@@ -1,0 +1,35 @@
+# webkvm logs go to journald by default (see webkvm.service:
+# StandardOutput=journal / StandardError=journal). View them with:
+#   journalctl -u webkvm -f
+#
+# When WEBKVM_LOG_FILE is set (typical for Docker or a systemd drop-in)
+# the backend also writes to that file. The rules below cover both
+# the systemd legacy path and the DATA_DIR path used by the in-app
+# "Logs" tab and the docker-compose deployment. Both are missingok
+# so a host that uses neither won't fail logrotate.
+
+/var/log/webkvm/*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+    sharedscripts
+    # Do NOT call "systemctl reload" here: the Go binary treats SIGHUP
+    # as a no-op, so reloading would just log a warning, not actually
+    # reopen files. If you ever switch to file logging, replace this
+    # with: systemctl reload webkvm 2>/dev/null || true
+}
+
+/opt/webkvm/logs/*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+    sharedscripts
+}

@@ -1,0 +1,6 @@
+node_modules
+build
+.svelte-kit
+dist
+package-lock.json
+src/lib/novnc

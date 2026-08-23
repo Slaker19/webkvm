@@ -1,0 +1,171 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unused
+    - gocritic
+    - revive
+    - bodyclose
+    - nilerr
+    - nilnil
+    - errorlint
+    - prealloc
+  disable:
+    - dupl
+    - funlen
+    - gocognit
+    - cyclop
+    - gocyclo
+    - wsl
+    - lll
+    - nlreturn
+    - exhaustruct
+    - varnamelen
+    - mnd
+    - paralleltest
+    - tparallel
+    - testpackage
+    - wrapcheck
+    - forcetypeassert
+    - noctx
+    - copyloopvar
+    - depguard
+    - gomodguard
+    - gosec
+    - iface
+    - protogetter
+    - rowserrcheck
+    - sqlclosecheck
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-tags:
+        - experimental
+        - opinionated
+      settings:
+        ifElseChain:
+          minThreshold: 3
+        elseif:
+          skipBalanced: true
+    revive:
+      rules:
+        - name: var-naming
+        - name: package-comments
+          disabled: true
+        - name: exported
+          disabled: true
+        - name: dot-imports
+          disabled: true
+        - name: error-strings
+          disabled: true
+        - name: error-naming
+          disabled: true
+        - name: superfluous-else
+        - name: range-val-in-closure
+        - name: unhandled-error
+          arguments:
+            - "fmt\\.Print.*"
+            - "fmt\\.Fprint.*"
+        - name: unused-parameter
+          arguments:
+            - allowRegex: "^_"
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+        - copylocks
+    staticcheck:
+      checks: ["all", "-ST1000", "-ST1020", "-ST1021", "-ST1023"]
+    errcheck:
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - (io.ReadCloser).Close
+        - (net.Conn).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - os.Remove
+        - os.RemoveAll
+        - (*os/exec.Cmd).Run
+    misspell:
+      locale: US
+  exclusions:
+    rules:
+      - path: (embed|frontend/dist)
+        linters:
+          - all
+      - path: _test\.go
+        linters:
+          - gocritic
+          - errcheck
+          - dupl
+          - gosimple
+      - text: unused-parameter
+        linters:
+          - revive
+      - text: Error return value of .+\.Close\(\) is not checked
+        linters:
+          - errcheck
+        path: _test\.go
+      - linters:
+          - errcheck
+        text: "Error return value of `.+\\..*(Close|Free|Undefine|Destroy|Write|Fprint|Fprintf|Fprintln|Remove|RemoveAll|Run|Encode|Flush)"
+      - linters:
+          - revive
+        text: "Unhandled error in call to function (fmt\\..*|os\\.(Remove|RemoveAll|WriteFile|MkdirAll|File\\.(Close|Write|WriteString|Truncate))|os/exec\\.Cmd\\.Run|net/http\\.ResponseWriter\\.Write|io\\.Writer\\.Write|io/fs\\.File\\.Close|bytes\\.Buffer\\.WriteString|strings\\.Builder\\.WriteString|encoding/json\\.Encoder\\.Encode|compress/gzip\\.Reader\\.Close|compress/gzip\\.Writer\\.Close)"
+      - linters:
+          - misspell
+        text: "(?i)behaviour|defence|honour|sanitise|centralised|cancelled|recognised"
+      - linters:
+          - nilerr
+        text: "error is not nil .+ but it returns nil"
+      - linters:
+          - nilnil
+        text: "return both a `nil` error and an invalid value"
+      - linters:
+          - errorlint
+        text: "non-wrapping format verb for fmt.Errorf|comparing with ==|comparing with !="
+      - linters:
+          - gocritic
+        text: "rangeValCopy|hugeParam|exitAfterDefer|ifElseChain|dupBranchBody|stringXbytes"
+      - linters:
+          - govet
+        text: "hostport|unusedwrite"
+      - linters:
+          - revive
+        text: "var-naming"
+      - linters:
+          - prealloc
+        text: "Consider preallocating"
+      - linters:
+          - staticcheck
+        text: "QF1001|QF1011|QF1012|S1008|ST1003|SA9003|SA6005|SA4000|SA4003|SA1012"
+      - linters:
+          - unused
+        text: "is unused"
+
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0
+
+output:
+  formats:
+    text:
+      path: stdout
+      print-issued-lines: true
+      print-linter-name: true
+  show-stats: true

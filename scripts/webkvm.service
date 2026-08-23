@@ -1,0 +1,65 @@
+[Unit]
+Description=WebKVM Backend (libvirt management + embedded Svelte frontend)
+Documentation=https://github.com/Slaker19/webkvm
+After=libvirtd.service virtlogd.service network-online.target
+Wants=libvirtd.service virtlogd.service network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+# Repo and data dirs can be overridden by /etc/default/webkvm
+# (sourced via EnvironmentFile).
+EnvironmentFile=-/etc/default/webkvm
+# Defaults if EnvironmentFile is missing.
+Environment=DATA_DIR=/opt/webkvm
+Environment=REPO_DIR=/opt/webkvm/source
+# Bind on loopback only — the front-end (Caddy on :443) is the
+# only thing that should reach the backend. Operators running
+# without a front proxy can override this with a drop-in setting
+# BIND_ADDR=0.0.0.0.
+Environment=BIND_ADDR=127.0.0.1
+# Go's multipart parser and os.CreateTemp use os.Tmpdir() (= $TMPDIR).
+# On many distros /tmp is a small tmpfs; /var/tmp is on the root
+# filesystem and has room for multi-GB uploads.
+Environment=TMPDIR=/var/tmp
+WorkingDirectory=/opt/webkvm
+ExecStart=/usr/local/bin/webkvm
+# Reload is intentionally a no-op — config is loaded once at startup.
+
+# Auto-restart on failure; brief backoff to avoid tight loops.
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65536
+
+# Logs go through journald. The companion logrotate file is a no-op
+# (missingok) and is kept only for installations that switch to file
+# logging via an override.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=webkvm
+
+# Hardening. The backend must run as root to read libvirt-owned image
+# files, so we explicitly grant the required paths and isolate the rest.
+# The set of writable paths is intentionally narrow; if you need to
+# import VMs from extra locations, drop a drop-in or set DATA_DIR
+# accordingly and add the parent to ReadWritePaths.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=true
+RestrictNamespaces=true
+ReadWritePaths=/opt/webkvm /var/lib/libvirt /var/tmp
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SYS_ADMIN CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID CAP_KILL CAP_SYS_PTRACE CAP_SYS_RESOURCE CAP_AUDIT_WRITE
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

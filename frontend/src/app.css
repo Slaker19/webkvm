@@ -1,0 +1,571 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-tertiary: var(--tertiary);
+  --color-tertiary-foreground: var(--tertiary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-status-running: var(--status-running);
+  --color-status-shutoff: var(--status-shutoff);
+  --color-status-paused: var(--status-paused);
+  --color-status-crashed: var(--status-crashed);
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/*
+ * WebKVM — Design tokens
+ * Dark-only for this phase. Light theme tokens defined in a comment block
+ * for future use (uncomment + add the `.dark` selector for opt-in switching).
+ *
+ * Palette inspired by shadcn/ui "zinc" + Beszel's neutral-first aesthetic.
+ * No gradients on surfaces. Accent (indigo) reserved for buttons, links,
+ * focus rings, and chart lines.
+ */
+
+@layer base {
+  :root {
+    /* Surfaces */
+    --background: #0a0a0c;
+    --foreground: #f4f4f5;
+
+    --card: #131316;
+    --card-foreground: #f4f4f5;
+
+    --popover: #131316;
+    --popover-foreground: #f4f4f5;
+
+    /* Surfaces with hover/active states */
+    --surface: #131316;
+    --surface-hover: #1b1b1f;
+    --surface-active: #232328;
+
+    /* Muted text/backgrounds */
+    --muted: #1b1b1f;
+    --muted-foreground: #a1a1aa;
+
+    /* Secondary surfaces */
+    --secondary: #1b1b1f;
+    --secondary-foreground: #f4f4f5;
+
+    /* Tertiary */
+    --tertiary: #232328;
+    --tertiary-foreground: #a1a1aa;
+
+    /* Accent (indigo) — buttons, links, focus rings ONLY */
+    --accent: #6366f1;
+    --accent-foreground: #ffffff;
+    --accent-hover: #818cf8;
+    --accent-subtle: rgba(99, 102, 241, 0.1);
+    --accent-subtle-hover: rgba(99, 102, 241, 0.15);
+
+    /* Primary — alias of accent, consumed by shadcn Button default variant */
+    --primary: #6366f1;
+    --primary-foreground: #ffffff;
+
+    /* Borders */
+    --border: #232328;
+    --border-hover: #2e2e34;
+    --input: #232328;
+    --ring: #6366f1;
+
+    /* Status colors */
+    --status-running: #22c55e;
+    --status-shutoff: #71717a;
+    --status-paused: #eab308;
+    --status-crashed: #ef4444;
+
+    --success: #22c55e;
+    --success-foreground: #ffffff;
+    --success-subtle: rgba(34, 197, 94, 0.1);
+    --warning: #f59e0b;
+    --warning-foreground: #ffffff;
+    --warning-subtle: rgba(245, 158, 11, 0.1);
+    --info: #3b82f6;
+    --info-foreground: #ffffff;
+    --info-subtle: rgba(59, 130, 246, 0.1);
+    --destructive: #ef4444;
+    --destructive-foreground: #ffffff;
+    --destructive-subtle: rgba(239, 68, 68, 0.1);
+
+    /* Radius */
+    --radius: 8px;
+
+    /* Text */
+    --text-primary: #f4f4f5;
+    --text-secondary: #a1a1aa;
+    --text-muted: #52525b;
+  }
+
+  /* Light theme (not active in dark-only phase; kept for future use)
+	:root:not(.dark) {
+		--background: #ffffff;
+		--foreground: #09090b;
+		--card: #ffffff;
+		--card-foreground: #09090b;
+		--popover: #ffffff;
+		--popover-foreground: #09090b;
+		--muted: #f4f4f5;
+		--muted-foreground: #71717a;
+		--secondary: #f4f4f5;
+		--secondary-foreground: #09090b;
+		--surface: #ffffff;
+		--surface-hover: #f4f4f5;
+		--surface-active: #e4e4e7;
+		--tertiary: #e4e4e7;
+		--tertiary-foreground: #71717a;
+		--accent: #6366f1;
+		--accent-foreground: #ffffff;
+		--border: #e4e4e7;
+		--border-hover: #d4d4d8;
+		--input: #e4e4e7;
+		--ring: #6366f1;
+		--text-primary: #09090b;
+		--text-secondary: #71717a;
+		--text-muted: #a1a1aa;
+	}
+	*/
+
+  body {
+    margin: 0;
+    /* Soft indigo glow near the top for depth; stays subtle against the
+       flat dark surfaces. Uses the accent-subtle token so it can't be
+       mistaken for a button. */
+    background:
+      radial-gradient(60rem 36rem at 50% -10%, var(--accent-subtle) 0%, transparent 55%),
+      var(--background);
+    color: var(--foreground);
+    font-family:
+      'Inter',
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  ::selection {
+    background: var(--accent-subtle);
+    color: var(--foreground);
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--background);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--border-hover);
+  }
+  /* Firefox scrollbar styling (WebKit rules above don't apply). */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) var(--background);
+  }
+}
+
+/* Tabular numbers for data tables */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Status dot — tiny circle for status indicators */
+.status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* Backwards-compat for any leftover class references during migration.
+   These are intentionally minimal — new code uses the shadcn primitives. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    opacity 0.15s ease;
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 0;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.btn-success {
+  background: var(--success);
+  color: var(--success-foreground);
+}
+.btn-danger {
+  background: var(--destructive);
+  color: var(--destructive-foreground);
+}
+.btn-secondary {
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  border-color: var(--border);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-hover);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+}
+
+:where(.input) {
+  width: 100%;
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  background: var(--background);
+  border: 1px solid var(--input);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+  outline: none;
+  box-sizing: border-box;
+}
+.input:focus {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23a1a1aa' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  background-size: 12px;
+  padding-right: 2rem;
+  cursor: pointer;
+}
+select.input option {
+  background: var(--popover);
+  color: var(--text-primary);
+  padding: 0.5rem;
+}
+
+.spinner {
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes progressIndeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(100%);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+.animate-slide-up {
+  animation: slideUp 0.2s ease-out;
+}
+.animate-slide-down {
+  animation: slideDown 0.2s ease-out;
+}
+.animate-scale-in {
+  animation: scaleIn 0.15s ease-out;
+}
+.animate-progress-indeterminate {
+  animation: progressIndeterminate 2s ease-in-out infinite;
+}
+
+/* ============================================================
+ * Micro-interactions — subset of tw-animate-css, hand-rolled so
+ * the shadcn primitives (dialogs, toasts, dropdowns, tooltips)
+ * animate in/out instead of appearing instantly.
+ *
+ * Tailwind v4's `data-open:` / `data-closed:` variants drive the
+ * utilities below (`data-open:animate-in` compiles to
+ * `.data-open\:animate-in[data-open]`). The per-property classes
+ * (fade-in-0, zoom-in-95, slide-in-from-*-2, …) set CSS variables
+ * consumed by the enter/exit keyframes.
+ * ============================================================ */
+@theme {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.32, 0, 0.67, 0);
+}
+
+@utility animate-in {
+  animation-name: enter;
+  animation-duration: var(--tw-duration, 150ms);
+  animation-timing-function: var(--tw-ease, var(--ease-out));
+  animation-fill-mode: both;
+}
+
+@utility animate-out {
+  animation-name: exit;
+  animation-duration: var(--tw-duration, 120ms);
+  animation-timing-function: var(--tw-ease, var(--ease-in));
+  animation-fill-mode: both;
+}
+
+@utility fade-in-0 {
+  --tw-enter-opacity: 0;
+}
+@utility fade-out-0 {
+  --tw-exit-opacity: 0;
+}
+@utility zoom-in-95 {
+  --tw-enter-scale: 0.95;
+}
+@utility zoom-out-95 {
+  --tw-exit-scale: 0.95;
+}
+@utility slide-in-from-top-2 {
+  --tw-enter-translate-y: -8px;
+}
+@utility slide-in-from-bottom-2 {
+  --tw-enter-translate-y: 8px;
+}
+@utility slide-in-from-left-2 {
+  --tw-enter-translate-x: -8px;
+}
+@utility slide-in-from-right-2 {
+  --tw-enter-translate-x: 8px;
+}
+@utility slide-out-to-top-2 {
+  --tw-exit-translate-y: -8px;
+}
+@utility slide-out-to-bottom-2 {
+  --tw-exit-translate-y: 8px;
+}
+@utility slide-out-to-left-2 {
+  --tw-exit-translate-x: -8px;
+}
+@utility slide-out-to-right-2 {
+  --tw-exit-translate-x: 8px;
+}
+
+@keyframes enter {
+  from {
+    opacity: var(--tw-enter-opacity, 1);
+    transform: translate3d(var(--tw-enter-translate-x, 0), var(--tw-enter-translate-y, 0), 0)
+      scale3d(var(--tw-enter-scale, 1), var(--tw-enter-scale, 1), var(--tw-enter-scale, 1))
+      rotate(var(--tw-enter-rotate, 0));
+  }
+}
+
+@keyframes exit {
+  to {
+    opacity: var(--tw-exit-opacity, 1);
+    transform: translate3d(var(--tw-exit-translate-x, 0), var(--tw-exit-translate-y, 0), 0)
+      scale3d(var(--tw-exit-scale, 1), var(--tw-exit-scale, 1), var(--tw-exit-scale, 1))
+      rotate(var(--tw-exit-rotate, 0));
+  }
+}
+
+/* Respect users who prefer reduced motion: collapse all animation
+ * and transition durations to ~0 so nothing pulses or slides. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Backwards-compat: .card class used by old code during migration.
+   New code uses shadcn <Card>. */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+.card:hover {
+  border-color: var(--border-hover);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* Clear, consistent keyboard focus for plain links and custom
+   interactive elements (buttons already use the ring utilities). */
+a:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Backwards-compat: .badge variants for old code.
+   New code uses shadcn <Badge> with custom variants. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border: 1px solid transparent;
+}
+.badge-running {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--status-running);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+.badge-shutoff {
+  background: rgba(113, 113, 122, 0.1);
+  color: var(--status-shutoff);
+  border-color: rgba(113, 113, 122, 0.2);
+}
+.badge-paused {
+  background: rgba(234, 179, 8, 0.1);
+  color: var(--status-paused);
+  border-color: rgba(234, 179, 8, 0.2);
+}
+.badge-crashed {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--status-crashed);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+/* Override Tailwind v4's forced-colors outline-hidden rule.
+   The default uses `outline: 2px solid #0000` (4-digit hex with
+   alpha=0), which Firefox logs as a 'Declaration rejected' warning
+   because in forced-colors mode the browser expects the outline to
+   be drawn with a system color, not a transparent one. The
+   `transparent` keyword is universally accepted and renders the
+   same way (no visible outline) in forced-colors mode.
+
+   Also use the longhand `outline-*` properties so the
+   `outline-offset: 2px` from the original rule is preserved (the
+   shorthand `outline:` resets it to 0). */
+@media (forced-colors: active) {
+  .outline-hidden {
+    outline-color: transparent;
+    outline-style: solid;
+    outline-width: 2px;
+    outline-offset: 2px;
+  }
+}
