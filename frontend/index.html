@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebKVM</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- xterm.js UMD assets served by the backend; loaded as globals for
+         the embedded terminal panels (TerminalPanel.svelte). -->
+    <link rel="stylesheet" href="/static/xterm.css" />
+    <script src="/static/xterm.mjs"></script>
+    <script src="/static/xterm-addon-fit.mjs"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,36 @@
+# webkvm Caddyfile
+#
+# Terminates TLS with a long-lived self-signed cert that includes
+# the mDNS hostname (hostname.local) so it works on any network
+# without reconfiguring.
+#
+# Layout:
+#   :80  -> 301 redirect to https://
+#   :443 -> reverse-proxy to 127.0.0.1:8080 (webkvm)
+#
+# The SAMEORIGIN policy lets the UI be framed by a same-site
+# reverse proxy while blocking arbitrary third-party sites.
+
+# HTTP -> HTTPS
+:80 {
+	redir https://{host}{uri} permanent
+}
+
+# HTTPS reverse proxy
+:443 {
+	tls /etc/caddy/certs/webkvm.crt /etc/caddy/certs/webkvm.key
+
+	header {
+		# The "SAMEORIGIN" policy prevents arbitrary third-party sites
+		# from framing the management interface.
+		X-Frame-Options "SAMEORIGIN"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), fullscreen=(self)"
+	}
+
+	reverse_proxy 127.0.0.1:8080
+}
+
+
