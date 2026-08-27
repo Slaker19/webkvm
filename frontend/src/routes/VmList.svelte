@@ -127,6 +127,8 @@
   let instCIKey = $state('');
   let instCIHostname = $state('');
   let instSaving = $state(false);
+  let instNet = $state('default');
+  let instNetOptions = $state([]);
   // Community appliance deploy dialog.
   let showAppliances = $state(false);
   let appliances = $state([]);
@@ -514,10 +516,18 @@ apt-get update -y
     instCIPassword = '';
     instCIKey = '';
     instCIHostname = '';
+    instNet = 'default';
     try {
-      const r = await api.listTemplates();
+      const [r, nets] = await Promise.all([api.listTemplates(), api.listNetworks()]);
       instTemplates = r.templates || [];
       instTemplateId = instTemplates[0]?.id || '';
+      instNetOptions = (nets.networks || nets || []).map((n) => ({
+        name: n.name,
+        type: n.mode || n.type || '',
+      }));
+      if (!instNetOptions.some((n) => n.name === instNet)) {
+        instNet = instNetOptions[0]?.name || 'default';
+      }
     } catch (e) {
       const msg = e.message || '';
       toast.error(msg);
@@ -557,7 +567,7 @@ apt-get update -y
     }
     instSaving = true;
     try {
-      const data = { name: instName.trim() };
+      const data = { name: instName.trim(), network: instNet };
       if (instCI) {
         data.cloud_init = {
           user: instCIUser || undefined,
@@ -602,8 +612,9 @@ apt-get update -y
         const def = {};
         for (const app of appliances) def[app.id] = appNets[app.id] || 'default';
         appNets = def;
-      } catch (_e) {
+      } catch (e) {
         netOptions = [];
+        toast.warning('Could not load network list: ' + (e.message || 'unknown error'));
       }
     } catch (e) {
       toast.error(e.message);
@@ -1602,6 +1613,14 @@ apt-get update -y
         <div class="space-y-1.5">
           <Label for="inst-name">{t('vms.newVmName')}</Label>
           <Input id="inst-name" bind:value={instName} placeholder="my-vm" />
+        </div>
+        <div class="space-y-1.5">
+          <Label for="inst-net">{t('vmDetail.networkLabel')}</Label>
+          <select id="inst-net" bind:value={instNet} class="input w-full">
+            {#each instNetOptions as n (n.name)}
+              <option value={n.name}>{n.name}{n.type ? ' (' + n.type + ')' : ''}</option>
+            {/each}
+          </select>
         </div>
 
         <label class="flex items-center gap-2 text-sm cursor-pointer select-none">

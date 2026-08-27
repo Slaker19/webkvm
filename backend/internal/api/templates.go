@@ -76,6 +76,7 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name      string                    `json:"name"`
 		Pool      string                    `json:"pool,omitempty"`
+		Network   string                    `json:"network,omitempty"`
 		CloudInit *models.CloudInitRequest  `json:"cloud_init,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -123,7 +124,7 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	cloneReq := models.CloneVMRequest{Name: req.Name, Pool: req.Pool}
+	cloneReq := models.CloneVMRequest{Name: req.Name, Pool: req.Pool, Network: req.Network}
 	vm, err := h.lv.CloneDomain(id, cloneReq)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())

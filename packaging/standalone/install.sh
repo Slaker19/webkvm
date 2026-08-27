@@ -398,8 +398,9 @@ elif [[ -n "${BIN_URL}" ]]; then
   SOURCE_BIN="${DOWNLOADED_BIN}"
 elif [[ -x "${REPO_DIR}/backend/webkvm" ]]; then
   SOURCE_BIN="${REPO_DIR}/backend/webkvm"
+  log "using binary from repo checkout: ${SOURCE_BIN}"
 else
-  # Try to fetch latest release binary from GitHub
+  # Try to fetch latest release binary from GitHub (last resort)
   log "fetching latest release binary from GitHub..."
   RELEASE_API="https://api.github.com/repos/Slaker19/webkvm/releases/latest"
   BIN_URL=$(curl -fsSL "${RELEASE_API}" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*webkvm[^"]*linux_amd64[^"]*"' | head -1 | cut -d'"' -f4 || true)

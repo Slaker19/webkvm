@@ -136,6 +136,7 @@ type AttachNetRequest struct {
 type CloneVMRequest struct {
 	Name     string `json:"name"`
 	Pool     string `json:"pool,omitempty"`
+	Network  string `json:"network,omitempty"`
 }
 
 type Snapshot struct {
