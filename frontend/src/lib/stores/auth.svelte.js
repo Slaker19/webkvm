@@ -224,7 +224,7 @@ export const api = {
       body: JSON.stringify({ capacity }),
     }),
   deleteVolume: (pool, name) => request(`/storage/volumes/${pool}/${name}`, { method: 'DELETE' }),
-  listISOs: (pool = 'ISOS') => request(`/storage/isos?pool=${encodeURIComponent(pool)}`),
+  listISOs: (pool) => request(`/storage/isos${pool ? '?pool=' + encodeURIComponent(pool) : ''}`),
   deleteISO: (name, pool = 'ISOS') =>
     request(`/storage/isos/${encodeURIComponent(pool)}/${encodeURIComponent(name)}`, {
       method: 'DELETE',

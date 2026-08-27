@@ -412,13 +412,34 @@ func (h *Handler) ResizeVolume(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ListISOs(w http.ResponseWriter, r *http.Request) {
 	poolName := r.URL.Query().Get("pool")
-	if poolName == "" {
-		poolName = config.ISOPoolName
+	if poolName != "" {
+		isos, err := h.lv.GetISOs(poolName)
+		if err != nil {
+			jsonErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		jsonResp(w, http.StatusOK, isos)
+		return
 	}
-	isos, err := h.lv.GetISOs(poolName)
+	// No pool specified → aggregate ISOs from all pools with purpose "iso"
+	allPools, err := h.lv.ListStoragePools()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	var isos []models.ISOScanResult
+	for _, p := range allPools {
+		if p.Purpose != "iso" {
+			continue
+		}
+		poolISOs, err := h.lv.GetISOs(p.Name)
+		if err != nil {
+			continue
+		}
+		isos = append(isos, poolISOs...)
+	}
+	if isos == nil {
+		isos = []models.ISOScanResult{}
 	}
 	jsonResp(w, http.StatusOK, isos)
 }
