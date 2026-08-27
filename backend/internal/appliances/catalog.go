@@ -98,10 +98,27 @@ type Store struct {
 }
 
 // NewStore loads (or seeds) the catalog at path. If the file does not
-// exist it is initialized from Defaults and persisted.
+// exist it is initialized from Defaults and persisted. New builtins
+// added in newer versions are merged in so existing stores gain them
+// without losing operator customizations.
 func NewStore(path string) *Store {
 	s := &Store{path: path, items: map[string]Appliance{}}
 	if err := s.load(); err == nil && len(s.items) > 0 {
+		// Merge in any new builtins that didn't exist when the store
+		// was first seeded (operator customizations on existing items
+		// are preserved).
+		added := false
+		for _, d := range Defaults {
+			if _, ok := s.items[d.ID]; !ok {
+				d.Builtin = true
+				d.ProvisionScript = provisionScripts[d.ID]
+				s.items[d.ID] = d
+				added = true
+			}
+		}
+		if added {
+			_ = s.save()
+		}
 		return s
 	}
 	// Seed from defaults if the file is missing/empty.
@@ -158,6 +175,19 @@ func (s *Store) load() error {
 		if a.ProvisionScript == "" {
 			if scr, ok := provisionScripts[a.ID]; ok {
 				a.ProvisionScript = scr
+			}
+		}
+		// For builtins, re-apply immutable fields from the compiled
+		// Defaults so the persistent store can't override them (e.g.
+		// cloud_init_supported was wrongly set to true for ISO apps).
+		if a.Builtin {
+			for _, d := range Defaults {
+				if d.ID == a.ID {
+					a.CloudInitSupported = d.CloudInitSupported
+					a.Format = d.Format
+					a.Category = d.Category
+					break
+				}
 			}
 		}
 		s.items[a.ID] = a

@@ -119,6 +119,21 @@
       term.onData((data) => {
         if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
       });
+      // Sync container size with the terminal's natural dimensions so
+      // there's no overflow or empty space when the panel resizes.
+      ro = new ResizeObserver(() => {
+        if (!container) return;
+        const w = container.clientWidth;
+        const h = container.clientHeight;
+        if (w <= 0 || h <= 0) return;
+        // Force xterm.js to redraw its canvas into the available space.
+        try {
+          term.refresh(0, term.rows - 1);
+        } catch (_e) {
+          /* ignore transient refresh errors */
+        }
+      });
+      ro.observe(container);
       return;
     }
     fitAddon = new window.FitAddon.FitAddon();
@@ -276,6 +291,6 @@
   <div
     bind:this={container}
     class="flex-1 min-h-0 p-1"
-    style="height: {fullscreen ? 'auto' : '420px'}"
+    style="height: {fullscreen ? 'auto' : '480px'}"
   ></div>
 </div>

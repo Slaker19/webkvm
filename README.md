@@ -45,6 +45,20 @@ backend terminates TLS natively. Only put a proxy in front if you already run
 one (WAF/rate-limit/central auth); then install with `WEBKVM_HTTPS=no` and
 `proxy_pass http://127.0.0.1:8080`.
 
+## Update
+
+```bash
+# from GitHub release (recommended)
+curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/packaging/standalone/update.sh -o /tmp/webkvm-update.sh && sudo bash /tmp/webkvm-update.sh
+
+# from local repo clone
+sudo /opt/webkvm-repo/packaging/standalone/update.sh --source
+```
+
+The updater downloads the latest release, stops the service, backs up the old
+binary, installs the new one, runs a health check and restarts — with automatic
+rollback if anything fails.
+
 ## Documentation
 
 - **[docs/INSTALLATION.md](docs/INSTALLATION.md)** — step-by-step install, HTTPS,
