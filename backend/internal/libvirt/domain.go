@@ -1948,6 +1948,12 @@ func (c *Connector) CloneDomain(id string, req models.CloneVMRequest) (models.VM
 	// Remove NVRAM path
 	xmlDesc = regexp.MustCompile(`<nvram>[^<]*</nvram>`).ReplaceAllString(xmlDesc, "")
 
+	// Override network if requested
+	if req.Network != "" {
+		xmlDesc = regexp.MustCompile(`(<source\s+network=)['"][^'"]+['"]`).
+			ReplaceAllString(xmlDesc, "${1}'"+xmlEscape(req.Network)+"'")
+	}
+
 	// Replace disk source
 	poolName := req.Pool
 	if poolName == "" {

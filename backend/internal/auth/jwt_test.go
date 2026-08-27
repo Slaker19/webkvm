@@ -96,13 +96,23 @@ func TestValidateToken_WrongSecret(t *testing.T) {
 func TestValidateToken_TamperedSignature(t *testing.T) {
 	m := newTestManager(t)
 	tok, _, _ := m.GenerateToken("u", "admin")
-	// Flip the last char of the signature.
-	tampered := tok[:len(tok)-1]
-	if tok[len(tok)-1] == 'A' {
-		tampered += "B"
-	} else {
-		tampered += "A"
+	// Corrupt the signature: find the last dot (separator between
+	// payload and signature) and flip the first byte of the
+	// base64url-encoded signature.
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("unexpected token parts: %d", len(parts))
 	}
+	sig := parts[2]
+	if sig == "" {
+		t.Fatal("empty signature")
+	}
+	if sig[0] == 'A' {
+		parts[2] = "B" + sig[1:]
+	} else {
+		parts[2] = "A" + sig[1:]
+	}
+	tampered := strings.Join(parts, ".")
 	if _, err := m.ValidateToken(tampered); err == nil {
 		t.Error("expected error on tampered signature")
 	}

@@ -298,6 +298,624 @@ append_info() {
 append_info /root/.bashrc
 UHOME=$(getent passwd 1000 | cut -d: -f6)
 [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
-echo "Moodle provisioned."
+	echo "Moodle provisioned."
+`,
+
+	// ---- vpn ----
+
+	"wireguard-easy": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+# Install Docker
+if ! command -v docker &>/dev/null; then
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable --now docker
+fi
+# WireGuard module (built-in on kernel 5.6+, safety net)
+modprobe wireguard 2>/dev/null || true
+# IP forwarding
+cat > /etc/sysctl.d/90-wireguard.conf <<'EOF'
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.src_valid_mark=1
+EOF
+sysctl -p /etc/sysctl.d/90-wireguard.conf
+WG_PASS="$(openssl rand -base64 12 | tr -d '\n' | cut -c1-16)"
+mkdir -p /opt/wg-easy
+cat > /opt/wg-easy/docker-compose.yml <<COMPOSE
+services:
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:15
+    container_name: wg-easy
+    network_mode: host
+    volumes:
+      - /opt/wg-easy:/etc/wireguard
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - INSECURE=true
+      - INIT_ENABLED=true
+      - INIT_USERNAME=admin
+      - INIT_PASSWORD=${WG_PASS}
+      - INIT_PORT=51820
+    restart: unless-stopped
+COMPOSE
+cd /opt/wg-easy && docker compose up -d
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : WireGuard Easy
+ URL        : http://$VMIP:51821
+ VPN        : UDP 51820
+ Admin      : admin / ${WG_PASS}
+ IMPORTANTE : cambia la contrasena despues
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "WireGuard Easy provisioned."
+`,
+
+	"openvpn-ui": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v docker &>/dev/null; then
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable --now docker
+fi
+mkdir -p /dev/net && mknod /dev/net/tun c 10 200 2>/dev/null || true
+OVPN_PASS="$(openssl rand -base64 12 | tr -d '\n' | cut -c1-16)"
+mkdir -p /opt/openvpn-ui/{openvpn/conf,openvpn/db}
+cat > /opt/openvpn-ui/docker-compose.yml <<COMPOSE
+services:
+  ovpn:
+    image: shuricksumy/openvpn-ui:latest
+    container_name: openvpn
+    working_dir: /etc/openvpn/easy-rsa
+    environment:
+      - OPENVPN_ADMIN_USERNAME=admin
+      - OPENVPN_ADMIN_PASSWORD=${OVPN_PASS}
+      - SITE_NAME=VPN-Admin
+      - APP_PORT=8080
+    ports:
+      - "8080:8080/tcp"
+      - "1194:1194/udp"
+    devices:
+      - /dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ./openvpn/conf:/etc/openvpn
+      - ./openvpn/db:/opt/openvpn-gui/db
+    restart: always
+COMPOSE
+cd /opt/openvpn-ui && docker compose up -d
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : OpenVPN UI
+ URL        : http://$VMIP:8080
+ VPN        : UDP 1194
+ Admin      : admin / ${OVPN_PASS}
+ IMPORTANTE : completa el wizard en la web UI
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "OpenVPN UI provisioned."
+`,
+
+	// ---- devops ----
+
+	"portainer-ce": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v docker &>/dev/null; then
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable --now docker
+fi
+docker volume create portainer_data 2>/dev/null || true
+docker run -d --name portainer --restart=always \
+  -p 9443:9443 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v portainer_data:/data \
+  portainer/portainer-ce:lts
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : Portainer CE
+ URL        : https://$VMIP:9443
+ Admin      : crea tu cuenta en la primera visita
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "Portainer CE provisioned."
+`,
+
+	"gitea": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y git sqlite3
+GITEA_VERSION="1.22.6"
+adduser --system --shell /bin/bash --gecos 'Git Version Control' --group --disabled-password --home /home/git git 2>/dev/null || true
+wget -q -O /usr/local/bin/gitea "https://dl.gitea.com/gitea/${GITEA_VERSION}/gitea-${GITEA_VERSION}-linux-amd64"
+chmod +x /usr/local/bin/gitea
+mkdir -p /var/lib/gitea/{custom,data,log} /etc/gitea
+chown -R git:git /var/lib/gitea
+chmod -R 750 /var/lib/gitea
+chown root:git /etc/gitea
+chmod 770 /etc/gitea
+cat > /etc/gitea/app.ini <<'INI'
+[database]
+DB_TYPE = sqlite3
+PATH = /var/lib/gitea/data/gitea.db
+[repository]
+ROOT = /var/lib/gitea/data/gitea-repositories
+[server]
+DOMAIN = localhost
+HTTP_PORT = 3001
+ROOT_URL = http://localhost:3001/
+DISABLE_SSH = false
+SSH_PORT = 22
+[service]
+DISABLE_REGISTRATION = false
+REQUIRE_SIGNIN_VIEW = false
+[security]
+INSTALL_LOCK = true
+[log]
+MODE = file
+LEVEL = Info
+ROOT_PATH = /var/lib/gitea/log
+[openid]
+ENABLE_OPENID_SIGNIN = false
+ENABLE_OPENID_SIGNUP = false
+INI
+chown root:git /etc/gitea/app.ini
+chmod 640 /etc/gitea/app.ini
+cat > /etc/systemd/system/gitea.service <<'UNIT'
+[Unit]
+Description=Gitea
+After=network.target
+[Service]
+Type=simple
+User=git
+Group=git
+WorkingDirectory=/var/lib/gitea/
+ExecStart=/usr/local/bin/gitea web --config /etc/gitea/app.ini
+Restart=always
+Environment=GITEA_WORK_DIR=/var/lib/gitea/
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now gitea
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : Gitea
+ URL        : http://$VMIP:3001
+ Admin      : crea tu cuenta en la primera visita
+ SSH        : git clone ssh://git@$VMIP:22/...
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "Gitea provisioned."
+`,
+
+	// ---- storage ----
+
+	"vaultwarden": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v docker &>/dev/null; then
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable --now docker
+fi
+VW_TOKEN="$(openssl rand -base64 48)"
+mkdir -p /opt/vaultwarden
+docker run -d --name vaultwarden --restart unless-stopped \
+  -v /opt/vaultwarden:/data \
+  -e ADMIN_TOKEN="${VW_TOKEN}" \
+  -e SIGNUPS_ALLOWED=true \
+  -p 8080:80 \
+  vaultwarden/server:latest
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : Vaultwarden
+ URL        : http://$VMIP:8080
+ Admin Token : ${VW_TOKEN}
+ IMPORTANTE : HTTPS necesario para web vault
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "Vaultwarden provisioned."
+`,
+
+	"minio": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+MINIO_USER="minioadmin"
+MINIO_PASS="$(openssl rand -base64 24 | tr -d '\n' | tr '/+' 'AB' | cut -c1-24)"
+useradd --system --home /var/lib/minio --shell /sbin/nologin minio-user 2>/dev/null || true
+wget -q -O /usr/local/bin/minio "https://dl.min.io/server/minio/release/linux-amd64/minio"
+chmod +x /usr/local/bin/minio
+mkdir -p /var/lib/minio/data
+chown -R minio-user:minio-user /var/lib/minio
+cat > /etc/default/minio <<EOF
+MINIO_VOLUMES="/var/lib/minio/data"
+MINIO_OPTS="--console-address :9001"
+MINIO_ROOT_USER=${MINIO_USER}
+MINIO_ROOT_PASSWORD=${MINIO_PASS}
+EOF
+chmod 600 /etc/default/minio
+cat > /etc/systemd/system/minio.service <<'UNIT'
+[Unit]
+Description=MinIO
+Wants=network-online.target
+After=network-online.target
+[Service]
+User=minio-user
+Group=minio-user
+EnvironmentFile=-/etc/default/minio
+ExecStart=/usr/local/bin/minio server $MINIO_OPTS $MINIO_VOLUMES
+Restart=always
+LimitNOFILE=65536
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now minio
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : MinIO
+ S3 API     : http://$VMIP:9000
+ Console    : http://$VMIP:9001
+ User       : ${MINIO_USER}
+ Pass       : ${MINIO_PASS}
+ IMPORTANTE : cambia las credenciales despues
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "MinIO provisioned."
+`,
+
+	// ---- web/monitoring ----
+
+	"nginx-proxy-manager": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v docker &>/dev/null; then
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable --now docker
+fi
+mkdir -p /opt/npm/{data,letsencrypt}
+cat > /opt/npm/docker-compose.yml <<'COMPOSE'
+services:
+  app:
+    image: jc21/nginx-proxy-manager:latest
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '81:81'
+    environment:
+      TZ: UTC
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
+COMPOSE
+cd /opt/npm && docker compose up -d
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : Nginx Proxy Manager
+ Admin UI   : http://$VMIP:81
+ Default    : admin@example.com / changeme
+ IMPORTANTE : cambia las credenciales despues
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "Nginx Proxy Manager provisioned."
+`,
+
+	"homer": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v docker &>/dev/null; then
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable --now docker
+fi
+mkdir -p /opt/homer/assets
+cat > /opt/homer/docker-compose.yml <<'COMPOSE'
+services:
+  homer:
+    image: b4bz/homer:latest
+    container_name: homer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /opt/homer/assets:/www/assets
+    environment:
+      - INIT_ASSETS=1
+COMPOSE
+cd /opt/homer && docker compose up -d
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : Homer Dashboard
+ URL        : http://$VMIP:8080
+ Config     : /opt/homer/assets/config.yml
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "Homer provisioned."
+`,
+
+	"pihole": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v docker &>/dev/null; then
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable --now docker
+fi
+# Free port 53 from systemd-resolved
+mkdir -p /etc/systemd/resolved.conf.d
+cat > /etc/systemd/resolved.conf.d/no-stub.conf <<'EOF'
+[Resolve]
+DNSStubListener=no
+EOF
+rm -f /etc/resolv.conf
+ln -s /run/systemd/resolve/resolv.conf /etc/resolv.conf
+systemctl restart systemd-resolved
+for i in $(seq 1 10); do ss -lntp | grep -q ':53 ' || break; sleep 2; done
+PIHOLE_PASS="$(openssl rand -base64 12 | tr -d '\n' | cut -c1-16)"
+mkdir -p /opt/pihole/etc-pihole
+cat > /opt/pihole/docker-compose.yml <<COMPOSE
+services:
+  pihole:
+    container_name: pihole
+    image: pihole/pihole:latest
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "80:80/tcp"
+    environment:
+      TZ: UTC
+      FTLCONF_webserver_api_password: '${PIHOLE_PASS}'
+      FTLCONF_dns_listeningMode: ALL
+    volumes:
+      - ./etc-pihole:/etc/pihole
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+COMPOSE
+cd /opt/pihole && docker compose up -d
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : Pi-hole
+ URL        : http://$VMIP/admin
+ DNS        : $VMIP:53
+ Password   : ${PIHOLE_PASS}
+ IMPORTANTE : usa este DNS en tus dispositivos
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "Pi-hole provisioned."
+`,
+
+	"adguard-home": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+# Free port 53
+systemctl disable --now systemd-resolved 2>/dev/null || true
+systemctl mask systemd-resolved 2>/dev/null || true
+echo "nameserver 1.1.1.1" > /etc/resolv.conf
+AGH_VERSION="v0.107.45"
+wget -q -O /tmp/adguard.tar.gz "https://github.com/AdguardTeam/AdGuardHome/releases/download/${AGH_VERSION}/AdGuardHome_linux_amd64.tar.gz"
+tar -xzf /tmp/adguard.tar.gz -C /opt/
+rm /tmp/adguard.tar.gz
+ADMIN_PASS="$(openssl rand -base64 12 | tr -d '\n' | cut -c1-16)"
+apt-get update -y && apt-get install -y apache2-utils >/dev/null 2>&1
+HASH="$(htpasswd -bnBC 10 "" "${ADMIN_PASS}" | cut -d: -f2)"
+cat > /opt/AdGuardHome/AdGuardHome.yaml <<YAML
+http:
+  address: 0.0.0.0:80
+  session_ttl: 720h
+users:
+  - name: admin
+    password: "${HASH}"
+auth_attempts: 5
+block_auth_min: 15
+theme: auto
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  protection_enabled: true
+  blocking_mode: default
+  blocked_response_ttl: 10
+  upstream_dns:
+    - https://dns.google/dns-query
+    - https://dns.cloudflare.com/dns-query
+  bootstrap_dns:
+    - 1.1.1.1
+    - 8.8.8.8
+  fallback_dns:
+    - 8.8.4.4
+  ratelimit: 50
+  enabled: true
+filters:
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    name: AdGuard DNS filter
+    id: 1
+schema_version: 29
+YAML
+cd /opt/AdGuardHome && ./AdGuardHome -s install
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : AdGuard Home
+ URL        : http://$VMIP
+ DNS        : $VMIP:53
+ Admin      : admin / ${ADMIN_PASS}
+ IMPORTANTE : usa este DNS en tus dispositivos
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "AdGuard Home provisioned."
+`,
+
+	"beszel": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v docker &>/dev/null; then
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable --now docker
+fi
+mkdir -p /opt/beszel
+cat > /opt/beszel/docker-compose.yml <<'COMPOSE'
+services:
+  beszel:
+    image: henrygd/beszel:latest
+    container_name: beszel
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./beszel_data:/beszel_data
+  beszel-agent:
+    image: henrygd/beszel-agent:latest
+    container_name: beszel-agent
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./beszel-agent_data:/beszel_data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+COMPOSE
+cd /opt/beszel && docker compose up -d
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : Beszel
+ Hub        : http://$VMIP:8090
+ Admin      : crea tu cuenta en la primera visita
+ Agent      : beszel-agent en el mismo host
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "Beszel provisioned."
+`,
+
+	"uptime-kuma": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if ! command -v docker &>/dev/null; then
+  apt-get update -y
+  apt-get install -y ca-certificates curl gnupg
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable --now docker
+fi
+mkdir -p /opt/uptime-kuma
+cat > /opt/uptime-kuma/docker-compose.yml <<'COMPOSE'
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:2
+    container_name: uptime-kuma
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./uptime-kuma:/app/data
+COMPOSE
+cd /opt/uptime-kuma && docker compose up -d
+VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+[ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+cat > /etc/webkvm-app.txt <<EOF
+==========================================
+ WebKVM App : Uptime Kuma
+ URL        : http://$VMIP:3001
+ Admin      : crea tu cuenta en la primera visita
+ Log        : /var/log/webkvm-provision.log
+==========================================
+EOF
+MARK='# >>> WEBKVM APP INFO >>>'
+append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n[ -r /etc/webkvm-app.txt ] && cat /etc/webkvm-app.txt\n# <<< WEBKVM APP INFO <<<\n' "$MARK" >> "$1"; }
+append_info /root/.bashrc
+UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
+echo "Uptime Kuma provisioned."
 `,
 }

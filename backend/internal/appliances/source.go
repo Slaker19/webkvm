@@ -25,10 +25,14 @@ var officialHosts = map[string]bool{
 	"mirror.opnsense.org":         true,
 	"mirrors.bfsu.edu.cn":         true, // official OPNsense mirror
 	"downloads.openwrt.org":       true,
-	"github.com":                  true, // Home Assistant operating-system releases
+	"github.com":                  true, // Home Assistant, VyOS nightly releases
 	"objects.githubusercontent.com": true, // GitHub release asset host
 	"downloads.vyos.io":           true,
 	"images.linuxcontainers.org":  true,
+	"nyifiles.pfsense.org":        true, // pfSense CE mirror
+	"downloads.ipfire.org":        true, // IPFire releases
+	"download.truenas.com":       true, // TrueNAS SCALE releases
+	"sourceforge.net":            true, // OpenMediaVault ISOs
 }
 
 // ValidateSourceURL ensures u is an https URL hosted on an official

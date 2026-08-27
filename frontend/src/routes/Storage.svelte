@@ -93,10 +93,15 @@
       }
       volumes = (selectedPool ? await api.listVolumes(selectedPool) : []) || [];
       const isoPools = pools.filter((p) => p.purpose === 'iso');
-      if (!selectedISOPool || !isoPools.find((p) => p.name === selectedISOPool)) {
-        selectedISOPool = isoPools[0]?.name || 'ISOS';
+      if (
+        !selectedISOPool ||
+        selectedISOPool === '__all__' ||
+        !isoPools.find((p) => p.name === selectedISOPool)
+      ) {
+        selectedISOPool = '__all__';
       }
-      isos = (await api.listISOs(selectedISOPool)) || [];
+      isos =
+        (await api.listISOs(selectedISOPool === '__all__' ? undefined : selectedISOPool)) || [];
     } catch (e) {
       error = e.message;
     } finally {
@@ -800,11 +805,12 @@
             bind:value={selectedISOPool}
             onchange={() =>
               api
-                .listISOs(selectedISOPool)
+                .listISOs(selectedISOPool === '__all__' ? undefined : selectedISOPool)
                 .then((data) => (isos = data || []))
                 .catch((e) => (error = e.message))}
             class="input !py-1 !text-xs !w-auto"
           >
+            <option value="__all__">All pools</option>
             {#each pools.filter((p) => p.purpose === 'iso') as p}
               <option value={p.name}>{p.name}</option>
             {/each}
