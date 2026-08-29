@@ -9,7 +9,7 @@ import (
 	"webkvm/internal/events"
 	"webkvm/internal/models"
 
-	"github.com/libvirt/libvirt-go"
+	"libvirt.org/go/libvirt"
 )
 
 // ringBuffer is a fixed-size circular buffer of MetricsSample. When full,

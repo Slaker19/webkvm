@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/libvirt/libvirt-go"
+	"libvirt.org/go/libvirt"
 )
 
 // validateDisksReadable walks the disk sources referenced by the domain

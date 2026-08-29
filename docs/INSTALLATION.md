@@ -230,7 +230,7 @@ Browser ──HTTP/SSE + Bearer JWT──► Go backend (:8080)
                                     ├─ SSE event hub (VM state, metrics)
                                     ├─ noVNC proxy (WebSocket → VNC), serial WebSocket
                                     └─ Backup runner (cron) + OVA import/export
-                                    │  libvirt C API (libvirt-go)
+                                    │  libvirt C API (libvirt.org/go/libvirt)
                                     ▼
                         libvirtd / qemu:///system
                         VMs · Networks · Storage pools · Snapshots

@@ -18,7 +18,7 @@ func TestMain(m *testing.M) {
 		// Any test that calls Open() (connect_test.go) triggers this
 		// for the first time, which goleak would otherwise always
 		// flag as a leak.
-		goleak.IgnoreTopFunction("github.com/libvirt/libvirt-go._Cfunc_virEventRunDefaultImplWrapper"),
+		goleak.IgnoreTopFunction("libvirt.org/go/libvirt._Cfunc_virEventRunDefaultImplWrapper"),
 	)
 }
 

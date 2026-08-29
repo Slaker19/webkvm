@@ -8,7 +8,7 @@ import (
 
 	"webkvm/internal/models"
 
-	"github.com/libvirt/libvirt-go"
+	"libvirt.org/go/libvirt"
 )
 
 // webkvm metadata XML namespace & root. Stored inside the libvirt

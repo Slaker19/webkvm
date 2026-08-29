@@ -26,7 +26,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/libvirt/libvirt-go"
+	"libvirt.org/go/libvirt"
 	"webkvm/internal/config"
 	vmmlibvirt "webkvm/internal/libvirt"
 )

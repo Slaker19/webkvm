@@ -3,7 +3,7 @@ package libvirt
 import (
 	"fmt"
 
-	"github.com/libvirt/libvirt-go"
+	"libvirt.org/go/libvirt"
 )
 
 // OpenSerialConsole opens a stream to the serial console of the given domain.

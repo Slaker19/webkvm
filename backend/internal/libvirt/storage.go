@@ -12,7 +12,7 @@ import (
 
 	"webkvm/internal/models"
 
-	"github.com/libvirt/libvirt-go"
+	"libvirt.org/go/libvirt"
 )
 
 func (c *Connector) ListStoragePools() ([]models.StoragePool, error) {

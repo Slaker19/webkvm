@@ -17,7 +17,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
-	lv "github.com/libvirt/libvirt-go"
+	lv "libvirt.org/go/libvirt"
 
 	"webkvm/internal/audit"
 	"webkvm/internal/auth"

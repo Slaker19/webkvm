@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/libvirt/libvirt-go"
+	"libvirt.org/go/libvirt"
 	"webkvm/internal/events"
 )
 

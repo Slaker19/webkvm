@@ -4,7 +4,7 @@ import "testing"
 
 // testConnURI is libvirt's built-in fake driver — a real (in-process)
 // connection with no hypervisor required, so these tests exercise the
-// actual libvirt-go connection lifecycle instead of mocking it away.
+// actual libvirt connection lifecycle instead of mocking it away.
 const testConnURI = "test:///default"
 
 func TestOpen_ConnectsSuccessfully(t *testing.T) {

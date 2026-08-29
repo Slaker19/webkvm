@@ -7,7 +7,7 @@ import (
 
 	"webkvm/internal/models"
 
-	"github.com/libvirt/libvirt-go"
+	"libvirt.org/go/libvirt"
 )
 
 // validateDNS checks a slice of DNS forwarder IPs and returns an error if any

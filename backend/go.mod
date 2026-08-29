@@ -11,12 +11,12 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
 	github.com/klauspost/compress v1.18.6
-	github.com/libvirt/libvirt-go v7.4.0+incompatible
 	github.com/pkg/sftp v1.13.11
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/tredoe/osutil v1.5.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.54.0
+	libvirt.org/go/libvirt v1.12006.0
 )
 
 require (

@@ -21,7 +21,7 @@ import (
 	"webkvm/internal/models"
 
 	"github.com/google/uuid"
-	"github.com/libvirt/libvirt-go"
+	"libvirt.org/go/libvirt"
 )
 
 const (

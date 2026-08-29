@@ -36,7 +36,7 @@ jobs:
           cache-dependency-path: backend/go.sum
 
       # libvirt headers aren't installed by default in GitHub Actions
-      # runners. The packages that import github.com/libvirt/libvirt-go
+      # runners. The packages that import libvirt.org/go/libvirt
       # only need the C headers at build time when CGO is enabled.
       - name: Install libvirt dev headers
         run: sudo apt-get update && sudo apt-get install -y libvirt-dev pkg-config

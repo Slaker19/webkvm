@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/libvirt/libvirt-go"
+	"libvirt.org/go/libvirt"
 	"webkvm/internal/config"
 )
 
