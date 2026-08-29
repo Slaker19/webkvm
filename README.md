@@ -1,9 +1,10 @@
 # WebKVM
 
 A **native** virtual machine manager (libvirt + QEMU/KVM) with a web UI.
-Go backend + embedded Svelte 5 frontend in a single binary (~14 MB). No Docker,
-no mandatory reverse proxy: the backend serves **HTTPS directly** with a
-self-signed certificate.
+Go backend + embedded Svelte 5 frontend in a single binary (~14 MB). No
+mandatory reverse proxy: the backend serves **HTTPS directly** with a
+self-signed certificate. Docker is supported as an alternative to the native
+install (see [docs/DOCKER.md](docs/DOCKER.md)) for those who prefer it.
 
 [![CI](https://github.com/Slaker19/webkvm/actions/workflows/ci.yml/badge.svg)](https://github.com/Slaker19/webkvm/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/Go-1.25-blue)
@@ -66,6 +67,8 @@ rollback if anything fails.
   API, storage).
 - **[docs/USAGE.md](docs/USAGE.md)** — daily use: VMs, templates, cloud-init,
   storage, networking, firewall, backups, users/roles.
+- **[docs/DOCKER.md](docs/DOCKER.md)** — running WebKVM in a container against
+  your host's existing libvirtd.
 
 ## Build from source
 

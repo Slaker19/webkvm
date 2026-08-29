@@ -1,0 +1,41 @@
+# WebKVM in Docker — connects to the libvirtd ALREADY running on this
+# host (it does not bundle or start its own). See docs/DOCKER.md for the
+# reasoning behind every mount and privilege below before using this in
+# production: this grants the container the same level of trust as the
+# native install, which also runs as root on the host.
+#
+# Prerequisite: this host must already have libvirtd/QEMU installed and
+# running (exactly what `install.sh` sets up for a native install).
+services:
+  webkvm:
+    image: webkvm:latest
+    build: .
+    container_name: webkvm
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    environment:
+      - DATA_DIR=/opt/webkvm
+      - LIBVIRT_URI=qemu:///system
+      - BIND_ADDR=0.0.0.0
+      - PORT=8080
+    volumes:
+      # Persistent state: users, settings, certs, disk/ISO pools. Kept at
+      # the SAME path inside and outside the container — libvirt's pool
+      # definitions store this as an absolute directory path, so the
+      # container must see it exactly where the host's libvirtd sees it.
+      - /opt/webkvm:/opt/webkvm
+      # Host's libvirt socket — lets LIBVIRT_URI=qemu:///system reach the
+      # host's libvirtd exactly like the native install does.
+      - /var/run/libvirt:/var/run/libvirt
+      # Host's systemd socket + journal — used for `journalctl`/
+      # `systemctl restart webkvm` (service logs/restart).
+      - /run/systemd:/run/systemd
+      - /var/log/journal:/var/log/journal:ro
+      # Host's user database, read-only — lets the Host Terminal feature
+      # authenticate real host accounts via the container's own /bin/login
+      # (not the host's login binary, to avoid a glibc mismatch).
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/shadow:/etc/shadow:ro
+      - /etc/group:/etc/group:ro
+      - /etc/pam.d:/etc/pam.d:ro

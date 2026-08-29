@@ -1,4 +1,4 @@
-.PHONY: all install-deps build build-cli run dev stop clean install uninstall update status logs install-systemd install-systemd-force install-caddy install-all regen-cert rollback
+.PHONY: all install-deps build build-cli run dev stop clean install uninstall update status logs install-systemd install-systemd-force install-caddy install-all regen-cert rollback docker-build
 
 # Version: prefer git tag/describe, fall back to "dev" for local builds.
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
@@ -116,6 +116,17 @@ dist: binary
 	@echo "On the target server:"
 	@echo "  tar xzf webkvm-$(VERSION).tar.gz"
 	@echo "  sudo WEBKVM_BINARY=backend/webkvm bash packaging/standalone/install.sh"
+
+# ---- Docker ----
+
+# docker-build — build the prebuilt binary (same artifact the native
+# installer uses, never compiled inside the image) then the container
+# image. See docker-compose.yml / docs/DOCKER.md for how to run it.
+docker-build: build-backend
+	docker build -t webkvm:$(VERSION) -t webkvm:latest .
+	@echo ""
+	@echo "Image built: webkvm:$(VERSION) (also tagged webkvm:latest)"
+	@echo "Run it with: docker compose up -d"
 
 # ---- Install / Uninstall (systemd) ----
 
