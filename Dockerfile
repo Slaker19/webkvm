@@ -8,11 +8,10 @@
 #
 # The binary is prebuilt (same artifact the native installer uses) and only
 # copied in here, never compiled inside the image — see backend/webkvm.
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
-      curl \
       openssl \
       python3 \
       xorriso \
