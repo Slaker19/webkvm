@@ -180,9 +180,16 @@ Everything under `/opt/webkvm` (config, disks, ISOs, users) is preserved.
 
 ```bash
 cd packaging/standalone
-sudo ./uninstall.sh               # keeps data
-sudo PURGE_DATA=1 ./uninstall.sh  # also removes data
+sudo ./uninstall.sh                                  # keeps data
+sudo PURGE_DATA=1 PURGE_NETWORKS=1 ./uninstall.sh     # also removes data + networks/bridges
 ```
+
+Uninstall only removes what WebKVM itself owns: the binary, the systemd
+service, and — opt-in — its own data (`PURGE_DATA`) and the libvirt
+networks/bridges it created (`PURGE_NETWORKS`). It deliberately does **not**
+remove runtime packages (libvirt, qemu, swtpm, ovmf, dnsmasq, ...): those are
+shared system/virtualization tooling that other software on the host may also
+depend on, so uninstall never touches them.
 
 ### 10. Troubleshooting
 
@@ -349,9 +356,9 @@ API token>`.
 |------|----------------|
 | Auth | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `PUT /users/me/password` |
 | Users/groups | `GET/POST/PUT/DELETE /users/{username}`, `GET/POST /groups`, `GET /accounts` |
-| VMs | `GET/POST /vms`, `GET/PUT/DELETE /vms/{id}`, power actions, clone/import/import-OVA/export |
-| Console | serial WebSocket (+ single-use tickets), noVNC, `.rdp`/`.vv` download, clipboard |
-| Storage | pools/volumes/ISOs CRUD, upload/download ISO |
+| VMs | `GET/POST /vms`, `GET/PUT/DELETE /vms/{id}`, power actions, clone/import/import-OVA/export, `POST/DELETE /vms/{id}/usb` (USB passthrough, admin only) |
+| Console | serial WebSocket (+ single-use tickets), noVNC (`POST /vms/{id}/vnc-ticket` + reusable VM-scoped ticket), `.rdp`/`.vv` download, clipboard |
+| Storage | pools/volumes/ISOs CRUD, upload/download ISO, `POST /storage/upload-disk` (qcow2/img/raw/qed) |
 | Networks | bridges/networks CRUD, VLAN-aware toggle |
 | Snapshots/backups | snapshot CRUD + revert; backup targets/runs/jobs/schedules |
 | Appliances | catalog CRUD, deploy (background job), provisioning scripts |

@@ -159,6 +159,7 @@ func (s *Store) Create(req models.CreateUserRequest) (*models.User, error) {
 		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 		Active:       true,
 		Quota:        req.Quota,
+		AllowedPools: req.AllowedPools,
 	}
 	s.users[req.Username] = u
 	if err := s.save(); err != nil {
@@ -228,6 +229,11 @@ func (s *Store) Update(username string, req models.UpdateUserRequest) (*models.U
 			q.MaxDiskGB = 0
 		}
 		u.Quota = q
+	}
+	if req.AllowedPools != nil {
+		// Non-nil replaces the allowlist; an empty slice clears it so
+		// the user may use every pool again.
+		u.AllowedPools = *req.AllowedPools
 	}
 
 	if err := s.save(); err != nil {
@@ -348,16 +354,32 @@ func (s *Store) load() error {
 	needsMigration := false
 	for _, u := range users {
 		if u.PasswordHash == "" {
-			// Legacy record (password field was json:"-", never
-			// persisted). The seed admin gets the documented default
-			// password re-applied (hashed) so the install isn't
-			// permanently locked out. Other users without hashes
-			// are dropped — they couldn't log in anyway.
+			// Legacy/corrupted record (password field was json:"-",
+			// never persisted, or the file was hand-edited/partially
+			// restored). The seed admin is re-seeded with a freshly
+			// generated random password (like a first-run install)
+			// rather than a hardcoded, guessable one — a literal
+			// "admin" password here would let anyone regain a
+			// trivially-guessable admin credential just by producing
+			// a users.json missing that field. Other users without
+			// hashes are dropped — they couldn't log in anyway.
 			if u.Username == "admin" {
-				hash, herr := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
+				raw := make([]byte, 24)
+				if _, rerr := rand.Read(raw); rerr != nil {
+					return rerr
+				}
+				adminPassword := base64.RawURLEncoding.EncodeToString(raw)
+				hash, herr := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.DefaultCost)
 				if herr != nil {
 					return herr
 				}
+				pwPath := filepath.Join(filepath.Dir(s.filePath), "admin-password.reset")
+				if werr := os.WriteFile(pwPath, []byte(adminPassword), 0600); werr != nil {
+					return werr
+				}
+				slog.Warn("admin_password_reset_missing_hash",
+					"saved_to", pwPath,
+					"msg", "users.json had an admin record with no password hash (corrupted or hand-edited file); a new random password was generated and saved with restricted permissions — retrieve it from the indicated file and change it after login.")
 				u.PasswordHash = string(hash)
 				u.MustChangePassword = true
 				u.Active = true

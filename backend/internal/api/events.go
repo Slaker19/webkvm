@@ -5,14 +5,34 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"webkvm/internal/audit"
+	"webkvm/internal/auth"
 )
+
+// EventsTicket issues a short-lived, single-use ticket the frontend
+// exchanges for SSE access (?ticket=... on /api/events), the same
+// mechanism used for the VM console/serial WebSocket endpoints. This
+// keeps the caller's long-lived JWT out of the request URL — a raw
+// bearer token in a query string ends up durably logged (reverse-proxy
+// access logs, this backend's own request logger, browser history)
+// where anyone with log access could replay it until it expires.
+func (h *Handler) EventsTicket(w http.ResponseWriter, r *http.Request) {
+	user, role, _ := audit.FromRequest(r)
+	tk, err := auth.IssueTicket(user, role)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "issue ticket: "+err.Error())
+		return
+	}
+	jsonResp(w, http.StatusOK, map[string]any{"ticket": tk, "expires_in": 30})
+}
 
 // EventsSSE serves a Server-Sent Events stream of VM state changes.
 //
-// Auth: the global JWT middleware validates the token. For this SSE endpoint
-// the token is passed via the `?token=` query param because EventSource
-// cannot set request headers. That query-param path is ONLY honored for
-// /api/events; all other routes require the Authorization header.
+// Auth: EventSource cannot set request headers, so the caller first
+// exchanges its JWT for a short-lived ticket via EventsTicket, then
+// connects here with `?ticket=...`. The global JWT middleware's
+// generic ticket branch validates and burns it before this handler runs.
 //
 // Wire format: each event is one SSE message:
 //

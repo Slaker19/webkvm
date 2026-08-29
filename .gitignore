@@ -24,6 +24,11 @@ frontend/.svelte-kit/
 .env.*.local
 !.env.example
 
+# Claude Code session context: accumulates real operational details
+# over time (test-host IP/SSH/sudo passwords, admin credentials) and
+# must never be committed to a public repo.
+CLAUDE.md
+
 # TLS certs (self-signed, host-specific, generated on first deploy)
 certs/
 *.pem

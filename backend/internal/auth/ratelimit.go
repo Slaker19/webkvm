@@ -124,16 +124,20 @@ func parseTrustedCIDRs(raw string) []*net.IPNet {
 	return out
 }
 
-// isTrusted returns true if the request's source IP is loopback
-// or matches one of the configured trusted CIDRs. The check is
-// safe to call without holding l.mu because the trusted slice
-// is read-only after construction.
-func (l *LoginRateLimiter) isTrusted(r *http.Request) bool {
+// peerIP returns the immediate TCP peer's address (RemoteAddr, port
+// stripped), with no X-Forwarded-For handling.
+func peerIP(r *http.Request) net.IP {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	ip := net.ParseIP(host)
+	return net.ParseIP(host)
+}
+
+// isTrustedProxyPeer reports whether ip is allowed to hand us a client
+// IP via X-Forwarded-For: loopback, an env-configured CIDR, or a live
+// server.trusted_cidrs entry.
+func (l *LoginRateLimiter) isTrustedProxyPeer(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
@@ -145,13 +149,61 @@ func (l *LoginRateLimiter) isTrusted(r *http.Request) bool {
 			return true
 		}
 	}
+	if l.settings != nil {
+		for _, cidr := range l.settings.GetList("server.trusted_cidrs") {
+			if _, n, err := net.ParseCIDR(strings.TrimSpace(cidr)); err == nil && n.Contains(ip) {
+				return true
+			}
+		}
+	}
 	return false
 }
 
-func keyFor(r *http.Request, username string) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
+// clientIP resolves the request's real client IP. X-Forwarded-For is
+// honored ONLY when server.trust_proxy is live-enabled in settings AND
+// the immediate TCP peer is itself a trusted proxy source — i.e. only
+// when the request actually arrived via a proxy we trust to set that
+// header honestly. Without the peer check, ANY request landing on a
+// process whose immediate peer happens to be loopback (the case for
+// every request when a local reverse proxy fronts the backend, a
+// topology this project documents and ships packaging for) would
+// resolve to "loopback" and bypass the limiter for 100% of traffic
+// regardless of the real client. Previously l.settings was stored but
+// never consulted here at all, so server.trust_proxy had no effect on
+// the rate limiter no matter how an operator configured it.
+func (l *LoginRateLimiter) clientIP(r *http.Request) net.IP {
+	peer := peerIP(r)
+	trustProxy := l.settings != nil && l.settings.GetBool("server.trust_proxy")
+	if trustProxy && l.isTrustedProxyPeer(peer) {
+		if v := r.Header.Get("X-Forwarded-For"); v != "" {
+			first := v
+			if i := strings.Index(v, ","); i >= 0 {
+				first = v[:i]
+			}
+			if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
+				return ip
+			}
+		}
+	}
+	return peer
+}
+
+// isTrusted returns true if the request's real client IP (see
+// clientIP) is loopback or matches one of the configured trusted
+// CIDRs (env-var at construction, or live server.trusted_cidrs).
+func (l *LoginRateLimiter) isTrusted(r *http.Request) bool {
+	ip := l.clientIP(r)
+	if ip == nil {
+		return false
+	}
+	return l.isTrustedProxyPeer(ip)
+}
+
+func (l *LoginRateLimiter) keyFor(r *http.Request, username string) string {
+	ip := l.clientIP(r)
+	host := "unknown"
+	if ip != nil {
+		host = ip.String()
 	}
 	return host + "|" + username
 }
@@ -163,7 +215,7 @@ func (l *LoginRateLimiter) Allow(r *http.Request, username string) (bool, time.D
 	if l.isTrusted(r) {
 		return true, 0
 	}
-	k := keyFor(r, username)
+	k := l.keyFor(r, username)
 	now := time.Now()
 
 	l.mu.Lock()
@@ -190,7 +242,7 @@ func (l *LoginRateLimiter) RecordFailure(r *http.Request, username string) {
 	if l.isTrusted(r) {
 		return
 	}
-	k := keyFor(r, username)
+	k := l.keyFor(r, username)
 	now := time.Now()
 
 	l.mu.Lock()
@@ -217,7 +269,7 @@ func (l *LoginRateLimiter) RecordSuccess(r *http.Request, username string) {
 	if l.isTrusted(r) {
 		return
 	}
-	k := keyFor(r, username)
+	k := l.keyFor(r, username)
 	l.mu.Lock()
 	delete(l.failures, k)
 	l.mu.Unlock()

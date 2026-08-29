@@ -260,11 +260,29 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 	if cpuMode == "" {
 		cpuMode = "host-passthrough"
 	}
+	var topologyXML string
+	if req.CPUSockets != nil || req.CPUCores != nil || req.CPUThreads != nil {
+		if req.CPUSockets == nil || req.CPUCores == nil || req.CPUThreads == nil {
+			return models.VM{}, fmt.Errorf("cpu_sockets, cpu_cores and cpu_threads must all be set together")
+		}
+		if *req.CPUSockets <= 0 || *req.CPUCores <= 0 || *req.CPUThreads <= 0 {
+			return models.VM{}, fmt.Errorf("cpu_sockets, cpu_cores and cpu_threads must be positive")
+		}
+		if (*req.CPUSockets)*(*req.CPUCores)*(*req.CPUThreads) != req.VCPUs {
+			return models.VM{}, fmt.Errorf("cpu_sockets * cpu_cores * cpu_threads (%d) must equal vcpus (%d)", (*req.CPUSockets)*(*req.CPUCores)*(*req.CPUThreads), req.VCPUs)
+		}
+		topologyXML = fmt.Sprintf("<topology sockets='%d' cores='%d' threads='%d'/>", *req.CPUSockets, *req.CPUCores, *req.CPUThreads)
+	}
+
 	var cpuXML string
 	if cpuMode == "custom" && req.CPUModel != "" {
-		cpuXML = fmt.Sprintf("<cpu mode='custom' match='exact'><model>%s</model></cpu>", xmlEscape(req.CPUModel))
+		cpuXML = fmt.Sprintf("<cpu mode='custom' match='exact'><model>%s</model>%s</cpu>", xmlEscape(req.CPUModel), topologyXML)
 	} else {
-		cpuXML = fmt.Sprintf("<cpu mode='%s' check='none'/>", xmlEscape(cpuMode))
+		if topologyXML != "" {
+			cpuXML = fmt.Sprintf("<cpu mode='%s' check='none'>%s</cpu>", xmlEscape(cpuMode), topologyXML)
+		} else {
+			cpuXML = fmt.Sprintf("<cpu mode='%s' check='none'/>", xmlEscape(cpuMode))
+		}
 	}
 
 	videoModel := req.VideoModel
@@ -377,6 +395,13 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
     `
 	}
 
+	devicesExtra += `<rng model='virtio'>
+      <backend model='random'>/dev/urandom</backend>
+    </rng>
+    `
+
+	diskDriverAttrs := diskDriverXMLAttrs(diskFormat, req.DiskCacheIO, req.DiskDiscard)
+
 	uuidStr := uuid.New().String()
 	title := xmlEscape(req.Name)
 	if req.OSType != "" {
@@ -408,7 +433,7 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
     <controller type='usb' model='qemu-xhci'/>
     %s
     <disk type='file' device='disk'>
-      <driver name='qemu' type='%s'/>
+      <driver %s/>
       <source file='%s'/>
       <target dev='%s' bus='%s'/>
     </disk>
@@ -433,7 +458,7 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
     %s
     %s
   </devices>
-</domain>`, xmlEscape(req.Name), uuidStr, title, req.RAMMB, req.VCPUs, osXML, featuresXML, cpuXML, controllerXML, xmlEscape(diskFormat), xmlEscape(diskFullPath), xmlEscape(targetDev), xmlEscape(diskBus), isoXML, virtioISOXML, xmlEscape(defaultNetwork(req.Network)), xmlEscape(networkModel), videoXML, devicesExtra)
+</domain>`, xmlEscape(req.Name), uuidStr, title, req.RAMMB, req.VCPUs, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, xmlEscape(diskFullPath), xmlEscape(targetDev), xmlEscape(diskBus), isoXML, virtioISOXML, xmlEscape(defaultNetwork(req.Network)), xmlEscape(networkModel), videoXML, devicesExtra)
 
 	dom, err := c.conn.DomainDefineXML(xmlConfig)
 	if err != nil {
@@ -629,13 +654,28 @@ func (c *Connector) CreateSnapshot(domainID string, req models.CreateSnapshotReq
 			return models.Snapshot{}, fmt.Errorf("create memory snapshot: %w", err)
 		}
 	} else {
-		// Disk-only first; fall back to a full snapshot if the
-		// hypervisor does not support disk-only.
-		_, err := dom.CreateSnapshotXML(xmlStr, libvirt.DOMAIN_SNAPSHOT_CREATE_DISK_ONLY)
+		// Disk-only. If the VM is running, try to quiesce the
+		// filesystem via the guest agent first (fsfreeze/fsthaw,
+		// handled atomically by libvirt itself) for a
+		// filesystem-consistent snapshot instead of merely
+		// crash-consistent. Best-effort: VMs without a responsive
+		// guest agent fall back to the existing behavior.
+		state, _, _ := dom.GetState()
+		var err error
+		if state == libvirt.DOMAIN_RUNNING {
+			_, err = dom.CreateSnapshotXML(xmlStr, libvirt.DOMAIN_SNAPSHOT_CREATE_DISK_ONLY|libvirt.DOMAIN_SNAPSHOT_CREATE_QUIESCE)
+		} else {
+			err = fmt.Errorf("not running")
+		}
 		if err != nil {
-			_, err = dom.CreateSnapshotXML(xmlStr, 0)
+			// Fall back: disk-only without quiesce, then a full
+			// snapshot if disk-only itself isn't supported.
+			_, err = dom.CreateSnapshotXML(xmlStr, libvirt.DOMAIN_SNAPSHOT_CREATE_DISK_ONLY)
 			if err != nil {
-				return models.Snapshot{}, fmt.Errorf("create snapshot: %w", err)
+				_, err = dom.CreateSnapshotXML(xmlStr, 0)
+				if err != nil {
+					return models.Snapshot{}, fmt.Errorf("create snapshot: %w", err)
+				}
 			}
 		}
 	}
@@ -768,32 +808,32 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 	}
 	if req.CPUMode != nil {
 		re := regexp.MustCompile(`<cpu [^>]*mode='[^']+'`)
-		xmlDesc = re.ReplaceAllString(xmlDesc, "<cpu mode='"+*req.CPUMode+"'")
+		xmlDesc = re.ReplaceAllString(xmlDesc, "<cpu mode='"+xmlEscape(*req.CPUMode)+"'")
 		if *req.CPUMode != "host-passthrough" && *req.CPUMode != "maximum" {
 			xmlDesc = strings.ReplaceAll(xmlDesc, " migratable='on'", "")
 		}
 	}
 	if req.VideoModel != nil {
 		re := regexp.MustCompile(`<video>[^<]*<model type='[^']+'`)
-		xmlDesc = re.ReplaceAllString(xmlDesc, "<video>\n      <model type='"+*req.VideoModel+"'")
+		xmlDesc = re.ReplaceAllString(xmlDesc, "<video>\n      <model type='"+xmlEscape(*req.VideoModel)+"'")
 	}
 	if req.Network != nil {
 		re := regexp.MustCompile(`network='[^']+'`)
-		xmlDesc = re.ReplaceAllString(xmlDesc, "network='"+*req.Network+"'")
+		xmlDesc = re.ReplaceAllString(xmlDesc, "network='"+xmlEscape(*req.Network)+"'")
 	}
 	if req.NetworkModel != nil {
 		re := regexp.MustCompile(`(<interface\b[^>]*>[\s\S]*?<model\s+type=')[^']+(')`)
-		xmlDesc = re.ReplaceAllString(xmlDesc, "${1}"+*req.NetworkModel+"${2}")
+		xmlDesc = re.ReplaceAllString(xmlDesc, "${1}"+xmlEscape(*req.NetworkModel)+"${2}")
 	}
 	if req.Name != nil {
-		xmlDesc = regexp.MustCompile(`<name>[^<]+</name>`).ReplaceAllString(xmlDesc, "<name>"+*req.Name+"</name>")
+		xmlDesc = regexp.MustCompile(`<name>[^<]+</name>`).ReplaceAllString(xmlDesc, "<name>"+xmlEscape(*req.Name)+"</name>")
 	}
 	if req.Chipset != nil {
 		machine := *req.Chipset
 		if machine == "i440fx" {
 			machine = "pc"
 		}
-		xmlDesc = regexp.MustCompile(`machine='[^']+'`).ReplaceAllString(xmlDesc, "machine='"+machine+"'")
+		xmlDesc = regexp.MustCompile(`machine='[^']+'`).ReplaceAllString(xmlDesc, "machine='"+xmlEscape(machine)+"'")
 	}
 	if req.SecureBoot != nil {
 		if *req.SecureBoot {
@@ -850,7 +890,7 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 		if req.OSVersion != nil {
 			title = updateOSTag(title, "OSVersion", *req.OSVersion)
 		}
-		xmlDesc = regexp.MustCompile(`<title>[^<]*</title>`).ReplaceAllString(xmlDesc, "<title>"+title+"</title>")
+		xmlDesc = regexp.MustCompile(`<title>[^<]*</title>`).ReplaceAllString(xmlDesc, "<title>"+xmlEscape(title)+"</title>")
 	}
 
 	newDom, err := c.conn.DomainDefineXML(xmlDesc)
@@ -989,6 +1029,7 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 
 	vm.Disks = c.parseDisks(xmlDesc)
 	vm.Networks = parseNetworks(xmlDesc)
+	vm.USBDevices = parseUSBHostdevs(xmlDesc)
 
 	// Fallback: extractDiskSize silently returns 0 for disks that
 	// don't have a <capacity unit=...> child (LVM, zvols, OVA imports
@@ -1153,26 +1194,26 @@ func attrValue(xml, attr string) string {
 }
 
 func (c *Connector) createDiskInPool(poolName, volName string, sizeMB int64, format string) error {
-    pool, err := c.conn.LookupStoragePoolByName(poolName)
-    if err != nil {
-        return fmt.Errorf("lookup pool: %w", err)
-    }
-    defer pool.Free()
+	pool, err := c.conn.LookupStoragePoolByName(poolName)
+	if err != nil {
+		return fmt.Errorf("lookup pool: %w", err)
+	}
+	defer pool.Free()
 
-    // Validate format
-    validFormats := []string{"qcow2", "raw"}
-    valid := false
-    for _, f := range validFormats {
-        if format == f {
-            valid = true
-            break
-        }
-    }
-    if !valid {
-        format = "qcow2" // Default to qcow2 if invalid
-    }
+	// Validate format
+	validFormats := []string{"qcow2", "raw"}
+	valid := false
+	for _, f := range validFormats {
+		if format == f {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		format = "qcow2" // Default to qcow2 if invalid
+	}
 
-    volXML := fmt.Sprintf(`<volume>
+	volXML := fmt.Sprintf(`<volume>
         <name>%s</name>
         <capacity unit='M'>%d</capacity>
         <target>
@@ -1180,8 +1221,8 @@ func (c *Connector) createDiskInPool(poolName, volName string, sizeMB int64, for
         </target>
     </volume>`, volName, sizeMB, format)
 
-    _, err = pool.StorageVolCreateXML(volXML, libvirt.STORAGE_VOL_CREATE_PREALLOC_METADATA)
-    return err
+	_, err = pool.StorageVolCreateXML(volXML, libvirt.STORAGE_VOL_CREATE_PREALLOC_METADATA)
+	return err
 }
 
 func calculateCPUUsage(dom *libvirt.Domain, info *libvirt.DomainInfo) float64 {
@@ -1394,7 +1435,6 @@ func (c *Connector) parseDisks(xmlDesc string) []models.DiskInfo {
 // disk list (including the optical drive), but exports and disk
 // resize must skip CD-ROMs because they aren't real disks.
 
-
 // deepestSourcePath extracts the root (deepest backing file) source path from a
 // disk XML fragment when libvirt includes the <backingStore> chain.
 func deepestSourcePath(diskXML string) string {
@@ -1495,11 +1535,11 @@ func parseNetworks(xmlDesc string) []models.NetIface {
 	matches := re.FindAllString(xmlDesc, -1)
 	for _, i := range matches {
 		iface := models.NetIface{
-			Type:  attrValue(i, "type"),
-			MAC:   attrValue(i, "address"),
-			Model: attrValue(i, "type"),
+			Type:    attrValue(i, "type"),
+			MAC:     attrValue(i, "address"),
+			Model:   attrValue(i, "type"),
 			Network: attrValue(i, "network"),
-			Source: attrValue(i, "bridge"),
+			Source:  attrValue(i, "bridge"),
 		}
 		// also check <source network='xxx'>
 		if iface.Network == "" {
@@ -1553,7 +1593,7 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 		driverXML = "<driver name='qemu' type='raw'/>"
 		diskType = "file"
 	} else if req.Source != "" {
-		driverXML = fmt.Sprintf("<driver name='qemu' type='%s'/>", xmlEscape(format))
+		driverXML = fmt.Sprintf("<driver %s/>", diskDriverXMLAttrs(format, req.DiskCacheIO, req.DiskDiscard))
 		diskType = "file"
 	} else {
 		// Create new volume
@@ -1573,12 +1613,12 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 		if sizeMB <= 0 {
 			sizeMB = 10
 		}
-    if err := c.createDiskInPool(poolName, volName, sizeMB*1024, format); err != nil {
-        dom.Undefine() // Clean up domain if disk creation fails
-        return fmt.Errorf("create disk: %w", err)
-    }
+		if err := c.createDiskInPool(poolName, volName, sizeMB*1024, format); err != nil {
+			dom.Undefine() // Clean up domain if disk creation fails
+			return fmt.Errorf("create disk: %w", err)
+		}
 		sourceXML = fmt.Sprintf("<source file='%s'/>", xmlEscape(diskPath))
-		driverXML = fmt.Sprintf("<driver name='qemu' type='%s'/>", xmlEscape(format))
+		driverXML = fmt.Sprintf("<driver %s/>", diskDriverXMLAttrs(format, req.DiskCacheIO, req.DiskDiscard))
 	}
 
 	busType := req.Bus
@@ -1653,6 +1693,143 @@ func (c *Connector) DetachDisk(id, target string) error {
 
 	diskXML := xmlDesc[start:end]
 	return dom.DetachDeviceFlags(diskXML, flags)
+}
+
+var (
+	usbVendorRE  = regexp.MustCompile(`<vendor id='(0x[0-9a-fA-F]+)'(?:>([^<]*)</vendor>|/>)`)
+	usbProductRE = regexp.MustCompile(`<product id='(0x[0-9a-fA-F]+)'(?:>([^<]*)</product>|/>)`)
+	usbBusRE     = regexp.MustCompile(`<bus>(\d+)</bus>`)
+	usbDeviceRE  = regexp.MustCompile(`<device>(\d+)</device>`)
+)
+
+// hostUSBRootHubVendor is the Linux Foundation vendor ID shared by
+// every USB root hub; passing one through is never useful, so it's
+// filtered out (same convention virt-manager uses).
+const hostUSBRootHubVendor = "0x1d6b"
+
+// ListHostUSBDevices enumerates USB devices on the host available
+// for passthrough, excluding generic root hubs.
+func (c *Connector) ListHostUSBDevices() ([]models.USBDevice, error) {
+	if err := c.ensureConnected(); err != nil {
+		return nil, err
+	}
+	devs, err := c.conn.ListAllNodeDevices(libvirt.CONNECT_LIST_NODE_DEVICES_CAP_USB_DEV)
+	if err != nil {
+		return nil, fmt.Errorf("list host USB devices: %w", err)
+	}
+	out := make([]models.USBDevice, 0, len(devs))
+	for i := range devs {
+		xmlDesc, err := devs[i].GetXMLDesc(0)
+		name, _ := devs[i].GetName()
+		devs[i].Free()
+		if err != nil {
+			continue
+		}
+		vendorID, vendorName := usbMatch(usbVendorRE, xmlDesc)
+		productID, productName := usbMatch(usbProductRE, xmlDesc)
+		if vendorID == "" || productID == "" || vendorID == hostUSBRootHubVendor {
+			continue
+		}
+		bus := ""
+		if m := usbBusRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
+			bus = m[1]
+		}
+		device := ""
+		if m := usbDeviceRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
+			device = m[1]
+		}
+		label := strings.TrimSpace(vendorName + " " + productName)
+		if label == "" {
+			label = name
+		}
+		out = append(out, models.USBDevice{
+			Name:      label,
+			VendorID:  vendorID,
+			ProductID: productID,
+			Bus:       bus,
+			Device:    device,
+		})
+	}
+	return out, nil
+}
+
+func usbMatch(re *regexp.Regexp, xmlDesc string) (id, label string) {
+	m := re.FindStringSubmatch(xmlDesc)
+	if len(m) < 2 {
+		return "", ""
+	}
+	if len(m) > 2 {
+		label = strings.TrimSpace(m[2])
+	}
+	return m[1], label
+}
+
+var usbHostdevBlockRE = regexp.MustCompile(`(?s)<hostdev\b[^>]*type=['"]usb['"][^>]*>.*?</hostdev>`)
+
+// parseUSBHostdevs extracts the USB devices already passed through
+// to a domain from its XML, so the UI can offer a "Detach" action.
+func parseUSBHostdevs(xmlDesc string) []models.USBDevice {
+	blocks := usbHostdevBlockRE.FindAllString(xmlDesc, -1)
+	out := make([]models.USBDevice, 0, len(blocks))
+	for _, b := range blocks {
+		vendorID, _ := usbMatch(usbVendorRE, b)
+		productID, _ := usbMatch(usbProductRE, b)
+		if vendorID == "" || productID == "" {
+			continue
+		}
+		out = append(out, models.USBDevice{VendorID: vendorID, ProductID: productID})
+	}
+	return out
+}
+
+func usbHostdevXML(vendorID, productID string) string {
+	return fmt.Sprintf(`<hostdev mode='subsystem' type='usb' managed='yes'>
+  <source>
+    <vendor id='%s'/>
+    <product id='%s'/>
+  </source>
+</hostdev>`, xmlEscape(vendorID), xmlEscape(productID))
+}
+
+// AttachUSBDevice passes a host USB device (identified by vendor and
+// product ID) through to a VM, live if running.
+func (c *Connector) AttachUSBDevice(id, vendorID, productID string) error {
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return err
+	}
+	defer dom.Free()
+
+	// Unlike AttachDisk/DetachDisk's CURRENT|CONFIG (CURRENT==0, so
+	// that combination is really just CONFIG — takes effect on next
+	// boot only), USB passthrough's whole point is being usable
+	// against a running VM, so this explicitly requests LIVE too.
+	flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+	state, _, err := dom.GetState()
+	if err == nil && state == libvirt.DOMAIN_RUNNING {
+		flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
+	}
+	return dom.AttachDeviceFlags(usbHostdevXML(vendorID, productID), flags)
+}
+
+// DetachUSBDevice removes a previously passed-through USB device from a VM.
+func (c *Connector) DetachUSBDevice(id, vendorID, productID string) error {
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return err
+	}
+	defer dom.Free()
+
+	// Unlike AttachDisk/DetachDisk's CURRENT|CONFIG (CURRENT==0, so
+	// that combination is really just CONFIG — takes effect on next
+	// boot only), USB passthrough's whole point is being usable
+	// against a running VM, so this explicitly requests LIVE too.
+	flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+	state, _, err := dom.GetState()
+	if err == nil && state == libvirt.DOMAIN_RUNNING {
+		flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
+	}
+	return dom.DetachDeviceFlags(usbHostdevXML(vendorID, productID), flags)
 }
 
 func (c *Connector) UpdateDiskSource(id, target, source string) error {
@@ -1938,7 +2115,7 @@ func (c *Connector) CloneDomain(id string, req models.CloneVMRequest) (models.VM
 	newName := req.Name
 
 	// Replace name
-	xmlDesc = regexp.MustCompile(`<name>[^<]+</name>`).ReplaceAllString(xmlDesc, "<name>"+newName+"</name>")
+	xmlDesc = regexp.MustCompile(`<name>[^<]+</name>`).ReplaceAllString(xmlDesc, "<name>"+xmlEscape(newName)+"</name>")
 	// Replace UUID
 	xmlDesc = regexp.MustCompile(`<uuid>[^<]+</uuid>`).ReplaceAllString(xmlDesc, "<uuid>"+newUUID+"</uuid>")
 	// Replace title
@@ -1973,19 +2150,19 @@ func (c *Connector) CloneDomain(id string, req models.CloneVMRequest) (models.VM
 		newDiskPath := poolPath + "/" + newDiskName
 		xmlDesc = strings.Replace(xmlDesc, oldDiskPath, newDiskPath, 1)
 
-        sizeGB := extractDiskSize(xmlDesc)
-        if sizeGB <= 0 {
-            sizeGB = 10
-        }
-        // Detect original disk format
-        originalFormat := "qcow2" // default
-        formatMatch := regexp.MustCompile(`<driver[^>]*type='([^']+)'`).FindStringSubmatch(dm[0])
-        if len(formatMatch) > 1 {
-            originalFormat = formatMatch[1]
-        }
-        if err := c.createDiskInPool(poolName, newDiskName, sizeGB*1024, originalFormat); err != nil {
-            return models.VM{}, fmt.Errorf("create cloned disk: %w", err)
-        }
+		sizeGB := extractDiskSize(xmlDesc)
+		if sizeGB <= 0 {
+			sizeGB = 10
+		}
+		// Detect original disk format
+		originalFormat := "qcow2" // default
+		formatMatch := regexp.MustCompile(`<driver[^>]*type='([^']+)'`).FindStringSubmatch(dm[0])
+		if len(formatMatch) > 1 {
+			originalFormat = formatMatch[1]
+		}
+		if err := c.createDiskInPool(poolName, newDiskName, sizeGB*1024, originalFormat); err != nil {
+			return models.VM{}, fmt.Errorf("create cloned disk: %w", err)
+		}
 	}
 
 	newDom, err := c.conn.DomainDefineXML(xmlDesc)
@@ -2102,13 +2279,6 @@ func (c *Connector) ResizeDomainDisk(ctx context.Context, id, target string, new
 	}
 	defer dom.Free()
 
-	// Refuse to resize on a live VM — qemu-img can't take the
-	// write lock and the operation would fail cryptically.
-	state, _, _ := dom.GetState()
-	if state == libvirt.DOMAIN_RUNNING || state == libvirt.DOMAIN_PAUSED {
-		return 0, fmt.Errorf("VM must be shut off to resize a disk; shutdown first then retry")
-	}
-
 	disks := c.parseDisksFiltered(domGetXMLDescOrEmpty(dom), false)
 	var disk *models.DiskInfo
 	for i := range disks {
@@ -2125,6 +2295,22 @@ func (c *Connector) ResizeDomainDisk(ctx context.Context, id, target string, new
 	}
 
 	newBytes := uint64(newSizeGB) * 1024 * 1024 * 1024
+
+	state, _, _ := dom.GetState()
+	if state == libvirt.DOMAIN_RUNNING || state == libvirt.DOMAIN_PAUSED {
+		// Online resize only supports growing, and relies on QEMU's
+		// own block_resize (libvirt's BlockResize) to grow the
+		// qcow2 header/metadata in place — no host file truncation
+		// needed for qcow2. Raw disks have no such header and are
+		// not safe to grow this way while running.
+		if newSizeGB < disk.SizeGB {
+			return 0, fmt.Errorf("cannot shrink a disk while the VM is running; shut it down first")
+		}
+		if err := dom.BlockResize(target, newBytes, libvirt.DOMAIN_BLOCK_RESIZE_BYTES); err != nil {
+			return 0, fmt.Errorf("live resize failed (only qcow2 disks can grow while running): %w", err)
+		}
+		return int64(newBytes), nil
+	}
 
 	cmd := exec.CommandContext(ctx, "qemu-img", "resize", disk.Source, fmt.Sprintf("%d", newBytes))
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -2211,9 +2397,9 @@ func extractTagAttr(xml, attr string) string {
 // preserved when Compress is "gzip"; new exports default to zstd for
 // better ratio and faster throughput.
 type ExportBackupOptions struct {
-	Compress     string // "gzip" (legacy) or "zstd" (default for new exports)
-	ZstdLevel    int    // 1..22, default 19
-	RepackDisks  bool   // if true, run qemu-img convert -c on each disk first
+	Compress    string // "gzip" (legacy) or "zstd" (default for new exports)
+	ZstdLevel   int    // 1..22, default 19
+	RepackDisks bool   // if true, run qemu-img convert -c on each disk first
 }
 
 // ExportDomain streams a backup of the domain (XML + disk files) to w.
@@ -2263,9 +2449,9 @@ func (c *Connector) ExportDomain(ctx context.Context, id string, opts ExportBack
 		Disks:     disks,
 	}
 	producerOpts := backupstore.ProducerOpts{
-		Compression:  opts.Compress,
-		ZstdLevel:    opts.ZstdLevel,
-		RepackDisks:  opts.RepackDisks,
+		Compression:   opts.Compress,
+		ZstdLevel:     opts.ZstdLevel,
+		RepackDisks:   opts.RepackDisks,
 		DiskSizeLimit: 0, // export has no size cap (the request body can be huge)
 	}
 	return backupstore.ProduceVMArchive(ctx, vmBackup, producerOpts, w)
@@ -2456,14 +2642,16 @@ func (c *Connector) ImportDomain(tarPath, newName, poolName string, opts ImportO
 	}
 	// Always rewrite the <name> in the XML to the resolved value (handles
 	// both caller-supplied and archive-supplied names, and the rename case).
+	// xmlEscape guards against a caller- or archive-supplied name breaking
+	// out of the <name> element (XML/QEMU-arg injection).
 	re := regexp.MustCompile(`<name>[^<]*</name>`)
 	if loc := re.FindStringIndex(xmlStr); loc != nil {
-		xmlStr = xmlStr[:loc[0]] + "<name>" + resolvedName + "</name>" + xmlStr[loc[1]:]
+		xmlStr = xmlStr[:loc[0]] + "<name>" + xmlEscape(resolvedName) + "</name>" + xmlStr[loc[1]:]
 	}
 	// Also update the title if present.
 	titleRe := regexp.MustCompile(`<title>[^<]*</title>`)
 	if loc := titleRe.FindStringIndex(xmlStr); loc != nil {
-		xmlStr = xmlStr[:loc[0]] + "<title>" + resolvedName + "</title>" + xmlStr[loc[1]:]
+		xmlStr = xmlStr[:loc[0]] + "<title>" + xmlEscape(resolvedName) + "</title>" + xmlStr[loc[1]:]
 	}
 	// Update NVRAM file hint if the name appears there.
 	xmlStr = regexp.MustCompile(`<nvram[^>]*template[^>]*/>`).ReplaceAllStringFunc(xmlStr, func(m string) string {
@@ -2486,7 +2674,7 @@ func (c *Connector) ImportDomain(tarPath, newName, poolName string, opts ImportO
 	// vcpu/memory tags are single-element in libvirt XML.
 	if opts.Network != "" {
 		xmlStr = regexp.MustCompile(`<source\s+network=['"][^'"]*['"]\s*/>`).
-			ReplaceAllString(xmlStr, "<source network='"+opts.Network+"'/>")
+			ReplaceAllString(xmlStr, "<source network='"+xmlEscape(opts.Network)+"'/>")
 	}
 	if opts.VCPUs > 0 {
 		xmlStr = regexp.MustCompile(`<vcpu[^>]*>[\s\S]*?</vcpu>`).
@@ -2759,9 +2947,9 @@ func (c *Connector) restoreSnapshots(tarPath, resolvedName, poolPath string, dom
 		volumeArcName string // archive entry name for the overlay file
 		snapName      string // snapshot name (e.g. "snap1")
 	}
-	snapshots := map[string]*snapRestore{}   // snapName → restore data
-	var baseVolumeArc string                  // "_base" volume archive entry
-	var restoreOrder []string                 // snapshot names in archive order
+	snapshots := map[string]*snapRestore{} // snapName → restore data
+	var baseVolumeArc string               // "_base" volume archive entry
+	var restoreOrder []string              // snapshot names in archive order
 
 	for {
 		hdr, err := tr3.Next()

@@ -3,43 +3,44 @@ package models
 type VMState string
 
 const (
-	VMStateRunning  VMState = "running"
-	VMStateShutoff  VMState = "shutoff"
-	VMStatePaused   VMState = "paused"
-	VMStateCrashed  VMState = "crashed"
-	VMStateUnknown  VMState = "unknown"
+	VMStateRunning VMState = "running"
+	VMStateShutoff VMState = "shutoff"
+	VMStatePaused  VMState = "paused"
+	VMStateCrashed VMState = "crashed"
+	VMStateUnknown VMState = "unknown"
 )
 
 type VM struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	State      VMState  `json:"state"`
-	VCPUs      int      `json:"vcpus"`
-	RAMMB      int64    `json:"ram_mb"`
-	DiskGB     int64    `json:"disk_gb"`
-	OSIcon     string   `json:"os_icon,omitempty"`
-	UptimeSec  int64    `json:"uptime_sec,omitempty"`
-	CPUUsage   float64  `json:"cpu_usage,omitempty"`
-	RAMUsedMB  int64    `json:"ram_used_mb,omitempty"`
-	OSType     string   `json:"os_type,omitempty"`
-	OSVersion  string   `json:"os_version,omitempty"`
-	Chipset    string   `json:"chipset,omitempty"`
-	SecureBoot bool     `json:"secure_boot"`
-	TPMEnabled bool     `json:"tpm_enabled"`
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	State      VMState `json:"state"`
+	VCPUs      int     `json:"vcpus"`
+	RAMMB      int64   `json:"ram_mb"`
+	DiskGB     int64   `json:"disk_gb"`
+	OSIcon     string  `json:"os_icon,omitempty"`
+	UptimeSec  int64   `json:"uptime_sec,omitempty"`
+	CPUUsage   float64 `json:"cpu_usage,omitempty"`
+	RAMUsedMB  int64   `json:"ram_used_mb,omitempty"`
+	OSType     string  `json:"os_type,omitempty"`
+	OSVersion  string  `json:"os_version,omitempty"`
+	Chipset    string  `json:"chipset,omitempty"`
+	SecureBoot bool    `json:"secure_boot"`
+	TPMEnabled bool    `json:"tpm_enabled"`
 	// Autostart mirrors libvirtd's autostart flag: when true,
 	// libvirtd starts the domain automatically on host boot.
 	// Surfaced here so the UI doesn't need a second round-trip
 	// to GET /vms/{id}/autostart after fetching the VM.
-	Autostart  bool     `json:"autostart"`
-	Firmware   string   `json:"firmware,omitempty"`
-	CPUMode    string   `json:"cpu_mode,omitempty"`
-	VideoModel string   `json:"video_model,omitempty"`
-	IP         string   `json:"ip,omitempty"`
-	Alias      string   `json:"alias,omitempty"`
-	Cover      string   `json:"cover,omitempty"`
-	Groups     []string `json:"groups,omitempty"`
+	Autostart  bool        `json:"autostart"`
+	Firmware   string      `json:"firmware,omitempty"`
+	CPUMode    string      `json:"cpu_mode,omitempty"`
+	VideoModel string      `json:"video_model,omitempty"`
+	IP         string      `json:"ip,omitempty"`
+	Alias      string      `json:"alias,omitempty"`
+	Cover      string      `json:"cover,omitempty"`
+	Groups     []string    `json:"groups,omitempty"`
 	Disks      []DiskInfo  `json:"disks,omitempty"`
 	Networks   []NetIface  `json:"networks,omitempty"`
+	USBDevices []USBDevice `json:"usb_devices,omitempty"`
 }
 
 type CreateVMRequest struct {
@@ -66,26 +67,38 @@ type CreateVMRequest struct {
 	VirtIOISO        string `json:"virtio_iso,omitempty"`
 	ExistingDiskPool string `json:"existing_disk_pool,omitempty"`
 	ExistingDiskName string `json:"existing_disk_name,omitempty"`
+	// DiskCacheIO applies the recommended cache='none' io='native'
+	// driver attributes to the main disk.
+	DiskCacheIO *bool `json:"disk_cache_io,omitempty"`
+	// DiskDiscard enables discard='unmap' (TRIM passthrough) on the
+	// main disk, reclaiming space on thin-provisioned qcow2 volumes.
+	DiskDiscard *bool `json:"disk_discard,omitempty"`
+	// CPUSockets/CPUCores/CPUThreads describe an explicit CPU
+	// topology. All three must be set together, and their product
+	// must equal VCPUs, or CreateVM rejects the request.
+	CPUSockets *int `json:"cpu_sockets,omitempty"`
+	CPUCores   *int `json:"cpu_cores,omitempty"`
+	CPUThreads *int `json:"cpu_threads,omitempty"`
 	// CloudInit optionally provisions the VM with a NoCloud seed
 	// (user + SSH key + hostname) on first boot.
 	CloudInit *CloudInitRequest `json:"cloud_init,omitempty"`
 }
 
 type UpdateVMRequest struct {
-	Name        *string `json:"name,omitempty"`
-	VCPUs       *int    `json:"vcpus,omitempty"`
-	RAMMB       *int64  `json:"ram_mb,omitempty"`
-	DiskGB      *int64  `json:"disk_gb,omitempty"`
-	CPUMode     *string `json:"cpu_mode,omitempty"`
-	VideoModel  *string `json:"video_model,omitempty"`
-	Network     *string `json:"network,omitempty"`
+	Name         *string `json:"name,omitempty"`
+	VCPUs        *int    `json:"vcpus,omitempty"`
+	RAMMB        *int64  `json:"ram_mb,omitempty"`
+	DiskGB       *int64  `json:"disk_gb,omitempty"`
+	CPUMode      *string `json:"cpu_mode,omitempty"`
+	VideoModel   *string `json:"video_model,omitempty"`
+	Network      *string `json:"network,omitempty"`
 	NetworkModel *string `json:"network_model,omitempty"`
-	OSType      *string `json:"os_type,omitempty"`
-	OSVersion   *string `json:"os_version,omitempty"`
-	Chipset     *string `json:"chipset,omitempty"`
-	SecureBoot  *bool   `json:"secure_boot,omitempty"`
-	TPMEnabled  *bool   `json:"tpm_enabled,omitempty"`
-	Firmware    *string `json:"firmware,omitempty"`
+	OSType       *string `json:"os_type,omitempty"`
+	OSVersion    *string `json:"os_version,omitempty"`
+	Chipset      *string `json:"chipset,omitempty"`
+	SecureBoot   *bool   `json:"secure_boot,omitempty"`
+	TPMEnabled   *bool   `json:"tpm_enabled,omitempty"`
+	Firmware     *string `json:"firmware,omitempty"`
 }
 
 type DiskInfo struct {
@@ -112,20 +125,32 @@ type VolumeAttachment struct {
 }
 
 type AttachDiskRequest struct {
-	Device string `json:"device"` // disk, cdrom
-	Bus    string `json:"bus"`    // virtio, sata, scsi, ide
-	Source string `json:"source,omitempty"` // for cdrom: ISO path
-	SizeGB int64  `json:"size_gb,omitempty"` // for disk: new size
-	Pool   string `json:"pool,omitempty"` // storage pool for new disk
-	Format string `json:"format,omitempty"` // for disk: qcow2, raw
+	Device      string `json:"device"`                  // disk, cdrom
+	Bus         string `json:"bus"`                     // virtio, sata, scsi, ide
+	Source      string `json:"source,omitempty"`        // for cdrom: ISO path
+	SizeGB      int64  `json:"size_gb,omitempty"`       // for disk: new size
+	Pool        string `json:"pool,omitempty"`          // storage pool for new disk
+	Format      string `json:"format,omitempty"`        // for disk: qcow2, raw
+	DiskCacheIO *bool  `json:"disk_cache_io,omitempty"` // cache='none' io='native'
+	DiskDiscard *bool  `json:"disk_discard,omitempty"`  // discard='unmap'
+}
+
+// USBDevice describes a USB device enumerated on the host, available
+// for passthrough to a VM (admin only).
+type USBDevice struct {
+	Name      string `json:"name"`
+	VendorID  string `json:"vendor_id"`  // e.g. "0x046d"
+	ProductID string `json:"product_id"` // e.g. "0xc52b"
+	Bus       string `json:"bus"`
+	Device    string `json:"device"`
 }
 
 type NetIface struct {
-	MAC      string `json:"mac"`
-	Network  string `json:"network"`
-	Model    string `json:"model"`
-	Type     string `json:"type"` // network, bridge
-	Source   string `json:"source,omitempty"`
+	MAC     string `json:"mac"`
+	Network string `json:"network"`
+	Model   string `json:"model"`
+	Type    string `json:"type"` // network, bridge
+	Source  string `json:"source,omitempty"`
 }
 
 type AttachNetRequest struct {
@@ -134,9 +159,9 @@ type AttachNetRequest struct {
 }
 
 type CloneVMRequest struct {
-	Name     string `json:"name"`
-	Pool     string `json:"pool,omitempty"`
-	Network  string `json:"network,omitempty"`
+	Name    string `json:"name"`
+	Pool    string `json:"pool,omitempty"`
+	Network string `json:"network,omitempty"`
 }
 
 type Snapshot struct {
@@ -159,25 +184,25 @@ type CreateSnapshotRequest struct {
 }
 
 type StoragePool struct {
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Path       string `json:"path"`
-	Purpose    string `json:"purpose"`
-	Capacity   int64  `json:"capacity"`
-	Allocated  int64  `json:"allocated"`
-	Available  int64  `json:"available"`
-	State      string `json:"state"`
-	Autostart  bool   `json:"autostart"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	Path      string `json:"path"`
+	Purpose   string `json:"purpose"`
+	Capacity  int64  `json:"capacity"`
+	Allocated int64  `json:"allocated"`
+	Available int64  `json:"available"`
+	State     string `json:"state"`
+	Autostart bool   `json:"autostart"`
 }
 
 type CreatePoolRequest struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`        // dir, netfs
-	Path        string `json:"path"`        // local target path (where the mount lands)
-	SourceHost  string `json:"source_host"` // for netfs
-	SourceDir   string `json:"source_dir"`  // for netfs
+	Name         string `json:"name"`
+	Type         string `json:"type"`          // dir, netfs
+	Path         string `json:"path"`          // local target path (where the mount lands)
+	SourceHost   string `json:"source_host"`   // for netfs
+	SourceDir    string `json:"source_dir"`    // for netfs
 	SourceFormat string `json:"source_format"` // nfs, cifs (defaults to nfs)
-	Purpose     string `json:"purpose"`
+	Purpose      string `json:"purpose"`
 
 	// SourceUsername / SourcePassword are accepted for netfs pools
 	// with SourceFormat=cifs. Both must be set together (validated
@@ -225,7 +250,7 @@ type StorageVolume struct {
 	Path      string `json:"path"`
 	Format    string `json:"format"`
 	Capacity  int64  `json:"capacity"`
-	Allocated int64  `json:"allocated"`	// IsSnapshot is true when this volume is an internal qcow2 snapshot
+	Allocated int64  `json:"allocated"` // IsSnapshot is true when this volume is an internal qcow2 snapshot
 	// view (e.g. "vm1.snap1") rather than a real file on disk. Resize
 	// and delete are not supported for snapshots.
 	IsSnapshot bool `json:"is_snapshot,omitempty"`
@@ -245,17 +270,21 @@ type CreateVolumeRequest struct {
 }
 
 type Network struct {
-	Name        string   `json:"name"`
-	Forward     string   `json:"forward"`
-	Bridge      string   `json:"bridge"`
-	CIDR        string   `json:"cidr"`
-	DHCP        bool     `json:"dhcp"`
-	DHCPStart   string   `json:"dhcp_start,omitempty"`
-	DHCPEnd     string   `json:"dhcp_end,omitempty"`
-	Gateway     string   `json:"gateway,omitempty"`
-	DNS         []string `json:"dns,omitempty"` // DNS forwarders for dnsmasq
-	Active      bool     `json:"active"`
-	Autostart   bool     `json:"autostart"`
+	Name    string `json:"name"`
+	Forward string `json:"forward"`
+	Bridge  string `json:"bridge"`
+	// Interface is the physical (or wireless) host NIC a "direct"
+	// (macvtap) forward-mode network is bound to, e.g. "eth0". Empty
+	// for every other forward mode.
+	Interface string   `json:"interface,omitempty"`
+	CIDR      string   `json:"cidr"`
+	DHCP      bool     `json:"dhcp"`
+	DHCPStart string   `json:"dhcp_start,omitempty"`
+	DHCPEnd   string   `json:"dhcp_end,omitempty"`
+	Gateway   string   `json:"gateway,omitempty"`
+	DNS       []string `json:"dns,omitempty"` // DNS forwarders for dnsmasq
+	Active    bool     `json:"active"`
+	Autostart bool     `json:"autostart"`
 	// Protected is true for networks that webkvm.s setup-bridge.sh
 	// auto-creates. The API refuses to delete these (and the UI
 	// greys out the delete button) so a stray click can't silently
@@ -264,36 +293,41 @@ type Network struct {
 }
 
 type CreateNetworkRequest struct {
-	Name        string   `json:"name"`
-	Forward     string   `json:"forward"`
-	CIDR        string   `json:"cidr"`
-	Bridge      string   `json:"bridge,omitempty"`
-	DHCP        *bool    `json:"dhcp,omitempty"`
-	DHCPStart   string   `json:"dhcp_start,omitempty"`
-	DHCPEnd     string   `json:"dhcp_end,omitempty"`
-	DNS         []string `json:"dns,omitempty"`
-	Autostart   *bool    `json:"autostart,omitempty"`
+	Name    string `json:"name"`
+	Forward string `json:"forward"`
+	CIDR    string `json:"cidr"`
+	Bridge  string `json:"bridge,omitempty"`
+	// Interface is required when Forward == "direct": the physical
+	// (or wireless) host NIC to bind the network to via macvtap, e.g.
+	// "eth0". Unlike "bridge" mode, this does not need (or use) an
+	// existing Linux bridge device on the host.
+	Interface string   `json:"interface,omitempty"`
+	DHCP      *bool    `json:"dhcp,omitempty"`
+	DHCPStart string   `json:"dhcp_start,omitempty"`
+	DHCPEnd   string   `json:"dhcp_end,omitempty"`
+	DNS       []string `json:"dns,omitempty"`
+	Autostart *bool    `json:"autostart,omitempty"`
 }
 
 type UpdateNetworkRequest struct {
-	DHCP        *bool    `json:"dhcp,omitempty"`
-	DHCPStart   string   `json:"dhcp_start,omitempty"`
-	DHCPEnd     string   `json:"dhcp_end,omitempty"`
-	DNS         []string `json:"dns,omitempty"`
-	Autostart   *bool    `json:"autostart,omitempty"`
+	DHCP      *bool    `json:"dhcp,omitempty"`
+	DHCPStart string   `json:"dhcp_start,omitempty"`
+	DHCPEnd   string   `json:"dhcp_end,omitempty"`
+	DNS       []string `json:"dns,omitempty"`
+	Autostart *bool    `json:"autostart,omitempty"`
 }
 
 type HostInfo struct {
-	Hostname      string `json:"hostname"`
-	Architecture  string `json:"architecture"`
-	CPUCores      int    `json:"cpu_cores"`
-	CPUThreads    int    `json:"cpu_threads"`
-	CPUSockets    int    `json:"cpu_sockets"`
-	CPUModel      string `json:"cpu_model"`
-	TotalRAM      int64  `json:"total_ram"`
-	FreeRAM       int64  `json:"free_ram"`
+	Hostname       string `json:"hostname"`
+	Architecture   string `json:"architecture"`
+	CPUCores       int    `json:"cpu_cores"`
+	CPUThreads     int    `json:"cpu_threads"`
+	CPUSockets     int    `json:"cpu_sockets"`
+	CPUModel       string `json:"cpu_model"`
+	TotalRAM       int64  `json:"total_ram"`
+	FreeRAM        int64  `json:"free_ram"`
 	LibvirtVersion string `json:"libvirt_version"`
-	QEMUVersion   string `json:"qemu_version"`
+	QEMUVersion    string `json:"qemu_version"`
 }
 
 type HostStats struct {
@@ -308,8 +342,8 @@ type HostStats struct {
 // can be used as a bridge target for libvirt bridge-mode networks.
 type HostInterface struct {
 	Name     string `json:"name"`
-	Type     string `json:"type"`      // "ethernet", "wifi", "bond", "vlan"
-	State    string `json:"state"`     // "up", "down", "unknown"
+	Type     string `json:"type"`  // "ethernet", "wifi", "bond", "vlan"
+	State    string `json:"state"` // "up", "down", "unknown"
 	MAC      string `json:"mac"`
 	IPSource string `json:"ip_source"` // "static" | "dhcp" | "none"
 }
@@ -318,19 +352,19 @@ type HostInterface struct {
 // libvirt domain's <metadata><webkvm:meta> element. Persists with
 // the domain via libvirt; no separate database needed.
 type VMMeta struct {
-	Alias    string   `xml:"alias"     json:"alias,omitempty"`
-	Notes    string   `xml:"notes"     json:"notes,omitempty"`
-	Cover    string   `xml:"cover"     json:"cover,omitempty"`
-	Groups   []string `xml:"groups>group,omitempty" json:"groups,omitempty"`
+	Alias  string   `xml:"alias"     json:"alias,omitempty"`
+	Notes  string   `xml:"notes"     json:"notes,omitempty"`
+	Cover  string   `xml:"cover"     json:"cover,omitempty"`
+	Groups []string `xml:"groups>group,omitempty" json:"groups,omitempty"`
 	// OwnerID is the username that owns this VM (used for per-user
 	// quotas). Admin/operator-created VMs may leave it empty.
-	OwnerID   string `xml:"owner,omitempty" json:"owner_id,omitempty"`
+	OwnerID string `xml:"owner,omitempty" json:"owner_id,omitempty"`
 	// Template marks a VM as a reusable template (hidden from the
 	// normal VM list, instantiated to create new VMs).
-	Template  bool   `xml:"template,omitempty" json:"template,omitempty"`
+	Template bool `xml:"template,omitempty" json:"template,omitempty"`
 	// CiUser is the cloud-init username provisioned at creation, used
 	// for password reset via the guest agent.
-	CiUser    string `xml:"ci_user,omitempty" json:"ci_user,omitempty"`
+	CiUser string `xml:"ci_user,omitempty" json:"ci_user,omitempty"`
 	// AppInfo is a JSON blob describing a deployed appliance app
 	// (name, URL path and database credentials) so the UI can show a
 	// credentials pop-up. Set at deploy time.
@@ -417,19 +451,19 @@ type MetricsSample struct {
 
 // MetricsSeries is a time series of samples.
 type MetricsSeries struct {
-	Kind string          `json:"kind"` // "cpu" | "ram" | "disk_r" | "disk_w" | "net_rx" | "net_tx"
-	Unit  string         `json:"unit"`
-	Window int            `json:"window"` // seconds
+	Kind   string          `json:"kind"` // "cpu" | "ram" | "disk_r" | "disk_w" | "net_rx" | "net_tx"
+	Unit   string          `json:"unit"`
+	Window int             `json:"window"` // seconds
 	Points []MetricsSample `json:"points"`
 }
 
 // VMMetrics bundles all the metric series for a single VM. Returned by
 // GET /api/vms/{id}/metrics and pushed via the "vm.metrics" SSE event.
 type VMMetrics struct {
-	VMID    string         `json:"vm_id"`
-	SampledAt int64        `json:"sampled_at"`
-	CPU     MetricsSeries  `json:"cpu"`
-	RAM     MetricsSeries  `json:"ram"`
+	VMID      string        `json:"vm_id"`
+	SampledAt int64         `json:"sampled_at"`
+	CPU       MetricsSeries `json:"cpu"`
+	RAM       MetricsSeries `json:"ram"`
 	DiskRead  MetricsSeries `json:"disk_read"`
 	DiskWrite MetricsSeries `json:"disk_write"`
 	NetRx     MetricsSeries `json:"net_rx"`
@@ -442,11 +476,11 @@ type LoginRequest struct {
 }
 
 type LoginResponse struct {
-	Token               string `json:"token"`
-	ExpiresAt           int64  `json:"expires_at"`
-	Username            string `json:"username"`
-	Role                string `json:"role"`
-	MustChangePassword  bool   `json:"must_change_password"`
+	Token              string `json:"token"`
+	ExpiresAt          int64  `json:"expires_at"`
+	Username           string `json:"username"`
+	Role               string `json:"role"`
+	MustChangePassword bool   `json:"must_change_password"`
 }
 
 type ErrorResponse struct {
@@ -486,42 +520,53 @@ func IsValidRole(r string) bool {
 // Quota caps a user's/group's resource usage. Zero values mean
 // "unlimited" for that dimension.
 type Quota struct {
-	MaxVMs    int `json:"max_vms,omitempty"`
-	MaxVCPUs  int `json:"max_vcpus,omitempty"`
-	MaxRAMMB  int `json:"max_ram_mb,omitempty"`
-	MaxDiskGB int `json:"max_disk_gb,omitempty"`
+	MaxVMs     int            `json:"max_vms,omitempty"`
+	MaxVCPUs   int            `json:"max_vcpus,omitempty"`
+	MaxRAMMB   int            `json:"max_ram_mb,omitempty"`
+	MaxDiskGB  int            `json:"max_disk_gb,omitempty"` // global disk cap across all pools (0 = no global cap)
+	PoolQuotas map[string]int `json:"pool_quotas,omitempty"` // per storage-pool disk cap in GB (0 = no cap on that pool)
 }
 
-// Enabled reports whether any quota dimension is set.
+// Enabled reports whether any quota dimension is set. A user may have
+// only per-pool disk limits (MaxDiskGB == 0) and must still be subject
+// to quota, so PoolQuotas is considered too.
 func (q Quota) Enabled() bool {
-	return q.MaxVMs > 0 || q.MaxVCPUs > 0 || q.MaxRAMMB > 0 || q.MaxDiskGB > 0
+	if q.MaxVMs > 0 || q.MaxVCPUs > 0 || q.MaxRAMMB > 0 || q.MaxDiskGB > 0 {
+		return true
+	}
+	return len(q.PoolQuotas) > 0
 }
 
 type User struct {
-	Username             string `json:"username"`
-	PasswordHash         string `json:"password_hash,omitempty"`
-	Role                 string `json:"role"`
-	CreatedAt            string `json:"created_at"`
-	Email                string `json:"email,omitempty"`
-	Active               bool   `json:"active"`
-	MustChangePassword   bool   `json:"must_change_password"`
-	LastLoginAt          string `json:"last_login_at,omitempty"`
-	// Quota limits this user's VMs. Zero fields = unlimited.
-	Quota Quota `json:"quota,omitempty"`
-}
-
-// UserResponse is the API-facing projection of User; it is what gets
-// returned by /api/users endpoints and /api/auth/me. The hash is
-// deliberately excluded.
-type UserResponse struct {
 	Username           string `json:"username"`
+	PasswordHash       string `json:"password_hash,omitempty"`
 	Role               string `json:"role"`
 	CreatedAt          string `json:"created_at"`
 	Email              string `json:"email,omitempty"`
 	Active             bool   `json:"active"`
 	MustChangePassword bool   `json:"must_change_password"`
 	LastLoginAt        string `json:"last_login_at,omitempty"`
-	Quota              Quota  `json:"quota,omitempty"`
+	// Quota limits this user's VMs. Zero fields = unlimited.
+	Quota Quota `json:"quota,omitempty"`
+	// AllowedPools restricts which storage pools this user may use for
+	// VM/disk operations. Empty means "all pools". Admins are always
+	// exempt. This is the per-user pool visibility/ACL.
+	AllowedPools []string `json:"allowed_pools,omitempty"`
+}
+
+// UserResponse is the API-facing projection of User; it is what gets
+// returned by /api/users endpoints and /api/auth/me. The hash is
+// deliberately excluded.
+type UserResponse struct {
+	Username           string   `json:"username"`
+	Role               string   `json:"role"`
+	CreatedAt          string   `json:"created_at"`
+	Email              string   `json:"email,omitempty"`
+	Active             bool     `json:"active"`
+	MustChangePassword bool     `json:"must_change_password"`
+	LastLoginAt        string   `json:"last_login_at,omitempty"`
+	Quota              Quota    `json:"quota,omitempty"`
+	AllowedPools       []string `json:"allowed_pools,omitempty"`
 }
 
 func (u *User) ToResponse() UserResponse {
@@ -534,6 +579,7 @@ func (u *User) ToResponse() UserResponse {
 		MustChangePassword: u.MustChangePassword,
 		LastLoginAt:        u.LastLoginAt,
 		Quota:              u.Quota,
+		AllowedPools:       u.AllowedPools,
 	}
 }
 
@@ -543,6 +589,8 @@ type CreateUserRequest struct {
 	Role     string `json:"role"`
 	Email    string `json:"email,omitempty"`
 	Quota    Quota  `json:"quota,omitempty"`
+	// AllowedPools, when non-empty, restricts the user to these pools.
+	AllowedPools []string `json:"allowed_pools,omitempty"`
 }
 
 type UpdateUserRequest struct {
@@ -552,6 +600,9 @@ type UpdateUserRequest struct {
 	Active   *bool   `json:"active,omitempty"`
 	// Quota is applied wholesale when non-nil (all dimensions).
 	Quota *Quota `json:"quota,omitempty"`
+	// AllowedPools, when non-nil, replaces the user's pool allowlist
+	// (pass an empty slice to clear the restriction).
+	AllowedPools *[]string `json:"allowed_pools,omitempty"`
 }
 
 // ChangeMyPasswordRequest is the body of PUT /api/users/me/password.

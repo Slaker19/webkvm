@@ -59,8 +59,52 @@ func TestStoreRevoke(t *testing.T) {
 	s, _ := New(dir)
 	_, plain, _ := s.Create("t1", "bob", "viewer", nil, time.Hour)
 	id := lookupID(t, s, plain)
-	if err := s.Revoke(id, "bob"); err != nil {
+	if err := s.Revoke(id, "bob", false); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.Validate(plain); err == nil {
+		t.Fatal("expected revoked token to fail")
+	}
+}
+
+// Regression test: Revoke/Delete must authorize based on the CALLER's
+// own role, never the target token's recorded role. A prior version
+// checked `t.Role != "admin"` (the target token's role), which let any
+// non-owner caller revoke/delete a token that happened to belong to an
+// admin, as long as they weren't claiming to be that admin themselves.
+func TestStoreRevoke_NonOwnerNonAdminCannotRevokeAdminToken(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := New(dir)
+	_, plain, _ := s.Create("admin-token", "root", "admin", nil, time.Hour)
+	id := lookupID(t, s, plain)
+	if err := s.Revoke(id, "mallory", false); err == nil {
+		t.Fatal("expected a non-owner, non-admin caller to be rejected")
+	}
+	if _, err := s.Validate(plain); err != nil {
+		t.Fatal("token should still be valid: the unauthorized revoke must not have applied")
+	}
+}
+
+func TestStoreDelete_NonOwnerNonAdminCannotDeleteAdminToken(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := New(dir)
+	_, plain, _ := s.Create("admin-token", "root", "admin", nil, time.Hour)
+	id := lookupID(t, s, plain)
+	if err := s.Delete(id, "mallory", false); err == nil {
+		t.Fatal("expected a non-owner, non-admin caller to be rejected")
+	}
+	if _, err := s.Validate(plain); err != nil {
+		t.Fatal("token should still exist: the unauthorized delete must not have applied")
+	}
+}
+
+func TestStoreRevoke_CallerAdminCanRevokeAnyToken(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := New(dir)
+	_, plain, _ := s.Create("t1", "bob", "viewer", nil, time.Hour)
+	id := lookupID(t, s, plain)
+	if err := s.Revoke(id, "someone-else", true); err != nil {
+		t.Fatalf("admin caller should be able to revoke any token: %v", err)
 	}
 	if _, err := s.Validate(plain); err == nil {
 		t.Fatal("expected revoked token to fail")

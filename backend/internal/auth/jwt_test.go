@@ -218,20 +218,42 @@ func TestMiddleware_ValidBearer_AllowsRequest(t *testing.T) {
 	}
 }
 
-func TestMiddleware_TokenInQueryString(t *testing.T) {
+func TestMiddleware_EventsRejectsRawTokenInQueryString(t *testing.T) {
+	// Regression test: /api/events (SSE) must NOT accept a raw,
+	// long-lived JWT via ?token=... — that leaks into access/proxy
+	// logs, browser history, and Referer headers. It authenticates via
+	// a short-lived single-use ticket instead (see the next test).
 	m := newTestManager(t)
 	tok, _, _ := m.GenerateToken("alice", "admin")
+
+	h := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest("GET", "/api/events?token="+tok, nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 (raw query token must be rejected)", rr.Code)
+	}
+}
+
+func TestMiddleware_EventsTicketInQueryString(t *testing.T) {
+	m := newTestManager(t)
+	tk, err := IssueTicket("alice", "admin")
+	if err != nil {
+		t.Fatalf("IssueTicket: %v", err)
+	}
 
 	var gotUser string
 	h := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUser = r.Header.Get(HeaderUser)
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest("GET", "/api/events?token="+tok, nil)
+	req := httptest.NewRequest("GET", "/api/events?ticket="+tk, nil)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200 (query token allowed)", rr.Code)
+		t.Errorf("status = %d, want 200 (ticket allowed)", rr.Code)
 	}
 	if gotUser != "alice" {
 		t.Errorf("user = %q, want alice", gotUser)

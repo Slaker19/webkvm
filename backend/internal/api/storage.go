@@ -365,6 +365,26 @@ func (h *Handler) CreateVolume(w http.ResponseWriter, r *http.Request) {
 	if req.Pool == "" {
 		req.Pool = config.DiskPoolName
 	}
+	// A raw volume can be attached to a VM as an "existing disk" later,
+	// so it must go through the same pool-ACL and disk-quota checks as
+	// any other disk allocation, or a restricted user could create an
+	// unmetered volume on a disallowed pool and attach it afterward.
+	owner, role, _ := audit.FromRequest(r)
+	if role != models.RoleAdmin {
+		u, uerr := h.userStore.Get(owner)
+		if uerr != nil {
+			jsonErr(w, http.StatusUnauthorized, "user not found")
+			return
+		}
+		if err := assertPoolAllowed(u, req.Pool); err != nil {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if err := h.checkDiskQuota(owner, map[string]int64{req.Pool: req.Capacity}); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
 	vol, err := h.lv.CreateStorageVolume(req)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -403,6 +423,27 @@ func (h *Handler) ResizeVolume(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "capacity must be positive")
 		return
 	}
+	owner, role, _ := audit.FromRequest(r)
+	if role != models.RoleAdmin {
+		u, uerr := h.userStore.Get(owner)
+		if uerr != nil {
+			jsonErr(w, http.StatusUnauthorized, "user not found")
+			return
+		}
+		if err := assertPoolAllowed(u, pool); err != nil {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if cur, err := h.lv.GetStorageVolume(pool, name); err == nil {
+			delta := req.Capacity - bytesToGB(cur.Capacity)
+			if delta > 0 {
+				if err := h.checkDiskQuota(owner, map[string]int64{pool: delta}); err != nil {
+					jsonErr(w, http.StatusConflict, err.Error())
+					return
+				}
+			}
+		}
+	}
 	if err := h.lv.ResizeStorageVolume(pool, name, req.Capacity); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -421,7 +462,11 @@ func (h *Handler) ListISOs(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, http.StatusOK, isos)
 		return
 	}
-	// No pool specified → aggregate ISOs from all pools with purpose "iso"
+	// No pool specified → aggregate ISOs from every pool. Purpose is
+	// just an informational label, not a restriction on where an ISO
+	// can live, so a pool tagged "disk" is scanned too — otherwise an
+	// ISO uploaded there would be invisible in the default "all pools"
+	// view even though GetISOs(pool) finds it fine when asked directly.
 	allPools, err := h.lv.ListStoragePools()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -429,9 +474,6 @@ func (h *Handler) ListISOs(w http.ResponseWriter, r *http.Request) {
 	}
 	var isos []models.ISOScanResult
 	for _, p := range allPools {
-		if p.Purpose != "iso" {
-			continue
-		}
 		poolISOs, err := h.lv.GetISOs(p.Name)
 		if err != nil {
 			continue
@@ -550,6 +592,131 @@ func (h *Handler) UploadISO(w http.ResponseWriter, r *http.Request) {
 		Name: name,
 		Size: written,
 		Pool: poolName,
+	})
+}
+
+// diskUploadExts is the allowlist of disk-image extensions accepted
+// by UploadDisk (case-insensitive). Libvirt's dir-pool backend
+// auto-detects the real format by inspecting the file itself once
+// refreshed, so the extension is just a sanity/consistency check —
+// same convention the rest of the app already uses for disk files.
+var diskUploadExts = map[string]bool{".qcow2": true, ".img": true, ".raw": true, ".qed": true}
+
+// UploadDisk streams an uploaded qcow2/raw/img disk image directly
+// into a storage pool's directory, the same way UploadISO does for
+// ISOs. Unlike UploadISO it uses the low-level multipart.Reader
+// directly instead of ParseMultipartForm/FormFile: disk images run
+// far larger than ISOs, and ParseMultipartForm/FormValue would fully
+// buffer or temp-file the entire body before this handler got a
+// chance to reject an over-quota upload. Streaming part-by-part lets
+// the pool-ACL and quota checks run (using the "pool" field) before
+// the "file" part's bytes are ever written to disk — the frontend
+// sends "pool" before "file" in the FormData for exactly this reason.
+func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 500<<30) // 500GB cap, disk images run larger than ISOs
+
+	mr, err := r.MultipartReader()
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, "failed to parse multipart form: "+err.Error())
+		return
+	}
+
+	owner, role, _ := audit.FromRequest(r)
+	var poolName, name, destPath string
+	var written int64
+
+	for {
+		part, perr := mr.NextPart()
+		if perr == io.EOF {
+			break
+		}
+		if perr != nil {
+			jsonErr(w, http.StatusBadRequest, "failed to read multipart body: "+perr.Error())
+			return
+		}
+
+		if part.FormName() == "pool" {
+			b, _ := io.ReadAll(io.LimitReader(part, 256))
+			poolName = strings.TrimSpace(string(b))
+			continue
+		}
+		if part.FormName() != "file" {
+			continue
+		}
+
+		if poolName == "" {
+			poolName = config.DiskPoolName
+		}
+		name, err = safeISOFilename(part.FileName())
+		if err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !diskUploadExts[strings.ToLower(filepath.Ext(name))] {
+			jsonErr(w, http.StatusBadRequest, "unsupported disk image extension (use .qcow2, .img, .raw or .qed)")
+			return
+		}
+
+		// Same ACL + disk-quota gate as CreateVolume: an uploaded disk
+		// image can be attached to a VM as an "existing disk" afterward,
+		// so it must not let a restricted user bypass pool ACL or quota
+		// by uploading instead of creating a blank volume. r.ContentLength
+		// is a good-enough upper bound (multipart overhead is negligible
+		// next to a real disk image); skipped if the client didn't send it.
+		if role != models.RoleAdmin {
+			u, uerr := h.userStore.Get(owner)
+			if uerr != nil {
+				jsonErr(w, http.StatusUnauthorized, "user not found")
+				return
+			}
+			if err := assertPoolAllowed(u, poolName); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
+			if r.ContentLength > 0 {
+				if err := h.checkDiskQuota(owner, map[string]int64{poolName: bytesToGB(r.ContentLength)}); err != nil {
+					jsonErr(w, http.StatusConflict, err.Error())
+					return
+				}
+			}
+		}
+
+		poolPath, perr := h.lv.GetPoolPath(poolName)
+		if perr != nil {
+			jsonErr(w, http.StatusInternalServerError, "failed to resolve pool: "+perr.Error())
+			return
+		}
+		destPath = filepath.Join(poolPath, name)
+
+		dst, derr := os.Create(destPath)
+		if derr != nil {
+			jsonErr(w, http.StatusInternalServerError, "failed to create file: "+derr.Error())
+			return
+		}
+		written, err = io.Copy(dst, part)
+		dst.Close()
+		if err != nil {
+			os.Remove(destPath)
+			jsonErr(w, http.StatusInternalServerError, "failed to write file: "+err.Error())
+			return
+		}
+	}
+
+	if name == "" {
+		jsonErr(w, http.StatusBadRequest, "missing file field")
+		return
+	}
+
+	if err := h.lv.RefreshPool(poolName); err != nil {
+		jsonErr(w, http.StatusInternalServerError, "uploaded but failed to refresh pool: "+err.Error())
+		return
+	}
+
+	jsonResp(w, http.StatusCreated, map[string]any{
+		"name": name,
+		"path": destPath,
+		"size": written,
+		"pool": poolName,
 	})
 }
 

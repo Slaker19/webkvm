@@ -22,17 +22,17 @@ import (
 // --- Targets ---
 
 type backupTargetCreateRequest struct {
-	Name        string   `json:"name"`
-	Type        string   `json:"type"`
-	Path        string   `json:"path"`
-	VMFilter    string   `json:"vm_filter"`
-	VMIDs       []string `json:"vm_ids"`
-	Host        string   `json:"host"`
-	Port        int      `json:"port"`
-	Username    string   `json:"username"`
-	Password    string   `json:"password"`
-	SSHKeyPath  string   `json:"ssh_key_path"`
-	Retention   backupstore.RetentionPolicy `json:"retention"`
+	Name       string                      `json:"name"`
+	Type       string                      `json:"type"`
+	Path       string                      `json:"path"`
+	VMFilter   string                      `json:"vm_filter"`
+	VMIDs      []string                    `json:"vm_ids"`
+	Host       string                      `json:"host"`
+	Port       int                         `json:"port"`
+	Username   string                      `json:"username"`
+	Password   string                      `json:"password"`
+	SSHKeyPath string                      `json:"ssh_key_path"`
+	Retention  backupstore.RetentionPolicy `json:"retention"`
 }
 
 func (h *Handler) ListBackupTargets(w http.ResponseWriter, r *http.Request) {
@@ -85,17 +85,17 @@ func (h *Handler) UpdateBackupTarget(w http.ResponseWriter, r *http.Request) {
 	// Enabled=false explicitly — the API would silently treat it as
 	// "leave alone". With pointers, false is a real value.
 	var req struct {
-		Name       *string             `json:"name"`
-		Path       *string             `json:"path"`
-		Type       *string             `json:"type"`
-		VMFilter   *string             `json:"vm_filter"`
-		VMIDs      *[]string           `json:"vm_ids"`
-		Enabled    *bool               `json:"enabled"`
-		Host       *string             `json:"host"`
-		Port       *int                `json:"port"`
-		Username   *string             `json:"username"`
-		Password   *string             `json:"password"`
-		SSHKeyPath *string             `json:"ssh_key_path"`
+		Name       *string                      `json:"name"`
+		Path       *string                      `json:"path"`
+		Type       *string                      `json:"type"`
+		VMFilter   *string                      `json:"vm_filter"`
+		VMIDs      *[]string                    `json:"vm_ids"`
+		Enabled    *bool                        `json:"enabled"`
+		Host       *string                      `json:"host"`
+		Port       *int                         `json:"port"`
+		Username   *string                      `json:"username"`
+		Password   *string                      `json:"password"`
+		SSHKeyPath *string                      `json:"ssh_key_path"`
 		Retention  *backupstore.RetentionPolicy `json:"retention"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -299,10 +299,12 @@ type BackupNowRequest struct{}
 // param id; if empty, the default target is used.
 //
 // The HTTP status is mapped from the runner's sentinel errors:
-//   ErrTargetNotFound        → 404
-//   ErrTargetDisabled        → 409
-//   ErrTargetPathUnwritable  → 400
-//   anything else            → 500
+//
+//	ErrTargetNotFound        → 404
+//	ErrTargetDisabled        → 409
+//	ErrTargetPathUnwritable  → 400
+//	anything else            → 500
+//
 // The job is returned in the body on every error path so the UI
 // can still render what was attempted.
 func (h *Handler) BackupNow(w http.ResponseWriter, r *http.Request) {
@@ -377,9 +379,9 @@ func (h *Handler) VerifyBackup(w http.ResponseWriter, r *http.Request) {
 // RestoreBackup extracts a backup archive into a fresh directory.
 // Phase II accepts two request shapes:
 //
-//   {"filename": "webkvm-...-vm-1.tar.zst"}    — single file
-//   {"run": "20260625T120000.000000000Z-aabbcc"} — every file in
-//                                                  that backup run
+//	{"filename": "webkvm-...-vm-1.tar.zst"}    — single file
+//	{"run": "20260625T120000.000000000Z-aabbcc"} — every file in
+//	                                               that backup run
 //
 // The handler passes the request's context so a client disconnect
 // aborts the tar. Sentinel errors from the runner are mapped to
@@ -391,8 +393,8 @@ func (h *Handler) RestoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chiURLParam(r, "id")
 	var req struct {
-		Filename string   `json:"filename"`
-		Run      string   `json:"run"`
+		Filename string `json:"filename"`
+		Run      string `json:"run"`
 		// Config restores the stable "latest configuration"
 		// snapshot (config/webkvm-config-latest.tar.zst).
 		Config bool `json:"config"`
@@ -536,13 +538,13 @@ func (h *Handler) RestoreAsVM(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chiURLParam(r, "id")
 	var req struct {
-		Filename  string  `json:"filename"`
-		Name      string  `json:"name"`
-		Pool      string  `json:"pool"`
-		Network   string  `json:"network"`
-		VCPUs     int     `json:"vcpus"`
-		RAMMB     int     `json:"ram_mb"`
-		Autostart *bool   `json:"autostart"`
+		Filename  string `json:"filename"`
+		Name      string `json:"name"`
+		Pool      string `json:"pool"`
+		Network   string `json:"network"`
+		VCPUs     int    `json:"vcpus"`
+		RAMMB     int    `json:"ram_mb"`
+		Autostart *bool  `json:"autostart"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -551,6 +553,25 @@ func (h *Handler) RestoreAsVM(w http.ResponseWriter, r *http.Request) {
 	if req.Filename == "" {
 		jsonErr(w, http.StatusBadRequest, "filename is required")
 		return
+	}
+	// req.Name and req.Network are spliced into the restored domain's
+	// XML by the importer, so they must be constrained to the same
+	// libvirt-safe charset as a normal VM name to prevent XML/QEMU-arg
+	// injection (an unescaped value could break out of a <name> or
+	// <source network='...'/> element).
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name != "" {
+		if err := validateVMName(req.Name); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	req.Network = strings.TrimSpace(req.Network)
+	if req.Network != "" {
+		if err := validateVMName(req.Network); err != nil {
+			jsonErr(w, http.StatusBadRequest, "invalid network: "+err.Error())
+			return
+		}
 	}
 	if req.Pool == "" {
 		req.Pool = config.DiskPoolName
@@ -626,7 +647,20 @@ func (h *Handler) RestoreAsVM(w http.ResponseWriter, r *http.Request) {
 			ram = 2048
 		}
 		diskGB := bytesToGB(fi.Size())
+		u, uerr := h.userStore.Get(owner)
+		if uerr != nil {
+			jsonErr(w, http.StatusUnauthorized, "user not found")
+			return
+		}
+		if err := assertPoolAllowed(u, req.Pool); err != nil {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
 		if err := h.checkQuota(owner, 1, int64(vcpus), int64(ram), diskGB); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err := h.checkDiskQuota(owner, map[string]int64{req.Pool: diskGB}); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -763,7 +797,7 @@ func (h *Handler) TestBackupTarget(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, http.StatusOK, map[string]any{"ok": false, "message": "cannot create path: " + err.Error()})
 		return
 	}
-	probe := filepath.Join(req.Path, ".webkvm-test") // lgtm[go/path-injection] - req.Path validated above
+	probe := filepath.Join(req.Path, ".webkvm-test")                 // lgtm[go/path-injection] - req.Path validated above
 	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil { // lgtm[go/path-injection]
 		jsonResp(w, http.StatusOK, map[string]any{"ok": false, "message": "path not writable: " + err.Error()})
 		return

@@ -10,7 +10,9 @@
   import { Input } from '$lib/components/ui/input';
   import DataTable from '$lib/components/DataTable.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-  import { t } from '../lib/i18n.svelte.js';
+  import Icon from '$lib/components/Icon.svelte';
+  import StatCard from '$lib/components/StatCard.svelte';
+  import { t, htmlVar } from '../lib/i18n.svelte.js';
 
   let networks = $state([]);
   let hostInterfaces = $state([]);
@@ -24,6 +26,10 @@
   let cidr = $state('192.168.100.0/24');
   let forward = $state('nat');
   let hostDevice = $state('');
+  // forward=direct (macvtap): physical interface to bind straight to,
+  // e.g. "eth0" — like the auto-created "webkvm-bridge" network, but
+  // for any interface the operator picks, not just the default route.
+  let directInterface = $state('');
   let dhcp = $state(true);
   let dhcpStart = $state('');
   let dhcpEnd = $state('');
@@ -102,6 +108,7 @@
     cidr = '192.168.100.0/24';
     forward = 'nat';
     hostDevice = '';
+    directInterface = '';
     dhcp = true;
     dhcpStart = '';
     dhcpEnd = '';
@@ -116,6 +123,7 @@
     cidr = net.cidr || '';
     forward = net.forward || 'nat';
     hostDevice = net.bridge || '';
+    directInterface = net.interface || '';
     dhcp = !!net.dhcp;
     dhcpStart = net.dhcp_start || '';
     dhcpEnd = net.dhcp_end || '';
@@ -194,7 +202,13 @@
       toast.error(msg, { duration: 0 });
       return;
     }
-    if (forward !== 'bridge' && cidr && !cidr.includes('/')) {
+    if (forward === 'direct' && !directInterface) {
+      const msg = t('networks.selectInterfaceError');
+      error = msg;
+      toast.error(msg, { duration: 0 });
+      return;
+    }
+    if (forward !== 'bridge' && forward !== 'direct' && cidr && !cidr.includes('/')) {
       const msg = t('networks.cidrPrefixError');
       error = msg;
       toast.error(msg, { duration: 0 });
@@ -202,21 +216,36 @@
     }
     error = '';
     saving = true;
-    // For bridge-mode networks, the backend silently drops
-    // cidr/dhcp/dhcp_start/dhcp_end because libvirt rejects
-    // <forward mode='bridge'/> networks that carry an <ip>
-    // block. Don't even send them — keeps the request body
-    // clean and makes the network's intent obvious in
-    // /api/networks output (cidr="" for bridged networks).
-    const payload =
-      forward === 'bridge'
-        ? { name: name.trim(), forward, autostart, bridge: hostDevice, dns: parseDNSList(dnsText) }
-        : { name: name.trim(), cidr, forward, dhcp, autostart };
-    if (forward !== 'bridge' && dhcp) {
+    // For bridge/direct-mode networks, the backend silently drops
+    // cidr/dhcp/dhcp_start/dhcp_end because libvirt rejects networks
+    // in either mode that carry an <ip> block. Don't even send them —
+    // keeps the request body clean and makes the network's intent
+    // obvious in /api/networks output (cidr="" for both modes).
+    let payload;
+    if (forward === 'bridge') {
+      payload = {
+        name: name.trim(),
+        forward,
+        autostart,
+        bridge: hostDevice,
+        dns: parseDNSList(dnsText),
+      };
+    } else if (forward === 'direct') {
+      payload = {
+        name: name.trim(),
+        forward,
+        autostart,
+        interface: directInterface,
+        dns: parseDNSList(dnsText),
+      };
+    } else {
+      payload = { name: name.trim(), cidr, forward, dhcp, autostart };
+    }
+    if (forward !== 'bridge' && forward !== 'direct' && dhcp) {
       payload.dhcp_start = dhcpStart || preview?.dhcpStart || '';
       payload.dhcp_end = dhcpEnd || preview?.dhcpEnd || '';
     }
-    if (forward !== 'bridge' && dnsText) {
+    if (forward !== 'bridge' && forward !== 'direct' && dnsText) {
       payload.dns = parseDNSList(dnsText);
     }
     try {
@@ -441,7 +470,7 @@
   }
 </script>
 
-<div class="p-6 max-w-6xl">
+<div class="p-4 sm:p-6 max-w-6xl">
   <PageHeader title={t('networks.title')} subtitle={t('networks.subtitle')}>
     {#snippet actions()}
       {#if !showCreate}
@@ -454,6 +483,22 @@
       {/if}
     {/snippet}
   </PageHeader>
+
+  {#if !loading && networks.length > 0}
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <StatCard label={t('networks.title')} value={String(networks.length)} />
+      <StatCard
+        label={t('networks.activeBadge')}
+        status="running"
+        value={String(networks.filter((n) => n.active).length)}
+      />
+      <StatCard
+        label={t('networks.autostartBadge')}
+        value={String(networks.filter((n) => n.autostart).length)}
+      />
+      <StatCard label={t('networks.hostBridges')} value={String(hostBridges.length)} />
+    </div>
+  {/if}
 
   {#if hostBridges.length > 0}
     <div class="mb-4 border border-border rounded-lg bg-card p-4">
@@ -478,7 +523,7 @@
           {#if bridgeError}
             <Alert variant="error">{bridgeError}</Alert>
           {/if}
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label for="br-name-list" class="block text-xs font-medium mb-1"
                 >{t('networks.bridgeName')}</label
@@ -527,7 +572,7 @@
               <span class="text-foreground font-medium">{t('networks.vlanAwareLabel')}</span>
               <br />
               {@html t('networks.vlanAwareDesc', {
-                code: '<code class="text-[10px]">vlan_filtering=1</code>',
+                code: htmlVar('<code class="text-[10px]">vlan_filtering=1</code>'),
               })}
             </span>
           </label>
@@ -587,18 +632,7 @@
                   : t('networks.deleteBridgeTooltip')}
                 aria-label={`${t('networks.deleteBridge')} ${br.name}`}
               >
-                <svg
-                  class="w-3.5 h-3.5"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  viewBox="0 0 24 24"
-                  ><path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 3h6a1 1 0 011 1v3H8V4a1 1 0 011-1z"
-                  /></svg
-                >
+                <Icon name="trash" size={14} />
               </button>
             </div>
           </div>
@@ -623,7 +657,7 @@
       </div>
 
       {#if !editingNet}
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label for="net-name" class="block text-sm font-medium mb-1.5"
               >{t('networks.name')}</label
@@ -637,6 +671,7 @@
             <select id="net-forward" bind:value={forward} class="input">
               <option value="nat">NAT</option>
               <option value="bridge">Bridge</option>
+              <option value="direct">{t('networks.direct')}</option>
               <option value="isolated">{t('networks.isolated')}</option>
             </select>
           </div>
@@ -673,7 +708,7 @@
                   {#if bridgeError}
                     <Alert variant="error">{bridgeError}</Alert>
                   {/if}
-                  <div class="grid grid-cols-2 gap-3">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label for="br-name" class="block text-xs font-medium mb-1"
                         >{t('networks.bridgeName')}</label
@@ -728,6 +763,22 @@
               {/if}
             {/if}
           </div>
+        {:else if forward === 'direct'}
+          <div>
+            <label for="net-direct-iface" class="block text-sm font-medium mb-1.5"
+              >{t('networks.directInterfaceLabel')}</label
+            >
+            <select id="net-direct-iface" bind:value={directInterface} class="input">
+              <option value="" disabled>{t('networks.selectInterfacePlaceholder')}</option>
+              {#each hostInterfaces as iface}
+                <option value={iface.name}
+                  >{iface.name}
+                  {iface.type !== 'other' ? `(${iface.type})` : ''} — {iface.state}</option
+                >
+              {/each}
+            </select>
+            <p class="text-xs text-muted-foreground mt-1">{t('networks.directHelp')}</p>
+          </div>
         {:else}
           <div>
             <label for="net-cidr" class="block text-sm font-medium mb-1.5">CIDR</label>
@@ -735,7 +786,7 @@
           </div>
         {/if}
       {:else}
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label for="net-edit-forward" class="block text-sm font-medium mb-1.5"
               >{t('networks.forwardMode')}</label
@@ -754,6 +805,18 @@
                 class="opacity-50 tnum"
               />
             </div>
+          {:else if forward === 'direct'}
+            <div>
+              <label for="net-edit-iface" class="block text-sm font-medium mb-1.5"
+                >{t('networks.directBoundTo')}</label
+              >
+              <Input
+                id="net-edit-iface"
+                value={directInterface || '—'}
+                readonly
+                class="opacity-50 tnum"
+              />
+            </div>
           {:else}
             <div>
               <label for="net-edit-cidr" class="block text-sm font-medium mb-1.5">CIDR</label>
@@ -763,7 +826,7 @@
         </div>
       {/if}
 
-      {#if forward !== 'bridge'}
+      {#if forward !== 'bridge' && forward !== 'direct'}
         <div class="flex items-center gap-2 pt-2 border-t border-border">
           <input
             id="net-dhcp"
@@ -777,7 +840,7 @@
         </div>
 
         {#if dhcp}
-          <div class="grid grid-cols-3 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label for="net-gw" class="block text-sm font-medium mb-1.5"
                 >{t('networks.gateway')}</label
@@ -891,30 +954,15 @@
         ? 'bg-success/10 text-success'
         : 'bg-muted text-muted-foreground'}"
     >
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-        <rect x="4" y="2" width="16" height="8" rx="2" /><rect
-          x="4"
-          y="14"
-          width="16"
-          height="8"
-          rx="2"
-        /><line x1="12" y1="10" x2="12" y2="14" />
-      </svg>
+      <Icon name="network" size={16} />
     </div>
     <div class="min-w-0">
       <div class="font-medium truncate flex items-center gap-2">
         {row.name}
         {#if row.protected}
-          <svg
-            class="w-3.5 h-3.5 text-info shrink-0"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            title={t('networks.managedTooltip')}
-          >
-            <rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
+          <span class="shrink-0" title={t('networks.managedTooltip')}>
+            <Icon name="lock" size={14} class="text-info" />
+          </span>
         {/if}
       </div>
       <div class="flex items-center gap-1.5 mt-1">
@@ -931,13 +979,7 @@
           <span
             class="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-medium"
           >
-            <svg
-              class="w-2.5 h-2.5 mr-0.5"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
-              viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg
-            >
+            <Icon name="zap" size={10} class="mr-0.5" />
             {t('networks.autostartBadge')}
           </span>
         {/if}
@@ -951,28 +993,22 @@
     class="inline-flex items-center text-xs px-2 py-1 rounded-full font-medium {row.forward ===
     'nat'
       ? 'bg-info/10 text-info'
-      : row.forward === 'bridge'
+      : row.forward === 'bridge' || row.forward === 'direct'
         ? 'bg-accent/10 text-accent'
         : 'bg-muted text-muted-foreground'}"
   >
     {#if row.forward === 'nat'}
-      <svg
-        class="w-3 h-3 mr-1"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" /></svg
-      >
-    {:else if row.forward === 'bridge'}
-      <svg
-        class="w-3 h-3 mr-1"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        viewBox="0 0 24 24"><path d="M2 12h20M6 8v8M12 8v8M18 8v8" /></svg
-      >
+      <Icon name="arrowRight" size={12} class="mr-1" />
+    {:else if row.forward === 'bridge' || row.forward === 'direct'}
+      <Icon name="network" size={12} class="mr-1" />
     {/if}
-    {row.forward === 'nat' ? 'NAT' : row.forward === 'bridge' ? 'Bridge' : t('networks.isolated')}
+    {row.forward === 'nat'
+      ? 'NAT'
+      : row.forward === 'bridge'
+        ? 'Bridge'
+        : row.forward === 'direct'
+          ? t('networks.direct')
+          : t('networks.isolated')}
   </span>
 {/snippet}
 
@@ -1036,14 +1072,7 @@
         {#if toggling[row.name]}
           <Spinner size="xs" color="text-warning" />
         {:else}
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"
-            ><rect x="6" y="4" width="4" height="16" /><rect
-              x="14"
-              y="4"
-              width="4"
-              height="16"
-            /></svg
-          >
+          <Icon name="pause" size={16} />
         {/if}
       </button>
     {:else}
@@ -1057,9 +1086,7 @@
         {#if toggling[row.name]}
           <Spinner size="xs" color="text-success" />
         {:else}
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"
-            ><polygon points="5 3 19 12 5 21 5 3" /></svg
-          >
+          <Icon name="play" size={16} />
         {/if}
       </button>
     {/if}
@@ -1068,10 +1095,7 @@
       class="p-1.5 rounded-md text-muted-foreground hover:text-accent hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       aria-label={`${t('common.edit')} ${row.name}`}
     >
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-      </svg>
+      <Icon name="pencil" size={16} />
     </button>
     <button
       onclick={() => deleteNet(row.name)}
@@ -1082,11 +1106,7 @@
         ? t('networks.managedDeleteTooltip2', { name: row.name })
         : t('common.delete')}
     >
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <polyline points="3 6 5 6 21 6" /><path
-          d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
-        />
-      </svg>
+      <Icon name="trash" size={16} />
     </button>
   </div>
 {/snippet}

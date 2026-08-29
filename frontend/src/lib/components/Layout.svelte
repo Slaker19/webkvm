@@ -19,12 +19,26 @@
   import Icon from './Icon.svelte';
   import TaskCenter from './TaskCenter.svelte';
   import { SITE_NAME } from '../brand.js';
+  import { sidebarMode, cycleSidebarMode } from '../stores/sidebarMode.svelte.js';
 
   let { children } = $props();
 
   const route = $derived(getRoute());
 
   let mobileNavOpen = $state(false);
+
+  const sidebarModeLabelKey = {
+    full: 'layout.sidebarFull',
+    rail: 'layout.sidebarRail',
+    hover: 'layout.sidebarHover',
+  };
+  // Short labels for the header toggle button itself (the long
+  // descriptions above are for the tooltip/aria-label only).
+  const sidebarModeShortKey = {
+    full: 'layout.sidebarFullShort',
+    rail: 'layout.sidebarRailShort',
+    hover: 'layout.sidebarHoverShort',
+  };
 
   const viewNames = {
     vms: () => t('vms.title'),
@@ -34,6 +48,7 @@
     networks: () => t('networks.title'),
     users: () => t('users.title'),
     nodes: () => t('nodes.title'),
+    snapshots: () => t('snapshots.title'),
     backup: () => t('backup.title'),
     settings: () => t('settings.title'),
     status: () => t('status.title'),
@@ -58,6 +73,16 @@
     void route.name;
     mobileNavOpen = false;
   });
+
+  // Reset scroll on route change. #main (not window) is what scrolls,
+  // so a lingering deep scroll position from the previous page (e.g.
+  // a long DataTable) could make a freshly-mounted page look wrong or,
+  // combined with a slow re-render, make navigation look like it did
+  // nothing at all.
+  $effect(() => {
+    void route.name;
+    document.getElementById('main')?.scrollTo(0, 0);
+  });
 </script>
 
 <a
@@ -69,8 +94,11 @@
 
 <div class="flex h-screen overflow-hidden bg-background text-foreground">
   <!-- Desktop sidebar -->
-  <div class="hidden lg:flex shrink-0">
-    <Sidebar />
+  <div
+    class="hidden md:flex shrink-0 relative h-full"
+    style="width: {sidebarMode.value === 'full' ? '224px' : '56px'}"
+  >
+    <Sidebar mode={sidebarMode.value} />
   </div>
 
   <!-- Mobile drawer -->
@@ -79,9 +107,9 @@
       type="button"
       aria-label={t('layout.closeMenu')}
       onclick={() => (mobileNavOpen = false)}
-      class="lg:hidden fixed inset-0 z-40 bg-black/50"
+      class="md:hidden fixed inset-0 z-40 bg-black/50"
     ></button>
-    <div class="lg:hidden fixed inset-y-0 left-0 z-50 shadow-2xl">
+    <div class="md:hidden fixed inset-y-0 left-0 z-50 shadow-2xl">
       <Sidebar onNavigate={() => (mobileNavOpen = false)} />
     </div>
   {/if}
@@ -94,7 +122,7 @@
         <button
           type="button"
           onclick={() => (mobileNavOpen = true)}
-          class="lg:hidden -ml-1 p-1.5 text-muted-foreground hover:text-foreground rounded"
+          class="md:hidden -ml-1 p-1.5 text-muted-foreground hover:text-foreground rounded"
           aria-label={t('layout.openMenu')}
         >
           <Icon name="menu" size={18} />
@@ -123,6 +151,18 @@
       </div>
 
       <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
+        <button
+          onclick={cycleSidebarMode}
+          class="hidden md:flex items-center gap-1.5 px-2 py-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+          title={t('layout.toggleSidebar', { mode: t(sidebarModeLabelKey[sidebarMode.value]) })}
+          aria-label={t('layout.toggleSidebar', {
+            mode: t(sidebarModeLabelKey[sidebarMode.value]),
+          })}
+        >
+          <Icon name="panelLeft" size={16} />
+          <span class="text-xs font-medium">{t(sidebarModeShortKey[sidebarMode.value])}</span>
+        </button>
+
         <button
           onclick={() => window.dispatchEvent(new CustomEvent('open-command-palette'))}
           class="sm:flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded border border-border hover:border-border-hover"

@@ -411,10 +411,13 @@ func (c *Connector) CreateStorageVolume(req models.CreateVolumeRequest) (models.
 		return models.StorageVolume{}, err
 	}
 
-	if c.poolPurpose(req.Pool) == PoolPurposeISO {
-		return models.StorageVolume{}, fmt.Errorf("cannot create volumes in ISO pool %s", req.Pool)
+	if !nameRE.MatchString(req.Name) {
+		return models.StorageVolume{}, fmt.Errorf("invalid volume name %q (allowed: A-Z a-z 0-9 . _ -)", req.Name)
 	}
 
+	// Pool "purpose" (disk vs iso) is an informational label only — any
+	// pool can hold both VM disks and ISOs, so volume creation is not
+	// gated on it.
 	pool, err := c.conn.LookupStoragePoolByName(req.Pool)
 	if err != nil {
 		return models.StorageVolume{}, fmt.Errorf("lookup pool: %w", err)
@@ -735,10 +738,6 @@ func extractPoolPath(xml string) string {
 func (c *Connector) ResizeStorageVolume(poolName, volName string, newSizeGB int64) error {
 	if err := c.ensureConnected(); err != nil {
 		return err
-	}
-
-	if c.poolPurpose(poolName) == PoolPurposeISO {
-		return fmt.Errorf("cannot resize volumes in ISO pool %s", poolName)
 	}
 
 	pool, err := c.conn.LookupStoragePoolByName(poolName)

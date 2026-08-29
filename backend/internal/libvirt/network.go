@@ -97,6 +97,22 @@ func (c *Connector) CreateNetwork(req models.CreateNetworkRequest) (models.Netwo
 		}
 	}
 
+	// For forward=direct, the network is bound straight to a physical
+	// (or wireless) host NIC via macvtap — no Linux bridge device is
+	// created or required (that's the whole point vs. forward=bridge).
+	if req.Forward == "direct" {
+		if !isPhysicalInterface(req.Interface) {
+			available := listPhysicalInterfaces()
+			hint := ""
+			if len(available) == 0 {
+				hint = " (no physical network interfaces were found on this host)"
+			} else {
+				hint = " (available: " + strings.Join(available, ", ") + ")"
+			}
+			return models.Network{}, fmt.Errorf("'%s' is not a physical network interface on the host%s", req.Interface, hint)
+		}
+	}
+
 	forward := req.Forward
 	if forward == "" {
 		forward = "nat"
@@ -114,6 +130,14 @@ func (c *Connector) CreateNetwork(req models.CreateNetworkRequest) (models.Netwo
 	case "bridge":
 		forwardXML = `<forward mode='bridge'/>
   <bridge name='` + xmlEscape(bridge) + `'/>`
+	case "direct":
+		// macvtap "direct" attachment to a physical NIC — no <bridge>
+		// element at all (that's what makes this a "direct" network
+		// rather than a "bridge" one when read back by networkToModel/
+		// extractNetworkForward).
+		forwardXML = `<forward mode='bridge'>
+    <interface dev='` + xmlEscape(req.Interface) + `'/>
+  </forward>`
 	case "isolated":
 		forwardXML = `<forward mode='none'/>
   <bridge name='` + xmlEscape(bridge) + `' stp='on' delay='0'/>`
@@ -123,13 +147,12 @@ func (c *Connector) CreateNetwork(req models.CreateNetworkRequest) (models.Netwo
 	}
 
 	var ipXML string
-	// forward=bridge networks MUST NOT have an <ip>
-	// element — the IP belongs to the underlying bridge
-	// (managed externally by the host, not by libvirt), and libvirt
-	// rejects any <forward mode='bridge'/> network that also specifies
-	// an <ip> with "Unsupported <ip> element in network <name> with
-	// forward mode='bridge'".
-	if forward == "bridge" {
+	// forward=bridge/direct networks MUST NOT have an <ip>
+	// element — the IP belongs to the underlying bridge or physical
+	// NIC (managed externally, not by libvirt), and libvirt rejects
+	// any such network that also specifies an <ip> with "Unsupported
+	// <ip> element in network <name> with forward mode='bridge'".
+	if forward == "bridge" || forward == "direct" {
 		// Note: req.CIDR / req.DHCP / req.DHCPStart / req.DHCPEnd
 		// are intentionally ignored for bridge-mode networks.
 	} else if req.CIDR != "" {
@@ -302,6 +325,15 @@ func (c *Connector) UpdateNetwork(name string, req models.UpdateNetworkRequest) 
 	case "bridge":
 		forwardXML = `<forward mode='bridge'/>
   <bridge name='` + xmlEscape(bridge) + `'/>`
+	case "direct":
+		// Preserve the existing physical-interface binding — forward
+		// mode/target aren't editable via UpdateNetworkRequest, so
+		// re-read it from the network's current XML rather than
+		// synthesizing a <bridge> element (which would silently turn
+		// a macvtap "direct" network into a broken bridge-mode one).
+		forwardXML = `<forward mode='bridge'>
+    <interface dev='` + xmlEscape(extractNetworkInterface(xmlDesc)) + `'/>
+  </forward>`
 	case "isolated":
 		forwardXML = `<forward mode='none'/>
   <bridge name='` + xmlEscape(bridge) + `' stp='on' delay='0'/>`
@@ -310,13 +342,13 @@ func (c *Connector) UpdateNetwork(name string, req models.UpdateNetworkRequest) 
   <bridge name='` + xmlEscape(bridge) + `' stp='on' delay='0'/>`
 	}
 
-	// Same forward=bridge restriction as CreateNetwork: no <ip>
-	// block on a network that points at an external bridge.
-	// For NAT/isolated/default networks the <ip> block is required, so
-	// refuse if we don't have one.
+	// Same forward=bridge/direct restriction as CreateNetwork: no
+	// <ip> block on a network that points at an external bridge or a
+	// physical NIC. For NAT/isolated/default networks the <ip> block
+	// is required, so refuse if we don't have one.
 	var ipXML string
-	if forward == "bridge" {
-		// ipXML stays empty — bridge networks have no <ip>.
+	if forward == "bridge" || forward == "direct" {
+		// ipXML stays empty — bridge/direct networks have no <ip>.
 	} else if parsed.Gateway == "" {
 		return models.Network{}, fmt.Errorf("network has no IP configuration")
 	} else if dhcpEnabled && start != "" && end != "" {
@@ -434,11 +466,13 @@ func networkToModel(net *libvirt.Network) (models.Network, error) {
 	cidr, gateway := extractNetworkCIDR(xmlDesc)
 	dhcpStart, dhcpEnd := extractNetworkDHCP(xmlDesc)
 	dns := extractNetworkDNS(xmlDesc)
+	iface := extractNetworkInterface(xmlDesc)
 
 	return models.Network{
 		Name:      name,
 		Forward:   forward,
 		Bridge:    bridgeName,
+		Interface: iface,
 		CIDR:      cidr,
 		Gateway:   gateway,
 		DHCP:      dhcpStart != "" || dhcpEnd != "",
@@ -539,7 +573,63 @@ func extractNetworkForward(xml string) string {
 	if e < 0 {
 		return "nat"
 	}
-	return tag[m : m+e]
+	mode := tag[m : m+e]
+
+	// A libvirt forward mode='bridge' element either points at a real
+	// host Linux bridge (self-closed, with a <bridge name='...'/>
+	// sibling) or, when it instead has one or more <interface dev=.../>
+	// children, binds guests straight to a physical NIC via macvtap —
+	// no host-side bridge device involved at all. WebKVM surfaces the
+	// second case as forward="direct" so the UI (and CreateNetwork's
+	// own validation) never confuses it with a network that needs an
+	// existing Linux bridge.
+	if mode == "bridge" && !strings.HasSuffix(strings.TrimRight(tag[:len(tag)-1], " "), "/") {
+		if closeIdx := strings.Index(xml[fwd:], "</forward>"); closeIdx >= 0 {
+			if strings.Contains(xml[fwd:fwd+closeIdx], "<interface ") {
+				return "direct"
+			}
+		}
+	}
+	return mode
+}
+
+// extractNetworkInterface returns the physical interface name bound
+// to a forward="direct" (macvtap) network, e.g. "eth0" from
+// "<forward mode='bridge'><interface dev='eth0'/></forward>". Returns
+// "" for any other forward mode.
+func extractNetworkInterface(xml string) string {
+	fwd := strings.Index(xml, "<forward")
+	if fwd < 0 {
+		return ""
+	}
+	closeIdx := strings.Index(xml[fwd:], "</forward>")
+	if closeIdx < 0 {
+		return ""
+	}
+	block := xml[fwd : fwd+closeIdx]
+	i := strings.Index(block, "<interface ")
+	if i < 0 {
+		return ""
+	}
+	rest := block[i:]
+	devKey := `dev='`
+	d := strings.Index(rest, devKey)
+	if d < 0 {
+		devKey = `dev="`
+		d = strings.Index(rest, devKey)
+	}
+	if d < 0 {
+		return ""
+	}
+	d += len(devKey)
+	e2 := strings.IndexByte(rest[d:], '\'')
+	if e2 < 0 {
+		e2 = strings.IndexByte(rest[d:], '"')
+	}
+	if e2 < 0 {
+		return ""
+	}
+	return rest[d : d+e2]
 }
 
 // extractNetworkCIDR returns the network CIDR (e.g. "192.168.100.0/24") and

@@ -6,12 +6,14 @@
   import CredentialsModal from '$lib/components/CredentialsModal.svelte';
   import TerminalPanel from '$lib/components/TerminalPanel.svelte';
   import BlockCard from '$lib/components/BlockCard.svelte';
-  import { layout, resetLayout } from '$lib/stores/vmLayout.svelte.js';
+  import Tabs from '$lib/components/Tabs.svelte';
   import { upsertTask, updateTask, finishTask } from '$lib/stores/tasks.svelte.js';
   import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
   import { api, auth } from '$lib/stores/auth.svelte.js';
   import { t } from '../lib/i18n.svelte.js';
+  import { stateDotClass } from '$lib/utils/vmState.js';
+  import { formatRate } from '$lib/utils/format.js';
   import { events } from '$lib/stores/events.svelte.js';
   import { navigate, getRoute } from '$lib/router.svelte.js';
   import { toast } from '$lib/components/ui/toast';
@@ -164,7 +166,11 @@
   let eAlias = $state('');
   let eNotes = $state('');
   let eNotesOriginal = $state(''); // tracks the last-saved value for blur autosave
-  let eGroupsText = $state('');
+  // Selected group names for this VM. A Set, not free text — a group
+  // name can itself contain spaces (e.g. "APPS WEBS"), and the old
+  // comma-or-space-separated text field silently split those into
+  // separate, unregistered tags that never matched the real group.
+  let eGroupsSet = $state(new Set());
   let eGroupsList = $state([]); // groups available to assign
   let coverFile = $state(null);
   let coverPreview = $state(null);
@@ -190,19 +196,40 @@
   let networks = $state([]);
   let isos = $state([]);
 
-  const stateColors = {
-    running: 'bg-status-running',
-    shutoff: 'bg-status-shutoff',
-    paused: 'bg-status-paused',
-    crashed: 'bg-status-crashed',
-  };
+  // Which of the 4 tabs is showing. 'overview' bundles the spec/metrics/
+  // serial-console/firewall/schedule cards that used to be freestanding
+  // blocks — see BlockCard/vmLayout.svelte.js.
+  let activeSection = $state('overview');
+  const sectionTabs = $derived([
+    { id: 'overview', label: t('vmDetail.overview') },
+    { id: 'disks', label: t('vmDetail.disks') },
+    { id: 'net', label: t('vmDetail.networkInterfaces') },
+    { id: 'snaps', label: t('vmDetail.snapshots') },
+  ]);
 
-  // Scroll suave hasta el bloque de consola serial (botón lateral y ?serial=1).
+  // Serial console lives in the Overview tab; switch to it (if we're
+  // elsewhere) before scrolling so the target isn't display:none.
   function gotoSerial() {
-    document.getElementById('vm-serial-block')?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start',
+    activeSection = 'overview';
+    queueMicrotask(() => {
+      document.getElementById('vm-serial-block')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
     });
+  }
+
+  async function openConsole() {
+    try {
+      const { vnc_ticket } = await api.getVNCTicket(vmId);
+      window.open(
+        `/console/${vmId}?vt=${encodeURIComponent(vnc_ticket)}`,
+        '_blank',
+        'noopener,noreferrer'
+      );
+    } catch (e) {
+      toast.error(e.message);
+    }
   }
 
   onMount(() => {
@@ -312,12 +339,12 @@
       eAlias = meta.alias || '';
       eNotes = meta.notes || '';
       eNotesOriginal = meta.notes || '';
-      eGroupsText = (meta.groups || []).join(', ');
+      eGroupsSet = new Set(meta.groups || []);
     } catch {
       eAlias = vm?.alias || '';
       eNotes = '';
       eNotesOriginal = '';
-      eGroupsText = (vm?.groups || []).join(', ');
+      eGroupsSet = new Set(vm?.groups || []);
     }
     // Initialize iface edit state for each network interface.
     const edits = {};
@@ -357,10 +384,7 @@
     // Save alias + notes + groups in a single PUT.
     savingIdentity = true;
     try {
-      const groups = eGroupsText
-        .split(/[\s,;]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const groups = Array.from(eGroupsSet);
       await api.updateVMMeta(vmId, {
         alias: eAlias,
         notes: eNotes,
@@ -369,6 +393,11 @@
       eNotesOriginal = eNotes;
       vm = { ...vm, alias: eAlias, groups };
       toast.success('Identity updated');
+      // Close on success — leaving the dialog open with no visible
+      // change (besides a toast easy to miss) read as "the button
+      // doesn't do anything" even though the save worked. On error,
+      // stay open so the message and fields remain visible to retry.
+      showIdentity = false;
     } catch (e) {
       toast.error(e.message);
     } finally {
@@ -947,15 +976,13 @@
   }
 
   async function resizeDisk() {
-    if (!requireShutoff(t('vmDetail.requireShutoffResizingDisk'))) return;
     if (!resizeDiskTarget) return;
+    if (resizeDiskSize < resizeDiskCurrent) {
+      if (!requireShutoff(t('vmDetail.requireShutoffShrinkingDisk'))) return;
+    }
     actionLoading = 'resizedisk';
     try {
-      const disk = vm.disks.find((d) => d.target === resizeDiskTarget);
-      if (!disk) throw new Error(t('vmDetail.diskNotFound'));
-      if (!disk.pool) throw new Error(t('vmDetail.diskPoolUnknown'));
-      const volName = disk.source.split('/').pop();
-      await api.resizeVolume(disk.pool, volName, resizeDiskSize);
+      await api.resizeVmDisk(vm.id, resizeDiskTarget, resizeDiskSize);
       showResizeDisk = false;
       toast.success(t('vmDetail.diskResized'));
       await load();
@@ -1044,6 +1071,43 @@
         }
       },
     });
+  }
+
+  // USB passthrough (admin only)
+  let hostUSBDevices = $state([]);
+  async function loadHostUSBDevices() {
+    try {
+      hostUSBDevices = await api.listHostUSBDevices();
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+  $effect(() => {
+    if (auth.isAdmin()) loadHostUSBDevices();
+  });
+  async function attachUSB(vendorId, productId) {
+    actionLoading = 'usb';
+    try {
+      await api.attachUSBDevice(vmId, vendorId, productId);
+      toast.success(t('vmDetail.usbDeviceAttached'));
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      actionLoading = '';
+    }
+  }
+  async function detachUSB(vendorId, productId) {
+    actionLoading = 'usb';
+    try {
+      await api.detachUSBDevice(vmId, vendorId, productId);
+      toast.success(t('vmDetail.usbDeviceDetached'));
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      actionLoading = '';
+    }
   }
 
   async function cloneVM() {
@@ -1190,14 +1254,6 @@
     return parts.join(' ') || '<1m';
   }
 
-  function formatRate(b) {
-    if (b == null) return '0 B/s';
-    if (b < 1024) return b.toFixed(0) + ' B/s';
-    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB/s';
-    if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(2) + ' MB/s';
-    return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB/s';
-  }
-
   function bytesToStr(b) {
     if (!b) return '0 B';
     const u = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -1251,21 +1307,14 @@
     return `${y}-${m}-${day} ${hh}:${mm}`;
   }
 
-  // Deep-link from Storage: ?tab=snapshots scrolls the snapshot
-  // section into view. Re-runs whenever the route query changes.
+  // Deep-link from Storage: ?tab=snapshots opens the Snapshots tab.
   $effect(() => {
     const r = getRoute();
-    if (r.query?.tab === 'snapshots') {
-      // Defer to next tick so the section is rendered first.
-      queueMicrotask(() => {
-        const el = document.getElementById('snapshots');
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      });
-    }
+    if (r.query?.tab === 'snapshots') activeSection = 'snaps';
   });
 </script>
 
-<div class="p-6 max-w-6xl">
+<div class="p-4 sm:p-6 max-w-6xl">
   <div class="flex items-center gap-3 mb-6">
     <button
       onclick={onBack}
@@ -1278,7 +1327,7 @@
     </button>
     {#if vm}
       <div class="flex items-center gap-3 flex-1 flex-wrap min-w-0">
-        <span class="status-dot {stateColors[vm.state] || stateColors.crashed} shrink-0"></span>
+        <span class="status-dot {stateDotClass(vm.state)} shrink-0"></span>
         <h1 class="text-xl font-semibold tracking-tight truncate min-w-0">{vm.alias || vm.name}</h1>
         {#if vm.alias && vm.alias !== vm.name}
           <span class="text-xs text-muted-foreground font-mono truncate shrink-0">({vm.name})</span>
@@ -1325,7 +1374,7 @@
         <!-- Overview -->
         {#snippet sec_overview()}
           <BlockCard bid="overview" title={t('vmDetail.overview')}>
-            <div class="grid grid-cols-3 gap-3 mb-4">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
               <div class="border border-border rounded-md p-3 bg-background">
                 <p class="text-2xl font-semibold tnum">{vm.vcpus}</p>
                 <p class="text-xs text-muted-foreground mt-0.5">{t('common.vcpu')}</p>
@@ -1556,13 +1605,11 @@
                         >
                         <button
                           onclick={() => {
-                            if (!requireShutoff(t('vmDetail.requireShutoffResizingDisk'))) return;
                             resizeDiskTarget = disk.target;
                             resizeDiskSize = disk.size_gb || 10;
                             resizeDiskCurrent = disk.size_gb || 0;
                             showResizeDisk = true;
                           }}
-                          title={t('vmDetail.requireShutoffTitle')}
                           class="text-xs text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-muted"
                           >{t('vmDetail.resize')}</button
                         >
@@ -1628,6 +1675,75 @@
                 {/each}
               </div>
             {/if}
+          </BlockCard>
+        {/snippet}
+
+        {#snippet sec_usb()}
+          <BlockCard bid="usb" title={t('vmDetail.usbDevices')}>
+            <div class="space-y-3">
+              <div>
+                <div class="text-xs font-medium text-muted-foreground mb-1.5">
+                  {t('vmDetail.usbAttached')}
+                </div>
+                {#if !vm.usb_devices || vm.usb_devices.length === 0}
+                  <p class="text-sm text-muted-foreground">{t('vmDetail.usbNoneAttached')}</p>
+                {:else}
+                  <div class="space-y-1.5">
+                    {#each vm.usb_devices as dev}
+                      <div
+                        class="flex items-center justify-between px-3 py-2 rounded-md border border-border bg-background"
+                      >
+                        <span class="text-xs font-mono text-muted-foreground"
+                          >{dev.vendor_id}:{dev.product_id}</span
+                        >
+                        <button
+                          onclick={() => detachUSB(dev.vendor_id, dev.product_id)}
+                          disabled={actionLoading === 'usb'}
+                          class="text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >{t('vmDetail.usbDetach')}</button
+                        >
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+              <div>
+                <div class="flex items-center justify-between mb-1.5">
+                  <div class="text-xs font-medium text-muted-foreground">
+                    {t('vmDetail.usbAvailable')}
+                  </div>
+                  <button
+                    onclick={loadHostUSBDevices}
+                    class="text-xs text-accent hover:text-accent-hover"
+                    >{t('common.refresh')}</button
+                  >
+                </div>
+                {#if hostUSBDevices.length === 0}
+                  <p class="text-sm text-muted-foreground">{t('vmDetail.usbNoneFound')}</p>
+                {:else}
+                  <div class="space-y-1.5">
+                    {#each hostUSBDevices as dev (dev.vendor_id + dev.product_id)}
+                      <div
+                        class="flex items-center justify-between px-3 py-2 rounded-md border border-border bg-background"
+                      >
+                        <div class="flex items-center gap-2 min-w-0">
+                          <span class="text-sm truncate">{dev.name}</span>
+                          <span class="text-xs font-mono text-muted-foreground"
+                            >{dev.vendor_id}:{dev.product_id}</span
+                          >
+                        </div>
+                        <button
+                          onclick={() => attachUSB(dev.vendor_id, dev.product_id)}
+                          disabled={actionLoading === 'usb'}
+                          class="text-xs text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                          >{t('vmDetail.usbAttach')}</button
+                        >
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            </div>
           </BlockCard>
         {/snippet}
 
@@ -1796,39 +1912,30 @@
           </div>
         {/snippet}
 
-        {#each layout.order as bid (bid)}
-          {#if bid === 'overview'}{@render sec_overview()}
-          {:else if bid === 'serial'}{@render sec_serial()}
-          {:else if bid === 'metrics'}{@render sec_metrics()}
-          {:else if bid === 'disks'}{@render sec_disks()}
-          {:else if bid === 'net'}{@render sec_net()}
-          {:else if bid === 'snaps'}{@render sec_snaps()}
-          {:else if bid === 'firewall'}{@render sec_firewall()}
-          {:else if bid === 'schedule'}{@render sec_schedule()}
-          {/if}
-        {/each}
+        <Tabs tabs={sectionTabs} bind:active={activeSection} class="mb-1" />
 
-        <div class="flex justify-end mt-1">
-          <button
-            type="button"
-            class="text-[11px] underline text-muted-foreground hover:text-foreground"
-            onclick={() => resetLayout()}
-          >
-            Restaurar orden de bloques
-          </button>
+        <!-- Each panel stays mounted (CSS-hidden, not {#if}-removed) so
+             switching tabs never tears down the serial WebSocket or a
+             VNC connection living inside one of these cards. -->
+        <div class="space-y-5 {activeSection === 'overview' ? '' : 'hidden'}">
+          {@render sec_overview()}
+          {@render sec_metrics()}
+          {@render sec_serial()}
+          {@render sec_firewall()}
+          {@render sec_schedule()}
         </div>
-
-        <!-- Metrics -->
-
-        <!-- Disks -->
-
-        <!-- Network Interfaces -->
-
-        <!-- Snapshots -->
-
-        <!-- Firewall -->
-
-        <!-- Power schedule -->
+        <div class={activeSection === 'disks' ? '' : 'hidden'}>
+          {@render sec_disks()}
+        </div>
+        <div class={activeSection === 'net' ? '' : 'hidden'}>
+          {@render sec_net()}
+          {#if auth.isAdmin()}
+            {@render sec_usb()}
+          {/if}
+        </div>
+        <div class={activeSection === 'snaps' ? '' : 'hidden'}>
+          {@render sec_snaps()}
+        </div>
       </div>
 
       <!-- Sidebar -->
@@ -1918,15 +2025,7 @@
             {t('vmDetail.actions')}
           </h2>
           <div class="space-y-2">
-            <Button
-              onclick={() =>
-                window.open(
-                  `/console/${vm.id}?token=${encodeURIComponent(auth.token)}`,
-                  '_blank',
-                  'noopener,noreferrer'
-                )}
-              class="w-full"
-            >
+            <Button onclick={openConsole} class="w-full">
               <Terminal class="w-4 h-4 mr-1.5" />
               {t('vmDetail.openConsole')}
             </Button>
@@ -2464,6 +2563,9 @@
       <Dialog.Description
         >{t('vmDetail.resizeDiskDesc', { current: resizeDiskCurrent })}</Dialog.Description
       >
+      {#if vm && vm.state !== 'shutoff'}
+        <p class="text-xs text-muted-foreground mt-1">{t('vmDetail.resizeDiskLiveNotice')}</p>
+      {/if}
     </Dialog.Header>
     <div>
       <label for="rdisk-size" class="block text-sm font-medium mb-1.5"
@@ -2873,44 +2975,39 @@
     {:else if identityTab === 'groups'}
       <div class="space-y-3">
         <div>
-          <label for="ident-groups" class="block text-sm font-medium mb-1.5"
-            >{t('vmDetail.groupsLabel')}</label
-          >
-          <Input
-            id="ident-groups"
-            bind:value={eGroupsText}
-            placeholder="production, staging, team-a"
-          />
-          <p class="text-xs text-muted-foreground mt-1">{@html t('vmDetail.groupsHelper')}</p>
-        </div>
-        {#if eGroupsList.length > 0}
-          <div>
-            <p class="text-xs font-medium text-muted-foreground mb-1.5">
-              {t('vmDetail.availableGroups')}
-            </p>
+          <span class="block text-sm font-medium mb-1.5">{t('vmDetail.groupsLabel')}</span>
+          {#if eGroupsList.length === 0}
+            <p class="text-sm text-muted-foreground">{t('vmDetail.noGroupsCreateFirst')}</p>
+          {:else}
+            <!-- Toggle chips only — never free text. A group name can
+                 contain spaces (e.g. "APPS WEBS"); typed comma/space-
+                 separated text used to split that into unregistered
+                 fragments that never matched the real group. -->
             <div class="flex flex-wrap gap-1.5">
-              {#each eGroupsList as g}
+              {#each eGroupsList as g (g.name)}
+                {@const selected = eGroupsSet.has(g.name)}
                 <button
                   type="button"
                   onclick={() => {
-                    const current = eGroupsText
-                      .split(/[\s,;]+/)
-                      .map((s) => s.trim())
-                      .filter(Boolean);
-                    if (!current.includes(g.name)) {
-                      eGroupsText = [...current, g.name].join(', ');
-                    } else {
-                      eGroupsText = current.filter((n) => n !== g.name).join(', ');
-                    }
+                    const next = new Set(eGroupsSet);
+                    if (next.has(g.name)) next.delete(g.name);
+                    else next.add(g.name);
+                    eGroupsSet = next;
                   }}
-                  class="text-xs px-2 py-0.5 rounded border"
-                  style="border-color: {g.color}40; background-color: {g.color}15; color: {g.color}"
+                  aria-pressed={selected}
+                  class="text-xs px-2.5 py-1 rounded-full border transition-colors {selected
+                    ? 'border-transparent text-white'
+                    : ''}"
+                  style={selected
+                    ? `background-color: ${g.color}`
+                    : `border-color: ${g.color}40; background-color: ${g.color}15; color: ${g.color}`}
                   >{g.name}</button
                 >
               {/each}
             </div>
-          </div>
-        {/if}
+          {/if}
+          <p class="text-xs text-muted-foreground mt-1.5">{@html t('vmDetail.groupsHelper')}</p>
+        </div>
         <div class="flex justify-end gap-2 pt-2">
           <Button variant="outline" onclick={() => (showIdentity = false)}
             >{t('common.close')}</Button

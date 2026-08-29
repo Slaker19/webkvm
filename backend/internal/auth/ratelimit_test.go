@@ -130,8 +130,9 @@ func TestLoginRateLimiter_KeyForStripsPort(t *testing.T) {
 
 func TestLoginRateLimiter_KeyForIPv6(t *testing.T) {
 	// IPv6 with brackets.
+	rl := NewLoginRateLimiter()
 	ip1 := newReq("[::1]:1000", "alice")
-	k := keyFor(ip1, "alice")
+	k := rl.keyFor(ip1, "alice")
 	want := "::1|alice"
 	if k != want {
 		t.Errorf("key = %q, want %q", k, want)

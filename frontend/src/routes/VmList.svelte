@@ -12,14 +12,18 @@
   import { auth } from '$lib/stores/auth.svelte.js';
   import { toast } from '$lib/components/ui/toast';
   import { t } from '../lib/i18n.svelte.js';
+  import { stateDotClass } from '$lib/utils/vmState.js';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+  import BulkActionBar from '$lib/components/BulkActionBar.svelte';
   import ErrorModal from '$lib/components/ErrorModal.svelte';
   import CredentialsModal from '$lib/components/CredentialsModal.svelte';
   import * as Dialog from '$lib/components/ui/dialog';
   import Chart from '$lib/components/Chart.svelte';
+  import StatCard from '$lib/components/StatCard.svelte';
+  import { formatRate } from '$lib/utils/format.js';
   import {
     Plus,
     Download,
@@ -109,7 +113,9 @@
 
   // Bulk tag dialog
   let showBulkTag = $state(false);
-  let bulkTagName = $state('');
+  // A VM can belong to more than one group at once, so tagging supports
+  // selecting several groups in one go (toggleable chips), not just one.
+  let bulkTagNames = $state(new Set());
 
   // Import modal state
   let showImport = $state(false);
@@ -206,6 +212,19 @@ apt-get update -y
     menuFor = menuFor === vmId ? null : vmId;
   }
 
+  // Direct per-VM entry point for group assignment — reuses the same
+  // bulk-tag dialog/logic as the multi-select flow, just pre-seeded
+  // with a single VM. Before this, the only way to tag a VM with a
+  // group was: enter select mode, check a box, then find "Tag with
+  // group" in the bulk action bar — nothing in "Manage groups" (where
+  // groups are created) let you assign one directly to a VM.
+  function openTagForVm(vm) {
+    selectedKeys = new Set([vm.id]);
+    bulkTagNames = new Set(vm.groups || []);
+    showBulkTag = true;
+    menuFor = null;
+  }
+
   async function quickAction(vm, action) {
     const key = `${vm.id}:${action}`;
     quickBusy = key;
@@ -221,7 +240,7 @@ apt-get update -y
           toast.success(t('vms.shutdownSent', { name: vm.alias || vm.name }));
           break;
         case 'forceoff':
-          await api.forceoffVM(vm.id);
+          await api.forceOffVM(vm.id);
           toast.success(t('vms.forceoffDone', { name: vm.alias || vm.name }));
           break;
         case 'clone': {
@@ -235,9 +254,19 @@ apt-get update -y
           await api.makeVMTemplate(vm.id);
           toast.success(t('vms.madeTemplate', { name: vm.alias || vm.name }));
           break;
-        case 'console':
-          navigate('/console/' + vm.id);
+        case 'console': {
+          // The VNC console is a separate server-rendered page (not an
+          // SPA route) authenticated with a short-lived, VM-scoped
+          // ticket — never the session JWT. Mirrors VmDetail.svelte's
+          // openConsole().
+          const { vnc_ticket } = await api.getVNCTicket(vm.id);
+          window.open(
+            `/console/${vm.id}?vt=${encodeURIComponent(vnc_ticket)}`,
+            '_blank',
+            'noopener,noreferrer'
+          );
           return;
+        }
         case 'serial':
           // Embedded serial console lives in the VM detail page.
           navigate('/vms/' + vm.id, { query: { serial: '1' } });
@@ -363,6 +392,46 @@ apt-get update -y
 
   const last30 = (arr) => (Array.isArray(arr) ? arr.slice(-30) : []);
 
+  // Fleet-wide sparkline aggregation: index-wise combine each running
+  // VM's metric series, aligned from the most recent sample (arrays can
+  // have different lengths if a VM started polling more recently).
+  function sumSeries(seriesList) {
+    const trimmed = seriesList.map((s) => last30(s)).filter((s) => s.length > 0);
+    if (trimmed.length === 0) return [];
+    const len = Math.min(...trimmed.map((s) => s.length));
+    const out = [];
+    for (let i = 0; i < len; i++) {
+      const offset = i - len;
+      let sum = 0;
+      for (const s of trimmed) sum += s[s.length + offset]?.v || 0;
+      out.push({ v: sum });
+    }
+    return out;
+  }
+
+  function avgSeries(seriesList) {
+    const summed = sumSeries(seriesList);
+    const count = seriesList.filter((s) => Array.isArray(s) && s.length > 0).length || 1;
+    return summed.map((p) => ({ v: p.v / count }));
+  }
+
+  const runningVms = $derived(vms.filter((v) => v.state === 'running'));
+  const fleetCpu = $derived(avgSeries(runningVms.map((v) => metricsByVm[v.id]?.cpu?.points)));
+  const fleetRam = $derived(avgSeries(runningVms.map((v) => metricsByVm[v.id]?.ram?.points)));
+  const fleetDisk = $derived(
+    sumSeries([
+      ...runningVms.map((v) => metricsByVm[v.id]?.disk_read?.points),
+      ...runningVms.map((v) => metricsByVm[v.id]?.disk_write?.points),
+    ])
+  );
+  const fleetNet = $derived(
+    sumSeries([
+      ...runningVms.map((v) => metricsByVm[v.id]?.net_rx?.points),
+      ...runningVms.map((v) => metricsByVm[v.id]?.net_tx?.points),
+    ])
+  );
+  const lastVal = (series) => (series.length ? series[series.length - 1].v : 0);
+
   async function openManageGroups() {
     mgError = '';
     newGroupName = '';
@@ -467,25 +536,35 @@ apt-get update -y
   }
 
   async function doBulkTag() {
-    if (!bulkTagName.trim() || selectedKeys.size === 0) return;
+    if (bulkTagNames.size === 0) return;
+    if (selectedKeys.size === 0) {
+      // Can happen if the selection got cleared (e.g. a filter change)
+      // while this dialog was open — fail loudly instead of silently
+      // doing nothing, which is exactly what looked like a bug before.
+      toast.error(t('vms.noVmsSelected'));
+      showBulkTag = false;
+      return;
+    }
     const ids = Array.from(selectedKeys);
+    const namesToAdd = Array.from(bulkTagNames);
     let ok = 0,
       fail = 0;
     for (const id of ids) {
       try {
         const m = await api.getVMMeta(id);
         const groups = new Set(Array.isArray(m.groups) ? m.groups : []);
-        groups.add(bulkTagName.trim());
+        for (const name of namesToAdd) groups.add(name);
         await api.updateVMMeta(id, { groups: Array.from(groups) });
         ok++;
       } catch (_) {
         fail++;
       }
     }
-    if (ok) toast.success(`Tagged ${ok} VM${ok !== 1 ? 's' : ''} with "${bulkTagName}"`);
+    const namesLabel = namesToAdd.map((n) => `"${n}"`).join(', ');
+    if (ok) toast.success(`Tagged ${ok} VM${ok !== 1 ? 's' : ''} with ${namesLabel}`);
     if (fail) toast.error(`${fail} failed`);
     showBulkTag = false;
-    bulkTagName = '';
+    bulkTagNames = new Set();
     selectedKeys = new Set();
     await loadVMs();
   }
@@ -499,13 +578,6 @@ apt-get update -y
   function vmDiskGB(vm) {
     return (vm.disks || []).reduce((acc, d) => acc + (d.size_gb || 0), 0) || 0;
   }
-
-  const stateColors = {
-    running: 'bg-status-running',
-    shutoff: 'bg-status-shutoff',
-    paused: 'bg-status-paused',
-    crashed: 'bg-status-crashed',
-  };
 
   // Import modal
   async function openInstantiate() {
@@ -1051,11 +1123,56 @@ apt-get update -y
   }
 </script>
 
-<div class="p-6 max-w-6xl">
+<div class="p-4 sm:p-6 max-w-6xl">
   <PageHeader
     title={t('vms.title')}
     subtitle={`${vms.length} ${vms.length === 1 ? t('vms.machine') : t('vms.machines')}`}
   />
+
+  {#if !loading && vms.length > 0}
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <StatCard label={t('vms.fleetCpu')} value={`${lastVal(fleetCpu).toFixed(0)}%`}>
+        {#snippet chart()}
+          <Chart points={fleetCpu} yMax={100} height={28} strokeWidth={1} fillOpacity={0.15} />
+        {/snippet}
+      </StatCard>
+      <StatCard label={t('vms.fleetRam')} value={`${lastVal(fleetRam).toFixed(0)}%`}>
+        {#snippet chart()}
+          <Chart
+            points={fleetRam}
+            yMax={100}
+            height={28}
+            strokeWidth={1}
+            fillOpacity={0.15}
+            color="var(--success)"
+          />
+        {/snippet}
+      </StatCard>
+      <StatCard label={t('vms.fleetDisk')} value={formatRate(lastVal(fleetDisk))}>
+        {#snippet chart()}
+          <Chart
+            points={fleetDisk}
+            height={28}
+            strokeWidth={1}
+            fillOpacity={0.15}
+            color="var(--warning)"
+          />
+        {/snippet}
+      </StatCard>
+      <StatCard label={t('vms.fleetNet')} value={formatRate(lastVal(fleetNet))}>
+        {#snippet chart()}
+          <Chart
+            points={fleetNet}
+            height={28}
+            strokeWidth={1}
+            fillOpacity={0.15}
+            color="var(--info, var(--accent))"
+          />
+        {/snippet}
+      </StatCard>
+    </div>
+  {/if}
+
   <!-- Toolbar: kept on its own row so it never overlaps the title/subtitle -->
   <div class="flex flex-wrap items-center gap-2 -mt-3 mb-4">
     <button
@@ -1100,46 +1217,37 @@ apt-get update -y
     </Button>
   </div>
 
-  {#if selectedKeys.size > 0}
-    <div
-      class="flex items-center justify-between gap-2 mb-3 px-3 py-2 border border-accent/30 bg-accent/10 rounded-md"
-    >
-      <span class="text-sm font-medium text-accent">
-        {t('vms.selected', { n: selectedKeys.size })}
-      </span>
-      <div class="flex items-center gap-1.5">
-        {#if auth.canMutate()}
-          <Button size="sm" variant="outline" onclick={() => askBulk('start')}
-            >{t('vms.start')}</Button
-          >
-          <Button size="sm" variant="outline" onclick={() => askBulk('shutdown')}
-            >{t('vms.shutdown')}</Button
-          >
-          <Button size="sm" variant="outline" onclick={() => askBulk('forceoff')}
-            >{t('vms.forceOff')}</Button
-          >
-        {/if}
-        <Button
-          size="sm"
-          variant="outline"
-          onclick={() => (
-            (showBulkTag = true),
-            (bulkTagName = groupFilter !== 'all' ? groupFilter : '')
-          )}>{t('vms.tagWithGroup')}</Button
-        >
-        {#if auth.isAdmin()}
-          <Button size="sm" variant="destructive" onclick={() => askBulk('delete')}
-            >{t('common.delete')}</Button
-          >
-        {/if}
-        <button
-          onclick={() => (selectedKeys = new Set())}
-          class="text-xs text-muted-foreground hover:text-foreground px-2 py-1"
-          >{t('vms.clear')}</button
-        >
-      </div>
-    </div>
-  {/if}
+  <BulkActionBar
+    count={selectedKeys.size}
+    actions={[
+      ...(auth.canMutate()
+        ? [
+            { key: 'start', label: t('vms.start'), onClick: () => askBulk('start') },
+            { key: 'shutdown', label: t('vms.shutdown'), onClick: () => askBulk('shutdown') },
+            { key: 'forceoff', label: t('vms.forceOff'), onClick: () => askBulk('forceoff') },
+          ]
+        : []),
+      {
+        key: 'tag',
+        label: t('vms.tagWithGroup'),
+        onClick: () => (
+          (showBulkTag = true),
+          (bulkTagNames = new Set(groupFilter !== 'all' ? [groupFilter] : []))
+        ),
+      },
+      ...(auth.isAdmin()
+        ? [
+            {
+              key: 'delete',
+              label: t('common.delete'),
+              variant: 'destructive',
+              onClick: () => askBulk('delete'),
+            },
+          ]
+        : []),
+    ]}
+    onClear={() => (selectedKeys = new Set())}
+  />
 
   {#if groups.length > 0 || stateFilter !== 'all'}
     <div class="flex items-center gap-1.5 flex-wrap mb-4">
@@ -1270,8 +1378,7 @@ apt-get update -y
             <div
               class="absolute top-2 left-2 inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-black/50 text-white text-[10px] uppercase tracking-wider backdrop-blur"
             >
-              <span class="w-1.5 h-1.5 rounded-full {stateColors[vm.state] || stateColors.crashed}"
-              ></span>
+              <span class="w-1.5 h-1.5 rounded-full {stateDotClass(vm.state)}"></span>
               {vm.state}
             </div>
             {#if selectMode}
@@ -1373,6 +1480,13 @@ apt-get update -y
                       >
                         {t('vms.clone')}
                       </button>
+                      <button
+                        type="button"
+                        class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                        onclick={() => openTagForVm(vm)}
+                      >
+                        {t('vms.tagWithGroup')}
+                      </button>
                       {#if vm.state === 'shutoff'}
                         <button
                           type="button"
@@ -1406,7 +1520,7 @@ apt-get update -y
               </span>
             </div>
             {#if vm.state === 'running' && (cpuPts.length > 0 || ramPts.length > 0)}
-              <div class="grid grid-cols-2 gap-2 pt-1.5 border-t border-border/50">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1.5 border-t border-border/50">
                 <div>
                   <div
                     class="flex items-center justify-between text-[10px] text-muted-foreground tnum mb-0.5"
@@ -1487,16 +1601,43 @@ apt-get update -y
       <Dialog.Description>{t('vms.addToGroupTitle')}</Dialog.Description>
     </Dialog.Header>
     <div class="py-2 space-y-2">
-      <label for="bulk-tag-name" class="text-sm font-medium">{t('vms.groupNameLabel')}</label>
-      <Input id="bulk-tag-name" bind:value={bulkTagName} placeholder={t('vms.groupPlaceholder')} />
-      {#if groups.length > 0}
-        <div class="flex flex-wrap gap-1">
-          {#each groups as g}
+      <span class="text-sm font-medium block">{t('vms.groupNameLabel')}</span>
+      {#if groups.length === 0}
+        <p class="text-sm text-muted-foreground">{t('vms.noGroupsCreateFirst')}</p>
+        <Button
+          size="sm"
+          variant="outline"
+          onclick={() => {
+            showBulkTag = false;
+            openManageGroups();
+          }}
+        >
+          {t('vms.manageGroups')}
+        </Button>
+      {:else}
+        <!-- Tagging can only pick existing groups (not free text) — a
+             typed name that doesn't exactly match a registered group
+             silently became an orphaned tag nothing else recognized.
+             A VM can belong to more than one group, so each chip toggles
+             independently — this adds every checked group, it doesn't
+             replace whatever groups a VM already has. -->
+        <div class="flex flex-wrap gap-1.5">
+          {#each groups as g (g.name)}
+            {@const active = bulkTagNames.has(g.name)}
             <button
-              onclick={() => (bulkTagName = g.name)}
+              onclick={() => {
+                const next = new Set(bulkTagNames);
+                if (active) next.delete(g.name);
+                else next.add(g.name);
+                bulkTagNames = next;
+              }}
               type="button"
-              class="text-xs px-2 py-0.5 rounded border"
-              style="border-color: {g.color}40; color: {g.color}"
+              class="text-xs px-2.5 py-1 rounded-full border transition-colors {active
+                ? 'border-transparent text-white'
+                : ''}"
+              style={active
+                ? `background-color: ${g.color}`
+                : `border-color: ${g.color}40; color: ${g.color}`}
             >
               {g.name}
             </button>
@@ -1506,7 +1647,7 @@ apt-get update -y
     </div>
     <Dialog.Footer>
       <Button variant="outline" onclick={() => (showBulkTag = false)}>Cancel</Button>
-      <Button disabled={!bulkTagName.trim()} onclick={doBulkTag}>Tag</Button>
+      <Button disabled={bulkTagNames.size === 0} onclick={doBulkTag}>Tag</Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
@@ -1628,7 +1769,7 @@ apt-get update -y
           {t('vmCreate.cloudInitEnable')}
         </label>
         {#if instCI}
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label class="text-xs text-muted-foreground">{t('vmCreate.cloudInitUser')}</label>
               <Input bind:value={instCIUser} placeholder="webkvm" class="w-full" />
@@ -1773,7 +1914,7 @@ apt-get update -y
                           <p class="text-[11px] text-muted-foreground mt-1.5">{app.notes}</p>
                         {/if}
                         {#if app.cloud_init_supported}
-                          <div class="grid grid-cols-2 gap-2 mt-2">
+                          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
                             <div>
                               <label class="text-[11px] text-muted-foreground">Username</label>
                               <Input
@@ -2033,7 +2174,7 @@ apt-get update -y
           <Input bind:value={appForm.id} placeholder="ubuntu-24.04" class="w-full" />
         </div>
       {/if}
-      <div class="grid grid-cols-2 gap-3">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label class="text-xs font-medium text-muted-foreground">Name</label>
           <Input bind:value={appForm.name} placeholder="Ubuntu Server" class="w-full" />
@@ -2100,7 +2241,7 @@ set -e
           script original.
         </p>
       </div>
-      <div class="grid grid-cols-3 gap-3">
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div>
           <label class="text-xs font-medium text-muted-foreground">Format</label>
           <select bind:value={appForm.format} class="input w-full">
@@ -2129,7 +2270,7 @@ set -e
           </label>
         </div>
       </div>
-      <div class="grid grid-cols-3 gap-3">
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div>
           <label class="text-xs font-medium text-muted-foreground">vCPU</label>
           <Input type="number" bind:value={appForm.vcpus} class="w-full" />

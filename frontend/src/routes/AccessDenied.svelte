@@ -6,7 +6,7 @@
   import EmptyState from '$lib/components/EmptyState.svelte';
 </script>
 
-<div class="p-6 max-w-2xl">
+<div class="p-4 sm:p-6 max-w-2xl">
   <EmptyState
     icon="empty"
     title={t('common.accessDenied')}

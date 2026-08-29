@@ -3,27 +3,85 @@
   import { auth, api } from './lib/stores/auth.svelte.js';
   import { getRoute, navigate } from './lib/router.svelte.js';
   import { events } from './lib/stores/events.svelte.js';
+  import { t } from './lib/i18n.svelte.js';
   import Login from './routes/Login.svelte';
   import Layout from './lib/components/Layout.svelte';
-  import VmList from './routes/VmList.svelte';
-  import VmDetail from './routes/VmDetail.svelte';
-  import VmCreate from './routes/VmCreate.svelte';
-  import Storage from './routes/Storage.svelte';
-  import Networks from './routes/Networks.svelte';
-  import Users from './routes/Users.svelte';
-  import Nodes from './routes/Nodes.svelte';
-  import Backup from './routes/Backup.svelte';
-  import Status from './routes/Status.svelte';
-  import HostConsole from './routes/HostConsole.svelte';
-  import Settings from './routes/Settings.svelte';
-  import Account from './routes/Account.svelte';
   import NotFound from './routes/NotFound.svelte';
   import AccessDenied from './routes/AccessDenied.svelte';
   import CommandPalette from './lib/components/CommandPalette.svelte';
   import KeyboardShortcuts from './lib/components/KeyboardShortcuts.svelte';
   import { Toaster } from './lib/components/ui/toast';
+  import Spinner from './lib/components/Spinner.svelte';
+  import { Button } from './lib/components/ui/button';
 
   const route = $derived(getRoute());
+
+  // Route pages are lazy-loaded (one chunk each) instead of bundled
+  // into the single main chunk — before this, every page's code (VM
+  // detail, storage, networks, users, backup, settings...) loaded
+  // upfront even if the user only ever visits /vms. `routeLoaders` is
+  // a static map of literal `import()` calls so Vite can statically
+  // analyze and split each one into its own chunk; NotFound/Login/
+  // Layout stay eagerly bundled since they're needed immediately or
+  // on every route.
+  const routeLoaders = {
+    vms: () => import('./routes/VmList.svelte'),
+    'vms-new': () => import('./routes/VmCreate.svelte'),
+    'vm-detail': () => import('./routes/VmDetail.svelte'),
+    storage: () => import('./routes/Storage.svelte'),
+    networks: () => import('./routes/Networks.svelte'),
+    users: () => import('./routes/Users.svelte'),
+    nodes: () => import('./routes/Nodes.svelte'),
+    snapshots: () => import('./routes/Snapshots.svelte'),
+    backup: () => import('./routes/Backup.svelte'),
+    status: () => import('./routes/Status.svelte'),
+    'host-console': () => import('./routes/HostConsole.svelte'),
+    settings: () => import('./routes/Settings.svelte'),
+    account: () => import('./routes/Account.svelte'),
+  };
+
+  // The currently-resolved page component (or null while loading /
+  // for an unknown route, which falls back to NotFound below).
+  let PageComponent = $state(null);
+  // Set if the dynamic import() itself rejects (chunk 404, network
+  // blip, etc). Without this the failure was silent: PageComponent
+  // just stayed null forever with no way to recover short of a hard
+  // reload.
+  let loadError = $state(null);
+
+  $effect(() => {
+    const loader = routeLoaders[route.name];
+    if (!loader) {
+      PageComponent = null;
+      loadError = null;
+      return;
+    }
+    let cancelled = false;
+    PageComponent = null;
+    loadError = null;
+    loader()
+      .then((m) => {
+        // Bail if the route changed again while this chunk was loading
+        // — otherwise a slow chunk for a page the user already
+        // navigated away from could clobber the current one.
+        if (!cancelled) PageComponent = m.default;
+      })
+      .catch((err) => {
+        if (!cancelled) loadError = err;
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  function retryLoad() {
+    const loader = routeLoaders[route.name];
+    if (!loader) return;
+    loadError = null;
+    loader()
+      .then((m) => (PageComponent = m.default))
+      .catch((err) => (loadError = err));
+  }
 
   // Manage SSE connection lifecycle based on auth state
   $effect(() => {
@@ -84,34 +142,19 @@
   <Layout>
     {#key route.name + (route.params.id || '')}
       <div in:fly={{ y: 6, duration: 180 }}>
-        {#if route.name === 'vms'}
-          <VmList />
-        {:else if route.name === 'vms-new'}
-          <VmCreate />
+        {#if !routeLoaders[route.name]}
+          <NotFound />
+        {:else if loadError}
+          <div class="flex flex-col items-center justify-center py-24 gap-3">
+            <p class="text-sm text-destructive">{t('layout.pageLoadFailed')}</p>
+            <Button size="sm" variant="outline" onclick={retryLoad}>{t('layout.retry')}</Button>
+          </div>
+        {:else if !PageComponent}
+          <div class="flex items-center justify-center py-24"><Spinner size="lg" /></div>
         {:else if route.name === 'vm-detail'}
-          <VmDetail vmId={route.params.id} />
-        {:else if route.name === 'storage'}
-          <Storage />
-        {:else if route.name === 'networks'}
-          <Networks />
-        {:else if route.name === 'users'}
-          <Users />
-        {:else if route.name === 'nodes'}
-          <Nodes />
-        {:else if route.name === 'backup'}
-          <Backup />
-        {:else if route.name === 'status'}
-          <Status />
-        {:else if route.name === 'host-console'}
-          <HostConsole />
-        {:else if route.name === 'settings'}
-          <Settings />
-        {:else if route.name === 'account'}
-          <Account />
-        {:else if route.name === 'not-found'}
-          <NotFound />
+          <PageComponent vmId={route.params.id} />
         {:else}
-          <NotFound />
+          <PageComponent />
         {/if}
       </div>
     {/key}

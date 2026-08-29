@@ -97,16 +97,13 @@ func (h *Handler) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	id := chiURLParam(r, "id")
 	username := r.Header.Get("X-User")
 	role := r.Header.Get("X-Role")
-	if err := h.tokens.Revoke(id, username); err != nil {
-		if role != "admin" {
-			jsonErr(w, http.StatusForbidden, err.Error())
-			return
+	if err := h.tokens.Revoke(id, username, role == "admin"); err != nil {
+		status := http.StatusForbidden
+		if role == "admin" {
+			status = http.StatusNotFound
 		}
-		// Admin can force.
-		if err2 := h.tokens.Revoke(id, ""); err2 != nil {
-			jsonErr(w, http.StatusNotFound, err2.Error())
-			return
-		}
+		jsonErr(w, status, err.Error())
+		return
 	}
 	if h.audit != nil {
 		h.audit.Log(auditFor(r, "token.revoke", id, nil))
@@ -123,7 +120,7 @@ func (h *Handler) DeleteToken(w http.ResponseWriter, r *http.Request) {
 	id := chiURLParam(r, "id")
 	username := r.Header.Get("X-User")
 	role := r.Header.Get("X-Role")
-	if err := h.tokens.Delete(id, username); err != nil && role != "admin" {
+	if err := h.tokens.Delete(id, username, role == "admin"); err != nil {
 		jsonErr(w, http.StatusForbidden, err.Error())
 		return
 	}

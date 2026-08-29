@@ -1,5 +1,14 @@
 @import 'tailwindcss';
 
+/* Self-hosted Inter (weights used by the heading/body scale below) —
+   bundled via Vite/embedded in the binary like everything else, not
+   hotlinked to Google Fonts: WebKVM ships as a single offline binary
+   with no guaranteed internet access at runtime. */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
@@ -215,6 +224,22 @@
   border-radius: 9999px;
   display: inline-block;
   flex-shrink: 0;
+}
+
+/* Divider that fades to transparent at both ends instead of a hard
+   edge. Used sparingly (sidebar rail-mode section separators, the
+   Fleet stat-card row divider) — not a wholesale replacement for
+   border-border, which stays the default everywhere else. */
+.fade-rule {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--border) 15%,
+    var(--border) 85%,
+    transparent
+  );
 }
 
 /* Backwards-compat for any leftover class references during migration.

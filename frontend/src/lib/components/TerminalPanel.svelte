@@ -46,6 +46,12 @@
     if (status === 'connecting') return;
     status = 'connecting';
     try {
+      // Must run before building the URL below — the host-mode branch
+      // reads term.cols/term.rows, and term is only created here. It
+      // used to run after, so term was still null and every host
+      // console connection failed with "can't access property 'cols',
+      // term is null".
+      initTerm();
       let url;
       if (mode === 'host') {
         const r = await api.getHostTerminalTicket();
@@ -54,7 +60,6 @@
         const r = await api.getConsoleTicket(vmId);
         url = `${wsBase()}/api/vms/${encodeURIComponent(vmId)}/serial?ticket=${encodeURIComponent(r.ticket)}`;
       }
-      initTerm();
       openedThisAttempt = true;
       ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
@@ -63,7 +68,7 @@
         showedDisconnect = false;
         failedAttempts = 0;
         term.focus();
-        fit();
+        fit(sendResize);
       };
       ws.onmessage = (e) => {
         // Server sends text frames for serial; binary-safe anyway.
@@ -144,13 +149,22 @@
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
     });
     ro = new ResizeObserver(() => {
-      fit();
-      sendResize();
+      fit(sendResize);
     });
     ro.observe(container);
   }
 
-  function fit() {
+  // onDone fires *after* fitAddon.fit() actually resizes the terminal.
+  // Callers that need the post-fit term.cols/term.rows (sendResize)
+  // must pass it in rather than calling it right after fit() returns:
+  // fit()'s real work happens inside a requestAnimationFrame callback,
+  // so term.cols/term.rows are still the pre-resize values at the
+  // point fit() itself returns. Reading them synchronously right after
+  // (the previous code) always sent the PTY a stale size — one resize
+  // behind, or the library's 80x24 default if nothing had resized yet
+  // — which is exactly the kind of size mismatch that makes fullscreen
+  // TUIs like btop draw at the wrong dimensions and garble.
+  function fit(onDone) {
     // Guard: never fit into a zero-sized container (breaks xterm renderer
     // and leaves giant glyphs after leaving fullscreen).
     if (mode === 'vm') return; // fixed guest grid
@@ -164,6 +178,7 @@
       } catch (_e) {
         // ignore transient fit errors during layout transitions
       }
+      onDone?.();
     });
   }
 
@@ -177,10 +192,12 @@
   function toggleFullscreen() {
     fullscreen = !fullscreen;
     // Re-fit at several points while the layout transition settles,
-    // otherwise the terminal keeps stale dimensions (huge glyphs).
-    setTimeout(fit, 50);
-    setTimeout(fit, 150);
-    setTimeout(fit, 300);
+    // otherwise the terminal keeps stale dimensions (huge glyphs) —
+    // and tell the PTY about each corrected size once it's actually
+    // computed, or the guest keeps drawing at the old geometry.
+    setTimeout(() => fit(sendResize), 50);
+    setTimeout(() => fit(sendResize), 150);
+    setTimeout(() => fit(sendResize), 300);
   }
 
   // Hard restart of the console: drops the WebSocket, clears any

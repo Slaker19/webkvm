@@ -436,10 +436,11 @@ func (h *Handler) ApplyLiveSettings(w http.ResponseWriter, r *http.Request) {
 			// do here. We still report them as applied so the UI
 			// stops showing the "live values" badge.
 			applied = append(applied, k)
-		case "auth.token_ttl", "auth.allow_api_tokens", "server.trust_proxy":
+		case "auth.token_ttl", "auth.allow_api_tokens", "server.trust_proxy", "server.trusted_cidrs":
 			// TokenTTL/AllowAPITokens are read per-request by the
-			// auth.Manager; trust_proxy is read per-request by the
-			// rate limiter. Nothing to do here either.
+			// auth.Manager; trust_proxy/trusted_cidrs are read
+			// per-request by the rate limiter and the client-IP
+			// resolver. Nothing to do here either.
 			applied = append(applied, k)
 		}
 	}

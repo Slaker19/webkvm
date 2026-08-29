@@ -227,6 +227,24 @@ canvas{display:block;margin:auto}
 #panel .pbody .irow{display:flex;justify-content:space-between;padding:5px 0;font-size:12px}
 #panel .pbody .irow .ilabel{color:#64748b}
 #panel .pbody .irow .ivalue{color:#94a3b8;font-family:monospace;font-size:11px}
+#panel .pbody .srow.vertical{flex-direction:column;align-items:stretch;gap:6px}
+#panel .pbody .srange{-webkit-appearance:none;appearance:none;width:100%%;height:4px;border-radius:2px;background:rgba(148,163,184,.15);outline:none}
+#panel .pbody .srange::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%%;background:var(--indigo-400);cursor:pointer;box-shadow:0 0 6px rgba(99,102,241,.4)}
+#panel .pbody .srange::-moz-range-thumb{width:14px;height:14px;border-radius:50%%;border:none;background:var(--indigo-400);cursor:pointer;box-shadow:0 0 6px rgba(99,102,241,.4)}
+#panel .pbody .pbtn{display:flex;align-items:center;gap:10px;width:100%%;padding:9px 12px;margin-bottom:4px;border:1px solid rgba(148,163,184,.08);border-radius:8px;background:rgba(255,255,255,.03);color:#94a3b8;cursor:pointer;font:12px/1 system-ui,sans-serif;transition:all .12s}
+#panel .pbody .pbtn:hover{background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.2);color:#e2e8f0}
+#panel .pbody .pbtn.danger:hover{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.25);color:#fca5a5}
+#panel .pbody .pconfirm{display:flex;align-items:center;gap:8px;padding:8px 12px;margin-bottom:4px;border-radius:8px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);font-size:11px;color:#fca5a5}
+#panel .pbody .pconfirm button{border:none;border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer}
+#panel .pbody .pconfirm .pyes{background:#ef4444;color:#fff}
+#panel .pbody .pconfirm .pno{background:rgba(148,163,184,.15);color:#e2e8f0}
+/* touch-friendly targets on coarse pointers (tablets/phones) */
+@media (pointer:coarse){
+#sidebar button{width:46px;height:46px}
+#sidebar button svg{width:22px;height:22px}
+#panel{width:300px}
+#panel .pbody .kbtn,#panel .pbody .pbtn{padding:12px}
+}
 /* ---- status ---- */
 #status{position:fixed;bottom:20px;right:20px;padding:6px 14px 6px 10px;border-radius:20px;font:11px/1.4 monospace;color:#94a3b8;background:rgba(2,6,23,.7);backdrop-filter:blur(8px);border:1px solid rgba(99,102,241,.08);pointer-events:none;transition:all .3s;display:flex;align-items:center;gap:6px}
 #status .dot{width:6px;height:6px;border-radius:50%%;flex-shrink:0}
@@ -251,6 +269,9 @@ canvas{display:block;margin:auto}
   </button>
   <button id="btnToggleInfo" title="Connection info">
     <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+  </button>
+  <button id="btnTogglePower" title="Power">
+    <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg>
   </button>
   <div class="sep"></div>
   <button id="btnReconnect" class="reconnect" title="Reconnect" style="display:none">
@@ -277,11 +298,17 @@ window.onpopstate = function () {
 var host = window.location.hostname;
 var port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
 var wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-// The console page is opened with ?token=<jwt> (new tabs can't set
-// headers); propagate it into the WebSocket URL so the proxy accepts it.
-var url = wsProto + '//' + host + ':' + port + '/api/vms/%s/vnc?token=' + encodeURIComponent(new URLSearchParams(window.location.search).get('token') || '');
+// The console page is opened with ?vt=<ticket> (new tabs can't set
+// headers). Unlike a JWT this ticket is scoped to this one VM and to
+// a short list of endpoints (see vncTicketAllowedPath server-side),
+// and expires in an hour instead of the whole login session — but it
+// stays valid for reconnects and the power actions below, since it
+// isn't burned on first use like the serial console's ticket is.
+var vt = new URLSearchParams(window.location.search).get('vt') || '';
+var url = wsProto + '//' + host + ':' + port + '/api/vms/%s/vnc?vt=' + encodeURIComponent(vt);
 
 var rfb = null, connected = false, activePanel = null, vmId = '%s';
+var reconnectAttempts = 0, everConnected = false, autoRetry = true;
 var statusEl = document.getElementById('status');
 var sidebar = document.getElementById('sidebar');
 var panel = document.getElementById('panel');
@@ -361,7 +388,7 @@ document.addEventListener('keydown', function (e) {
         if (txt && txt !== lastClipText) {
             lastClipText = txt;
             var x = new XMLHttpRequest();
-            x.open('POST', '/api/vms/' + vmId + '/clipboard', true);
+            x.open('POST', '/api/vms/' + vmId + '/clipboard?vt=' + encodeURIComponent(vt), true);
             x.setRequestHeader('Content-Type', 'application/json');
             x.onloadend = function () { doPaste(ctrlSym, ctrlCode); };
             x.send(JSON.stringify({text: txt}));
@@ -385,14 +412,29 @@ document.addEventListener('keydown', function (e) {
 /* ---- settings panel ---- */
 document.getElementById('btnToggleSettings').onclick = function () {
     if (activePanel === 'settings') { closePanel(); return; }
+    var q = rfb ? rfb.qualityLevel : 6, c = rfb ? rfb.compressionLevel : 2;
     var settingsHtml =
       '<div class="srow"><div><div class="slabel">Scale viewport</div><div class="sdesc">Fit remote to screen</div></div><div class="stoggle on" id="togScale"><div class="knob"></div></div></div>' +
       '<div class="srow"><div><div class="slabel">Clip viewport</div><div class="sdesc">Show scrollbars when scaled</div></div><div class="stoggle on" id="togClip"><div class="knob"></div></div></div>' +
-      '<div class="srow"><div><div class="slabel">Resize session</div><div class="sdesc">Remote resizes with window</div></div><div class="stoggle" id="togResize"><div class="knob"></div></div></div>';
+      '<div class="srow"><div><div class="slabel">Resize session</div><div class="sdesc">Remote resizes with window</div></div><div class="stoggle" id="togResize"><div class="knob"></div></div></div>' +
+      '<div class="srow"><div><div class="slabel">Dot cursor</div><div class="sdesc">Fallback cursor if the guest draws none</div></div><div class="stoggle" id="togDotCursor"><div class="knob"></div></div></div>' +
+      '<div class="srow vertical"><div class="slabel">Image quality <span id="qualityVal">' + q + '</span>/9</div><input type="range" class="srange" id="rngQuality" min="0" max="9" step="1" value="' + q + '"></div>' +
+      '<div class="srow vertical"><div class="slabel">Compression <span id="compressionVal">' + c + '</span>/9</div><input type="range" class="srange" id="rngCompression" min="0" max="9" step="1" value="' + c + '"></div>';
     openPanel('settings', 'Settings', settingsHtml);
     setupToggle('togScale', function (on) { if (rfb) rfb.scaleViewport = on; });
     setupToggle('togClip', function (on) { if (rfb) rfb.clipViewport = on; });
     setupToggle('togResize', function (on) { if (rfb) rfb.resizeSession = on; });
+    setupToggle('togDotCursor', function (on) { if (rfb) rfb.showDotCursor = on; });
+    var rq = document.getElementById('rngQuality');
+    rq.oninput = function () {
+        document.getElementById('qualityVal').textContent = rq.value;
+        if (rfb) rfb.qualityLevel = parseInt(rq.value, 10);
+    };
+    var rc = document.getElementById('rngCompression');
+    rc.oninput = function () {
+        document.getElementById('compressionVal').textContent = rc.value;
+        if (rfb) rfb.compressionLevel = parseInt(rc.value, 10);
+    };
 };
 
 function setupToggle(id, callback) {
@@ -402,6 +444,7 @@ function setupToggle(id, callback) {
         if (id === 'togScale') el.classList.toggle('on', rfb.scaleViewport);
         if (id === 'togClip') el.classList.toggle('on', rfb.clipViewport);
         if (id === 'togResize') el.classList.toggle('on', rfb.resizeSession);
+        if (id === 'togDotCursor') el.classList.toggle('on', rfb.showDotCursor);
     }
     el.onclick = function () {
         el.classList.toggle('on');
@@ -429,6 +472,34 @@ document.getElementById('btnToggleInfo').onclick = function () {
     }
 };
 
+/* ---- power panel ---- */
+function powerAction(action) {
+    var x = new XMLHttpRequest();
+    x.open('POST', '/api/vms/' + vmId + '/' + action + '?vt=' + encodeURIComponent(vt), true);
+    x.send();
+}
+
+document.getElementById('btnTogglePower').onclick = function () {
+    if (activePanel === 'power') { closePanel(); return; }
+    var powerHtml =
+      '<div class="pbtn" data-action="reboot"><div class="kicon"><svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" width="14" height="14"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v6h-6"/></svg></div><span class="klabel">Reboot</span></div>' +
+      '<div class="pbtn" data-action="shutdown"><div class="kicon"><svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" width="14" height="14"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg></div><span class="klabel">Shutdown</span></div>' +
+      '<div class="pbtn danger" data-action="forceoff"><div class="kicon"><svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg></div><span class="klabel">Force off</span></div>' +
+      '<div id="powerConfirmSlot"></div>';
+    openPanel('power', 'Power', powerHtml);
+    panelBody.querySelectorAll('.pbtn').forEach(function (btn) {
+        btn.onclick = function () {
+            var action = btn.getAttribute('data-action');
+            var slot = document.getElementById('powerConfirmSlot');
+            slot.innerHTML =
+              '<div class="pconfirm"><span style="flex:1">' + (action === 'forceoff' ? 'Force off may cause data loss.' : 'Are you sure?') + '</span>' +
+              '<button class="pno">Cancel</button><button class="pyes">Confirm</button></div>';
+            slot.querySelector('.pno').onclick = function () { slot.innerHTML = ''; };
+            slot.querySelector('.pyes').onclick = function () { powerAction(action); slot.innerHTML = ''; };
+        };
+    });
+};
+
 /* ---- close panel ---- */
 document.getElementById('panelClose').onclick = closePanel;
 
@@ -441,6 +512,8 @@ function connect() {
     });
     rfb.addEventListener('connect', function () {
         connected = true;
+        everConnected = true;
+        reconnectAttempts = 0;
         updateStatus('ok', 'Connected');
         document.getElementById('btnReconnect').style.display = 'none';
         if (activePanel === 'info') {
@@ -454,14 +527,27 @@ function connect() {
         updateStatus('error', 'Disconnected');
         document.getElementById('btnReconnect').style.display = '';
         if (activePanel === 'info') document.getElementById('infoStatus').textContent = 'Disconnected';
+        if (autoRetry) {
+            reconnectAttempts++;
+            // Never connected even once and already retried a few times:
+            // most likely the VM is off or the ticket has expired — stop
+            // spamming reconnects and let the visible button take over.
+            if (!everConnected && reconnectAttempts >= 5) return;
+            var wait = Math.min(2000 * Math.pow(2, reconnectAttempts - 1), 10000);
+            updateStatus('connecting', 'Reconnecting in ' + Math.round(wait / 1000) + 's');
+            setTimeout(function () { if (autoRetry) connect(); }, wait);
+        }
     });
     rfb.addEventListener('clipboard', function (e) { syncClipToHost(e.detail.text); });    rfb.scaleViewport = true;
     rfb.resizeSession = false;
     rfb.clipViewport = true;
+    rfb.showDotCursor = false;
 }
 
 document.getElementById('btnReconnect').onclick = function () {
     this.style.display = 'none';
+    reconnectAttempts = 0;
+    autoRetry = true;
     connect();
 };
 
@@ -487,6 +573,15 @@ sidebar.addEventListener('mouseleave', function () {
         sidebarTimer = setTimeout(function () { sidebar.classList.remove('visible'); }, 1000);
     }
 });
+// Touch devices have no hover/mousemove — a tap anywhere shows the
+// sidebar for a few seconds instead of it staying hidden forever.
+document.addEventListener('touchstart', function () {
+    sidebar.classList.add('visible');
+    clearTimeout(sidebarTimer);
+    sidebarTimer = setTimeout(function () {
+        if (!activePanel) sidebar.classList.remove('visible');
+    }, 3000);
+}, { passive: true });
 
 function toggleFullscreen() {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen();

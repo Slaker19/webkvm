@@ -20,6 +20,7 @@ func staticRouter() http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=31536000")
 		w.Write(data)
 	})
 

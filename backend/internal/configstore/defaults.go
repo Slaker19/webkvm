@@ -55,6 +55,15 @@ func DefaultSchema() Schema {
 			HotReload:   true,
 		},
 		{
+			Key:         "server.trusted_cidrs",
+			Section:     "Server",
+			Label:       "Trusted proxy CIDRs",
+			Description: "Source IPs allowed to set X-Forwarded-For when Trust X-Forwarded-For is on, and allowed to bypass the login rate limiter (loopback is always included in both). Comma-free list, e.g. [\"10.0.0.0/8\"]. Leave empty unless your reverse proxy connects from a non-loopback address. Applies immediately.",
+			Type:        FieldList,
+			Default:     []string{},
+			HotReload:   true,
+		},
+		{
 			Key:         "server.tls_cert",
 			Section:     "Server",
 			Label:       "TLS certificate",

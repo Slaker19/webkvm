@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -100,6 +101,98 @@ func (l *Logger) Log(e Entry) {
 	}
 	_ = json.NewEncoder(l.w).Encode(e)
 	_ = l.w.Flush()
+}
+
+// ListOptions filters List's results. All fields are optional; a zero
+// value matches everything. Q is a case-insensitive substring match
+// across user/role/action/resource/ip/error; User and Action require
+// an exact match.
+type ListOptions struct {
+	Q      string
+	User   string
+	Action string
+}
+
+// List returns entries matching opts, newest first, with offset/limit
+// paging applied after filtering (so `total` reflects the filtered
+// count, not the whole log). It re-reads the log file(s) from disk on
+// every call — audit.log is capped at 10MB by rotation (plus one .1
+// backup), so a full parse is cheap even on a long-running install.
+func (l *Logger) List(opts ListOptions, limit, offset int) (entries []Entry, total int, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.w != nil {
+		if err := l.w.Flush(); err != nil {
+			return nil, 0, err
+		}
+	}
+
+	var all []Entry
+	for _, p := range []string{l.path + ".1", l.path} {
+		es, ferr := readEntries(p)
+		if ferr != nil && !os.IsNotExist(ferr) {
+			return nil, 0, ferr
+		}
+		all = append(all, es...)
+	}
+	// Newest first.
+	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
+		all[i], all[j] = all[j], all[i]
+	}
+
+	q := strings.ToLower(opts.Q)
+	filtered := all[:0]
+	for _, e := range all {
+		if opts.User != "" && e.User != opts.User {
+			continue
+		}
+		if opts.Action != "" && e.Action != opts.Action {
+			continue
+		}
+		if q != "" && !matchesQ(e, q) {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+
+	total = len(filtered)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	end := total
+	if limit > 0 && offset+limit < total {
+		end = offset + limit
+	}
+	return filtered[offset:end], total, nil
+}
+
+func matchesQ(e Entry, lowerQ string) bool {
+	return strings.Contains(strings.ToLower(e.User), lowerQ) ||
+		strings.Contains(strings.ToLower(e.Action), lowerQ) ||
+		strings.Contains(strings.ToLower(e.Resource), lowerQ) ||
+		strings.Contains(strings.ToLower(e.IP), lowerQ) ||
+		strings.Contains(strings.ToLower(e.Error), lowerQ)
+}
+
+func readEntries(path string) ([]Entry, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var out []Entry
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for scanner.Scan() {
+		var e Entry
+		if err := json.Unmarshal(scanner.Bytes(), &e); err == nil {
+			out = append(out, e)
+		}
+	}
+	return out, scanner.Err()
 }
 
 // FromRequest extracts a best-effort user/role/ip tuple from r.

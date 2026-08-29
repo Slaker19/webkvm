@@ -36,6 +36,29 @@ var (
 )
 
 func main() {
+	// version / --version: print the build-time -ldflags version (the
+	// binary is distributed pre-built, not compiled by the installer —
+	// see install.sh) and exit immediately, before any config/libvirt
+	// setup. update.sh relies on this to report what it's upgrading
+	// from/to; without it, "webkvm version" would fall through to a
+	// full second server instance that just fails to bind the port
+	// already held by the running one.
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
+		version, buildTime := Version, BuildTime
+		if version == "dev" {
+			if v := os.Getenv("WEBKVM_VERSION"); v != "" {
+				version = v
+			}
+		}
+		if buildTime == "unknown" {
+			if v := os.Getenv("WEBKVM_BUILD_TIME"); v != "" {
+				buildTime = v
+			}
+		}
+		fmt.Printf("webkvm %s (built %s)\n", version, buildTime)
+		return
+	}
+
 	// --fix-perms: one-shot CLI helper that chmod 0644 every disk
 	// file in every active storage pool so a non-root backend can
 	// read them. Requires root (the binary is invoked via sudo).

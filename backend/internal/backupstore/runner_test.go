@@ -551,6 +551,54 @@ func TestRestoreBackupRejectsDeniedPath(t *testing.T) {
 	}
 }
 
+// TestRestoreBackupRejectsTarSlip is a regression test for the
+// "tar-slip" path-traversal fix: an archive member whose name escapes
+// the extraction directory (here, via "..") must be rejected before
+// any extraction happens, and must not leave anything written outside
+// destDir. Without validateTarMembers, GNU tar would happily create
+// this file wherever "../../evil.txt" resolves to relative to destDir.
+func TestRestoreBackupRejectsTarSlip(t *testing.T) {
+	src := t.TempDir()
+	dataDir := t.TempDir()
+	tgtPath := filepath.Join(src, "default")
+	if err := os.MkdirAll(tgtPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tarPath := filepath.Join(tgtPath, "webkvm-x-20260101T000000Z.tar.gz")
+	if err := buildTinyTar(tarPath, "../../evil.txt", []byte("pwned")); err != nil {
+		t.Fatal(err)
+	}
+	tgt := Target{ID: "t", Name: "t", Path: tgtPath, Type: TargetLocal, Enabled: true}
+	_, err := RestoreBackup(context.Background(), tgt, "webkvm-x-20260101T000000Z.tar.gz", dataDir)
+	if err == nil {
+		t.Fatal("expected RestoreBackup to reject a tar-slip archive member")
+	}
+	// Nothing should have escaped dataDir's parent tree.
+	if _, statErr := os.Stat(filepath.Join(filepath.Dir(dataDir), "evil.txt")); statErr == nil {
+		t.Fatal("tar-slip member was written outside the restore directory")
+	}
+}
+
+// TestRestoreBackupRejectsAbsoluteTarMember covers the other
+// tar-slip variant: an absolute path in the archive.
+func TestRestoreBackupRejectsAbsoluteTarMember(t *testing.T) {
+	src := t.TempDir()
+	dataDir := t.TempDir()
+	tgtPath := filepath.Join(src, "default")
+	if err := os.MkdirAll(tgtPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tarPath := filepath.Join(tgtPath, "webkvm-x-20260101T000000Z.tar.gz")
+	if err := buildTinyTar(tarPath, "/etc/evil.txt", []byte("pwned")); err != nil {
+		t.Fatal(err)
+	}
+	tgt := Target{ID: "t", Name: "t", Path: tgtPath, Type: TargetLocal, Enabled: true}
+	_, err := RestoreBackup(context.Background(), tgt, "webkvm-x-20260101T000000Z.tar.gz", dataDir)
+	if err == nil {
+		t.Fatal("expected RestoreBackup to reject an absolute-path archive member")
+	}
+}
+
 // TestRestoreBackupReturnsResult is a tiny sanity check
 // that the new return type (RestoreResult, not string)
 // is wired correctly. Builds a 1-byte tar.gz, calls

@@ -16,20 +16,16 @@
    * @property {string | import('svelte').Snippet} value
    * @property {string} [hint]
    * @property {StatusKind} [status]
+   * @property {import('svelte').Snippet} [chart] - optional sparkline
+   *   (or any small visual) rendered below the hint line.
    */
 
-  /** @type {Props} */
-  let { label, value, hint = '', status = 'info' } = $props();
+  import { stateDotClass } from '$lib/utils/vmState.js';
 
-  const dotClass = $derived(
-    {
-      running: 'bg-status-running',
-      paused: 'bg-status-paused',
-      shutoff: 'bg-status-shutoff',
-      crashed: 'bg-status-crashed',
-      info: 'bg-muted-foreground',
-    }[status] || 'bg-muted-foreground'
-  );
+  /** @type {Props} */
+  let { label, value, hint = '', status = 'info', chart } = $props();
+
+  const dotClass = $derived(status === 'info' ? 'bg-muted-foreground' : stateDotClass(status));
 </script>
 
 <div
@@ -48,5 +44,8 @@
   </div>
   {#if hint}
     <div class="text-xs text-muted-foreground mt-1">{hint}</div>
+  {/if}
+  {#if chart}
+    <div class="mt-2">{@render chart()}</div>
   {/if}
 </div>

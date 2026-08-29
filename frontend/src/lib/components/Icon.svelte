@@ -52,6 +52,14 @@
     Camera,
     Save,
     HelpCircle,
+    PanelLeft,
+    Clock,
+    Disc,
+    Lock,
+    Zap,
+    ArrowRight,
+    Shield,
+    FileText,
   } from '@lucide/svelte';
 
   const registry = {
@@ -93,6 +101,14 @@
     camera: Camera,
     save: Save,
     help: HelpCircle,
+    panelLeft: PanelLeft,
+    clock: Clock,
+    disc: Disc,
+    lock: Lock,
+    zap: Zap,
+    arrowRight: ArrowRight,
+    shield: Shield,
+    fileText: FileText,
   };
 
   let { name, size = 16, class: className = '' } = $props();

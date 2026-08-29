@@ -2,20 +2,81 @@ package backupstore
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
+
+// pinnedHostKeys implements trust-on-first-use (TOFU) host key
+// verification for SFTP backup targets, scoped to this process's
+// lifetime (it is intentionally NOT persisted to disk — see
+// hostKeyCallbackFor). Keyed by target ID.
+var (
+	pinnedHostKeysMu sync.Mutex
+	pinnedHostKeys   = map[string]string{}
+)
+
+// hostKeyCallbackFor returns a TOFU HostKeyCallback for tgt: the first
+// successful connection to this target ID in the current process's
+// lifetime pins the presented key's SHA256 fingerprint, and every
+// later connection to the same target must present the same key or
+// the dial is refused.
+//
+// This narrows, but does not eliminate, the window for an on-path
+// attacker to silently impersonate a configured SFTP target: plain
+// ssh.InsecureIgnoreHostKey() accepts whatever key is presented on
+// EVERY connection, so a MITM active for even one backup/restore run
+// goes completely undetected and can swap in an arbitrary archive for
+// a later restore. Pinning only in memory (not to the target's
+// on-disk config) means an attacker who can force a webkvm restart
+// still gets a fresh trust-on-first-use window — full protection
+// would require the operator to record and manage the expected key
+// out-of-band (e.g. via known_hosts), which is a bigger workflow
+// change than this fix takes on — but it turns a permanent blind
+// spot into one bounded by the process's uptime.
+//
+// tgt.ID is empty for the ad-hoc "Test connection" dial (the target
+// isn't saved yet), so that path is intentionally left unpinned —
+// each test may reasonably target a different, not-yet-configured
+// host.
+func hostKeyCallbackFor(tgt Target) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		if tgt.ID == "" {
+			return nil
+		}
+		sum := sha256.Sum256(key.Marshal())
+		fp := "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:])
+
+		pinnedHostKeysMu.Lock()
+		defer pinnedHostKeysMu.Unlock()
+		if existing, ok := pinnedHostKeys[tgt.ID]; ok {
+			if existing != fp {
+				return fmt.Errorf("SFTP host key for target %q changed since the last connection in this session "+
+					"(expected %s, got %s from %s) — refusing to connect; this could mean the server was "+
+					"reprovisioned, or something is impersonating it. Restart webkvm to accept the new key "+
+					"if this change is expected", tgt.ID, existing, fp, hostname)
+			}
+			return nil
+		}
+		pinnedHostKeys[tgt.ID] = fp
+		slog.Warn("sftp_host_key_pinned", "target", tgt.ID, "host", hostname, "fingerprint", fp,
+			"msg", "no host key was pinned yet for this SFTP backup target; trusting the key presented on this first connection (trust-on-first-use, valid for this process's uptime)")
+		return nil
+	}
+}
 
 // TestSFTP dials a candidate SFTP destination (before it is saved)
 // and returns a human message. Used by the "Test" button in the Add
@@ -69,9 +130,10 @@ func dialSFTP(tgt Target) (*sftp.Client, *ssh.Client, error) {
 	cfg := &ssh.ClientConfig{
 		User: tgt.Username,
 		Auth: authMethods,
-		// lgtm[go/insecure-hostkeycallback] - homelab SFTP target: operator verifies host key out-of-band;
-		// strict verification would require known_hosts management which is out of scope for homelab.
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		// Trust-on-first-use, pinned per target ID for this process's
+		// uptime — see hostKeyCallbackFor's doc comment for the
+		// threat model and its limits.
+		HostKeyCallback: hostKeyCallbackFor(tgt),
 		Timeout:         15 * time.Second,
 	}
 	addr := fmt.Sprintf("%s:%d", tgt.Host, port)

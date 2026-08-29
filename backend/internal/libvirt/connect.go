@@ -78,12 +78,22 @@ func (c *Connector) IsConnected() bool {
 	return err == nil && alive
 }
 
+// Open establishes the libvirt connection. Idempotent: if a connection
+// (even a dead one) is already held, it's closed first — this is what
+// lets ensureConnected below call Open again to recover from a
+// mid-runtime drop, not just the initial connect.
 func (c *Connector) Open() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+
 	// The event loop must exist BEFORE the first connection so domain
-	// event callbacks can register against it.
+	// event callbacks can register against it. ensureEventLoop is a
+	// sync.Once, so re-running Open() after a later drop is a no-op here.
 	ensureEventLoop(slog.Default())
 
 	conn, err := libvirt.NewConnect(c.uri)
@@ -361,13 +371,28 @@ func defaultRouteInterface() (string, error) {
 	return "", fmt.Errorf("no default route found in /proc/net/route")
 }
 
+// ensureConnected reports whether the connection is usable, reconnecting
+// first if it isn't. Before this, a connection that dropped *after* a
+// successful initial connect (libvirtd restarted/crashed, a remote URI's
+// network blipped, ...) was permanent: nothing ever called Open() again
+// outside of server startup, so every request failed with "libvirt
+// connection lost" until the whole webkvm process was restarted. Now
+// any call site that already invokes ensureConnected/EnsureConnected
+// (i.e. nearly every VM/pool/network handler) doubles as a retry point.
 func (c *Connector) ensureConnected() error {
-	if c.conn == nil {
-		return fmt.Errorf("not connected to libvirt")
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn != nil {
+		if alive, err := conn.IsAlive(); err == nil && alive {
+			return nil
+		}
 	}
-	alive, err := c.conn.IsAlive()
-	if err != nil || !alive {
-		return fmt.Errorf("libvirt connection lost")
+
+	if err := c.Open(); err != nil {
+		return fmt.Errorf("libvirt connection lost: %w", err)
 	}
+	slog.Info("libvirt_reconnected")
 	return nil
 }

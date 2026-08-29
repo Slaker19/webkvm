@@ -9,20 +9,27 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/creack/pty"
 	"github.com/go-chi/chi/v5"
-	lv "github.com/libvirt/libvirt-go"
 	"github.com/gorilla/websocket"
+	lv "github.com/libvirt/libvirt-go"
 
 	"webkvm/internal/audit"
 	"webkvm/internal/auth"
 	"webkvm/internal/libvirt"
 	"webkvm/internal/models"
 )
+
+// serialSessions tracks the currently active SerialProxy WebSocket
+// per VM ID (vmID string -> *websocket.Conn), so a new connection can
+// force out a stale one instead of the two perpetually fighting over
+// the single libvirt console slot.
+var serialSessions sync.Map
 
 // SerialProxy upgrades the HTTP connection to a WebSocket and pipes
 // it to the VM's serial console via virDomainOpenConsole.
@@ -40,6 +47,19 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 	ws.SetReadLimit(1 << 20)
+
+	// libvirt only allows one active console reader per domain. A
+	// stale session (a second tab, or a browser that dropped without
+	// a clean close handshake) would otherwise fight this one for the
+	// console forever: each side's retry loop kicks the other out,
+	// re-acquires, and logs a false "resumed after reboot" — visible
+	// as that message repeating nonstop with no actual reboot behind
+	// it. Newest viewer wins: force-close whatever session is
+	// currently registered for this VM before proceeding.
+	if old, loaded := serialSessions.Swap(id, ws); loaded {
+		_ = old.(*websocket.Conn).Close()
+	}
+	defer serialSessions.CompareAndDelete(id, ws)
 
 	grace := 30 * time.Second // covers a full guest reboot cycle
 	deadline := time.Now().Add(grace)
@@ -348,6 +368,24 @@ func (h *Handler) VMConsoleTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResp(w, http.StatusOK, map[string]any{"ticket": tk, "expires_in": 30})
+}
+
+// VNCTicket issues a reusable, VM-scoped ticket for the noVNC console
+// (see auth.IssueVNCTicket for why it differs from VMConsoleTicket's
+// single-use ticket). Same ownership gate as the /vnc route itself.
+func (h *Handler) VNCTicket(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if _, err := h.lv.GetDomain(id); err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	user, role, _ := audit.FromRequest(r)
+	tk, err := auth.IssueVNCTicket(user, role, id)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "issue ticket: "+err.Error())
+		return
+	}
+	jsonResp(w, http.StatusOK, map[string]any{"vnc_ticket": tk, "expires_in": int(auth.VNCTicketTTL.Seconds())})
 }
 
 // HostTerminalTicket issues a single-use ticket for the embedded host

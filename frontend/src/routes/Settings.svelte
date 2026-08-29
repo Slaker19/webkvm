@@ -148,7 +148,7 @@
   ]);
 </script>
 
-<div class="p-6 max-w-4xl">
+<div class="p-4 sm:p-6 max-w-4xl">
   <PageHeader title={t('settings.title')} subtitle={t('settings.subtitle', { n: sections.length })}>
     {#snippet actions()}
       {#if isDirty}

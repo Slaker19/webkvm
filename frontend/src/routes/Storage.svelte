@@ -4,6 +4,8 @@
   import Spinner from '$lib/components/Spinner.svelte';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
+  import Icon from '$lib/components/Icon.svelte';
+  import StatCard from '$lib/components/StatCard.svelte';
   import { formatBytes } from '$lib/format.js';
   import { upsertTask, updateTask, finishTask } from '$lib/stores/tasks.svelte.js';
   import { onMount } from 'svelte';
@@ -15,7 +17,7 @@
   import ErrorModal from '$lib/components/ErrorModal.svelte';
   import * as Dialog from '$lib/components/ui/dialog';
   import { navigate } from '$lib/router.svelte.js';
-  import { t } from '../lib/i18n.svelte.js';
+  import { t, htmlVar } from '../lib/i18n.svelte.js';
 
   let pools = $state([]);
   let volumes = $state([]);
@@ -25,6 +27,8 @@
   let isos = $state([]);
   let uploading = $state(false);
   let uploadProgress = $state(0);
+  let uploadingDisk = $state(false);
+  let uploadDiskProgress = $state(0);
   let downloadProgress = $state(0);
   let downloading = $state(false);
   let downloadMessage = $state('');
@@ -54,9 +58,6 @@
   let renameOldName = $state('');
   let renameNewName = $state('');
   let renaming = $state(false);
-
-  let selectedPoolInfo = $derived(pools.find((p) => p.name === selectedPool));
-  let selectedPoolIsISO = $derived(selectedPoolInfo?.purpose === 'iso');
 
   // Confirm dialog state
   // Persistent error pop-up for destructive storage operations.
@@ -362,6 +363,43 @@
     }
   }
 
+  let uploadDiskFiles = $state(null);
+
+  async function handleUploadDisk() {
+    const file = uploadDiskFiles?.[0];
+    if (!file) return;
+    uploadingDisk = true;
+    uploadDiskProgress = 0;
+    const taskId = 'upload-disk:' + file.name;
+    upsertTask({
+      id: taskId,
+      kind: 'upload',
+      title: file.name,
+      pct: 0,
+      message: t('storage.uploadProgress'),
+      status: 'running',
+    });
+    try {
+      await api.uploadDisk(
+        file,
+        (pct) => {
+          uploadDiskProgress = pct;
+          updateTask(taskId, { pct });
+        },
+        selectedPool
+      );
+      uploadDiskFiles = null;
+      finishTask(taskId, 'success', t('storage.diskUploaded'), 100);
+      toast.success(t('storage.diskUploaded'));
+      await load();
+    } catch (e) {
+      finishTask(taskId, 'error', e.message, uploadDiskProgress || 0);
+      toast.error(e.message);
+    } finally {
+      uploadingDisk = false;
+    }
+  }
+
   function bytesToStr(b) {
     if (!b) return '0 B';
     const u = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -415,6 +453,9 @@
   }
   let _vmNameByIdCache = $state({});
 
+  const totalCapacity = $derived(pools.reduce((sum, p) => sum + (p.capacity || 0), 0));
+  const totalAllocated = $derived(pools.reduce((sum, p) => sum + (p.allocated || 0), 0));
+
   $effect(() => {
     // Whenever we see a new snapshot_of_vm_id, fetch the VM name
     // once and remember it.
@@ -434,7 +475,7 @@
   });
 </script>
 
-<div class="p-6 max-w-6xl">
+<div class="p-4 sm:p-6 max-w-6xl">
   <PageHeader title={t('storage.title')} subtitle={t('storage.subtitle')} />
 
   {#if error}
@@ -444,6 +485,19 @@
   {#if loading}
     <div class="flex items-center justify-center py-24"><Spinner size="lg" /></div>
   {:else}
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <StatCard label={t('storage.storagePools')} value={String(pools.length)} />
+      <StatCard label={t('storage.usedSpace')} value={formatBytes(totalAllocated)} />
+      <StatCard
+        label="Total"
+        value={formatBytes(totalCapacity)}
+        hint={totalCapacity > 0
+          ? `${Math.round((totalAllocated / totalCapacity) * 100)}%`
+          : undefined}
+      />
+      <StatCard label={t('storage.isoLibrary')} value={String(isos.length)} />
+    </div>
+
     <!-- Storage Pools -->
     <div class="border border-border rounded-lg bg-card p-5 mb-4">
       <div class="flex items-center justify-between mb-3">
@@ -482,129 +536,75 @@
       {/if}
 
       <div class="space-y-1.5">
-        {#if pools.filter((p) => p.purpose !== 'iso').length > 0}
-          <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-2 mb-1">
-            {t('storage.vdiPools')}
-          </div>
-          {#each pools.filter((p) => p.purpose !== 'iso') as p (p.name)}
-            <div
-              class="flex items-center justify-between px-3 py-2 rounded-md border cursor-pointer transition-colors {selectedPool ===
-              p.name
-                ? 'border-accent/50 bg-accent/5'
-                : 'border-border bg-background hover:bg-muted/30'}"
-              onclick={() => selectPool(p.name)}
-              onkeydown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  selectPool(p.name);
-                }
-              }}
-              role="button"
-              tabindex="0"
-            >
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="text-sm font-medium {selectedPool === p.name ? 'text-accent' : ''}"
-                    >{p.name}</span
-                  >
-                  <span
-                    class="text-[10px] px-1.5 py-0.5 rounded border border-accent/30 bg-accent/10 text-accent uppercase tracking-wide"
-                    >VDI</span
-                  >
-                </div>
-                {#if auth.role === 'admin'}
-                  <p class="text-xs text-muted-foreground font-mono mt-0.5 truncate">{p.path}</p>
-                {/if}
-                {#if p.capacity > 0}
-                  <div class="mt-1.5 max-w-[300px]">
-                    <ProgressBar value={(p.allocated / p.capacity) * 100} size="sm" />
-                    <div
-                      class="flex items-center justify-between text-[10px] text-muted-foreground tnum mt-0.5"
-                    >
-                      <span>{formatBytes(p.allocated)} {t('storage.usedSpace')}</span>
-                      <span>{formatBytes(p.capacity)}</span>
-                    </div>
-                  </div>
-                {/if}
-              </div>
-              {#if auth.role === 'admin' || auth.role === 'operator'}
-                <div class="flex items-center gap-1 shrink-0">
-                  {#if auth.role === 'admin'}
-                    <button
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        deletePool(p.name);
-                      }}
-                      class="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                      aria-label={`${t('common.delete')} ${p.name}`}
-                    >
-                      <svg
-                        class="w-4 h-4"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        />
-                      </svg>
-                    </button>
-                  {/if}
-                </div>
-              {/if}
-            </div>
-          {/each}
-        {/if}
-        {#if pools.filter((p) => p.purpose === 'iso').length > 0}
-          <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider mt-3 mb-1">
-            {t('storage.isoPools')}
-          </div>
-          {#each pools.filter((p) => p.purpose === 'iso') as p (p.name)}
-            <div
-              class="flex items-center justify-between px-3 py-2 rounded-md border border-border bg-background"
-            >
-              <div class="min-w-0">
-                <div class="flex items-center gap-2">
-                  <span class="text-sm font-medium">{p.name}</span>
+        <!-- Every pool is usable for both volumes and ISOs — "purpose"
+             below is just an informational badge, not a restriction
+             on what you can store in the pool. -->
+        {#each pools as p (p.name)}
+          <div
+            class="flex items-center justify-between px-3 py-2 rounded-md border cursor-pointer transition-colors {selectedPool ===
+            p.name
+              ? 'border-accent/50 bg-accent/5'
+              : 'border-border bg-background hover:bg-muted/30'}"
+            onclick={() => selectPool(p.name)}
+            onkeydown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                selectPool(p.name);
+              }
+            }}
+            role="button"
+            tabindex="0"
+          >
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span class="text-sm font-medium {selectedPool === p.name ? 'text-accent' : ''}"
+                  >{p.name}</span
+                >
+                {#if p.purpose === 'iso'}
                   <span
                     class="text-[10px] px-1.5 py-0.5 rounded border border-warning/30 bg-warning/10 text-warning uppercase tracking-wide"
                     >ISO</span
                   >
-                </div>
-                {#if auth.role === 'admin'}
-                  <p class="text-xs text-muted-foreground font-mono mt-0.5 truncate">{p.path}</p>
+                {:else}
+                  <span
+                    class="text-[10px] px-1.5 py-0.5 rounded border border-accent/30 bg-accent/10 text-accent uppercase tracking-wide"
+                    >VDI</span
+                  >
                 {/if}
               </div>
               {#if auth.role === 'admin'}
-                <button
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    deletePool(p.name);
-                  }}
-                  class="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0"
-                  aria-label={`${t('common.delete')} ${p.name}`}
-                >
-                  <svg
-                    class="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    viewBox="0 0 24 24"
+                <p class="text-xs text-muted-foreground font-mono mt-0.5 truncate">{p.path}</p>
+              {/if}
+              {#if p.capacity > 0}
+                <div class="mt-1.5 max-w-[300px]">
+                  <ProgressBar value={(p.allocated / p.capacity) * 100} size="sm" />
+                  <div
+                    class="flex items-center justify-between text-[10px] text-muted-foreground tnum mt-0.5"
                   >
-                    <path
-                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                </button>
+                    <span>{formatBytes(p.allocated)} {t('storage.usedSpace')}</span>
+                    <span>{formatBytes(p.capacity)}</span>
+                  </div>
+                </div>
               {/if}
             </div>
-          {/each}
-        {/if}
+            {#if auth.role === 'admin' || auth.role === 'operator'}
+              <div class="flex items-center gap-1 shrink-0">
+                {#if auth.role === 'admin'}
+                  <button
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      deletePool(p.name);
+                    }}
+                    class="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                    aria-label={`${t('common.delete')} ${p.name}`}
+                  >
+                    <Icon name="trash" size={16} />
+                  </button>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {/each}
         {#if pools.length === 0}
           <EmptyState
             icon="disk"
@@ -626,14 +626,19 @@
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           {t('storage.volumesTitle', { pool: selectedPool || t('storage.none') })}
-          {#if selectedPoolIsISO}
-            <span
-              class="text-[10px] px-1.5 py-0.5 rounded border border-warning/30 bg-warning/10 text-warning uppercase tracking-wide ml-2"
-              >{t('storage.isoPoolReadOnly')}</span
-            >
-          {/if}
         </h2>
-        {#if !selectedPoolIsISO}
+        <div class="flex items-center gap-2">
+          <Input
+            type="file"
+            accept=".qcow2,.img,.raw,.qed"
+            bind:files={uploadDiskFiles}
+            onchange={handleUploadDisk}
+            class="hidden"
+            id="disk-upload"
+          />
+          <label for="disk-upload" class="btn btn-primary !text-xs !h-7 cursor-pointer">
+            {uploadingDisk ? t('storage.uploadProgress') : t('storage.uploadDisk')}
+          </label>
           <Button
             size="sm"
             variant="outline"
@@ -643,10 +648,21 @@
               showCreateVol = true;
             }}>+ {t('storage.volumes')}</Button
           >
-        {/if}
+        </div>
       </div>
 
-      {#if showCreateVol && !selectedPoolIsISO}
+      {#if uploadingDisk}
+        <div class="mb-3 bg-muted/30 rounded-md p-3 border border-border">
+          <ProgressBar
+            value={uploadDiskProgress}
+            label={t('storage.uploadProgress')}
+            showValue
+            size="sm"
+          />
+        </div>
+      {/if}
+
+      {#if showCreateVol}
         <div class="bg-muted/30 rounded-md p-3 mb-3 border border-border space-y-2">
           <div class="text-sm font-medium">{t('storage.newVolume')}</div>
           <div class="flex flex-wrap gap-2 items-end">
@@ -666,7 +682,7 @@
         </div>
       {/if}
 
-      {#if showResizeVol && !selectedPoolIsISO}
+      {#if showResizeVol}
         <div class="bg-muted/30 rounded-md p-3 mb-3 border border-border space-y-2">
           <div class="text-sm font-medium">
             {t('storage.resizeVolume', { name: resizeVolName, current: resizeVolCurrent })}
@@ -714,34 +730,23 @@
                   {/if}
                 </div>
                 <div class="flex items-center gap-1 shrink-0">
-                  {#if !selectedPoolIsISO}
-                    <button
-                      onclick={() => {
-                        resizeVolName = vol.name;
-                        resizeVolSize = vol.capacity / (1024 * 1024 * 1024);
-                        resizeVolCurrent = vol.capacity / (1024 * 1024 * 1024);
-                        resizeVolPool = selectedPool;
-                        showResizeVol = true;
-                      }}
-                      class="text-xs text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-muted"
-                      >{t('storage.resize')}</button
-                    >
-                  {/if}
+                  <button
+                    onclick={() => {
+                      resizeVolName = vol.name;
+                      resizeVolSize = vol.capacity / (1024 * 1024 * 1024);
+                      resizeVolCurrent = vol.capacity / (1024 * 1024 * 1024);
+                      resizeVolPool = selectedPool;
+                      showResizeVol = true;
+                    }}
+                    class="text-xs text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-muted"
+                    >{t('storage.resize')}</button
+                  >
                   <button
                     onclick={() => deleteVolume(selectedPool, vol.name)}
                     class="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                     aria-label={`${t('common.delete')} ${vol.name}`}
                   >
-                    <svg
-                      class="w-4 h-4"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      viewBox="0 0 24 24"
-                      ><polyline points="3 6 5 6 21 6" /><path
-                        d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
-                      /></svg
-                    >
+                    <Icon name="trash" size={16} />
                   </button>
                 </div>
               </div>
@@ -752,16 +757,7 @@
                       class="flex items-center justify-between px-2 py-1.5 rounded bg-muted/30 text-xs"
                     >
                       <div class="flex items-center gap-2 min-w-0">
-                        <svg
-                          class="w-3 h-3 text-muted-foreground shrink-0"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          viewBox="0 0 24 24"
-                          ><circle cx="12" cy="12" r="10" /><polyline
-                            points="12 6 12 12 16 14"
-                          /></svg
-                        >
+                        <Icon name="clock" size={12} class="text-muted-foreground shrink-0" />
                         <span class="font-mono truncate" title={snap.name}>{snap.name}</span>
                         <span
                           class="text-[10px] px-1.5 py-0.5 rounded border border-border bg-background text-muted-foreground uppercase tracking-wider"
@@ -811,8 +807,8 @@
             class="input !py-1 !text-xs !w-auto"
           >
             <option value="__all__">All pools</option>
-            {#each pools.filter((p) => p.purpose === 'iso') as p}
-              <option value={p.name}>{p.name}</option>
+            {#each pools as p (p.name)}
+              <option value={p.name}>{p.name} ({p.purpose === 'iso' ? 'ISO' : 'VDI'})</option>
             {/each}
           </select>
           <Button size="sm" variant="outline" onclick={() => (showDownloadISO = !showDownloadISO)}>
@@ -884,19 +880,7 @@
               class="flex items-center justify-between px-3 py-2 rounded-md border border-border bg-background"
             >
               <div class="flex items-center gap-3 min-w-0">
-                <svg
-                  class="w-4 h-4 text-warning shrink-0"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  viewBox="0 0 24 24"
-                >
-                  <circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle
-                    cx="12"
-                    cy="12"
-                    r="2"
-                  />
-                </svg>
+                <Icon name="disc" size={16} class="text-warning shrink-0" />
                 <div class="min-w-0">
                   <span class="text-sm truncate">{iso.name}</span>
                   <span class="text-xs text-muted-foreground ml-2 tnum">{bytesToStr(iso.size)}</span
@@ -909,32 +893,14 @@
                   class="p-1.5 rounded-md text-muted-foreground hover:text-accent hover:bg-muted"
                   aria-label={`${t('storage.rename')} ${iso.name}`}
                 >
-                  <svg
-                    class="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    viewBox="0 0 24 24"
-                  >
-                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                  </svg>
+                  <Icon name="pencil" size={16} />
                 </button>
                 <button
                   onclick={() => deleteISO(iso.name)}
                   class="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                   aria-label={`${t('common.delete')} ${iso.name}`}
                 >
-                  <svg
-                    class="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    viewBox="0 0 24 24"
-                    ><polyline points="3 6 5 6 21 6" /><path
-                      d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
-                    /></svg
-                  >
+                  <Icon name="trash" size={16} />
                 </button>
               </div>
             </div>
@@ -956,7 +922,7 @@
       <label for="rename-iso-input" class="block text-sm font-medium">{t('storage.newName')}</label>
       <Input id="rename-iso-input" bind:value={renameNewName} placeholder="new-name.iso" />
       <p class="text-xs text-muted-foreground">
-        {@html t('storage.mustEndWithIso', { code: '<code>.iso</code>' })}
+        {@html t('storage.mustEndWithIso', { code: htmlVar('<code>.iso</code>') })}
       </p>
     </div>
     <Dialog.Footer class="gap-2">

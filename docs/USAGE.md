@@ -39,7 +39,18 @@ The UI is a single-page app with a sidebar:
 3. Attach an ISO from the **Storage** library (or upload one).
 4. Choose the network (NAT for isolated internet access, or bridge for a real
    LAN IP).
-5. Create it — the VM boots and you can open its console.
+5. Advanced options: recommended disk performance (`cache=none, io=native`),
+   space-reclaiming discard/TRIM, a CPU model dropdown with common presets
+   (or "Custom" for a manual model), and an explicit CPU topology
+   (sockets/cores/threads) instead of a flat vCPU count. A virtio hardware
+   RNG is always attached (no toggle needed).
+6. Create it — the VM boots and you can open its console.
+
+### USB device passthrough (admin only)
+
+From the VM's **Interfaces** tab, admins can attach a host USB device
+directly to a running or stopped VM (and detach it again), listing what's
+plugged into the host. PCI/GPU passthrough is not supported.
 
 ### Templates and cloud-init
 
@@ -53,18 +64,30 @@ The UI is a single-page app with a sidebar:
 
 - Power actions: start, shutdown, reboot, suspend, resume, force off.
 - **Snapshots**: create from the VM detail page (disk-only or with memory),
-  view the tree with history, revert or delete.
+  view the tree with history, revert or delete. Disk-only snapshots of a
+  running VM are filesystem-consistent when the guest agent is available
+  (quiesced via cloud-init's pre-installed `qemu-guest-agent`), falling back
+  to a crash-consistent snapshot otherwise.
+- **Disk resize**: grow a disk while the VM is shut off (any change) or
+  while it's running (grow-only, qcow2 disks only) — no downtime needed to
+  add space to a live VM's disk.
 - **Autostart**: mark VMs to boot automatically when the host starts.
 
 ### Console and graphics
 
-- **In-browser VNC console**: from the VM detail page (embedded noVNC,
-  no plugins).
+- **In-browser VNC console**: from the VM detail page (embedded noVNC).
+  Auto-reconnects with backoff if the connection drops, and its own sidebar
+  panel exposes image quality/compression sliders, a dot-cursor toggle, and
+  power actions (reboot/shutdown/force off) without leaving the console.
 - **Serial console**: embedded terminal (80×24), survives guest reboots.
 - **SPICE/RDP**: download `.vv` (SPICE) or `.rdp` files for external clients.
   The IP baked in comes from `PUBLIC_HOST` or the first non-loopback address.
-- The serial/host consoles authenticate via short-lived single-use tickets —
-  no long-lived credentials ever travel in URLs.
+- Every embedded console (serial, host terminal, VNC) authenticates via
+  short-lived tickets — no long-lived session credentials ever travel in
+  URLs. The VNC ticket is scoped to that one VM and console-related action
+  and expires after an hour (reusable within that window, since the console
+  can reconnect and its power buttons need it too), unlike the single-use,
+  30-second tickets the serial/host terminals use.
 
 ## 4. Storage
 
@@ -73,7 +96,10 @@ The UI is a single-page app with a sidebar:
   - `ISOS` — ISO images.
 - Additional pools of type `dir` (local) or `netfs` (NFS/SMB/CIFS) can be
   created; `iso`-purpose pools are read-only for volume operations.
-- **Volumes**: create, resize and delete disks inside a pool.
+- **Volumes**: create, resize and delete disks inside a pool, or **upload an
+  existing disk image** (`.qcow2`, `.img`, `.raw`, `.qed`) directly into a
+  pool — the file streams straight to disk and libvirt auto-detects its
+  format on refresh, no conversion needed.
 - **ISO library**: upload, download (with progress) and delete ISOs from the web.
 
 ### Authenticated CIFS (SMB) network pools

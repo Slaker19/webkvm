@@ -4,13 +4,22 @@
  * Connects to the backend's /api/events endpoint via EventSource and
  * dispatches incoming events to registered listeners.
  *
- * Auth: EventSource cannot set custom headers, so the JWT is passed
- * via the `?token=` query parameter. The backend's JWT middleware
- * already supports this.
+ * Auth: EventSource cannot set custom headers, so a raw JWT can't
+ * travel in an Authorization header here. It also must NOT travel as
+ * a `?token=` query parameter — a long-lived bearer token in a URL
+ * ends up durably logged (reverse-proxy access logs, this app's own
+ * request logger, browser history). Instead, each connection attempt
+ * first exchanges the JWT for a short-lived, single-use ticket via
+ * POST /api/events/ticket (the same mechanism the VM console/serial
+ * WebSocket endpoints use), then opens the EventSource with
+ * `?ticket=...`.
  *
  * Reconnect policy: exponential backoff starting at 1s, doubling up
  * to 30s, reset on successful open. A `reconnecting` state is
- * exposed so the UI can show a "reconnecting…" pill.
+ * exposed so the UI can show a "reconnecting…" pill. Since a ticket
+ * is single-use and expires in 30s, every (re)connect mints a fresh
+ * one rather than relying on the browser's native EventSource
+ * auto-retry (which would replay the same, by-then-burned, URL).
  *
  * Usage:
  *   import { events } from '$lib/stores/events.svelte.js';
@@ -22,7 +31,7 @@
  *   });
  */
 
-import { auth } from './auth.svelte.js';
+import { auth, api } from './auth.svelte.js';
 import { browser } from '$lib/utils/browser.js';
 
 const MIN_RECONNECT_MS = 1000;
@@ -43,22 +52,47 @@ class EventsStore {
     this._hostMetricsListeners = new Set();
     this._reconnectTimer = null;
     this._lastToken = null;
+    this._opening = false;
   }
 
   connect() {
     if (!browser) return;
     if (!auth.token) return;
-    if (this._es && this._lastToken === auth.token) return;
+    if ((this._es || this._opening) && this._lastToken === auth.token) return;
 
     this._disconnect();
+    this._lastToken = auth.token;
     this._open();
   }
 
-  _open() {
-    const url = `/api/events?token=${encodeURIComponent(auth.token)}`;
+  async _open() {
+    if (this._opening) return;
+    this._opening = true;
+    const tokenAtRequest = auth.token;
+    let ticket = null;
+    try {
+      const res = await api.getEventsTicket();
+      ticket = res?.ticket || null;
+    } catch {
+      ticket = null;
+    }
+    this._opening = false;
+
+    // The session may have changed (e.g. logout, token refresh) while
+    // the ticket request was in flight; only proceed if it's still
+    // current.
+    if (this._lastToken !== tokenAtRequest || this._lastToken !== auth.token) {
+      return;
+    }
+    if (!ticket) {
+      this.lastError = 'failed to obtain events ticket';
+      this._scheduleReconnect();
+      return;
+    }
+
+    const url = `/api/events?ticket=${encodeURIComponent(ticket)}`;
     const es = new EventSource(url);
     this._es = es;
-    this._lastToken = auth.token;
 
     es.addEventListener('open', () => {
       this.connected = true;

@@ -97,9 +97,39 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 	// Quota enforcement: the requesting user owns the new VM.
 	owner, role, _ := audit.FromRequest(r)
 	if role != models.RoleAdmin {
+		u, uerr := h.userStore.Get(owner)
+		if uerr != nil {
+			jsonErr(w, http.StatusUnauthorized, "user not found")
+			return
+		}
 		if err := h.checkQuota(owner, 1, int64(req.VCPUs), req.RAMMB, req.DiskGB); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
+		}
+		// Per-pool disk cap (a new blank disk lands on req.StoragePool
+		// or the default pool; an existing disk is pre-allocated so it
+		// does not consume new disk quota). Pool ACL, however, must be
+		// checked in both cases: without this, a user restricted to a
+		// subset of pools could land a VM on a disallowed pool simply
+		// by pointing at an existing disk on it.
+		if req.ExistingDiskPool != "" && req.ExistingDiskName != "" {
+			if err := assertPoolAllowed(u, req.ExistingDiskPool); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
+		} else {
+			pool := req.StoragePool
+			if pool == "" {
+				pool = h.defaultPool()
+			}
+			if err := assertPoolAllowed(u, pool); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
+			if err := h.checkDiskQuota(owner, map[string]int64{pool: req.DiskGB}); err != nil {
+				jsonErr(w, http.StatusConflict, err.Error())
+				return
+			}
 		}
 	}
 
@@ -241,6 +271,10 @@ func (h *Handler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) StartVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if err := h.checkStartQuota(id); err != nil {
+		jsonErr(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err := h.lv.StartDomain(id); err != nil {
 		jsonErr(w, http.StatusInternalServerError, humanizeStartError(err))
 		return
@@ -304,6 +338,10 @@ func (h *Handler) SuspendVM(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ResumeVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if err := h.checkStartQuota(id); err != nil {
+		jsonErr(w, http.StatusConflict, err.Error())
+		return
+	}
 	if err := h.lv.ResumeDomain(id); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -320,6 +358,39 @@ func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResp(w, http.StatusOK, snaps)
+}
+
+// SnapshotWithVM is a models.Snapshot tagged with the VM it belongs
+// to, for the cross-fleet snapshots view.
+type SnapshotWithVM struct {
+	models.Snapshot
+	VMID   string `json:"vm_id"`
+	VMName string `json:"vm_name"`
+}
+
+// ListAllSnapshots aggregates snapshots across every VM. This is N+1
+// over libvirt (one ListSnapshots call per domain), which is fine at
+// the domain counts this product targets (homelab/small-team, not a
+// hyperscaler); a VM whose snapshot list fails to load is skipped
+// rather than failing the whole request, so one broken domain doesn't
+// take down the fleet view.
+func (h *Handler) ListAllSnapshots(w http.ResponseWriter, r *http.Request) {
+	vms, err := h.lv.ListDomains()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]SnapshotWithVM, 0, len(vms))
+	for _, vm := range vms {
+		snaps, err := h.lv.ListSnapshots(vm.ID)
+		if err != nil {
+			continue
+		}
+		for _, s := range snaps {
+			out = append(out, SnapshotWithVM{Snapshot: s, VMID: vm.ID, VMName: vm.Name})
+		}
+	}
+	jsonResp(w, http.StatusOK, map[string]any{"snapshots": out})
 }
 
 func (h *Handler) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -394,6 +465,32 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if req.Source != "" {
+		if err := h.validateDiskSourcePath(req.Source); err != nil {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
+	}
+	// Per-pool disk quota: a newly attached disk consumes space in its
+	// pool (cdrom/ISO attachments don't allocate a disk image).
+	if req.SizeGB > 0 {
+		if owner := h.ownerOf(id); owner != "" {
+			if u, gerr := h.userStore.Get(owner); gerr == nil && u.Role != models.RoleAdmin {
+				pool := req.Pool
+				if pool == "" {
+					pool = h.defaultPool()
+				}
+				if err := assertPoolAllowed(u, pool); err != nil {
+					jsonErr(w, http.StatusForbidden, err.Error())
+					return
+				}
+				if err := h.checkDiskQuota(owner, map[string]int64{pool: req.SizeGB}); err != nil {
+					jsonErr(w, http.StatusConflict, err.Error())
+					return
+				}
+			}
+		}
+	}
 	if err := h.lv.AttachDisk(id, req); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -421,6 +518,10 @@ func (h *Handler) UpdateDisk(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeBody(r, &req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.validateDiskSourcePath(req.Source); err != nil {
+		jsonErr(w, http.StatusForbidden, err.Error())
 		return
 	}
 	if err := h.lv.UpdateDiskSource(id, dev, req.Source); err != nil {
@@ -499,7 +600,25 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 		// Estimate the clone's size from the source before cloning.
 		src, err := h.lv.GetDomain(id)
 		if err == nil {
-			if err := h.checkQuota(owner, 1, int64(src.VCPUs), src.RAMMB, src.DiskGB); err != nil {
+			diskGB := vmTotalDiskGB(src)
+			if err := h.checkQuota(owner, 1, int64(src.VCPUs), src.RAMMB, diskGB); err != nil {
+				jsonErr(w, http.StatusConflict, err.Error())
+				return
+			}
+			clonePool := req.Pool
+			if clonePool == "" {
+				clonePool = h.defaultPool()
+			}
+			u, uerr := h.userStore.Get(owner)
+			if uerr != nil {
+				jsonErr(w, http.StatusUnauthorized, "user not found")
+				return
+			}
+			if err := assertPoolAllowed(u, clonePool); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
+			if err := h.checkDiskQuota(owner, map[string]int64{clonePool: diskGB}); err != nil {
 				jsonErr(w, http.StatusConflict, err.Error())
 				return
 			}
@@ -592,15 +711,27 @@ func (h *Handler) ResizeDomainDisk(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "size_gb must be positive")
 		return
 	}
-	// Quota: growing a disk counts against its owner. We approximate
-	// the delta by comparing with the VM's reported DiskGB.
-	if _, role, _ := audit.FromRequest(r); role != models.RoleAdmin {
-		if owner := h.ownerOf(id); owner != "" {
-			if cur, err := h.lv.GetDomain(id); err == nil && req.SizeGB > cur.DiskGB {
-				delta := req.SizeGB - cur.DiskGB
-				if err := h.checkQuota(owner, 0, 0, 0, delta); err != nil {
-					jsonErr(w, http.StatusConflict, err.Error())
-					return
+	// Quota: growing a disk counts against its owner, against both the
+	// global disk cap and this disk's pool cap. We use the resized
+	// disk's actual current size/pool (not the VM's first-disk figure).
+	if owner := h.ownerOf(id); owner != "" {
+		if u, gerr := h.userStore.Get(owner); gerr == nil && u.Role != models.RoleAdmin {
+			if cur, err := h.lv.GetDomain(id); err == nil {
+				pool := h.defaultPool()
+				curSize := cur.DiskGB
+				for _, d := range cur.Disks {
+					if d.Target == dev {
+						pool = d.Pool
+						curSize = d.SizeGB
+						break
+					}
+				}
+				if req.SizeGB > curSize {
+					delta := req.SizeGB - curSize
+					if err := h.checkDiskQuota(owner, map[string]int64{pool: delta}); err != nil {
+						jsonErr(w, http.StatusConflict, err.Error())
+						return
+					}
 				}
 			}
 		}
@@ -612,9 +743,9 @@ func (h *Handler) ResizeDomainDisk(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit.Log(auditFor(r, "vm.disk_resize", id, map[string]interface{}{"dev": dev, "size_gb": req.SizeGB}))
 	jsonResp(w, http.StatusOK, map[string]interface{}{
-		"status":    "resized",
-		"dev":       dev,
-		"size_gb":   req.SizeGB,
+		"status":     "resized",
+		"dev":        dev,
+		"size_gb":    req.SizeGB,
 		"size_bytes": newBytes,
 	})
 }
@@ -840,15 +971,33 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 	defer file.Close()
 
 	newName := strings.TrimSpace(r.FormValue("name"))
+	if newName != "" {
+		if err := validateVMName(newName); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	pool := strings.TrimSpace(r.FormValue("pool"))
 	if pool == "" {
 		pool = config.DiskPoolName
 	}
 
 	// Optional overrides passed through to the importer. All are
-	// optional: an empty/zero field keeps the archive's value.
+	// optional: an empty/zero field keeps the archive's value. Both
+	// name and network are validated against the same libvirt-safe
+	// charset as a normal VM name: they are spliced into the domain
+	// XML by the importer, and an unvalidated value there is an XML/
+	// QEMU-argument injection vector (e.g. breaking out of a <name> or
+	// <source network='...'/> element).
+	network := strings.TrimSpace(r.FormValue("network"))
+	if network != "" {
+		if err := validateVMName(network); err != nil {
+			jsonErr(w, http.StatusBadRequest, "invalid network: "+err.Error())
+			return
+		}
+	}
 	importOpts := libvirt.ImportOpts{
-		Network: strings.TrimSpace(r.FormValue("network")),
+		Network: network,
 	}
 	if v := r.FormValue("vcpus"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -877,7 +1026,20 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 			ram = 2048
 		}
 		diskGB := bytesToGB(hdr.Size)
+		u, uerr := h.userStore.Get(owner)
+		if uerr != nil {
+			jsonErr(w, http.StatusUnauthorized, "user not found")
+			return
+		}
+		if err := assertPoolAllowed(u, pool); err != nil {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
 		if err := h.checkQuota(owner, 1, int64(vcpus), int64(ram), diskGB); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err := h.checkDiskQuota(owner, map[string]int64{pool: diskGB}); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}

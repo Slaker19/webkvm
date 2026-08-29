@@ -22,6 +22,7 @@
  *   "/backup"                  → "backup"     (admin only)
  *   "/users"                   → "users"   (admin only)
  *   "/nodes"                   → "nodes"     (admin only)
+ *   "/snapshots"               → "snapshots"
  *   "/status"                  → "status"
  *   "/settings"                → "settings"   (admin only)
  *   "/account"                 → "account"
@@ -45,6 +46,7 @@ const ROUTES = [
   { pattern: 'backup', name: 'backup', roles: ['admin'] },
   { pattern: 'users', name: 'users', roles: ['admin'] },
   { pattern: 'nodes', name: 'nodes', roles: ['admin'] },
+  { pattern: 'snapshots', name: 'snapshots' },
   { pattern: 'status', name: 'status' },
   { pattern: 'host-console', name: 'host-console', roles: ['admin'] },
   { pattern: 'settings', name: 'settings', roles: ['admin'] },

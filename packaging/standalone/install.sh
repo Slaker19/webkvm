@@ -235,7 +235,11 @@ setup_package_map() {
       # the setup-network bridge uses `ip link add ... type macvlan` and never needs brctl.
       # dnsmasq is required for the libvirt default NAT network (otherwise
       # "could not find dnsmasq in $PATH" and VMs never get an IP).
-      RUNTIME_PACKAGES=(ca-certificates curl openssl xorriso libvirt qemu-full qemu-img swtpm edk2-ovmf python iproute2 procps-ng util-linux tar zstd virt-install dnsmasq)
+      # libisoburn (not "xorriso" — no such package on Arch, it's only a
+      # "provides" satisfied by libisoburn): pacman resolves provides for
+      # -S so "xorriso" would install fine here, but uninstall.sh's -R
+      # needs the real, installed package name, so both lists must agree.
+      RUNTIME_PACKAGES=(ca-certificates curl openssl libisoburn libvirt qemu-full qemu-img swtpm edk2-ovmf python iproute2 procps-ng util-linux tar zstd virt-install dnsmasq)
       ;;
   esac
 }
@@ -493,7 +497,11 @@ WantedBy=multi-user.target
 EOF
 
 for unit in virtqemud.socket virtstoraged.socket virtnetworkd.socket virtlogd.socket; do
-  if systemctl cat "${unit}" >/dev/null 2>&1; then
+  # --no-pager: see the libvirtd/virtqemud detection above — 'systemctl cat'
+  # can die with SIGPIPE (rc=141) in non-TTY contexts (the default for a
+  # piped one-liner install), which reads as "unit not found" and silently
+  # skips enabling a socket that actually exists.
+  if systemctl --no-pager cat "${unit}" >/dev/null 2>&1; then
     systemctl enable --now "${unit}"
   fi
 done

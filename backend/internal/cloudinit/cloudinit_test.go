@@ -80,3 +80,30 @@ func TestBuildUserDataProvisionScript(t *testing.T) {
 		t.Fatal("provision script block should be absent when no script is set")
 	}
 }
+
+// Regression test: buildUserData must emit exactly one top-level
+// write_files: key. A second one (previously emitted unconditionally
+// for the serial-console terminal hook, after the provisioning
+// script's own write_files: block) is invalid YAML at the document
+// level and silently drops one of the two lists when parsed, which
+// used to make the provisioning script vanish whenever a VM combined
+// ProvisionScript with the always-on terminal hook.
+func TestBuildUserDataSingleWriteFilesBlock(t *testing.T) {
+	cfg := Config{
+		User:            "webkvm",
+		Password:        "secret1",
+		ProvisionScript: "#!/bin/bash\necho hi\n",
+	}
+	ud := buildUserData(cfg)
+
+	count := strings.Count(ud, "write_files:")
+	if count != 1 {
+		t.Fatalf("expected exactly 1 top-level write_files: key, got %d in:\n%s", count, ud)
+	}
+	if !strings.Contains(ud, "/usr/local/bin/webkvm-provision.sh") {
+		t.Fatal("expected provision script entry under the single write_files: block")
+	}
+	if !strings.Contains(ud, "/etc/profile.d/zz-webkvm-term.sh") {
+		t.Fatal("expected terminal-hook entry under the single write_files: block")
+	}
+}

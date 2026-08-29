@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bufio"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -334,6 +335,150 @@ func TestNew_OpenFileFails(t *testing.T) {
 	}
 	if _, err := New(path); err == nil {
 		t.Errorf("expected error from OpenFile, got nil")
+	}
+}
+
+func TestList_NewestFirstAndPaging(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "audit.log")
+	logger, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = logger.file.Close() }()
+
+	for i := 0; i < 5; i++ {
+		logger.Log(Entry{User: "u", Action: "vm.start", Resource: strings.Repeat("r", 1) + string(rune('0'+i))})
+	}
+
+	entries, total, err := logger.List(ListOptions{}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 5 {
+		t.Fatalf("total = %d, want 5", total)
+	}
+	if len(entries) != 5 {
+		t.Fatalf("len(entries) = %d, want 5", len(entries))
+	}
+	// Newest first: the last one logged ("r4") comes back first.
+	if entries[0].Resource != "r4" {
+		t.Errorf("entries[0].Resource = %q, want r4", entries[0].Resource)
+	}
+	if entries[4].Resource != "r0" {
+		t.Errorf("entries[4].Resource = %q, want r0", entries[4].Resource)
+	}
+
+	// Paging: limit=2, offset=1 → the 2nd and 3rd newest.
+	page, total2, err := logger.List(ListOptions{}, 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total2 != 5 {
+		t.Errorf("total2 = %d, want 5", total2)
+	}
+	if len(page) != 2 || page[0].Resource != "r3" || page[1].Resource != "r2" {
+		t.Errorf("page = %+v, want [r3 r2]", page)
+	}
+
+	// Offset past the end returns an empty (not nil-panicking) slice.
+	empty, _, err := logger.List(ListOptions{}, 10, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("empty = %+v, want []", empty)
+	}
+}
+
+func TestList_Filters(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "audit.log")
+	logger, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = logger.file.Close() }()
+
+	logger.Log(Entry{User: "admin", Action: "vm.start", Resource: "vm-1"})
+	logger.Log(Entry{User: "alice", Action: "user.create", Resource: "bob"})
+	logger.Log(Entry{User: "admin", Action: "vm.delete", Resource: "vm-2", Error: "quota exceeded"})
+
+	byUser, total, err := logger.List(ListOptions{User: "admin"}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Errorf("byUser total = %d, want 2", total)
+	}
+	for _, e := range byUser {
+		if e.User != "admin" {
+			t.Errorf("got user %q, want admin", e.User)
+		}
+	}
+
+	byAction, _, err := logger.List(ListOptions{Action: "vm.start"}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byAction) != 1 || byAction[0].Resource != "vm-1" {
+		t.Errorf("byAction = %+v, want single vm-1 entry", byAction)
+	}
+
+	byQ, _, err := logger.List(ListOptions{Q: "QUOTA"}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byQ) != 1 || byQ[0].Resource != "vm-2" {
+		t.Errorf("byQ (case-insensitive) = %+v, want single vm-2 entry", byQ)
+	}
+
+	byQUser, _, err := logger.List(ListOptions{Q: "bob"}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byQUser) != 1 || byQUser[0].User != "alice" {
+		t.Errorf("byQUser (matches resource) = %+v, want alice's entry", byQUser)
+	}
+}
+
+func TestList_ReadsRotatedFile(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "audit.log")
+	logger, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = logger.file.Close() }()
+
+	logger.Log(Entry{User: "u", Action: "old", Resource: "from-rotated"})
+	if err := logger.w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	// New current file, opened fresh (simulates what rotateIfNeededLocked
+	// does — List must not assume the current file always has content).
+	logger.file, err = os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.w = bufio.NewWriter(logger.file)
+	logger.Log(Entry{User: "u", Action: "new", Resource: "from-current"})
+
+	entries, total, err := logger.List(ListOptions{}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 (one per file)", total)
+	}
+	if entries[0].Resource != "from-current" {
+		t.Errorf("entries[0].Resource = %q, want from-current (newest)", entries[0].Resource)
+	}
+	if entries[1].Resource != "from-rotated" {
+		t.Errorf("entries[1].Resource = %q, want from-rotated (oldest)", entries[1].Resource)
 	}
 }
 

@@ -177,7 +177,7 @@
   });
 </script>
 
-<div class="p-6 max-w-6xl">
+<div class="p-4 sm:p-6 max-w-6xl">
   <PageHeader title={t('status.title')} subtitle={t('status.subtitle')}>
     {#snippet actions()}
       <Button variant="outline" size="sm" onclick={loadStatus}>

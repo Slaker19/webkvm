@@ -191,30 +191,36 @@ func (s *Store) List(username string) []Token {
 	return out
 }
 
-// Revoke marks a token as revoked. Idempotent.
-func (s *Store) Revoke(id, username string) error {
+// Revoke marks a token as revoked. Idempotent. isCallerAdmin must
+// reflect the CALLING user's own role, not the target token's — the
+// caller is authorized when they own the token or are an admin
+// themselves. (A previous version checked `t.Role != "admin"`, i.e.
+// the role recorded on the TARGET token, which let any non-admin
+// caller revoke/delete a token that happened to belong to an admin.)
+func (s *Store) Revoke(id, username string, isCallerAdmin bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.toks[id]
 	if !ok {
 		return errors.New("token not found")
 	}
-	if username != "" && t.Username != username && t.Role != "admin" {
+	if !isCallerAdmin && username != "" && t.Username != username {
 		return errors.New("not the owner")
 	}
 	t.Revoked = true
 	return s.save()
 }
 
-// Delete removes a token entirely. Idempotent.
-func (s *Store) Delete(id, username string) error {
+// Delete removes a token entirely. Idempotent. See Revoke for the
+// isCallerAdmin contract.
+func (s *Store) Delete(id, username string, isCallerAdmin bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.toks[id]
 	if !ok {
 		return nil
 	}
-	if username != "" && t.Username != username && t.Role != "admin" {
+	if !isCallerAdmin && username != "" && t.Username != username {
 		return errors.New("not the owner")
 	}
 	delete(s.toks, id)

@@ -10,7 +10,16 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m, goleak.IgnoreCurrent())
+	goleak.VerifyTestMain(m,
+		goleak.IgnoreCurrent(),
+		// ensureEventLoop (connect.go) starts libvirt's default event
+		// loop on a permanently OS-thread-locked goroutine exactly
+		// once per process (sync.Once) — by design it never exits.
+		// Any test that calls Open() (connect_test.go) triggers this
+		// for the first time, which goleak would otherwise always
+		// flag as a leak.
+		goleak.IgnoreTopFunction("github.com/libvirt/libvirt-go._Cfunc_virEventRunDefaultImplWrapper"),
+	)
 }
 
 func TestBuildPoolXMLDir(t *testing.T) {

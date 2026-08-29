@@ -109,6 +109,7 @@ func NewRouter(
 	})
 	r.Get("/api/health", h.Health)
 	r.Get("/api/events", h.EventsSSE)
+	r.Post("/api/events/ticket", h.EventsTicket)
 
 	// Frontend SPA: serve embedded Svelte build on /. Acts as catch-all
 	// for anything that isn't /api/*, /console/* or /static/*, so the
@@ -149,6 +150,12 @@ func NewRouter(
 
 	r.Route("/api/vms", func(r chi.Router) {
 		r.Get("/", h.ListVMs)
+		// Cross-fleet snapshot view (every VM's snapshots in one call,
+		// vs. the per-VM /vms/{id}/snapshots below). Same visibility as
+		// ListVMs — chi resolves this static segment before the /{id}
+		// wildcard route, so it can't be shadowed by a VM literally
+		// named "snapshots".
+		r.Get("/snapshots", h.ListAllSnapshots)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAtLeast("operator"))
 			r.Post("/", h.CreateVM)
@@ -157,6 +164,11 @@ func NewRouter(
 			r.Get("/", h.GetVM)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireAtLeast("operator"))
+				// Ownership gate: a caller must be admin or the VM's
+				// recorded owner. Without this, role alone (operator)
+				// let anyone act on, console into, or export any VM,
+				// not just their own.
+				r.Use(h.requireVMOwnership)
 				r.Patch("/", h.UpdateVM)
 				r.Delete("/", h.DeleteVM)
 				r.Post("/start", h.StartVM)
@@ -195,17 +207,33 @@ func NewRouter(
 				r.Put("/schedule", h.SetVMSchedule)
 				r.Post("/power/{action}", h.PowerVMNow)
 				r.Post("/reset-password", h.ResetVMPassword)
+
+				// These grant interactive console control or full VM
+				// data export, not mere metadata visibility, so they
+				// need the same owner-or-admin gate as the routes
+				// above rather than being open to any authenticated
+				// (including viewer-role) user.
+				r.Get("/graphics", h.GetGraphics)
+				r.Get("/vnc", h.VNCProxy)
+				r.Get("/serial", h.SerialProxy)
+				r.Post("/console-ticket", h.VMConsoleTicket)
+				r.Post("/vnc-ticket", h.VNCTicket)
+				r.Get("/rdp", h.DownloadRDP)
+				r.Get("/spice", h.DownloadSPICE)
+				r.Get("/export", h.ExportVM)
+				r.Post("/clipboard", h.SetClipboard)
 			})
 
-			// Read-only for everyone authenticated.
-			r.Get("/graphics", h.GetGraphics)
-			r.Get("/vnc", h.VNCProxy)
-			r.Get("/serial", h.SerialProxy)
-			r.Post("/console-ticket", h.VMConsoleTicket)
-			r.Get("/rdp", h.DownloadRDP)
-			r.Get("/spice", h.DownloadSPICE)
-			r.Get("/firewall", h.GetVMFirewall)
+			// USB device passthrough: admin only.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole(modelsRoleAdmin()))
+				r.Post("/usb", h.AttachUSBDevice)
+				r.Delete("/usb/{vendorId}/{productId}", h.DetachUSBDevice)
+			})
 
+			// Read-only metadata for everyone authenticated (viewer
+			// dashboards etc.) — no console access, no raw disk export.
+			r.Get("/firewall", h.GetVMFirewall)
 			r.Get("/disks", h.ListDisks)
 			r.Get("/networks", h.ListNetIfaces)
 			r.Get("/vlan-support", h.CheckVLANSupport)
@@ -214,8 +242,6 @@ func NewRouter(
 			r.Get("/boot", h.GetBootDevice)
 			r.Get("/autostart", h.GetAutostart)
 			r.Get("/snapshots", h.ListSnapshots)
-			r.Get("/export", h.ExportVM)
-			r.Post("/clipboard", h.SetClipboard)
 		})
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAtLeast("operator"))
@@ -274,6 +300,7 @@ func NewRouter(
 			r.Patch("/volumes/{pool}/{name}", h.ResizeVolume)
 			r.Post("/upload-iso", h.UploadISO)
 			r.Post("/upload-iso/raw", h.UploadISOByCURL)
+			r.Post("/upload-disk", h.UploadDisk)
 			r.Post("/download-iso", h.DownloadISO)
 		})
 
@@ -312,6 +339,7 @@ func NewRouter(
 			r.Post("/bridges", h.CreateHostBridge)
 			r.Delete("/bridges/{name}", h.DeleteHostBridge)
 			r.Post("/bridges/{name}/vlan_aware", h.SetHostBridgeVLanAware)
+			r.Get("/usb-devices", h.ListHostUSBDevices)
 		})
 	})
 
@@ -337,6 +365,13 @@ func NewRouter(
 			r.Post("/backup", h.SystemBackup)
 			r.Get("/backups", h.SystemListBackups)
 		})
+	})
+
+	// Audit log (read-only). Admin-only — entries carry every user's
+	// actions, IPs, and action detail across the whole install.
+	r.Route("/api/audit", func(r chi.Router) {
+		r.Use(auth.RequireRole(modelsRoleAdmin()))
+		r.Get("/", h.ListAudit)
 	})
 
 	// Settings (config store). Schema and current values are

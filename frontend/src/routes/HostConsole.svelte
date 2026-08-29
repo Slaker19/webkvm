@@ -7,7 +7,7 @@
   // ticket is issued and consumed.
 </script>
 
-<div class="p-6 space-y-4">
+<div class="p-4 sm:p-6 space-y-4">
   <PageHeader
     title="Terminal del sistema"
     subtitle="Shell del host embebida — requiere usuario y contraseña del sistema"

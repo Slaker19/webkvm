@@ -125,6 +125,20 @@ func xmlEscape(s string) string {
 	return string(out)
 }
 
+// diskDriverXMLAttrs builds the attribute list for a disk's <driver>
+// element, applying the recommended cache='none' io='native' profile
+// and/or discard='unmap' (TRIM passthrough) when requested.
+func diskDriverXMLAttrs(format string, cacheIO, discard *bool) string {
+	attrs := fmt.Sprintf("name='qemu' type='%s'", xmlEscape(format))
+	if cacheIO != nil && *cacheIO {
+		attrs += " cache='none' io='native'"
+	}
+	if discard != nil && *discard {
+		attrs += " discard='unmap'"
+	}
+	return attrs
+}
+
 // extractPoolFormatFromXML pulls the <format type='...'> value out
 // of a libvirt pool <source> block. Returns "" if absent.
 func extractPoolFormatFromXML(xml string) string {

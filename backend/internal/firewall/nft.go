@@ -110,6 +110,14 @@ func (m *Manager) BuildRuleset() string {
 
 	// Prerouting chain: DNAT port forwards.
 	hasForward := false
+	// targets collects the resolved guest IPs so the postrouting
+	// masquerade chain (built below) rewrites return traffic for
+	// every successfully-forwarded VM. It is populated here — in the
+	// same loop where we validate and resolve each forward — because
+	// the Applied flag we set on the local copy is discarded; a second
+	// pass over the (unmodified) store would see Applied==false and
+	// silently drop masquerade on the very first apply.
+	var targets []string
 	for _, fw := range all {
 		for i := range fw.Forwards {
 			f := &fw.Forwards[i]
@@ -127,6 +135,7 @@ func (m *Manager) BuildRuleset() string {
 				continue
 			}
 			f.Applied = true
+			targets = append(targets, ip)
 			if !hasForward {
 				b.WriteString("\tchain prerouting {\n")
 				b.WriteString("\t\ttype nat hook prerouting priority dstnat; policy accept;\n")
@@ -141,15 +150,6 @@ func (m *Manager) BuildRuleset() string {
 		b.WriteString("\t}\n")
 
 		// Postrouting: masquerade replies only toward forwarded VMs.
-		var targets []string
-		for _, fw := range all {
-			for i := range fw.Forwards {
-				f := &fw.Forwards[i]
-				if f.Applied && net.ParseIP(f.TargetIP) != nil {
-					targets = append(targets, f.TargetIP)
-				}
-			}
-		}
 		if len(targets) > 0 {
 			b.WriteString("\tchain postrouting {\n")
 			b.WriteString("\t\ttype nat hook postrouting priority srcnat; policy accept;\n")

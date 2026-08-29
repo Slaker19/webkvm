@@ -21,11 +21,14 @@ die()  { printf '[webkvm-update] ERROR: %s\n' "$*" >&2; exit 1; }
 command -v systemctl >/dev/null || die "systemctl not found"
 systemctl list-unit-files "${SERVICE}" >/dev/null 2>&1 || die "webkvm service not found — run install.sh first"
 
-# Auto-detect binary path from the running systemd unit
+# Auto-detect binary path from the running systemd unit. install.sh's
+# default is PREFIX=/usr/local (i.e. /usr/local/bin/webkvm) — /opt/webkvm
+# is only the DATA_DIR, never the binary location — so that's tried last,
+# purely as a last-ditch guess for a nonstandard setup.
 if [[ -z "${BIN}" ]]; then
   BIN="$(systemctl show "${SERVICE}" -p ExecStart --value 2>/dev/null | grep -oP 'path=\K[^ ;]+' || true)"
-  [[ -x "${BIN}" ]] || BIN="/opt/webkvm/webkvm"
   [[ -x "${BIN}" ]] || BIN="/usr/local/bin/webkvm"
+  [[ -x "${BIN}" ]] || BIN="/opt/webkvm/webkvm"
 fi
 
 CURRENT_VER=""
@@ -68,14 +71,43 @@ if [[ "${SOURCE_MODE}" == 1 ]]; then
     log "set WEBKVM_VERSION=${GIT_TAG} in ${DATA_DIR}/.env"
   fi
 else
-  # Download binary directly from the repo (no GitHub release needed)
-  TAG="$(curl -fsSL "https://api.github.com/repos/Slaker19/webkvm/tags" 2>/dev/null | grep -o '"name": *"[^"]*"' | head -1 | cut -d'"' -f4 || echo "main")"
-  log "downloading binary from ${TAG}..."
+  # Prefer a proper GitHub release + its SHA256SUMS asset (same source
+  # install.sh's own fallback trusts) so the downloaded binary can
+  # actually be checksum-verified before it's installed and run as root.
   TMP="$(mktemp /tmp/webkvm-update.XXXXXX)"
-  curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
-    "https://raw.githubusercontent.com/Slaker19/webkvm/${TAG}/backend/webkvm" -o "${TMP}" \
-    || die "could not download binary"
-  chmod 0755 "${TMP}"
+  RELEASE_API="https://api.github.com/repos/Slaker19/webkvm/releases/latest"
+  BIN_URL=$(curl -fsSL "${RELEASE_API}" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*webkvm[^"]*linux_amd64[^"]*"' | head -1 | cut -d'"' -f4 || true)
+  if [[ -n "${BIN_URL}" ]]; then
+    log "downloading release binary from ${BIN_URL}"
+    curl --fail --location --retry 3 --proto '=https' --tlsv1.2 "${BIN_URL}" -o "${TMP}" || die "could not download binary"
+    chmod 0755 "${TMP}"
+    SHA256_URL=$(curl -fsSL "${RELEASE_API}" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*SHA256SUMS[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    BIN_SHA256=""
+    if [[ -n "${SHA256_URL}" ]]; then
+      BIN_NAME=$(basename "${BIN_URL}")
+      BIN_SHA256=$(curl -fsSL "${SHA256_URL}" 2>/dev/null | grep "${BIN_NAME}" | awk '{print $1}' || true)
+    fi
+    if [[ "${BIN_SHA256}" =~ ^[[:xdigit:]]{64}$ ]]; then
+      printf '%s  %s\n' "${BIN_SHA256}" "${TMP}" | sha256sum --check --status || die "downloaded binary checksum mismatch"
+      log "checksum verified"
+    else
+      log "WARNING: could not verify checksum (no SHA256SUMS entry found for this asset)"
+    fi
+  else
+    # No GitHub release published — fall back to the binary committed
+    # directly in the repo (see .gitignore: backend/webkvm is
+    # intentionally versioned). /releases/latest has proper "latest"
+    # semantics; /tags does not, so this branch — not the tags list —
+    # is what a truly-latest lookup should prefer. No checksum is
+    # available on this path; the health check + rollback below is the
+    # only safety net.
+    TAG="$(curl -fsSL "https://api.github.com/repos/Slaker19/webkvm/tags" 2>/dev/null | grep -o '"name": *"[^"]*"' | head -1 | cut -d'"' -f4 || echo "main")"
+    log "no GitHub release found; downloading binary committed at tag ${TAG} (unverified)..."
+    curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+      "https://raw.githubusercontent.com/Slaker19/webkvm/${TAG}/backend/webkvm" -o "${TMP}" \
+      || die "could not download binary"
+    chmod 0755 "${TMP}"
+  fi
   INSTALL_SRC="${TMP}"
 fi
 

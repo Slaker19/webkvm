@@ -35,4 +35,4 @@ if ! command -v systemctl >/dev/null 2>&1; then
     die "systemd is required (not found). webkvm installs as a systemd service."
 fi
 
-exec "${SCRIPT_DIR}/packaging/standalone/install.sh"
+exec "${SCRIPT_DIR}/packaging/standalone/install.sh" "$@"

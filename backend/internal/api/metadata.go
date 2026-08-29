@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"webkvm/internal/audit"
 	"webkvm/internal/models"
@@ -49,6 +50,16 @@ func (h *Handler) UpdateVMMeta(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit.Log(auditFor(r, "vm.meta_update", id, nil))
 	jsonResp(w, http.StatusOK, meta)
+}
+
+// coverFilename extracts the on-disk filename from a stored cover URL
+// (e.g. "/api/covers/<id>.<ext>?v=<cache-buster>" -> "<id>.<ext>").
+// The query string must be stripped before calling filepath.Base — it
+// isn't a path separator, so Base would otherwise return
+// "<id>.<ext>?v=..." (no such file on disk).
+func coverFilename(coverURL string) string {
+	p, _, _ := strings.Cut(coverURL, "?")
+	return filepath.Base(p)
 }
 
 // UploadCover stores an image file as the VM's cover. The path is
@@ -120,8 +131,13 @@ func (h *Handler) UploadCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update metadata.
-	url := "/api/covers/" + cleanID + ext
+	// Update metadata. The URL is cache-busted with the upload time:
+	// the path is always /api/covers/{id}.{ext} regardless of content
+	// (same VM, same format = same filename), so replacing a cover
+	// with a same-format image reused the exact same URL the browser
+	// had already cached — showing the deleted/old image after a
+	// re-upload even though the new file was saved correctly.
+	url := fmt.Sprintf("/api/covers/%s%s?v=%d", cleanID, ext, time.Now().UnixNano())
 	if _, err := h.lv.UpdateVMMeta(id, models.VMMetaUpdate{Cover: &url}); err != nil {
 		os.Remove(dst) // lgtm[go/path-injection]
 		jsonErr(w, http.StatusInternalServerError, "save cover meta: "+err.Error())
@@ -145,8 +161,7 @@ func (h *Handler) DeleteCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if meta.Cover != "" {
-		// cover is a URL like /api/covers/<id>.<ext>
-		base := filepath.Base(meta.Cover)
+		base := coverFilename(meta.Cover)
 		if base != "" && base != "." && base != ".." {
 			fp := filepath.Join(h.cfg.CoversDir(), base)
 			if !strings.HasPrefix(filepath.Clean(fp), filepath.Clean(h.cfg.CoversDir())+string(os.PathSeparator)) {

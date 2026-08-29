@@ -195,7 +195,10 @@ export const api = {
   getApplianceProvision: (id) => request(`/appliances/${encodeURIComponent(id)}/provision`),
   getConsoleTicket: (vmId) =>
     request(`/vms/${encodeURIComponent(vmId)}/console-ticket`, { method: 'POST' }),
+  getVNCTicket: (vmId) =>
+    request(`/vms/${encodeURIComponent(vmId)}/vnc-ticket`, { method: 'POST' }),
   getHostTerminalTicket: () => request('/host/terminal-ticket', { method: 'POST' }),
+  getEventsTicket: () => request('/events/ticket', { method: 'POST' }),
   getVMSchedule: (vmId) => request(`/vms/${vmId}/schedule`),
   setVMSchedule: (vmId, data) =>
     request(`/vms/${vmId}/schedule`, { method: 'PUT', body: JSON.stringify(data) }),
@@ -276,6 +279,47 @@ export const api = {
 
   getDownloadJob: (jobId) => request(`/storage/jobs/${jobId}`),
 
+  uploadDisk: (file, onProgress, pool) => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      // "pool" must be appended before "file" — the backend streams the
+      // multipart body part-by-part and needs the pool name to run the
+      // ACL/quota check before it starts writing the (potentially huge)
+      // file part to disk.
+      formData.append('pool', pool);
+      formData.append('file', file);
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      });
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(JSON.parse(xhr.responseText || '{}'));
+        } else if (xhr.status === 401) {
+          auth.logout();
+          reject(new ApiError('Unauthorized', 401, 'unauthorized'));
+        } else {
+          let msg = 'Upload failed';
+          try {
+            const j = JSON.parse(xhr.responseText);
+            if (j.error) msg = j.error;
+          } catch {
+            /* ignore: non-JSON response */
+          }
+          reject(new ApiError(msg, xhr.status, 'upload_failed'));
+        }
+      });
+      xhr.addEventListener('error', () => reject(new ApiError('Upload failed', 0, 'network')));
+
+      xhr.open('POST', `${BASE}/storage/upload-disk`);
+      if (tokenState) xhr.setRequestHeader('Authorization', `Bearer ${tokenState}`);
+      xhr.send(formData);
+    });
+  },
+
   // --- users ---
   listUsers: () => request('/users'),
   createUser: (data) => request('/users', { method: 'POST', body: JSON.stringify(data) }),
@@ -301,6 +345,7 @@ export const api = {
     request('/host/bridges', { method: 'POST', body: JSON.stringify(data) }),
   deleteHostBridge: (name) =>
     request(`/host/bridges/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  listHostUSBDevices: () => request('/host/usb-devices'),
 
   // --- graphics ---
   getGraphics: (id) => request(`/vms/${id}/graphics`),
@@ -315,6 +360,20 @@ export const api = {
   deleteDisk: (vmId, dev) => request(`/vms/${vmId}/disks/${dev}`, { method: 'DELETE' }),
   updateDiskSource: (vmId, dev, source) =>
     request(`/vms/${vmId}/disks/${dev}`, { method: 'PUT', body: JSON.stringify({ source }) }),
+  resizeVmDisk: (vmId, dev, sizeGb) =>
+    request(`/vms/${vmId}/disks/${dev}/resize`, {
+      method: 'POST',
+      body: JSON.stringify({ size_gb: sizeGb }),
+    }),
+  attachUSBDevice: (vmId, vendorId, productId) =>
+    request(`/vms/${vmId}/usb`, {
+      method: 'POST',
+      body: JSON.stringify({ vendor_id: vendorId, product_id: productId }),
+    }),
+  detachUSBDevice: (vmId, vendorId, productId) =>
+    request(`/vms/${vmId}/usb/${encodeURIComponent(vendorId)}/${encodeURIComponent(productId)}`, {
+      method: 'DELETE',
+    }),
 
   // --- net ifaces ---
   listNetIfaces: (vmId) => request(`/vms/${vmId}/networks`),
@@ -555,6 +614,21 @@ export const api = {
     request('/nodes', { method: 'POST', body: JSON.stringify({ name, uri }) }),
   updateNode: (id, data) => request(`/nodes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteNode: (id) => request(`/nodes/${id}`, { method: 'DELETE' }),
+
+  // --- audit log (admin only) ---
+  listAudit: ({ limit, offset, q, user, action } = {}) => {
+    const params = new URLSearchParams();
+    if (limit) params.set('limit', limit);
+    if (offset) params.set('offset', offset);
+    if (q) params.set('q', q);
+    if (user) params.set('user', user);
+    if (action) params.set('action', action);
+    const qs = params.toString();
+    return request(`/audit${qs ? '?' + qs : ''}`);
+  },
+
+  // --- cross-fleet snapshots ---
+  listAllSnapshots: () => request('/vms/snapshots'),
 
   // --- Host bridges (extended) ---
   setHostBridgeVLanAware: (name, enabled) =>

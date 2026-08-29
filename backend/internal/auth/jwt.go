@@ -259,6 +259,30 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// VNC console ticket: unlike the single-use ticket above, this one
+		// is reusable within its (much shorter than a session JWT) lifetime
+		// — the console page opens in a new tab and then opens its own
+		// WebSocket, and may reconnect several times, so a single-use
+		// ticket can't cover it. Scoped to one VM ID and a short endpoint
+		// allowlist (see vncTicketAllowedPath) — never a stand-in for the
+		// full session JWT.
+		if vt := r.URL.Query().Get("vt"); vt != "" {
+			vmID, allowed := vncTicketAllowedPath(path)
+			if !allowed {
+				http.Error(w, `{"error":"ticket not valid for this endpoint"}`, http.StatusForbidden)
+				return
+			}
+			user, role, ok := CheckVNCTicket(vt, vmID)
+			if !ok {
+				http.Error(w, `{"error":"invalid or expired ticket"}`, http.StatusUnauthorized)
+				return
+			}
+			r.Header.Set("X-User", user)
+			r.Header.Set("X-Role", role)
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Everything else outside /api/* is the embedded SPA shell, served
 		// without auth (the SPA itself redirects to the login page).
 		if !consolePath && !strings.HasPrefix(path, "/api/") {
@@ -273,12 +297,15 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 				tokenStr = parts[1]
 			}
 		}
-		if tokenStr == "" && (path == "/api/events" || consolePath) {
-			// SSE (EventSource) and the console tab cannot set request
-			// headers, so the token travels in the query string for these
-			// endpoints only. Tokens in URLs leak into access/proxy logs,
-			// browser history and Referer headers, so every other route
-			// rejects query tokens and requires the Authorization header.
+		if tokenStr == "" && consolePath {
+			// The console tab opens in a new browser tab and cannot set
+			// request headers, so the token travels in the query string
+			// for these endpoints only. Tokens in URLs leak into
+			// access/proxy logs, browser history and Referer headers, so
+			// every other route rejects query tokens and requires either
+			// the Authorization header or a short-lived ticket (see the
+			// `ticket` branch above) — which is how /api/events (SSE)
+			// authenticates, since EventSource also cannot set headers.
 			tokenStr = r.URL.Query().Get("token")
 		}
 		if tokenStr == "" {
@@ -344,4 +371,28 @@ func isClipboardPath(path string) bool {
 	}
 	rest := strings.TrimPrefix(path, "/api/vms/")
 	return len(rest) > 0 && strings.Count(rest, "/") == 1 && strings.HasSuffix(rest, "/clipboard")
+}
+
+// vncTicketAllowedPath reports whether path is one a VNC console
+// ticket may authenticate, and extracts the VM ID it's scoped to.
+// Deliberately a short, fixed allowlist — unlike the session JWT, a
+// VNC ticket must never authenticate arbitrary API routes.
+func vncTicketAllowedPath(path string) (vmID string, ok bool) {
+	if strings.HasPrefix(path, "/console/") {
+		rest := strings.TrimPrefix(path, "/console/")
+		if rest != "" && !strings.Contains(rest, "/") {
+			return rest, true
+		}
+		return "", false
+	}
+	if !strings.HasPrefix(path, "/api/vms/") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(path, "/api/vms/")
+	for _, suffix := range []string{"/vnc", "/clipboard", "/reboot", "/shutdown", "/forceoff"} {
+		if strings.HasSuffix(rest, suffix) && strings.Count(rest, "/") == 1 {
+			return strings.TrimSuffix(rest, suffix), true
+		}
+	}
+	return "", false
 }

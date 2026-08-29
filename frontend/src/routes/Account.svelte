@@ -6,7 +6,7 @@
   import { navigate } from '../lib/router.svelte.js';
   import { toast } from '$lib/components/ui/toast';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-  import { t } from '../lib/i18n.svelte.js';
+  import { t, htmlVar } from '../lib/i18n.svelte.js';
 
   let me = $state(null);
   let loading = $state(true);
@@ -158,7 +158,7 @@
   });
 </script>
 
-<div class="p-6 max-w-2xl">
+<div class="p-4 sm:p-6 max-w-2xl">
   <div class="mb-6">
     <h1 class="text-xl font-semibold tracking-tight">{t('account.title')}</h1>
     <p class="text-sm text-muted-foreground mt-1">{t('account.subtitle')}</p>
@@ -404,7 +404,9 @@
       </div>
       <p class="text-sm text-muted-foreground mb-4">
         {@html t('account.tokenHelp', {
-          code: '<code class="text-xs bg-muted px-1 py-0.5 rounded">Authorization: Bearer wvmb_…</code>',
+          code: htmlVar(
+            '<code class="text-xs bg-muted px-1 py-0.5 rounded">Authorization: Bearer wvmb_…</code>'
+          ),
         })}
       </p>
       {#if tokens.length === 0}

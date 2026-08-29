@@ -4,12 +4,20 @@
   import { navigate } from '$lib/router.svelte.js';
   import { api } from '$lib/stores/auth.svelte.js';
   import { t } from '../i18n.svelte.js';
+  import { sidebarMode, cycleSidebarMode } from '../stores/sidebarMode.svelte.js';
+  import Icon from './Icon.svelte';
 
   let open = $state(false);
   let query = $state('');
   let vms = $state([]);
   let selectedIndex = $state(0);
   let inputEl = $state(null);
+
+  const sidebarModeLabelKey = {
+    full: 'layout.sidebarFull',
+    rail: 'layout.sidebarRail',
+    hover: 'layout.sidebarHover',
+  };
 
   const navigationCommands = [
     {
@@ -30,7 +38,7 @@
       id: 'nav-storage',
       label: () => t('storage.title'),
       path: '/storage',
-      icon: 'database',
+      icon: 'hardDrive',
       keywords: 'pool volume disk',
     },
     {
@@ -51,21 +59,34 @@
       id: 'nav-status',
       label: () => t('status.title'),
       path: '/status',
-      icon: 'cog',
+      icon: 'activity',
       keywords: 'status log update',
     },
   ];
+
+  const actionCommands = $derived([
+    {
+      id: 'action-toggle-sidebar',
+      label: () => t('layout.toggleSidebar', { mode: t(sidebarModeLabelKey[sidebarMode.value]) }),
+      action: cycleSidebarMode,
+      icon: 'panelLeft',
+      keywords: 'sidebar collapse rail hover expand',
+    },
+  ]);
 
   const filteredCommands = $derived.by(() => {
     const q = query.toLowerCase().trim();
     const navFiltered = navigationCommands.filter(
       (c) => !q || c.label().toLowerCase().includes(q) || c.keywords.includes(q)
     );
+    const actionFiltered = actionCommands.filter(
+      (c) => !q || c.label().toLowerCase().includes(q) || c.keywords.includes(q)
+    );
     const vmFiltered = vms
       .filter((v) => !q || v.name.toLowerCase().includes(q) || (v.ip && v.ip.includes(q)))
       .map((v) => ({
         id: `vm-${v.id}`,
-        label: v.name,
+        label: () => v.name,
         subtitle:
           v.state === 'running' && v.ip
             ? `${t('common.running')} · ${v.ip}`
@@ -74,8 +95,17 @@
         icon: 'computer',
         keywords: `vm ${v.state}`,
       }));
-    return [...navFiltered, ...vmFiltered];
+    return [...navFiltered, ...vmFiltered, ...actionFiltered];
   });
+
+  function runCommand(cmd) {
+    if (cmd.action) {
+      cmd.action();
+    } else if (cmd.path) {
+      navigate(cmd.path);
+    }
+    open = false;
+  }
 
   $effect(() => {
     if (open) {
@@ -112,10 +142,7 @@
     if (e.key === 'Enter') {
       e.preventDefault();
       const cmd = filteredCommands[selectedIndex];
-      if (cmd) {
-        navigate(cmd.path);
-        open = false;
-      }
+      if (cmd) runCommand(cmd);
     }
   }
 
@@ -179,42 +206,13 @@
         {#each filteredCommands as cmd, i (cmd.id)}
           <button
             type="button"
-            onclick={() => {
-              navigate(cmd.path);
-              open = false;
-            }}
+            onclick={() => runCommand(cmd)}
             onmouseenter={() => (selectedIndex = i)}
             class="w-full flex items-center gap-3 px-3 py-2 text-sm text-left {i === selectedIndex
               ? 'bg-accent/10 text-foreground'
               : 'text-muted-foreground hover:text-foreground'}"
           >
-            <svg
-              class="w-4 h-4 shrink-0"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-              viewBox="0 0 24 24"
-            >
-              {#if cmd.icon === 'computer'}
-                <rect x="2" y="3" width="20" height="14" rx="2" />
-                <line x1="8" y1="21" x2="16" y2="21" />
-                <line x1="12" y1="17" x2="12" y2="21" />
-              {:else if cmd.icon === 'database'}
-                <ellipse cx="12" cy="5" rx="9" ry="3" />
-                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
-              {:else if cmd.icon === 'network'}
-                <rect x="4" y="2" width="16" height="8" rx="2" />
-                <rect x="4" y="14" width="16" height="8" rx="2" />
-              {:else if cmd.icon === 'users'}
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-              {:else if cmd.icon === 'cog'}
-                <circle cx="12" cy="12" r="3" />
-              {:else if cmd.icon === 'plus'}
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              {/if}
-            </svg>
+            <Icon name={cmd.icon} size={16} class="shrink-0" />
             <span class="flex-1 truncate">{cmd.label()}</span>
             {#if cmd.subtitle}
               <span class="text-xs text-muted-foreground">{cmd.subtitle}</span>

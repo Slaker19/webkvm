@@ -199,9 +199,9 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name      string                    `json:"name"`
-		Network   string                    `json:"network"`
-		CloudInit *models.CloudInitRequest  `json:"cloud_init,omitempty"`
+		Name      string                   `json:"name"`
+		Network   string                   `json:"network"`
+		CloudInit *models.CloudInitRequest `json:"cloud_init,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -219,7 +219,17 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 	// Quota: the deploy creates one VM for the owner.
 	owner, role, _ := audit.FromRequest(r)
 	if role != models.RoleAdmin {
+		if u, uerr := h.userStore.Get(owner); uerr == nil {
+			if err := assertPoolAllowed(u, config.DiskPoolName); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
+		}
 		if err := h.checkQuota(owner, 1, int64(app.VCPUs), app.RAMMB, app.DiskGB); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err := h.checkDiskQuota(owner, map[string]int64{h.defaultPool(): app.DiskGB}); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -242,7 +252,6 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 			"size":      app.SizeBytes,
 		}))
 	}
-
 
 	// Fail fast: validate the cloud-init payload BEFORE any expensive
 	// work (downloads / clones), so a bad form never wastes minutes.
@@ -486,7 +495,7 @@ func downloadTo(jobID, url, destPath string) error {
 		},
 	}
 	client := &http.Client{
-		Timeout: 60 * time.Minute,
+		Timeout:   60 * time.Minute,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {

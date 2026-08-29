@@ -69,3 +69,45 @@ func listLinuxBridges() []string {
 	sort.Strings(out)
 	return out
 }
+
+// isPhysicalInterface reports whether name is a real physical (or
+// wireless) network interface on the host: it has a backing device
+// (/sys/class/net/<name>/device exists) and is not itself a Linux
+// bridge. Used by CreateNetwork to validate a forward=direct
+// (macvtap) network's target interface — unlike forward=bridge, this
+// deliberately does NOT require (or accept) a Linux bridge device.
+func isPhysicalInterface(name string) bool {
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") || strings.Contains(name, "\\") {
+		return false
+	}
+	base := "/sys/class/net/" + name // lgtm[go/path-injection] - name validated above
+	if _, err := os.Stat(base + "/bridge"); err == nil {
+		return false
+	}
+	_, err := os.Stat(base + "/device")
+	return err == nil
+}
+
+// listPhysicalInterfaces returns the names of the host's physical/
+// wireless NICs, sorted alphabetically, for use in error-message
+// hints. Mirrors the filtering in api.ListHostInterfaces; callers
+// that need richer per-interface detail (type, state, MAC, DHCP
+// status) should use that endpoint instead.
+func listPhysicalInterfaces() []string {
+	entries, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		return nil
+	}
+	out := []string{}
+	for _, e := range entries {
+		name := e.Name()
+		if name == "lo" || strings.HasPrefix(name, "vnet") || strings.HasPrefix(name, "virbr") {
+			continue
+		}
+		if isPhysicalInterface(name) {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}

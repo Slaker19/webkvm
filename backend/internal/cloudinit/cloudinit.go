@@ -186,9 +186,14 @@ func buildUserData(cfg Config) string {
 	// records the outcome in /run/webkvm-provision.status (running | ok |
 	// failed:<rc>). Without this, script output only lands deep inside
 	// cloud-init-output.log and any failure is invisible from WebKVM.
+	// A single write_files: block for every file below — cloud-config
+	// is YAML, and a second top-level write_files: key later in the
+	// same document would silently shadow (or be shadowed by) this
+	// one rather than merging with it, dropping whichever list came
+	// first.
+	ud.WriteString("write_files:\n")
 	if cfg.ProvisionScript != "" {
 		encoded := base64.StdEncoding.EncodeToString([]byte(cfg.ProvisionScript))
-		ud.WriteString("write_files:\n")
 		ud.WriteString("  - path: /usr/local/bin/webkvm-provision.sh\n")
 		ud.WriteString("    content: !!binary |\n")
 		ud.WriteString("      " + encoded + "\n")
@@ -219,7 +224,6 @@ if [ -t 0 ]; then
   stty rows 24 cols 80 2>/dev/null || true
 fi
 `
-	ud.WriteString("write_files:\n")
 	ud.WriteString("  - path: /etc/profile.d/zz-webkvm-term.sh\n")
 	ud.WriteString("    content: |\n")
 	for _, line := range strings.Split(strings.TrimRight(termHook, "\n"), "\n") {

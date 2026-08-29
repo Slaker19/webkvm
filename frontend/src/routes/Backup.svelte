@@ -865,7 +865,7 @@
   }
 </script>
 
-<div class="p-6 max-w-5xl">
+<div class="p-4 sm:p-6 max-w-5xl">
   <PageHeader title={t('backup.title')} subtitle={t('backup.subtitle')}>
     {#snippet actions()}
       {#if activeTab === 'targets'}
@@ -1350,7 +1350,7 @@
       </select>
     </div>
     {#if newTargetType === 'sftp'}
-      <div class="grid grid-cols-2 gap-3">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label class="text-sm font-medium block mb-1" for="add-tgt-host">{t('backup.host')}</label
           >
@@ -1368,7 +1368,7 @@
         >
         <Input id="add-tgt-user" bind:value={newTargetUsername} placeholder="backup" />
       </div>
-      <div class="grid grid-cols-2 gap-3">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label class="text-sm font-medium block mb-1" for="add-tgt-pass"
             >{t('backup.password')}</label
@@ -1518,7 +1518,7 @@
         <span class="text-sm font-medium">{t('backup.retentionTitle')}</span>
         <p class="text-xs text-muted-foreground">{t('backup.retentionDesc')}</p>
       </div>
-      <div class="grid grid-cols-2 gap-3">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div class="space-y-1.5">
           <Label for="retention-keep-last">{t('backup.retentionKeepLast')}</Label>
           <Input

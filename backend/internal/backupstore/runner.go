@@ -2,6 +2,7 @@ package backupstore
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
@@ -13,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -22,6 +24,7 @@ import (
 
 	"webkvm/internal/models"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/robfig/cron/v3"
 )
 
@@ -1669,6 +1672,9 @@ func extractOne(ctx context.Context, tgt Target, f restoreFile, destDir string) 
 	if MaxRestoreSourceBytes > 0 && f.size > MaxRestoreSourceBytes {
 		return "", fmt.Errorf("source archive %s is %d bytes, exceeds cap of %d", f.name, f.size, MaxRestoreSourceBytes)
 	}
+	if err := validateTarMembers(src, f.name); err != nil {
+		return "", fmt.Errorf("archive %s failed safety check: %w", f.name, err)
+	}
 	tctx, cancel := context.WithTimeout(ctx, MaxRestoreDuration)
 	defer cancel()
 	cmd, err := buildExtractCmd(tctx, src, destDir, f.name)
@@ -1714,6 +1720,85 @@ func extractOne(ctx context.Context, tgt Target, f restoreFile, destDir string) 
 	manifest := filepath.Join(destDir, "RESTORE_MANIFEST.json")
 	_ = os.WriteFile(manifest, mb, 0o644)
 	return manifest, nil
+}
+
+// validateTarMembers reads an archive's headers (pure Go, via
+// archive/tar over the appropriate decompressor — no shelling out) and
+// rejects the archive if any member's path is absolute or contains a
+// ".." segment. Such an entry would let the real extraction below
+// (buildExtractCmd, which shells out to the system `tar`) write
+// outside destDir — the classic "tar-slip" vulnerability. GNU tar
+// does not refuse such entries on its own, so this must run BEFORE
+// extraction, not rely on tar's own behavior.
+//
+// This also checks symlink/hardlink targets for the same escape, which
+// blocks a link entry pointing straight outside destDir. It does NOT
+// resolve multi-step symlink chains within the archive (e.g. a
+// relative-looking symlink that, combined with an already-extracted
+// sibling entry, ends up escaping destDir) — narrower defenses for
+// that variant would need a full simulated extraction and are out of
+// scope here; the checks below block the direct, common case.
+func validateTarMembers(src, name string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s for validation: %w", name, err)
+	}
+	defer f.Close()
+
+	var r io.Reader
+	switch {
+	case strings.HasSuffix(name, ".tar.gz"):
+		gz, gerr := gzip.NewReader(f)
+		if gerr != nil {
+			return fmt.Errorf("open gzip stream: %w", gerr)
+		}
+		defer gz.Close()
+		r = gz
+	case strings.HasSuffix(name, ".tar.zst"):
+		zr, zerr := zstd.NewReader(f)
+		if zerr != nil {
+			return fmt.Errorf("open zstd stream: %w", zerr)
+		}
+		defer zr.Close()
+		r = zr
+	default:
+		return fmt.Errorf("unsupported archive extension for %s", name)
+	}
+
+	tr := tar.NewReader(r)
+	for {
+		hdr, terr := tr.Next()
+		if terr == io.EOF {
+			return nil
+		}
+		if terr != nil {
+			return fmt.Errorf("read tar entry: %w", terr)
+		}
+		if err := validateTarMemberName(hdr.Name); err != nil {
+			return err
+		}
+		if (hdr.Typeflag == tar.TypeLink || hdr.Typeflag == tar.TypeSymlink) && hdr.Linkname != "" {
+			if err := validateTarMemberName(hdr.Linkname); err != nil {
+				return fmt.Errorf("link target of %q: %w", hdr.Name, err)
+			}
+		}
+	}
+}
+
+// validateTarMemberName rejects an absolute path or one containing a
+// ".." segment once cleaned.
+func validateTarMemberName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if strings.HasPrefix(name, "/") || strings.HasPrefix(name, "\\") {
+		return fmt.Errorf("archive member has an absolute path, refusing to extract: %q", name)
+	}
+	clean := path.Clean(filepath.ToSlash(name))
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("archive member escapes the extraction directory, refusing to extract: %q", name)
+	}
+	return nil
 }
 
 // buildExtractCmd assembles the right tar command for the

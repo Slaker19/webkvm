@@ -74,10 +74,10 @@ func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var req struct {
-		Name      string                    `json:"name"`
-		Pool      string                    `json:"pool,omitempty"`
-		Network   string                    `json:"network,omitempty"`
-		CloudInit *models.CloudInitRequest  `json:"cloud_init,omitempty"`
+		Name      string                   `json:"name"`
+		Pool      string                   `json:"pool,omitempty"`
+		Network   string                   `json:"network,omitempty"`
+		CloudInit *models.CloudInitRequest `json:"cloud_init,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -108,13 +108,30 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 		}
 		src, serr := h.lv.GetDomain(id)
 		if serr == nil {
-			if err := h.checkQuota(o, 1, int64(src.VCPUs), src.RAMMB, src.DiskGB); err != nil {
+			diskGB := vmTotalDiskGB(src)
+			u, uerr := h.userStore.Get(o)
+			if uerr != nil {
+				jsonErr(w, http.StatusUnauthorized, "user not found")
+				return
+			}
+			tplPool := req.Pool
+			if tplPool == "" {
+				tplPool = h.defaultPool()
+			}
+			if err := assertPoolAllowed(u, tplPool); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
+			if err := h.checkQuota(o, 1, int64(src.VCPUs), src.RAMMB, diskGB); err != nil {
+				jsonErr(w, http.StatusConflict, err.Error())
+				return
+			}
+			if err := h.checkDiskQuota(o, map[string]int64{h.defaultPool(): diskGB}); err != nil {
 				jsonErr(w, http.StatusConflict, err.Error())
 				return
 			}
 		}
 	}
-
 
 	// Fail fast on invalid cloud-init payloads before cloning/creating.
 	if req.CloudInit != nil {
