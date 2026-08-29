@@ -74,7 +74,17 @@
         // Server sends text frames for serial; binary-safe anyway.
         term.write(typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data));
       };
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        if (event.code === 4409) {
+          // Another tab/window opened this same console and took over
+          // (server's "newest viewer wins" policy) — stand down instead
+          // of auto-reconnecting, or two open tabs would evict each
+          // other forever. Only "Restart" reclaims it from here.
+          status = 'closed';
+          initTerm();
+          appendLine('[console opened in another tab/window — click Restart to reclaim it here]');
+          return;
+        }
         if (!openedThisAttempt) {
           // Server rejected the upgrade before any data flowed — most
           // likely the VM is off. Stop retrying and say so.

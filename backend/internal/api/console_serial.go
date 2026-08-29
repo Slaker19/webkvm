@@ -56,8 +56,19 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 	// as that message repeating nonstop with no actual reboot behind
 	// it. Newest viewer wins: force-close whatever session is
 	// currently registered for this VM before proceeding.
+	//
+	// A plain Close() looks identical to a network drop to the evicted
+	// browser tab, which auto-retries and immediately steals the console
+	// back — two open tabs on the same VM then evict each other forever,
+	// every ~2s. Send a distinguishing close code first so that tab can
+	// tell "replaced by another tab" apart from "connection dropped" and
+	// stand down instead of fighting back.
 	if old, loaded := serialSessions.Swap(id, ws); loaded {
-		_ = old.(*websocket.Conn).Close()
+		oldWS := old.(*websocket.Conn)
+		_ = oldWS.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(4409, "replaced by a newer session"),
+			time.Now().Add(time.Second))
+		_ = oldWS.Close()
 	}
 	defer serialSessions.CompareAndDelete(id, ws)
 
