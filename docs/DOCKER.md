@@ -27,12 +27,22 @@ means:
 
 ## Quick start
 
-```bash
-# 1) Build the prebuilt binary + the image (must be built on/for the target
-#    host's architecture — the binary is not compiled inside the image).
-make docker-build
+The published image (`slaker19/webkvm`, built and pushed automatically on
+every release tag) is the easiest way to get started:
 
-# 2) Edit docker-compose.yml if your paths differ from the defaults, then:
+```bash
+# 1) Edit docker-compose.yml if your paths differ from the defaults, then:
+docker compose up -d
+```
+
+`docker-compose.yml` points at `slaker19/webkvm:latest` by default, so
+`docker compose up -d` just pulls it — no local build needed.
+
+Prefer to build from source instead (e.g. to test a local change)?
+
+```bash
+make docker-build   # builds the binary + the image locally, tagged webkvm:latest
+docker compose build
 docker compose up -d
 ```
 
@@ -69,13 +79,15 @@ without understanding that.
 The native install's auto-update button (`git pull` + rebuild) doesn't make
 sense for a container — you don't rebuild a running container, you replace
 it. **Do not use the in-app update flow in Docker mode.** Instead, update by
-pulling/rebuilding the image and recreating the container:
+pulling the new image and recreating the container:
 
 ```bash
-git pull
-make docker-build
+docker compose pull
 docker compose up -d
 ```
+
+(If you build from source instead of using the published image, `git pull &&
+make docker-build && docker compose up -d` is the equivalent.)
 
 Everything else — Host Terminal, logs, service restart, VM networking,
 firewall — is designed to behave exactly like the native install.

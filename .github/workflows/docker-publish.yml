@@ -1,0 +1,75 @@
+name: Docker Publish
+
+# Builds the release binary (same artifact the native installer/`make
+# docker-build` uses, never compiled inside the image itself) and
+# publishes the container image to Docker Hub as slaker19/webkvm.
+#
+# Runs automatically on every version tag push (v1.1.2, v1.1.3, ...).
+# Can also be triggered manually for an existing tag via workflow_dispatch,
+# e.g. to (re)publish an image for a tag that predates this workflow.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git tag to build and publish (e.g. v1.1.2)"
+        required: true
+
+concurrency:
+  group: docker-publish-${{ github.event.inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.25"
+  NODE_VERSION: "24"
+
+jobs:
+  docker:
+    name: Build backend + publish image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Determine version
+        id: ver
+        run: |
+          VERSION="${{ github.event.inputs.ref || github.ref_name }}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # libvirt headers are needed at build time for CGO, same as ci.yml.
+      - name: Install libvirt dev headers
+        run: sudo apt-get update && sudo apt-get install -y libvirt-dev pkg-config
+
+      - name: Build backend (embeds frontend)
+        run: make build-backend VERSION=${{ steps.ver.outputs.version }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            slaker19/webkvm:${{ steps.ver.outputs.version }}
+            slaker19/webkvm:latest
