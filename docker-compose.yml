@@ -12,7 +12,7 @@ services:
     # (or `make docker-build`) first if you'd rather build it locally
     # from source — the `build:` context below makes that a drop-in
     # replacement without editing this file.
-    image: slaker19/webkvm:latest
+    image: slaker1908/webkvm:latest
     build: .
     container_name: webkvm
     restart: unless-stopped

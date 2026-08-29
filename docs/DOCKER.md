@@ -27,7 +27,7 @@ means:
 
 ## Quick start
 
-The published image (`slaker19/webkvm`, built and pushed automatically on
+The published image (`slaker1908/webkvm`, built and pushed automatically on
 every release tag) is the easiest way to get started:
 
 ```bash
@@ -35,7 +35,7 @@ every release tag) is the easiest way to get started:
 docker compose up -d
 ```
 
-`docker-compose.yml` points at `slaker19/webkvm:latest` by default, so
+`docker-compose.yml` points at `slaker1908/webkvm:latest` by default, so
 `docker compose up -d` just pulls it — no local build needed.
 
 Prefer to build from source instead (e.g. to test a local change)?
