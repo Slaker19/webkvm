@@ -46,6 +46,17 @@ backend terminates TLS natively. Only put a proxy in front if you already run
 one (WAF/rate-limit/central auth); then install with `WEBKVM_HTTPS=no` and
 `proxy_pass http://127.0.0.1:8080`.
 
+## Quick install (Docker, one line)
+
+Prefer Docker? This installs libvirt/QEMU + Docker if missing, then runs the
+published image against the host's own libvirtd — see
+[docs/DOCKER.md](docs/DOCKER.md) for host packages, the manual `docker run`
+equivalent, and what every mount/privilege is for.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/install-docker.sh -o /tmp/webkvm-docker-install.sh && sudo bash /tmp/webkvm-docker-install.sh
+```
+
 ## Update
 
 ```bash

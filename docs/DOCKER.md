@@ -25,10 +25,30 @@ means:
   native install already has, since its systemd unit also runs as root on the
   host. There is no "reduced" mode.
 
-## Quick start
+## Quick start (automated)
 
-The published image (`slaker1908/webkvm`, built and pushed automatically on
-every release tag) is the easiest way to get started:
+One line, from a fresh server — installs libvirt/QEMU and Docker if
+missing, then deploys the published image:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/install-docker.sh -o /tmp/webkvm-docker-install.sh && sudo bash /tmp/webkvm-docker-install.sh
+```
+
+Or, from a checkout of this repo:
+
+```bash
+sudo ./docker-install.sh              # pulls the published image
+sudo ./docker-install.sh --source     # builds the image locally instead
+sudo ./docker-install.sh --dry-run    # preview only, no changes
+```
+
+This verifies/installs the same libvirt/QEMU/KVM stack `install.sh` sets up
+for a native install (see **Host packages** below — the container itself
+brings everything else), verifies/installs Docker Engine + the compose
+plugin, then runs `docker compose up -d` with the full privileges/mounts
+from `docker-compose.yml`. Prerequisites are idempotent — safe to re-run.
+
+## Quick start (manual, using the published image)
 
 ```bash
 # 1) Edit docker-compose.yml if your paths differ from the defaults, then:
@@ -48,6 +68,75 @@ docker compose up -d
 
 Open `https://<host-ip>:8080` — a self-signed certificate and initial admin
 password are generated on first boot, exactly like a fresh native install.
+(If `DATA_DIR` already holds an existing native install, the printed
+"admin password" file may be a stale leftover from *that* install's first
+boot, not the current password — log in with your existing credentials.)
+
+## Host packages (prerequisites — install these BEFORE Docker)
+
+Docker mode does not install libvirt/QEMU for you — the container is a
+client of the libvirtd already running on the host, so this stack must
+already be installed and running there, exactly as `install.sh` sets up
+for a native install. `docker-install.sh` installs these for you; if you'd
+rather do it by hand:
+
+| Distro family | Command |
+|---|---|
+| Debian/Ubuntu (`apt`) | `sudo apt-get install libvirt-daemon-system libvirt-clients libvirt-daemon-driver-qemu qemu-system-x86 qemu-utils ovmf swtpm swtpm-tools virtinst bridge-utils dnsmasq-base` |
+| Fedora/RHEL (`dnf`) | `sudo dnf install libvirt-daemon-kvm libvirt-client qemu-kvm qemu-img edk2-ovmf swtpm-tools virt-install bridge-utils dnsmasq` |
+| Arch (`pacman`) | `sudo pacman -S libvirt qemu-full qemu-img swtpm edk2-ovmf virt-install dnsmasq` |
+
+Then enable the daemon and Docker itself:
+
+```bash
+sudo systemctl enable --now libvirtd   # or virtqemud on newer libvirt (9.7+)
+sudo systemctl enable --now docker
+```
+
+Docker Engine + the compose plugin, if not already installed:
+
+| Distro family | Command |
+|---|---|
+| Debian/Ubuntu | `sudo apt-get install docker.io docker-compose-v2` |
+| Fedora/RHEL | `sudo dnf install moby-engine docker-compose-plugin` (or add Docker's own repo: https://docs.docker.com/engine/install/fedora/) |
+| Arch | `sudo pacman -S docker docker-compose` |
+
+Notice what's **not** in these lists: `xorriso`, `openssl`, `python3`,
+`nftables`, `qemu-utils`'s CLI tools for the *container's own* use, etc. —
+those live inside the image (see the Dockerfile), not on the host. The
+container talks to the host's nftables too, via `--network host` sharing
+the host's network namespace directly — no separate host-side nftables
+package is needed for that either.
+
+## Manual `docker run` (no compose)
+
+Equivalent to `docker-compose.yml`, for anyone who prefers a single command
+over Compose (fill in a real `DATA_DIR` if it isn't `/opt/webkvm`):
+
+```bash
+docker run -d \
+  --name webkvm \
+  --restart unless-stopped \
+  --network host \
+  --privileged \
+  -e DATA_DIR=/opt/webkvm \
+  -e LIBVIRT_URI=qemu:///system \
+  -e BIND_ADDR=0.0.0.0 \
+  -e PORT=8080 \
+  -v /opt/webkvm:/opt/webkvm \
+  -v /var/run/libvirt:/var/run/libvirt \
+  -v /run/systemd:/run/systemd \
+  -v /var/log/journal:/var/log/journal:ro \
+  -v /etc/passwd:/etc/passwd:ro \
+  -v /etc/shadow:/etc/shadow:ro \
+  -v /etc/group:/etc/group:ro \
+  -v /etc/pam.d:/etc/pam.d:ro \
+  slaker1908/webkvm:latest
+```
+
+See **Bind mounts — what and why** below for the reasoning behind each
+`-v`/`-e`. Manage it afterward with `docker logs -f webkvm`, `docker
+restart webkvm`, `docker rm -f webkvm`.
 
 ## Bind mounts — what and why
 
