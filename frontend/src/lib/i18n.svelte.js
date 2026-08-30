@@ -754,6 +754,8 @@ const messages = {
       none: 'none',
       isoPoolReadOnly: 'ISO pool — read only',
       newVolume: 'New Volume',
+      isoPoolNoVolumes:
+        'ISO-purpose pools are for boot media, not disks — use the ISO library below to upload/manage files here.',
       volumeName: 'Volume name (e.g. vm-disk)',
       volumeCreated: 'Volume "{name}" created',
       volumeDeleted: 'Volume "{name}" deleted',
@@ -2053,6 +2055,8 @@ const messages = {
       none: 'ninguna',
       isoPoolReadOnly: 'Piscina ISO — solo lectura',
       newVolume: 'Nuevo volumen',
+      isoPoolNoVolumes:
+        'Los pools de tipo ISO son para medios de arranque, no discos — usa la biblioteca de ISOs de abajo para subir/gestionar archivos aquí.',
       volumeName: 'Nombre del volumen (p. ej. vm-disk)',
       volumeCreated: 'Volumen "{name}" creado',
       volumeDeleted: 'Volumen "{name}" borrado',
@@ -3356,6 +3360,8 @@ const messages = {
       none: 'cap',
       isoPoolReadOnly: 'Piscina ISO — només lectura',
       newVolume: 'Nou volum',
+      isoPoolNoVolumes:
+        "Els pools de tipus ISO són per a mitjans d'arrencada, no discos — utilitza la biblioteca d'ISOs de sota per pujar/gestionar fitxers aquí.",
       volumeName: 'Nom del volum (p. ex. vm-disk)',
       volumeCreated: 'Volum "{name}" creat',
       volumeDeleted: 'Volum "{name}" esborrat',

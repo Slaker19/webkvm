@@ -453,6 +453,10 @@
   }
   let _vmNameByIdCache = $state({});
 
+  // Disk-volume creation/upload only makes sense for VDI pools — an
+  // ISO-purpose pool is meant for boot media, not blank/uploaded disks.
+  const selectedPoolIsISO = $derived(pools.find((p) => p.name === selectedPool)?.purpose === 'iso');
+
   const totalCapacity = $derived(pools.reduce((sum, p) => sum + (p.capacity || 0), 0));
   const totalAllocated = $derived(pools.reduce((sum, p) => sum + (p.allocated || 0), 0));
 
@@ -627,29 +631,35 @@
         <h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           {t('storage.volumesTitle', { pool: selectedPool || t('storage.none') })}
         </h2>
-        <div class="flex items-center gap-2">
-          <Input
-            type="file"
-            accept=".qcow2,.img,.raw,.qed"
-            bind:files={uploadDiskFiles}
-            onchange={handleUploadDisk}
-            class="hidden"
-            id="disk-upload"
-          />
-          <label for="disk-upload" class="btn btn-primary !text-xs !h-7 cursor-pointer">
-            {uploadingDisk ? t('storage.uploadProgress') : t('storage.uploadDisk')}
-          </label>
-          <Button
-            size="sm"
-            variant="outline"
-            onclick={() => {
-              volName = '';
-              volSize = 20;
-              showCreateVol = true;
-            }}>+ {t('storage.volumes')}</Button
-          >
-        </div>
+        {#if !selectedPoolIsISO}
+          <div class="flex items-center gap-2">
+            <Input
+              type="file"
+              accept=".qcow2,.img,.raw,.qed"
+              bind:files={uploadDiskFiles}
+              onchange={handleUploadDisk}
+              class="hidden"
+              id="disk-upload"
+            />
+            <label for="disk-upload" class="btn btn-primary !text-xs !h-7 cursor-pointer">
+              {uploadingDisk ? t('storage.uploadProgress') : t('storage.uploadDisk')}
+            </label>
+            <Button
+              size="sm"
+              variant="outline"
+              onclick={() => {
+                volName = '';
+                volSize = 20;
+                showCreateVol = true;
+              }}>+ {t('storage.volumes')}</Button
+            >
+          </div>
+        {/if}
       </div>
+
+      {#if selectedPoolIsISO}
+        <p class="text-xs text-muted-foreground mb-3">{t('storage.isoPoolNoVolumes')}</p>
+      {/if}
 
       {#if uploadingDisk}
         <div class="mb-3 bg-muted/30 rounded-md p-3 border border-border">
@@ -662,7 +672,7 @@
         </div>
       {/if}
 
-      {#if showCreateVol}
+      {#if showCreateVol && !selectedPoolIsISO}
         <div class="bg-muted/30 rounded-md p-3 mb-3 border border-border space-y-2">
           <div class="text-sm font-medium">{t('storage.newVolume')}</div>
           <div class="flex flex-wrap gap-2 items-end">
