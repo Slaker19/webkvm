@@ -816,7 +816,7 @@
           </Button>
           <Input
             type="file"
-            accept=".iso"
+            accept=".iso,.img"
             bind:files={uploadFiles}
             onchange={handleUpload}
             class="hidden"
@@ -922,7 +922,10 @@
       <label for="rename-iso-input" class="block text-sm font-medium">{t('storage.newName')}</label>
       <Input id="rename-iso-input" bind:value={renameNewName} placeholder="new-name.iso" />
       <p class="text-xs text-muted-foreground">
-        {@html t('storage.mustEndWithIso', { code: htmlVar('<code>.iso</code>') })}
+        {@html t('storage.mustEndWithIso', {
+          code: htmlVar('<code>.iso</code>'),
+          code2: htmlVar('<code>.img</code>'),
+        })}
       </p>
     </div>
     <Dialog.Footer class="gap-2">

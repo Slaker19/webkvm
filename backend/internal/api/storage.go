@@ -805,7 +805,8 @@ func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name = safe
-	if !strings.HasSuffix(strings.ToLower(name), ".iso") {
+	lowerName := strings.ToLower(name)
+	if !strings.HasSuffix(lowerName, ".iso") && !strings.HasSuffix(lowerName, ".img") {
 		name += ".iso"
 	}
 

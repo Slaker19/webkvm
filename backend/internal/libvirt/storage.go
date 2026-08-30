@@ -575,7 +575,7 @@ func (c *Connector) GetISOs(poolName string) ([]models.ISOScanResult, error) {
 	result := make([]models.ISOScanResult, 0)
 	for i := range vols {
 		name, _ := vols[i].GetName()
-		if !strings.HasSuffix(strings.ToLower(name), ".iso") {
+		if !isISOPoolFile(name) {
 			vols[i].Free()
 			continue
 		}
@@ -810,8 +810,17 @@ func (c *Connector) DeleteISO(name, poolName string) error {
 	return vol.Delete(libvirt.STORAGE_VOL_DELETE_NORMAL)
 }
 
-// RenameISO renames an ISO file in a pool. The name must end with .iso.
-// The new name must not exist in the pool.
+// isISOPoolFile reports whether name has an extension accepted in an
+// ISO-purpose pool. Raw .img files are also boot media some distros
+// ship instead of .iso (e.g. some cloud/netinstall images), so they're
+// listed and manageable here the same way .iso files are.
+func isISOPoolFile(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, ".iso") || strings.HasSuffix(lower, ".img")
+}
+
+// RenameISO renames an ISO/img file in a pool. The name must end with
+// .iso or .img. The new name must not exist in the pool.
 func (c *Connector) RenameISO(oldName, newName, poolName string) error {
 	if err := c.ensureConnected(); err != nil {
 		return err
@@ -820,8 +829,8 @@ func (c *Connector) RenameISO(oldName, newName, poolName string) error {
 	if newName == "" || newName == oldName {
 		return fmt.Errorf("invalid new name")
 	}
-	if !strings.HasSuffix(strings.ToLower(newName), ".iso") {
-		return fmt.Errorf("new name must end with .iso")
+	if !isISOPoolFile(newName) {
+		return fmt.Errorf("new name must end with .iso or .img")
 	}
 	if strings.ContainsAny(newName, "/\\\x00") {
 		return fmt.Errorf("new name contains invalid characters")
