@@ -132,6 +132,8 @@
   let aDiskPool = $state('webkvm-disks');
   let aDiskISO = $state('');
   let aDiskFormat = $state('qcow2');
+  let aDiskVolumes = $state([]);
+  let aDiskExistingVol = $state('');
 
   // Change ISO state
   let showChangeISO = $state(false);
@@ -940,12 +942,26 @@
     });
   }
 
+  async function loadDiskVolumesForPool() {
+    try {
+      aDiskVolumes = (await api.listVolumes(aDiskPool)) || [];
+    } catch (_e) {
+      aDiskVolumes = [];
+    }
+  }
+
   async function addDisk() {
     actionLoading = 'adddisk';
     try {
-      const data = { device: aDiskDevice, bus: aDiskBus, format: aDiskFormat };
-      if (aDiskDevice === 'cdrom') data.source = aDiskISO;
-      else {
+      const data = { device: aDiskDevice === 'existing' ? 'disk' : aDiskDevice, bus: aDiskBus };
+      if (aDiskDevice === 'cdrom') {
+        data.source = aDiskISO;
+      } else if (aDiskDevice === 'existing') {
+        const vol = aDiskVolumes.find((v) => v.path === aDiskExistingVol);
+        data.source = aDiskExistingVol;
+        data.format = vol?.format || 'qcow2';
+      } else {
+        data.format = aDiskFormat;
         data.size_gb = aDiskSize;
         data.pool = aDiskPool;
       }
@@ -1565,6 +1581,8 @@
                   aDiskBus = 'virtio';
                   aDiskSize = 10;
                   aDiskPool = pools.find((p) => p.purpose !== 'iso')?.name || 'webkvm-disks';
+                  aDiskExistingVol = '';
+                  aDiskVolumes = [];
                   showAddDisk = true;
                 }}>+ Add Disk</Button
               >
@@ -2441,7 +2459,11 @@
   <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
       <Dialog.Title
-        >{aDiskDevice === 'cdrom' ? t('vmDetail.attachIso') : t('vmDetail.addDisk')}</Dialog.Title
+        >{aDiskDevice === 'cdrom'
+          ? t('vmDetail.attachIso')
+          : aDiskDevice === 'existing'
+            ? t('vmDetail.attachExistingDisk')
+            : t('vmDetail.addDisk')}</Dialog.Title
       >
     </Dialog.Header>
     <div class="space-y-3">
@@ -2452,10 +2474,12 @@
           bind:value={aDiskDevice}
           onchange={() => {
             aDiskBus = aDiskDevice === 'cdrom' ? 'scsi' : 'virtio';
+            if (aDiskDevice === 'existing') loadDiskVolumesForPool();
           }}
           class="input"
         >
           <option value="disk">{t('vmDetail.diskType')}</option>
+          <option value="existing">{t('vmDetail.existingDisk')}</option>
           <option value="cdrom">{t('vmDetail.cdromIso')}</option>
         </select>
       </div>
@@ -2475,6 +2499,25 @@
           {/if}
         </select>
       </div>
+      {#if aDiskDevice === 'disk' || aDiskDevice === 'existing'}
+        <div>
+          <label for="adisk-pool" class="block text-sm font-medium mb-1.5"
+            >{t('vmDetail.storagePool')}</label
+          >
+          <select
+            id="adisk-pool"
+            bind:value={aDiskPool}
+            onchange={() => {
+              if (aDiskDevice === 'existing') loadDiskVolumesForPool();
+            }}
+            class="input"
+          >
+            {#each pools.filter((p) => p.purpose !== 'iso') as p}<option value={p.name}
+                >{p.name}</option
+              >{/each}
+          </select>
+        </div>
+      {/if}
       {#if aDiskDevice === 'disk'}
         <div>
           <label for="adisk-size" class="block text-sm font-medium mb-1.5"
@@ -2483,22 +2526,24 @@
           <Input id="adisk-size" type="number" min="1" bind:value={aDiskSize} class="tnum" />
         </div>
         <div>
-          <label for="adisk-pool" class="block text-sm font-medium mb-1.5"
-            >{t('vmDetail.storagePool')}</label
-          >
-          <select id="adisk-pool" bind:value={aDiskPool} class="input">
-            {#each pools.filter((p) => p.purpose !== 'iso') as p}<option value={p.name}
-                >{p.name}</option
-              >{/each}
-          </select>
-        </div>
-        <div>
           <label for="adisk-fmt" class="block text-sm font-medium mb-1.5"
             >{t('vmDetail.format')}</label
           >
           <select id="adisk-fmt" bind:value={aDiskFormat} class="input">
             <option value="qcow2">qcow2</option>
             <option value="raw">raw</option>
+          </select>
+        </div>
+      {:else if aDiskDevice === 'existing'}
+        <div>
+          <label for="adisk-existing" class="block text-sm font-medium mb-1.5"
+            >{t('vmDetail.existingDisk')}</label
+          >
+          <select id="adisk-existing" bind:value={aDiskExistingVol} class="input">
+            <option value="">{t('vmDetail.empty')}</option>
+            {#each aDiskVolumes.filter((v) => !v.is_snapshot) as v}
+              <option value={v.path}>{v.name} ({bytesToStr(v.capacity)})</option>
+            {/each}
           </select>
         </div>
       {:else}
