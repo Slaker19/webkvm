@@ -473,9 +473,19 @@ document.getElementById('btnToggleInfo').onclick = function () {
 };
 
 /* ---- power panel ---- */
-function powerAction(action) {
+function powerAction(action, cb) {
     var x = new XMLHttpRequest();
     x.open('POST', '/api/vms/' + vmId + '/' + action + '?vt=' + encodeURIComponent(vt), true);
+    x.onload = function () {
+        if (x.status >= 200 && x.status < 300) { cb(null); return; }
+        var msg = 'Request failed (' + x.status + ')';
+        try {
+            var j = JSON.parse(x.responseText);
+            if (j && j.error) msg = j.error;
+        } catch (e) { /* non-JSON error body, keep the generic message */ }
+        cb(msg);
+    };
+    x.onerror = function () { cb('Network error'); };
     x.send();
 }
 
@@ -495,7 +505,19 @@ document.getElementById('btnTogglePower').onclick = function () {
               '<div class="pconfirm"><span style="flex:1">' + (action === 'forceoff' ? 'Force off may cause data loss.' : 'Are you sure?') + '</span>' +
               '<button class="pno">Cancel</button><button class="pyes">Confirm</button></div>';
             slot.querySelector('.pno').onclick = function () { slot.innerHTML = ''; };
-            slot.querySelector('.pyes').onclick = function () { powerAction(action); slot.innerHTML = ''; };
+            slot.querySelector('.pyes').onclick = function () {
+                slot.innerHTML = '<div class="pconfirm"><span style="flex:1">Sending…</span></div>';
+                powerAction(action, function (err) {
+                    if (err) {
+                        slot.innerHTML = '<div class="pconfirm"><span class="perr" style="flex:1"></span></div>';
+                        slot.querySelector('.perr').textContent = err;
+                        setTimeout(function () { slot.innerHTML = ''; }, 5000);
+                    } else {
+                        slot.innerHTML = '<div class="pconfirm"><span style="flex:1;color:#4ade80">Sent.</span></div>';
+                        setTimeout(function () { closePanel(); }, 900);
+                    }
+                });
+            };
         };
     });
 };
