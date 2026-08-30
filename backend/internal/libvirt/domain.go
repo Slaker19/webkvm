@@ -303,12 +303,25 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 
 	isoXML := ""
 	if req.ISO != "" {
-		isoXML = fmt.Sprintf(`<disk type='file' device='cdrom'>
+		if strings.HasSuffix(strings.ToLower(req.ISO), ".img") {
+			// A .img is a raw disk image (Raspberry Pi/ZimaOS/cloud-image
+			// style appliances), not optical media — it has no El Torito
+			// boot catalog for the firmware to find, so attaching it as
+			// a cdrom silently fails to boot. Attach it as a real,
+			// writable disk instead so the guest actually starts from it.
+			isoXML = fmt.Sprintf(`<disk type='file' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source file='%s'/>
+      <target dev='sda' bus='sata'/>
+    </disk>`, xmlEscape(req.ISO))
+		} else {
+			isoXML = fmt.Sprintf(`<disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
       <source file='%s'/>
       <target dev='sda' bus='sata'/>
       <readonly/>
     </disk>`, xmlEscape(req.ISO))
+		}
 	}
 
 	virtioISOXML := ""
@@ -1575,6 +1588,21 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 		volExt = ".img"
 	}
 
+	device := req.Device
+	if device == "cdrom" && req.Source != "" && strings.HasSuffix(strings.ToLower(req.Source), ".img") {
+		// A .img is a raw disk image (Raspberry Pi/ZimaOS/cloud-image
+		// style appliances), not optical media — it has no El Torito
+		// boot catalog for the firmware to find, so attaching it as a
+		// cdrom silently fails to boot. Attach as a real disk instead,
+		// keeping the SATA bus below (a downloaded appliance image
+		// rarely ships with virtio drivers built in).
+		device = "disk"
+	}
+
+	// Naming/bus scheme follows the ORIGINAL requested device, not the
+	// possibly-overridden one above: a .img reattached as a disk still
+	// keeps SCSI/SATA naming (sd*) rather than switching to virtio (vd*),
+	// since only the device= attribute changes, not the bus.
 	var devLetter string
 	if req.Device == "cdrom" {
 		devLetter = nextSCSIDev(dom, "sd")
@@ -1634,9 +1662,9 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
   %s
   <target dev='%s' bus='%s'/>
   %s
-</disk>`, xmlEscape(diskType), xmlEscape(req.Device), driverXML, xmlEscape(devLetter), xmlEscape(busType), sourceXML)
+</disk>`, xmlEscape(diskType), xmlEscape(device), driverXML, xmlEscape(devLetter), xmlEscape(busType), sourceXML)
 
-	if req.Device == "cdrom" {
+	if device == "cdrom" {
 		devXML = fmt.Sprintf(`<disk type='%s' device='cdrom'>
   %s
   %s
@@ -1871,6 +1899,16 @@ func (c *Connector) UpdateDiskSource(id, target, source string) error {
 	end = loc[1] + end + 7
 
 	diskXML := xmlDesc[start:end]
+
+	// A .img is a raw disk image, not optical media — swapping it into
+	// an existing cdrom slot keeps that slot's device='cdrom'/readonly
+	// semantics (this only replaces <source>, not the device type), so
+	// it would look "attached" but never boot. There's no in-place way
+	// to turn a cdrom slot into a real disk; the caller must attach it
+	// fresh as a disk instead (see AttachDisk).
+	if source != "" && strings.HasSuffix(strings.ToLower(source), ".img") && strings.Contains(diskXML, "device='cdrom'") {
+		return fmt.Errorf("%q is a raw disk image, not optical media — it can't boot from a CD-ROM slot; detach this drive and use \"Add Disk\" to attach it as a real disk instead", filepath.Base(source))
+	}
 
 	sourceRe := regexp.MustCompile(`<source\b[^>]*/>`)
 	if source == "" {
