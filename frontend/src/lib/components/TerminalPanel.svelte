@@ -210,18 +210,33 @@
     setTimeout(() => fit(sendResize), 300);
   }
 
+  // Closes a socket we're intentionally done with, detaching its
+  // handlers first. The close handshake completes asynchronously, so
+  // without this the old onclose/onerror would still fire afterward
+  // and act on whatever this component's state looks like *then* — on
+  // unmount that's a destroyed component with container reset to
+  // null, which made a late onclose call initTerm() straight into
+  // xterm.js's "Terminal requires a parent element" crash.
+  function closeWs(socket) {
+    if (!socket) return;
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+    try {
+      socket.close();
+    } catch (_e) {
+      // ignore close error
+    }
+  }
+
   // Hard restart of the console: drops the WebSocket, clears any
   // garbled alternate-screen state (e.g. after btop) and reconnects.
   function restartConsole() {
     autoRetry = true;
     showedDisconnect = false;
     failedAttempts = 0;
-    if (ws)
-      try {
-        ws.close();
-      } catch (_e) {
-        // ignore close error
-      }
+    closeWs(ws);
     ws = null;
     if (term) term.reset();
     status = 'idle';
@@ -230,12 +245,7 @@
 
   function disconnect() {
     autoRetry = false;
-    if (ws)
-      try {
-        ws.close();
-      } catch (_e) {
-        // ignore close error
-      }
+    closeWs(ws);
     ws = null;
   }
 

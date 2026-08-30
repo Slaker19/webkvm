@@ -327,6 +327,16 @@ func (c *Connector) ListStorageVolumes(poolName string) ([]models.StorageVolume,
 
 	result := make([]models.StorageVolume, 0, len(vols))
 	for i := range vols {
+		// A dir-purpose pool nested inside another pool's own directory
+		// (e.g. an ISO pool whose path lives under a disk pool's path)
+		// shows up here as a directory-typed "volume" — never a real
+		// disk file, so it can't be resized/deleted/attached as one.
+		// Skip anything that isn't a plain file before it ever reaches
+		// the UI's volume pickers.
+		if info, ierr := vols[i].GetInfo(); ierr == nil && info.Type != libvirt.STORAGE_VOL_FILE {
+			vols[i].Free()
+			continue
+		}
 		v, err := c.classifyVolume(&vols[i], poolName, vms)
 		vols[i].Free()
 		if err != nil {

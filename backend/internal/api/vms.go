@@ -531,6 +531,36 @@ func (h *Handler) UpdateDisk(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
+// validDiskBuses is the same set the "Add Disk" dialog offers.
+var validDiskBuses = map[string]bool{"virtio": true, "sata": true, "scsi": true, "ide": true}
+
+// ChangeDiskBus switches an existing disk/cdrom to a different bus.
+// Bus can't be changed in place (it's baked into the device's target
+// naming and address), so this detaches and reattaches the same
+// source file on the new bus — see ChangeDiskBus in the libvirt
+// package for the mechanics.
+func (h *Handler) ChangeDiskBus(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	dev := chi.URLParam(r, "dev")
+	var req struct {
+		Bus string `json:"bus"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !validDiskBuses[req.Bus] {
+		jsonErr(w, http.StatusBadRequest, "bus must be one of: virtio, sata, scsi, ide")
+		return
+	}
+	if err := h.lv.ChangeDiskBus(id, dev, req.Bus); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.audit.Log(auditFor(r, "vm.disk_bus_change", id, map[string]interface{}{"dev": dev, "bus": req.Bus}))
+	jsonResp(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
 // Network interface handlers
 
 func (h *Handler) ListNetIfaces(w http.ResponseWriter, r *http.Request) {

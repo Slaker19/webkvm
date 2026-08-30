@@ -146,6 +146,12 @@
   let resizeDiskSize = $state(10);
   let resizeDiskCurrent = $state(0);
 
+  // Change Disk Bus state
+  let showChangeBus = $state(false);
+  let changeBusTarget = $state('');
+  let changeBusCurrent = $state('');
+  let changeBusNew = $state('virtio');
+
   // Add Net state
   let showAddNet = $state(false);
   let aNetNetwork = $state('default');
@@ -685,7 +691,16 @@
         confirmLabel: t('vmDetail.forceOff'),
         variant: 'destructive',
         onConfirm: async () => {
+          // Unlike every other confirm-dialog action here, this one
+          // never toggled confirmState.loading — the Confirm button
+          // stayed enabled with no spinner for the whole call (up to
+          // 30s for forceRebootVM, which waits for shutoff before
+          // restarting), looking exactly like "accepted the click but
+          // never closes". doActionRun still closes the dialog itself
+          // on success; this only covers the wait and the error case.
+          confirmState.loading = true;
           await doActionRun(action);
+          confirmState.loading = false;
         },
       });
       return;
@@ -697,7 +712,9 @@
         confirmLabel: t('vmDetail.forceReboot'),
         variant: 'destructive',
         onConfirm: async () => {
+          confirmState.loading = true;
           await doActionRun(action);
+          confirmState.loading = false;
         },
       });
       return;
@@ -1001,6 +1018,22 @@
       await api.resizeVmDisk(vm.id, resizeDiskTarget, resizeDiskSize);
       showResizeDisk = false;
       toast.success(t('vmDetail.diskResized'));
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      actionLoading = '';
+    }
+  }
+
+  async function changeDiskBus() {
+    if (!changeBusTarget || !changeBusNew) return;
+    if (!requireShutoff(t('vmDetail.requireShutoffChangeBus'))) return;
+    actionLoading = 'changebus';
+    try {
+      await api.changeDiskBus(vm.id, changeBusTarget, changeBusNew);
+      showChangeBus = false;
+      toast.success(t('vmDetail.diskBusChanged'));
       await load();
     } catch (e) {
       toast.error(e.message);
@@ -1632,6 +1665,16 @@
                           >{t('vmDetail.resize')}</button
                         >
                       {/if}
+                      <button
+                        onclick={() => {
+                          changeBusTarget = disk.target;
+                          changeBusCurrent = disk.bus || '';
+                          changeBusNew = disk.bus || 'virtio';
+                          showChangeBus = true;
+                        }}
+                        class="text-xs text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-muted"
+                        >{t('vmDetail.changeBus')}</button
+                      >
                       <button
                         onclick={() => {
                           if (!requireShutoff(t('vmDetail.removing'))) return;
@@ -2495,7 +2538,12 @@
             <option value="virtio">{t('vmDetail.virtioRecommended')}</option>
             <option value="sata">SATA</option>
             <option value="scsi">SCSI</option>
-            <option value="ide">IDE</option>
+            <!-- IDE has no controller at all on Q35 (every VM here
+                 unless created with the legacy i440fx chipset) —
+                 offering it there just guarantees a failed attach. -->
+            {#if vm?.chipset === 'i440fx'}
+              <option value="ide">IDE</option>
+            {/if}
           {/if}
         </select>
       </div>
@@ -2633,6 +2681,48 @@
       <Button onclick={resizeDisk} disabled={actionLoading === 'resizedisk' || !resizeDiskSize}>
         {#if actionLoading === 'resizedisk'}<Spinner size="sm" color="text-white" />{:else}{t(
             'vmDetail.resize'
+          )}{/if}
+      </Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
+
+<!-- Change Disk Bus Dialog -->
+<Dialog.Root bind:open={showChangeBus}>
+  <Dialog.Content class="sm:max-w-md">
+    <Dialog.Header>
+      <Dialog.Title>{t('vmDetail.changeBusTitle', { target: changeBusTarget })}</Dialog.Title>
+      <Dialog.Description
+        >{t('vmDetail.changeBusDesc', { current: changeBusCurrent })}</Dialog.Description
+      >
+    </Dialog.Header>
+    <div>
+      <label for="cbus-new" class="block text-sm font-medium mb-1.5">{t('vmDetail.busLabel')}</label
+      >
+      <select id="cbus-new" bind:value={changeBusNew} class="input">
+        <option value="virtio">{t('vmDetail.virtioRecommended')}</option>
+        <option value="sata">SATA</option>
+        <option value="scsi">SCSI</option>
+        <!-- IDE has no controller at all on Q35 (every VM here unless
+             created with the legacy i440fx chipset) — offering it
+             there just guarantees a failed attach. -->
+        {#if vm?.chipset === 'i440fx'}
+          <option value="ide">IDE</option>
+        {/if}
+      </select>
+    </div>
+    <Dialog.Footer class="gap-2">
+      <Button
+        variant="outline"
+        onclick={() => (showChangeBus = false)}
+        disabled={actionLoading === 'changebus'}>{t('common.cancel')}</Button
+      >
+      <Button
+        onclick={changeDiskBus}
+        disabled={actionLoading === 'changebus' || changeBusNew === changeBusCurrent}
+      >
+        {#if actionLoading === 'changebus'}<Spinner size="sm" color="text-white" />{:else}{t(
+            'vmDetail.changeBus'
           )}{/if}
       </Button>
     </Dialog.Footer>

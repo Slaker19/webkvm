@@ -182,6 +182,7 @@ func NewRouter(
 				r.Put("/disks/{dev}", h.UpdateDisk)
 				r.Delete("/disks/{dev}", h.DeleteDisk)
 				r.Post("/disks/{dev}/resize", h.ResizeDomainDisk)
+				r.Post("/disks/{dev}/bus", h.ChangeDiskBus)
 
 				r.Post("/networks", h.CreateNetIface)
 				r.Patch("/networks/{mac}", h.UpdateNetIface)

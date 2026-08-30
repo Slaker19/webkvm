@@ -365,6 +365,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ size_gb: sizeGb }),
     }),
+  changeDiskBus: (vmId, dev, bus) =>
+    request(`/vms/${vmId}/disks/${dev}/bus`, {
+      method: 'POST',
+      body: JSON.stringify({ bus }),
+    }),
   attachUSBDevice: (vmId, vendorId, productId) =>
     request(`/vms/${vmId}/usb`, {
       method: 'POST',

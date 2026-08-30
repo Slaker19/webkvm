@@ -1589,14 +1589,23 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 	}
 
 	device := req.Device
+	forceSATA := false
 	if device == "cdrom" && req.Source != "" && strings.HasSuffix(strings.ToLower(req.Source), ".img") {
 		// A .img is a raw disk image (Raspberry Pi/ZimaOS/cloud-image
 		// style appliances), not optical media — it has no El Torito
 		// boot catalog for the firmware to find, so attaching it as a
-		// cdrom silently fails to boot. Attach as a real disk instead,
-		// keeping the SATA bus below (a downloaded appliance image
-		// rarely ships with virtio drivers built in).
+		// cdrom silently fails to boot. Attach as a real disk instead.
+		//
+		// Force SATA regardless of whatever bus the cdrom request asked
+		// for (the UI's cdrom bus picker defaults to "scsi", i.e. the
+		// lsilogic controller, which OVMF has no UEFI boot ROM for — a
+		// disk attached there is invisible to the firmware's boot
+		// manager even with an explicit <boot order>, confirmed live:
+		// it silently fell through to PXE instead of the disk). SATA
+		// (AHCI) has a native OVMF UEFI driver and needs no guest
+		// drivers, unlike virtio.
 		device = "disk"
+		forceSATA = true
 	}
 
 	// Naming/bus scheme follows the ORIGINAL requested device, not the
@@ -1657,20 +1666,38 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 			busType = "virtio"
 		}
 	}
+	if forceSATA {
+		busType = "sata"
+	}
+
+	// sata/scsi disks are addressed by controller/bus/target/unit
+	// rather than PCI slot. Leaving this to libvirt's own
+	// auto-assignment during an incremental AttachDeviceFlags call is
+	// unreliable once another disk already sits on the same bus —
+	// confirmed live: attaching a second sata disk failed with "Found
+	// duplicate drive address ... unit='0'" because it picked the
+	// same slot the first one already uses. Assign the next free unit
+	// ourselves instead of leaving it to chance.
+	var addressXML string
+	if busType == "sata" || busType == "scsi" {
+		addressXML = fmt.Sprintf("<address type='drive' controller='0' bus='0' target='0' unit='%d'/>", nextDriveUnit(dom, busType))
+	}
 
 	devXML := fmt.Sprintf(`<disk type='%s' device='%s'>
   %s
   <target dev='%s' bus='%s'/>
   %s
-</disk>`, xmlEscape(diskType), xmlEscape(device), driverXML, xmlEscape(devLetter), xmlEscape(busType), sourceXML)
+  %s
+</disk>`, xmlEscape(diskType), xmlEscape(device), driverXML, xmlEscape(devLetter), xmlEscape(busType), sourceXML, addressXML)
 
 	if device == "cdrom" {
 		devXML = fmt.Sprintf(`<disk type='%s' device='cdrom'>
   %s
   %s
   <target dev='%s' bus='%s'/>
+  %s
   <readonly/>
-</disk>`, xmlEscape(diskType), driverXML, sourceXML, xmlEscape(devLetter), xmlEscape(busType))
+</disk>`, xmlEscape(diskType), driverXML, sourceXML, xmlEscape(devLetter), xmlEscape(busType), addressXML)
 	}
 
 	flags := libvirt.DOMAIN_DEVICE_MODIFY_CURRENT | libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
@@ -1721,6 +1748,97 @@ func (c *Connector) DetachDisk(id, target string) error {
 
 	diskXML := xmlDesc[start:end]
 	return dom.DetachDeviceFlags(diskXML, flags)
+}
+
+// ChangeDiskBus switches an existing disk or cdrom to a different bus
+// (virtio/sata/scsi/ide). Bus is baked into libvirt's device topology
+// (target dev naming, PCI/drive address) — there's no in-place "update"
+// the way UpdateDiskSource swaps just the <source> file, so this reads
+// the current device/source/format, detaches it, and reattaches it
+// fresh on the requested bus.
+func (c *Connector) ChangeDiskBus(id, target, newBus string) error {
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return err
+	}
+
+	xmlDesc, err := dom.GetXMLDesc(0)
+	dom.Free()
+	if err != nil {
+		return fmt.Errorf("get xml: %w", err)
+	}
+
+	diskStartRe := regexp.MustCompile(`<disk\b`)
+	targetRe := regexp.MustCompile(`<target\b[^>]*dev='` + regexp.QuoteMeta(target) + `'[^>]*/>`)
+	loc := targetRe.FindStringIndex(xmlDesc)
+	if loc == nil {
+		return fmt.Errorf("disk with target '%s' not found", target)
+	}
+	allStarts := diskStartRe.FindAllStringIndex(xmlDesc[:loc[0]], -1)
+	if len(allStarts) == 0 {
+		return fmt.Errorf("could not find disk start for target '%s'", target)
+	}
+	start := allStarts[len(allStarts)-1][0]
+	end := strings.Index(xmlDesc[loc[1]:], "</disk>")
+	if end == -1 {
+		return fmt.Errorf("could not find disk end for target '%s'", target)
+	}
+	end = loc[1] + end + 7
+	diskXML := xmlDesc[start:end]
+
+	deviceRe := regexp.MustCompile(`<disk\b[^>]*\bdevice='([^']*)'`)
+	dm := deviceRe.FindStringSubmatch(diskXML)
+	if len(dm) < 2 {
+		return fmt.Errorf("could not determine device type for target %q", target)
+	}
+	device := dm[1]
+
+	sourceFileRe := regexp.MustCompile(`<source\b[^>]*\bfile='([^']*)'`)
+	sm := sourceFileRe.FindStringSubmatch(diskXML)
+	if len(sm) < 2 || sm[1] == "" {
+		return fmt.Errorf("disk %q has no source file (an empty drive can't change bus)", target)
+	}
+	source := sm[1]
+
+	format := "qcow2"
+	if fm := regexp.MustCompile(`<driver\b[^>]*\btype='([^']*)'`).FindStringSubmatch(diskXML); len(fm) > 1 && fm[1] != "" {
+		format = fm[1]
+	}
+
+	oldBus := ""
+	if bm := regexp.MustCompile(`<target\b[^>]*\bbus='([^']*)'`).FindStringSubmatch(diskXML); len(bm) > 1 {
+		oldBus = bm[1]
+	}
+
+	if err := c.DetachDisk(id, target); err != nil {
+		return fmt.Errorf("detach disk %q: %w", target, err)
+	}
+
+	attachErr := c.AttachDisk(id, models.AttachDiskRequest{
+		Device: device,
+		Bus:    newBus,
+		Source: source,
+		Format: format,
+	})
+	if attachErr == nil {
+		return nil
+	}
+
+	// The new bus didn't work (e.g. "ide" on a Q35 machine, which has
+	// no IDE controller at all) — restore the disk on its previous bus
+	// rather than leaving it detached with no easy way back.
+	if oldBus == "" {
+		return fmt.Errorf("bus %q failed (%v) and the disk is now detached (no original bus recorded to restore it) — reattach %q manually via Add Disk", newBus, attachErr, source)
+	}
+	if rollbackErr := c.AttachDisk(id, models.AttachDiskRequest{
+		Device: device,
+		Bus:    oldBus,
+		Source: source,
+		Format: format,
+	}); rollbackErr != nil {
+		return fmt.Errorf("bus %q failed (%v), and restoring the original bus %q also failed (%v) — the disk is detached; reattach %q manually via Add Disk", newBus, attachErr, oldBus, rollbackErr, source)
+	}
+	return fmt.Errorf("bus %q is not supported on this VM (%v) — the disk has been restored to its original bus (%s)", newBus, attachErr, oldBus)
 }
 
 var (
@@ -2407,6 +2525,33 @@ func nextSCSIDev(dom *libvirt.Domain, prefix string) string {
 		}
 	}
 	return prefix + "z"
+}
+
+// nextDriveUnit returns the next free 'unit' for a controller/bus/
+// target/unit-addressed disk bus (sata, scsi) — the highest unit
+// already used by an existing disk on that same bus, plus one. See
+// the call site in AttachDisk for why this can't be left to
+// libvirt's own auto-assignment during an incremental attach.
+func nextDriveUnit(dom *libvirt.Domain, bus string) int {
+	xmlDesc, err := dom.GetXMLDesc(0)
+	if err != nil {
+		return 0
+	}
+	diskRe := regexp.MustCompile(`(?s)<disk\b.*?</disk>`)
+	busRe := regexp.MustCompile(`<target\b[^>]*\bbus='` + regexp.QuoteMeta(bus) + `'`)
+	unitRe := regexp.MustCompile(`<address\s+type='drive'[^>]*\bunit='(\d+)'`)
+	maxUnit := -1
+	for _, d := range diskRe.FindAllString(xmlDesc, -1) {
+		if !busRe.MatchString(d) {
+			continue
+		}
+		if um := unitRe.FindStringSubmatch(d); len(um) > 1 {
+			if u, err := strconv.Atoi(um[1]); err == nil && u > maxUnit {
+				maxUnit = u
+			}
+		}
+	}
+	return maxUnit + 1
 }
 
 func extractTagAttr(xml, attr string) string {
