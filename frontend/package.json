@@ -27,7 +27,7 @@
     "tailwind-variants": "^3.2.2"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.4",
+    "@eslint/js": "^10.0.1",
     "@internationalized/date": "^3.12.2",
     "@lucide/svelte": "^1.21.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
