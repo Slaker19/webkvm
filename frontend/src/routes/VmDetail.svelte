@@ -99,6 +99,76 @@
   const netRxPoints = $derived(last60(metrics?.net_rx?.points));
   const netTxPoints = $derived(last60(metrics?.net_tx?.points));
 
+  // V13-C-03: metric history (downsampled 24h/7d/30d from the backend).
+  let historyWindow = $state('24h');
+  let history = $state(null); // VMMetrics-like series
+  let historyLoading = $state(false);
+  const historyCpu = $derived(history?.cpu?.points || []);
+  const historyRam = $derived(history?.ram?.points || []);
+  const historyDiskR = $derived(history?.disk_read?.points || []);
+  const historyDiskW = $derived(history?.disk_write?.points || []);
+  const historyNetRx = $derived(history?.net_rx?.points || []);
+  const historyNetTx = $derived(history?.net_tx?.points || []);
+
+  // V13-C-04: alert rules + live state machine for this VM.
+  let alertRules = $state([]);
+  let alertStatuses = $state([]);
+  let alertsLoading = $state(false);
+
+  async function loadHistory() {
+    if (!vmId) return;
+    historyLoading = true;
+    try {
+      history = await api.getVMMetricsHistory(vmId, historyWindow);
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      historyLoading = false;
+    }
+  }
+
+  async function loadAlerts() {
+    if (!vmId) return;
+    alertsLoading = true;
+    try {
+      const r = await api.getVMAlerterRules(vmId);
+      alertRules = (r.rules || []).map((x) => ({ ...x }));
+      alertStatuses = r.statuses || [];
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      alertsLoading = false;
+    }
+  }
+
+  function newAlertRule() {
+    return {
+      id: `al_${Date.now().toString(36)}`,
+      name: '',
+      metric: 'cpu',
+      threshold: 90,
+      above: true,
+      duration_secs: 300,
+      cooldown_secs: 3600,
+      enabled: true,
+    };
+  }
+
+  function ruleStatus(ruleId) {
+    const s = alertStatuses.find((x) => x.rule?.id === ruleId);
+    return s?.state || 'idle';
+  }
+
+  async function saveAlertRules() {
+    try {
+      await api.setVMAlerterRules(vmId, alertRules);
+      toast.success(t('vmDetail.alertsSaved'));
+      await loadAlerts();
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
   // Edit state
   let showEdit = $state(false);
   let eName = $state('');
@@ -212,6 +282,8 @@
     { id: 'overview', label: t('vmDetail.overview') },
     { id: 'disks', label: t('vmDetail.disks') },
     { id: 'net', label: t('vmDetail.networkInterfaces') },
+    { id: 'history', label: t('vmDetail.history') },
+    { id: 'alerts', label: t('vmDetail.alerts') },
     { id: 'snaps', label: t('vmDetail.snapshots') },
   ]);
 
@@ -243,6 +315,7 @@
   onMount(() => {
     load();
     loadMetrics();
+    loadAlerts();
     // Deep link: /vms/:id?serial=1 scrolls to the embedded serial console.
     if (getRoute().query?.serial === '1') later(gotoSerial, 400);
     const offMetrics = events.onVmMetrics((e) => {
@@ -1987,6 +2060,172 @@
           </BlockCard>
         {/snippet}
 
+        {#snippet sec_history()}
+          <BlockCard bid="history" title={t('vmDetail.historyTitle')} anchor="history">
+            <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
+              <span class="text-xs text-muted-foreground">{t('vmDetail.historyDesc')}</span>
+              <div class="flex items-center gap-1">
+                {#each ['24h', '168h', '720h'] as w (w)}
+                  <Button
+                    size="xs"
+                    variant={historyWindow === w ? 'default' : 'outline'}
+                    onclick={() => {
+                      historyWindow = w;
+                      loadHistory();
+                    }}
+                    >{w === '24h'
+                      ? t('vmDetail.hist24h')
+                      : w === '168h'
+                        ? t('vmDetail.hist7d')
+                        : t('vmDetail.hist30d')}</Button
+                  >
+                {/each}
+              </div>
+            </div>
+            {#if historyLoading}
+              <div class="flex justify-center py-10"><Spinner size="lg" /></div>
+            {:else if historyCpu.length === 0 && historyRam.length === 0}
+              <p class="text-sm text-muted-foreground">{t('vmDetail.historyEmpty')}</p>
+            {:else}
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div>
+                  <div class="flex items-baseline justify-between mb-1.5">
+                    <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider"
+                      >{t('vms.cpu')}</span
+                    >
+                    <span class="text-sm tnum"
+                      >{historyCpu.length
+                        ? historyCpu[historyCpu.length - 1].v.toFixed(1)
+                        : '0.0'}%</span
+                    >
+                  </div>
+                  <Chart points={historyCpu} yMax={100} height={80} />
+                </div>
+                <div>
+                  <div class="flex items-baseline justify-between mb-1.5">
+                    <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider"
+                      >{t('common.ram')}</span
+                    >
+                    <span class="text-sm tnum"
+                      >{historyRam.length
+                        ? historyRam[historyRam.length - 1].v.toFixed(1)
+                        : '0.0'}%</span
+                    >
+                  </div>
+                  <Chart
+                    points={historyRam}
+                    yMax={100}
+                    height={80}
+                    color="var(--info, var(--accent))"
+                  />
+                </div>
+                <div>
+                  <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider"
+                    >{t('vmDetail.diskIo')}</span
+                  >
+                  <Chart
+                    points={[...historyDiskR, ...historyDiskW]}
+                    height={80}
+                    color="var(--success)"
+                  />
+                </div>
+                <div>
+                  <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider"
+                    >{t('vmDetail.netIo')}</span
+                  >
+                  <Chart
+                    points={[...historyNetRx, ...historyNetTx]}
+                    height={80}
+                    color="var(--info, var(--accent))"
+                  />
+                </div>
+              </div>
+            {/if}
+          </BlockCard>
+        {/snippet}
+
+        {#snippet sec_alerts()}
+          <BlockCard bid="alerts" title={t('vmDetail.alertsTitle')} anchor="alerts">
+            <p class="text-xs text-muted-foreground mb-3">{t('vmDetail.alertsDesc')}</p>
+            {#if alertsLoading}
+              <div class="flex justify-center py-10"><Spinner size="lg" /></div>
+            {:else}
+              <div class="space-y-2 mb-4">
+                {#each alertRules as rule (rule.id)}
+                  <div
+                    class="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/20 p-2.5"
+                  >
+                    <select
+                      class="h-8 rounded-lg border border-border bg-background px-1 text-sm w-24"
+                      bind:value={rule.metric}
+                    >
+                      <option value="cpu">CPU</option>
+                      <option value="ram">RAM</option>
+                      <option value="disk_r">Disk R</option>
+                      <option value="disk_w">Disk W</option>
+                      <option value="net_rx">Net RX</option>
+                      <option value="net_tx">Net TX</option>
+                    </select>
+                    <select
+                      class="h-8 rounded-lg border border-border bg-background px-1 text-sm w-20"
+                      bind:value={rule.above}
+                    >
+                      <option value={true}>{t('vmDetail.alertAbove')}</option>
+                      <option value={false}>{t('vmDetail.alertBelow')}</option>
+                    </select>
+                    <Input
+                      type="number"
+                      class="h-8 w-24 tnum"
+                      bind:value={rule.threshold}
+                      min="0"
+                    />
+                    <span class="text-xs text-muted-foreground">{t('vmDetail.alertFor')}</span>
+                    <Input
+                      type="number"
+                      class="h-8 w-20 tnum"
+                      bind:value={rule.duration_secs}
+                      min="1"
+                    />
+                    <span class="text-xs text-muted-foreground">{t('vmDetail.alertSecs')}</span>
+                    {#if ruleStatus(rule.id)}
+                      <span
+                        class="text-xs px-2 py-0.5 rounded-md {ruleStatus(rule.id) === 'firing'
+                          ? 'bg-destructive/15 text-destructive'
+                          : ruleStatus(rule.id) === 'pending'
+                            ? 'bg-warning/15 text-warning'
+                            : 'bg-muted/50 text-muted-foreground'}"
+                        >{t('vmDetail.alertState' + ruleStatus(rule.id))}</span
+                      >
+                    {/if}
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      class="text-destructive"
+                      onclick={() => (alertRules = alertRules.filter((x) => x.id !== rule.id))}
+                      aria-label={t('common.delete')}>×</Button
+                    >
+                  </div>
+                {/each}
+                {#if alertRules.length === 0}
+                  <p class="text-sm text-muted-foreground">{t('vmDetail.alertsEmpty')}</p>
+                {/if}
+              </div>
+              <div class="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onclick={() => (alertRules = [...alertRules, newAlertRule()])}
+                >
+                  {t('vmDetail.addAlertRule')}
+                </Button>
+                <Button size="sm" onclick={saveAlertRules} disabled={alertsLoading}>
+                  {t('common.save')}
+                </Button>
+              </div>
+            {/if}
+          </BlockCard>
+        {/snippet}
+
         {#snippet sec_serial()}
           <div id="vm-serial-block">
             <BlockCard bid="serial" title="Consola serial">
@@ -2018,6 +2257,12 @@
         </div>
         <div class={activeSection === 'snaps' ? '' : 'hidden'}>
           {@render sec_snaps()}
+        </div>
+        <div class={activeSection === 'history' ? '' : 'hidden'}>
+          {@render sec_history()}
+        </div>
+        <div class={activeSection === 'alerts' ? '' : 'hidden'}>
+          {@render sec_alerts()}
         </div>
       </div>
 

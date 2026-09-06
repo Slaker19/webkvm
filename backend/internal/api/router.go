@@ -14,6 +14,7 @@ import (
 	"webkvm/internal/events"
 	"webkvm/internal/firewall"
 	"webkvm/internal/libvirt"
+	"webkvm/internal/metrics"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
 	"webkvm/internal/tokens"
@@ -46,6 +47,8 @@ func NewRouter(
 	fwMgr *firewall.Manager,
 	vmSchedStore *vmsched.Store,
 	vmScheduler *vmsched.Scheduler,
+	metricHist *metrics.TimeSeriesStore,
+	alerter *metrics.AlertEngine,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -107,6 +110,8 @@ func NewRouter(
 		fwMgr:        fwMgr,
 		vmSchedStore: vmSchedStore,
 		vmScheduler:  vmScheduler,
+		metricHist:   metricHist,
+		alerter:      alerter,
 		StartedAt:    time.Now(),
 	}
 
@@ -121,6 +126,7 @@ func NewRouter(
 		r.Get("/api/covers/{path}", h.ServeCover)
 	})
 	r.Get("/api/health", h.Health)
+	r.Get("/api/alerts/active", h.ListActiveAlerts)
 	r.Get("/api/events", h.EventsSSE)
 	r.Post("/api/events/ticket", h.EventsTicket)
 
@@ -253,6 +259,13 @@ func NewRouter(
 			r.Get("/vlan-support", h.CheckVLANSupport)
 			r.Get("/meta", h.GetVMMeta)
 			r.Get("/metrics", h.GetVMMetrics)
+			r.Get("/metrics/history", h.GetVMMetricsHistory)
+			r.Get("/alerts", h.GetVMAlerterRules)
+			// V13-C-04: alert rules for a VM are admin-editable.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole(modelsRoleAdmin()))
+				r.Put("/alerts", h.SetVMAlerterRules)
+			})
 			r.Get("/boot", h.GetBootDevice)
 			r.Get("/autostart", h.GetAutostart)
 			r.Get("/snapshots", h.ListSnapshots)

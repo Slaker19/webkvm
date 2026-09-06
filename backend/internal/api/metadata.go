@@ -268,3 +268,34 @@ func (h *Handler) GetVMMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResp(w, http.StatusOK, m)
 }
+
+// GetVMMetricsHistory (V13-C-03) returns downsampled history for a VM.
+// window is "24h", "168h" or "720h" (default 24h). <=24h uses per-minute
+// resolution from the bucketed in-memory window; longer windows use the
+// hourly rollup. Data lives in independent JSONL files under
+// {dataDir}/metrics — never in the main store.
+func (h *Handler) GetVMMetricsHistory(w http.ResponseWriter, r *http.Request) {
+	if h.metricHist == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "metrics history not initialized")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	window := time.Duration(0)
+	switch r.URL.Query().Get("window") {
+	case "", "24h":
+		window = 24 * time.Hour
+	case "168h":
+		window = 7 * 24 * time.Hour
+	case "720h":
+		window = 30 * 24 * time.Hour
+	default:
+		jsonErr(w, http.StatusBadRequest, "window must be 24h, 168h or 720h")
+		return
+	}
+	m, err := h.metricHist.History(id, window)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jsonResp(w, http.StatusOK, m)
+}

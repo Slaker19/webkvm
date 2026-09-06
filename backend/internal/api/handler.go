@@ -17,6 +17,7 @@ import (
 	"webkvm/internal/events"
 	"webkvm/internal/firewall"
 	"webkvm/internal/libvirt"
+	"webkvm/internal/metrics"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
 	"webkvm/internal/tokens"
@@ -46,7 +47,10 @@ type Handler struct {
 	fwMgr        *firewall.Manager
 	vmSchedStore *vmsched.Store
 	vmScheduler  *vmsched.Scheduler
-	StartedAt    time.Time
+	// V13-C-03/04: metric history + alert engine.
+	metricHist *metrics.TimeSeriesStore
+	alerter    *metrics.AlertEngine
+	StartedAt  time.Time
 
 	// V12-DATA-01: per-name serialization of appliance deployments. Two
 	// concurrent deploys must never race: the second one waits, then

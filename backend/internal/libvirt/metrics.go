@@ -113,6 +113,20 @@ type MetricsCollector struct {
 
 	mu   sync.Mutex
 	vms  map[string]*vmMetricsState
+	// sink receives every sampled VM metrics set (V13-C-03/04) so the
+	// history store and alert engine can consume them without coupling.
+	sink SampleSink
+}
+
+// SampleSink is invoked with every sampled metric set (after the SSE
+// broadcast). at is the sample time; m is the VM's full series.
+type SampleSink func(vmID string, at time.Time, m models.VMMetrics)
+
+// SetSink attaches the history/alert sink (V13-C-03/04).
+func (m *MetricsCollector) SetSink(s SampleSink) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sink = s
 }
 
 func NewMetricsCollector(lv *Connector, hub *events.Hub) *MetricsCollector {
@@ -351,6 +365,13 @@ func (m *MetricsCollector) collectOne(dom *libvirt.Domain, uuid string, st *vmMe
 			Timestamp: now.Unix(),
 			Data:      st.snapshot(),
 		})
+	}
+	// Feed the history store / alert engine (V13-C-03/04).
+	m.mu.Lock()
+	sink := m.sink
+	m.mu.Unlock()
+	if sink != nil {
+		sink(uuid, now, st.snapshot())
 	}
 }
 

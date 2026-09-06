@@ -21,6 +21,7 @@ import (
 	"webkvm/internal/firewall"
 	"webkvm/internal/libvirt"
 	"webkvm/internal/logging"
+	metrics2 "webkvm/internal/metrics"
 	"webkvm/internal/models"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
@@ -381,6 +382,15 @@ func main() {
 	metrics := libvirt.NewMetricsCollector(lv, hub)
 	go metrics.Run(eventCtx)
 
+	// V13-C-03/04: metric history (bucketed time series -> JSONL files)
+	// and the alert state machine. The collector feeds both via its sink;
+	// the history store flushes completed buckets to disk every minute.
+	metricHist := metrics2.NewTimeSeriesStore(cfg.DataDir)
+	if mErr := metricHist.Load(); mErr != nil {
+		logger.Warn("metrics_history_load_failed", "err", mErr)
+	}
+	go metricHist.Run(eventCtx)
+
 	// Host metrics collector: 5s sampling, in-memory ring buffer.
 	hostMetrics := libvirt.NewHostMetricsCollector(hub)
 	go hostMetrics.Run(eventCtx)
@@ -442,6 +452,17 @@ func main() {
 		logger.Info("notify_ready")
 	}
 
+	// V13-C-04: metric alert state machine (PENDING -> FIRING with
+	// cooldown). Fed by the collector sink, evaluates every sample.
+	alerter := metrics2.NewAlertEngine(cfg.DataDir, notifier, hub)
+	if aErr := alerter.Load(); aErr != nil {
+		logger.Warn("alerts_load_failed", "err", aErr)
+	}
+	metrics.SetSink(func(vmID string, at time.Time, m models.VMMetrics) {
+		metricHist.Record(vmID, at, m)
+		alerter.Evaluate(vmID, at, m)
+	})
+
 	// Firewall subsystem: per-VM rules + port forwards via nftables.
 	// Rules are rebuilt and applied at startup so they survive service
 	// restarts. Failures are logged but never fatal — the backend still
@@ -490,7 +511,7 @@ func main() {
 	vmScheduler.Start()
 	logger.Info("vmsched_ready")
 
-	router := api.NewRouter(cfg, lv, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler)
+	router := api.NewRouter(cfg, lv, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter)
 
 	srv := &http.Server{
 		Addr:    net.JoinHostPort(cfg.BindAddr, fmt.Sprintf("%d", cfg.Port)),

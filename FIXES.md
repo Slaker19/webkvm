@@ -1,5 +1,45 @@
 # FIXES — Correcciones aplicadas (2026-09-05)
 
+## Sprint C (v1.3) — V13-C-03/C-04: Histórico de métricas (time-series) y Alertas (2026-09-06)
+
+- **`metrics/history.go` (nuevo)** — almacén time-series con **Zero DB Bloat**:
+  - **Nada va a la DB principal**: muestras (5s) se agregan en **buckets en memoria**
+    por VM (minuto + hora) y se **flushean cada 60s a archivos append-only JSONL**
+    independientes: `{dataDir}/metrics/history/<vmID>.jsonl` (minutos) y
+    `metrics/rollup/<vmID>.jsonl` (horas), modo 0600. Nada toca el store principal.
+  - **Downsampling**: resolución fina **por minuto (promedio)** para las últimas 24h;
+    **rollup horario (promedio/max)** para 7/30 días. `History(vmID, window)`: ≤24h →
+    minutos, >24h → horas.
+  - **Retención acotada**: memoria podada a 24h/30d; ficheros recortados (rewrite
+    ocasional ≤1×/día/VM). `Load()` rehidrata al reiniciar y marca `lastFlushed` →
+    **append idempotente sin duplicados** tras restart. Flush en timer + al shutdown.
+  - `MetricsCollector.SetSink` → alimenta el histórico y las alertas tras cada sample.
+- **`metrics/alerts.go` (nuevo)** — máquina de estados **anti-spam**:
+  - `idle → pending (al cruzar umbral) → FIRING (solo tras `duration`, por defecto 5m)
+    → cooldown (1h) antes de re-disparar`. Un **pico de 1s no dispara nada**; un 0
+    transitorio rompe la racha y reinicia el PENDING.
+  - `AlertRule` (metric/threshold/above/duration/cooldown/enabled, VMID opcional
+    "" = todas las VMs), persistidas en `{dataDir}/alerts.json` (0600, fichero de
+    config diminuto, no métricas). Fire → `notifier.Record` (eventos + canales) +
+    evento SSE `vm.alert`. `Active()` y `Statuses()` limpian estados huérfanos de
+    reglas borradas/deshabilitadas.
+  - Fix JSON: slices vacíos → `[]` (no `null`) en Active/Statuses/History.
+- **API**: `GET /api/vms/{id}/metrics/history?window=24h|168h|720h`, `GET/PUT
+  /api/vms/{id}/alerts` (admin), `GET /api/alerts/active`. `main.go`: wire store +
+  engine + sink + flusher.
+- **Frontend `VmDetail`**: nuevas pestañas **History** (selector 24h/7d/30d, gráficas
+  **SVG nativo** reutilizando `Chart.svelte` — sin librerías pesadas) y **Alerts**
+  (editor de reglas con umbral/dirección/duración/cooldown + estado en vivo
+  idle/pending…/FIRING). i18n +28 claves ×3 (1301 cada uno, check-i18n OK).
+- **Tests** (`-race`): history (buckets promedio, minutos ordenados, flush idempotente
+  + append-only + 0600, restart sin duplicados, rollup horario, VM vacía), alerts
+  (spike no dispara, firing tras duración, **cooldown suprime re-fire**, resolución a
+  idle, below-threshold, scoping VM/global, persistencia 0600, invalid refused).
+- **Gate real en VM (v1.3.0-c04)**: VM fedora encendida → history 24h/720h poblados ✓
+  · regla guardada ✓ · **PENDING→FIRING live** ✓ · `/alerts/active` muestra la alerta ✓
+  · al borrar la regla → activas a 0 ✓ · **flush JSONL verificado en disco** (minutos
+  427 B + rollup horario) ✓ · VM apagada.
+
 ## Sprint C (v1.3) — V13-C-01/C-02: Editor de Firewall (host) con Safe Apply y templates (2026-09-06)
 
 - **`firewall/host.go` (nuevo)** — firewall a nivel de HOST:
