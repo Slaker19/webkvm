@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"syscall"
 	"time"
 
-	"webkvm/internal/audit"
 	"webkvm/internal/appliances"
+	"webkvm/internal/audit"
 	"webkvm/internal/auth"
 	"webkvm/internal/backupstore"
 	"webkvm/internal/config"
@@ -24,28 +25,74 @@ import (
 )
 
 type Handler struct {
-	lv            *libvirt.Connector
-	auth          *auth.Manager
-	loginLimiter  *auth.LoginRateLimiter
-	userStore     *user.Store
-	cfg           *config.Config
-	hub           *events.Hub
-	gs            *groupsStore
-	appStore      *appliances.Store
-	metrics       *libvirt.MetricsCollector
-	hostMetrics   *libvirt.HostMetricsCollector
-	audit         *audit.Logger
-	settings      *configstore.Store
-	tokens        *tokens.Store
-	nodes         *nodes.Registry
-	backupStore   *backupstore.Store
-	backupRunner  *backupstore.Runner
-	notifier      *notify.Notifier
-	fwStore       *firewall.Store
-	fwMgr         *firewall.Manager
-	vmSchedStore  *vmsched.Store
-	vmScheduler   *vmsched.Scheduler
-	StartedAt     time.Time
+	lv           *libvirt.Connector
+	auth         *auth.Manager
+	loginLimiter *auth.LoginRateLimiter
+	userStore    *user.Store
+	cfg          *config.Config
+	hub          *events.Hub
+	gs           *groupsStore
+	appStore     *appliances.Store
+	metrics      *libvirt.MetricsCollector
+	hostMetrics  *libvirt.HostMetricsCollector
+	audit        *audit.Logger
+	settings     *configstore.Store
+	tokens       *tokens.Store
+	nodes        *nodes.Registry
+	backupStore  *backupstore.Store
+	backupRunner *backupstore.Runner
+	notifier     *notify.Notifier
+	fwStore      *firewall.Store
+	fwMgr        *firewall.Manager
+	vmSchedStore *vmsched.Store
+	vmScheduler  *vmsched.Scheduler
+	StartedAt    time.Time
+
+	// V12-DATA-01: per-name serialization of appliance deployments. Two
+	// concurrent deploys must never race: the second one waits, then
+	// verifies the target is still free. The map is trimmed when the last
+	// holder releases, so it cannot grow without bound.
+	deployMu    sync.Mutex
+	deployLocks map[string]*deployLockEntry
+}
+
+// deployLockEntry is an acquired-or-waited deploy slot for one VM name.
+// holders counts acquirers that registered (holding or queued); when it
+// drops to zero the entry is removable.
+type deployLockEntry struct {
+	mu      sync.Mutex
+	holders int
+}
+
+// acquireDeployLock blocks until it holds the deploy lock for vmName. The
+// returned func releases it and must be deferred by the caller.
+func (h *Handler) acquireDeployLock(vmName string) func() {
+	h.deployMu.Lock()
+	if h.deployLocks == nil {
+		h.deployLocks = make(map[string]*deployLockEntry)
+	}
+	e := h.deployLocks[vmName]
+	if e == nil {
+		e = &deployLockEntry{}
+		h.deployLocks[vmName] = e
+	}
+	e.holders++
+	mu := &e.mu
+	name := vmName
+	h.deployMu.Unlock()
+
+	mu.Lock()
+	return func() {
+		h.deployMu.Lock()
+		if e := h.deployLocks[name]; e != nil {
+			e.holders--
+			if e.holders <= 0 {
+				delete(h.deployLocks, name)
+			}
+		}
+		h.deployMu.Unlock()
+		mu.Unlock()
+	}
 }
 
 // Health reports backend liveness and the status of its dependencies.

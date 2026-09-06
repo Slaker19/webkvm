@@ -68,6 +68,19 @@ func NewManager(secret string, settings SettingsProvider) *Manager {
 	}
 }
 
+// NewManagerWithPath is NewManager with a persistent token blacklist
+// backed by revokedPath (expected: cfg.RevokedFile()). The file is
+// missing on first boot (normal); corrupt files are quarantined and the
+// blacklist starts empty (fail-open). Tests that don't care about
+// persistence keep using NewManager.
+func NewManagerWithPath(secret string, settings SettingsProvider, revokedPath string) *Manager {
+	return &Manager{
+		secret:    []byte(secret),
+		blacklist: NewTokenBlacklistWithPath(revokedPath),
+		settings:  settings,
+	}
+}
+
 // Close releases resources held by the Manager, notably the token blacklist's
 // GC goroutine. It is safe to call once at process shutdown. Subsequent calls
 // are no-ops.
@@ -376,7 +389,10 @@ func isClipboardPath(path string) bool {
 // vncTicketAllowedPath reports whether path is one a VNC console
 // ticket may authenticate, and extracts the VM ID it's scoped to.
 // Deliberately a short, fixed allowlist — unlike the session JWT, a
-// VNC ticket must never authenticate arbitrary API routes.
+// VNC ticket must never authenticate arbitrary API routes. Power
+// actions (reboot/shutdown/forceoff) are INTENTIONALLY excluded: a
+// leaked ?vt= must not be able to stop the VM — those require the
+// session Bearer JWT from the main app.
 func vncTicketAllowedPath(path string) (vmID string, ok bool) {
 	if strings.HasPrefix(path, "/console/") {
 		rest := strings.TrimPrefix(path, "/console/")
@@ -389,7 +405,7 @@ func vncTicketAllowedPath(path string) (vmID string, ok bool) {
 		return "", false
 	}
 	rest := strings.TrimPrefix(path, "/api/vms/")
-	for _, suffix := range []string{"/vnc", "/clipboard", "/reboot", "/shutdown", "/forceoff"} {
+	for _, suffix := range []string{"/vnc", "/clipboard"} {
 		if strings.HasSuffix(rest, suffix) && strings.Count(rest, "/") == 1 {
 			return strings.TrimSuffix(rest, suffix), true
 		}

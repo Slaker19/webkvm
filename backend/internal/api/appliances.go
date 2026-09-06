@@ -5,14 +5,17 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"webkvm/internal/appliances"
@@ -216,6 +219,21 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// V12-DATA-01: fail fast BEFORE any job/I/O if the target already
+	// exists. The job re-checks under the name lock (TOCTOU window), but
+	// this gives the operator an immediate 409 instead of a job that dies
+	// after the fact. Fail-closed: if libvirt cannot answer, refuse.
+	poolName := config.DiskPoolName
+	exists, verr := h.verifyDeployTargetFree(poolName, vmName)
+	if verr != nil {
+		jsonErr(w, http.StatusServiceUnavailable, verr.Error())
+		return
+	}
+	if exists {
+		jsonErr(w, http.StatusConflict, fmt.Sprintf("deploy target taken: a VM or volume named %q already exists", vmName))
+		return
+	}
+
 	// Quota: the deploy creates one VM for the owner.
 	owner, role, _ := audit.FromRequest(r)
 	if role != models.RoleAdmin {
@@ -231,6 +249,34 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := h.checkDiskQuota(owner, map[string]int64{h.defaultPool(): app.DiskGB}); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+
+	// V12-CAT-08: validate the target network BEFORE any job is created.
+	// A bogus network name used to surface only after minutes of
+	// download+decompress (→ orphan cleanup); now it's an immediate 400.
+	// An empty name keeps the historical fallback to the default network
+	// (the deploy job resolves it).
+	if req.Network != "" {
+		ok, nerr := h.networkExists(req.Network)
+		if nerr != nil {
+			jsonErr(w, http.StatusServiceUnavailable, "cannot verify network before deploy: "+nerr.Error())
+			return
+		}
+		if !ok {
+			jsonErr(w, http.StatusBadRequest, fmt.Sprintf("network %q does not exist", req.Network))
+			return
+		}
+	}
+
+	// Fail fast: validate the cloud-init payload BEFORE creating the job,
+	// so a bad form returns 400 without leaving a queued job zombie (or an
+	// audit entry for a deploy that never starts).
+	if req.CloudInit != nil {
+		if err := (cloudinit.Config{User: req.CloudInit.User, Password: req.CloudInit.Password,
+			SSHKey: req.CloudInit.SSHKey, Hostname: req.CloudInit.Hostname}).Validate(); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
@@ -252,29 +298,125 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 			"size":      app.SizeBytes,
 		}))
 	}
-
-	// Fail fast: validate the cloud-init payload BEFORE any expensive
-	// work (downloads / clones), so a bad form never wastes minutes.
-	if req.CloudInit != nil {
-		if err := (cloudinit.Config{User: req.CloudInit.User, Password: req.CloudInit.Password,
-			SSHKey: req.CloudInit.SSHKey, Hostname: req.CloudInit.Hostname}).Validate(); err != nil {
-			jsonErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
 	go h.deployApplianceJob(jobID, app, vmName, req.Network, req.CloudInit, owner)
 
 	jsonResp(w, http.StatusAccepted, map[string]string{"job_id": jobID, "status": "started"})
+}
+
+// networkExists reports whether a libvirt network with this name exists
+// (active or inactive). Error is non-nil only when libvirt itself failed
+// to answer.
+func (h *Handler) networkExists(name string) (bool, error) {
+	nets, err := h.lv.ListNetworks()
+	if err != nil {
+		return false, err
+	}
+	return networkInList(name, nets), nil
+}
+
+// networkInList is the pure membership check used by networkExists,
+// separated so it can be unit-tested without a live libvirt connection.
+func networkInList(name string, nets []models.Network) bool {
+	for _, n := range nets {
+		if n.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// deployDiskCandidates lists the pool filenames a deploy would write for
+// the given VM name, covering both supported on-disk formats.
+func deployDiskCandidates(vmName string) []string {
+	return []string{vmName + ".qcow2", vmName + ".img"}
+}
+
+// fileInode returns the inode of path, or 0 if it cannot be stat'ed for
+// any reason. Linux-only (syscall.Stat_t), matching the server target.
+func fileInode(path string) uint64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0
+	}
+	return st.Ino
+}
+
+// verifyDeployTargetFree is the authoritative pre-flight: nil when the
+// domain name is free and neither candidate pool filename is taken.
+// Checks BOTH libvirt's view (registered volumes) and the filesystem
+// (a leftover image a failed deploy never registered). verifyErr is
+// non-nil when libvirt itself failed to answer (caller must fail
+// closed: a target we cannot verify is a target we must not overwrite).
+func (h *Handler) verifyDeployTargetFree(poolName, vmName string) (exists bool, verifyErr error) {
+	exists, err := h.lv.DomainExists(vmName)
+	if err != nil {
+		return false, fmt.Errorf("cannot verify deploy target: %w", err)
+	}
+	if exists {
+		return true, nil
+	}
+	// Filesystem truth first: a dir pool only registers volumes on
+	// refresh, so a raw leftover file may not appear as a volume yet.
+	poolPath, ferr := h.lv.GetPoolPath(poolName)
+	if ferr != nil {
+		return false, fmt.Errorf("cannot resolve pool before deploy: %w", ferr)
+	}
+	for _, cand := range deployDiskCandidates(vmName) {
+		if _, err := os.Stat(filepath.Join(poolPath, cand)); err == nil {
+			return true, nil
+		}
+		vexists, verr := h.lv.VolumeExists(poolName, cand)
+		if verr != nil {
+			return false, fmt.Errorf("cannot verify deploy target: %w", verr)
+		}
+		if vexists {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // deployApplianceJob runs the download → decompress → validate → create
 // pipeline in the background, updating the shared job store so the UI
 // can render a live progress bar.
 func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmName, network string, cloudInit *models.CloudInitRequest, owner string) {
+	// V12-DATA-01: serialize same-name deployments. The second job waits
+	// here, then its pre-flight sees the first one's artifacts and stops
+	// before touching any bytes on the pool.
+	unlock := h.acquireDeployLock(vmName)
+	defer unlock()
+
 	poolName := config.DiskPoolName
 	poolPath, err := h.lv.GetPoolPath(poolName)
 	if err != nil {
 		updateJob(jobID, 0, "error", "resolve pool: "+err.Error())
+		return
+	}
+
+	// Pre-flight re-check under the name lock (the handler check already
+	// ran, but minutes of download could have elapsed since then, or the
+	// request raced with another one). Fail-closed on verification errors.
+	exists, verr := h.verifyDeployTargetFree(poolName, vmName)
+	if verr != nil {
+		updateJob(jobID, 0, "error", verr.Error())
+		if h.audit != nil {
+			h.audit.Log(audit.Entry{Time: time.Now().UTC().Format(time.RFC3339), User: owner,
+				Action: "vm.appliance_deploy_blocked", Resource: vmName,
+				Detail: map[string]any{"appliance": app.ID, "reason": "verify failed"}})
+		}
+		return
+	}
+	if exists {
+		updateJob(jobID, 0, "error", fmt.Sprintf("deploy target taken: VM or volume named %q already exists", vmName))
+		if h.audit != nil {
+			h.audit.Log(audit.Entry{Time: time.Now().UTC().Format(time.RFC3339), User: owner,
+				Action: "vm.appliance_deploy_blocked", Resource: vmName,
+				Detail: map[string]any{"appliance": app.ID, "reason": "name collision"}})
+		}
 		return
 	}
 
@@ -379,6 +521,50 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 		return
 	}
 
+	// V12-DATA-02 (ownership guard): record the inode of the file we just
+	// placed. The rollback helper below refuses to delete anything whose
+	// inode no longer matches — a concurrent import/clone winning the
+	// same path must never have its file destroyed by our cleanup, and
+	// CreateDomain must not define a VM pointing at a foreign file.
+	poolIno := fileInode(poolDest)
+	assertStillOurs := func(stage string) bool {
+		if poolIno == 0 {
+			return true // no se pudo marcar; conservar comportamiento clásico
+		}
+		if cur := fileInode(poolDest); cur == poolIno {
+			return true
+		}
+		updateJob(jobID, 99, "error", "deploy target was replaced concurrently ("+stage+"); conserving foreign file")
+		return false
+	}
+
+	// V12-DATA-02: from here on the image lives in the pool, so every
+	// failure must roll it back — os.Rename already replaced anything on
+	// poolDest, and an orphaned volume is invisible to quota accounting
+	// and would block/overwrite the next deploy with the same name.
+	removePoolImage := func(reason string) {
+		if _, serr := os.Stat(poolDest); serr != nil && !errors.Is(serr, os.ErrNotExist) {
+			slog.Error("appliance_deploy_cleanup_stat_failed", "job", jobID, "file", poolDest, "err", serr)
+		}
+		if poolIno != 0 && fileInode(poolDest) != poolIno {
+			// The file we placed is gone (someone replaced it); we
+			// own nothing here. Do not delete what we don't own.
+			slog.Warn("appliance_deploy_cleanup_skipped_foreign_file", "job", jobID, "file", poolDest)
+			return
+		}
+		if rerr := os.Remove(poolDest); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			slog.Error("appliance_deploy_cleanup_failed", "job", jobID, "file", poolDest, "err", rerr)
+		}
+		if rerr := h.lv.RefreshPool(poolName); rerr != nil {
+			slog.Warn("appliance_deploy_cleanup_refresh", "job", jobID, "pool", poolName, "err", rerr)
+		}
+		if h.audit != nil {
+			h.audit.Log(audit.Entry{Time: time.Now().UTC().Format(time.RFC3339), User: owner,
+				Action: "appliance.deploy_cleanup", Resource: poolFileName,
+				Detail: map[string]any{"pool": poolName, "job": jobID, "reason": reason}})
+		}
+	}
+
 	// Grow the image to the app's recommended disk size BEFORE the VM is
 	// defined. Cloud images ship as tiny qcow2 files (a few GiB of virtual
 	// disk); any provisioning that installs packages would otherwise run
@@ -399,6 +585,7 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 				args = append(args, poolDest, fmt.Sprintf("%dG", effective.DiskGB))
 				if out, err := exec.Command("qemu-img", args...).CombinedOutput(); err != nil {
 					updateJob(jobID, 99, "error", fmt.Sprintf("resize disk to %dG: %v: %s", effective.DiskGB, err, strings.TrimSpace(string(out))))
+					removePoolImage("qemu-img resize failed")
 					return
 				}
 			}
@@ -406,11 +593,14 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 	}
 
 	if err := h.lv.RefreshPool(poolName); err != nil {
-		fmt.Println("Warning: refresh pool failed:", err)
+		slog.Warn("appliance_deploy_refresh_failed", "job", jobID, "pool", poolName, "err", err)
 	}
 	if _, err := h.lv.GetStorageVolume(poolName, poolFileName); err != nil {
-		_ = os.Remove(poolDest)
+		removePoolImage("volume did not register after refresh")
 		updateJob(jobID, 99, "error", "image did not register as volume: "+err.Error())
+		return
+	}
+	if !assertStillOurs("after volume registration") {
 		return
 	}
 
@@ -426,9 +616,13 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 	if cloudInit != nil && app.CloudInitSupported {
 		req.CloudInit = cloudInit
 	}
+	if !assertStillOurs("before create VM") {
+		return
+	}
 	vm, err := h.lv.CreateDomain(req)
 	if err != nil {
 		updateJob(jobID, 99, "error", "create VM: "+err.Error())
+		removePoolImage("create VM failed")
 		return
 	}
 	if owner != "" {
@@ -443,21 +637,37 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 		// runs on first boot to install the software. Database credentials
 		// are generated HERE (not inside the guest) so WebKVM can show them
 		// in the UI pop-up while the guest uses exactly the same values.
+		var meta *builtinAppMeta
 		if provisionScript != "" {
-			meta := appMetaFor(app.ID)
+			m := appMetaFor(app.ID)
+			meta = &m
 			if strings.Contains(provisionScript, "{{WEBKVM_DB_PASS}}") {
 				meta.DBPass = cloudinit.GeneratePassword(16)
 				provisionScript = strings.ReplaceAll(provisionScript, "{{WEBKVM_DB_PASS}}", meta.DBPass)
 			}
 			req.CloudInit.ProvisionScript = provisionScript
-			if b, err := json.Marshal(meta); err == nil {
+		}
+		// V12-CAT-08: if the NoCloud seed fails to build/attach, the job is
+		// ERROR (not "completed with a warning") — the operator must not see
+		// a green success for an app that never got its seed. AppInfo is NOT
+		// persisted until the seed is attached, so the UI never shows
+		// credentials for an unprovisioned app. The VM is kept (its disk is
+		// valid) and the audit trail documents the partial state.
+		if err := h.applyCloudInit(vm.ID, vm.Name, req.CloudInit); err != nil {
+			updateJob(jobID, 99, "error", "cloud-init seed failed: "+err.Error())
+			if h.audit != nil {
+				h.audit.Log(audit.Entry{Time: time.Now().UTC().Format(time.RFC3339), User: owner,
+					Action: "appliance.deploy_cloudinit_failed", Resource: vm.ID,
+					Detail: map[string]any{"vm": vm.Name, "appliance": app.ID, "error": err.Error()}})
+			}
+			return
+		}
+		// Seed attached: NOW the credentials are real and safe to surface.
+		if meta != nil {
+			if b, merr := json.Marshal(meta); merr == nil {
 				s := string(b)
 				_, _ = h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{AppInfo: &s})
 			}
-		}
-		if err := h.applyCloudInit(vm.ID, vm.Name, req.CloudInit); err != nil {
-			updateJob(jobID, 100, "completed", "VM created (cloud-init warning: "+err.Error()+")")
-			return
 		}
 	}
 	updateJob(jobID, 100, "completed", "VM "+vm.Name+" created")

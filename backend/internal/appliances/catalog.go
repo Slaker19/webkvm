@@ -52,6 +52,11 @@ type Appliance struct {
 	// BuiltinOverride marks a builtin whose provision script was replaced
 	// by an admin after v2 (persisted across restarts; empty = embedded).
 	BuiltinOverride bool `json:"builtin_override,omitempty"`
+	// Customized marks a builtin that an admin edited through the API
+	// (Update/SetProvision). Catalog migrations (V12-CAT-00, layout v3)
+	// overwrite the mutable defaults of a builtin ONLY when it is NOT
+	// customized — an admin-owned entry keeps exactly what the admin set.
+	Customized bool `json:"customized,omitempty"`
 	// BaseImageID is the ID of another appliance to use as the disk
 	// image when ProvisionScript is set (e.g. an app installed on the
 	// Ubuntu cloud base). When empty, URL is used directly.
@@ -131,10 +136,12 @@ func NewStore(path string) *Store {
 	return s
 }
 
-// layoutVersion bumps whenever embedded builtin scripts change in a way
-// that must invalidate previously persisted copies. v2 drops any builtin
-// script stored under v1 so updated binaries ship their fixed scripts.
-const layoutVersion = 2
+// layoutVersion bumps whenever embedded builtin defaults change in a way
+// that must reach already-seeded stores. v2 dropped stale v1 scripts.
+// v3 (V12-CAT-00) re-applies the mutable defaults (URL, SizeBytes,
+// compression, resources, notes) to builtins that were NOT customized by
+// an admin, so broken/expired catalog URLs self-heal on upgrade.
+const layoutVersion = 3
 
 type storeFile struct {
 	Version int         `json:"version"`
@@ -177,12 +184,32 @@ func (s *Store) load() error {
 				a.ProvisionScript = scr
 			}
 		}
-		// For builtins, re-apply immutable fields from the compiled
-		// Defaults so the persistent store can't override them (e.g.
-		// cloud_init_supported was wrongly set to true for ISO apps).
-		if a.Builtin {
+		// For builtins, re-apply immutable + (if not customized) mutable
+		// defaults from the compiled Defaults so a stale persistent store
+		// can't freeze broken URLs/sizes forever (V12-CAT-00 / layout v3).
+		// A Customized or BuiltinOverride builtin is admin-owned: keep the
+		// stored values verbatim, including its provision script.
+		if a.Builtin && !a.Customized && !a.BuiltinOverride {
 			for _, d := range Defaults {
 				if d.ID == a.ID {
+					a.CloudInitSupported = d.CloudInitSupported
+					a.Format = d.Format
+					a.Category = d.Category
+					a.URL = d.URL
+					a.Compression = d.Compression
+					a.SizeBytes = d.SizeBytes
+					a.VCPUs = d.VCPUs
+					a.RAMMB = d.RAMMB
+					a.DiskGB = d.DiskGB
+					a.Notes = d.Notes
+					break
+				}
+			}
+		} else if a.Builtin {
+			for _, d := range Defaults {
+				if d.ID == a.ID {
+					// immutable fields still come from the binary even for
+					// customized entries (they can't be edited via the API).
 					a.CloudInitSupported = d.CloudInitSupported
 					a.Format = d.Format
 					a.Category = d.Category
@@ -210,7 +237,7 @@ func (s *Store) save() error {
 		return err
 	}
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, s.path)
@@ -300,6 +327,9 @@ func (s *Store) SetProvision(id, script string) error {
 		// cleared -> fall back to the embedded default again
 		a.BuiltinOverride = false
 	}
+	if a.Builtin && norm != "" {
+		a.Customized = true
+	}
 	a.ProvisionScript = norm
 	s.items[id] = a
 	return s.save()
@@ -347,6 +377,7 @@ func (s *Store) Update(id string, a Appliance) error {
 	a.ID = id
 	a.Builtin = existing.Builtin
 	a.ProvisionScript = existing.ProvisionScript
+	a.Customized = true // admin owns this entry now; migrations must not touch it
 	s.items[id] = a
 	err := s.save()
 	s.mu.Unlock()

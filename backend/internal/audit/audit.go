@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,10 @@ import (
 
 const (
 	maxFileBytes = 10 << 20 // 10 MB
+	// maxBackups caps how many rotated audit files are kept before the
+	// oldest is dropped (V12-OPS-05). Combined with maxFileBytes this
+	// bounds total audit disk usage at ~80 MB regardless of uptime.
+	maxBackups = 7
 )
 
 type Entry struct {
@@ -72,18 +77,88 @@ func (l *Logger) rotateIfNeededLocked() error {
 	if info.Size() < maxFileBytes {
 		return nil
 	}
-	if err := l.w.Flush(); err != nil {
+	return l.rotateLocked()
+}
+
+// rotateLocked rotates the current file to .1 and shifts the existing
+// backups (.1->.2, .2->.3, …, .N-1->.N), dropping the oldest one beyond
+// maxBackups. Durability contract (V12-OPS-05): every buffered entry is
+// flushed to the kernel, fsynced to stable storage, and only then is the
+// file closed and renamed — a crash or power loss during rotation can
+// never drop audit entries that were already acknowledged by Log().
+func (l *Logger) rotateLocked() error {
+	if l.w != nil {
+		if err := l.w.Flush(); err != nil {
+			return err
+		}
+	}
+	if err := l.file.Sync(); err != nil {
 		return err
 	}
 	if err := l.file.Close(); err != nil {
 		return err
 	}
-	// Rename to .1 (overwriting the previous one).
-	_ = os.Remove(l.path + ".1")
+	// Drop the oldest backup first so the shift never overwrites data.
+	if err := os.Remove(l.path + "." + strconv.Itoa(maxBackups)); err != nil && !os.IsNotExist(err) {
+		return l.reopenAndReturn(err)
+	}
+	for i := maxBackups - 1; i >= 1; i-- {
+		src := l.path + "." + strconv.Itoa(i)
+		if _, err := os.Stat(src); err == nil {
+			if err := os.Rename(src, l.path+"."+strconv.Itoa(i+1)); err != nil {
+				return l.reopenAndReturn(err)
+			}
+		}
+	}
 	if err := os.Rename(l.path, l.path+".1"); err != nil {
-		return err
+		return l.reopenAndReturn(err)
 	}
 	return l.openLocked()
+}
+
+// reopenAndReturn reopens the log so the logger stays usable even when a
+// rotation step fails (e.g. a transient rename error), then returns the
+// original error. The entry that triggered the failed rotation is dropped
+// for that call, but future Log() calls keep working instead of silently
+// losing every subsequent entry to a closed file descriptor.
+func (l *Logger) reopenAndReturn(origErr error) error {
+	if err := l.openLocked(); err != nil {
+		return origErr
+	}
+	return origErr
+}
+
+// Close flushes, fsyncs and closes the audit log. It is idempotent and
+// safe to call more than once. Always call it on shutdown so the last
+// buffered entries survive a clean restart.
+func (l *Logger) Close() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file == nil {
+		return nil
+	}
+	var firstErr error
+	if l.w != nil {
+		if err := l.w.Flush(); err != nil {
+			firstErr = err
+		}
+	}
+	if err := l.file.Sync(); err != nil {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if err := l.file.Close(); err != nil {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	l.file = nil
+	l.w = nil
+	return firstErr
 }
 
 // Log writes an entry. Safe for concurrent use.
@@ -116,8 +191,9 @@ type ListOptions struct {
 // List returns entries matching opts, newest first, with offset/limit
 // paging applied after filtering (so `total` reflects the filtered
 // count, not the whole log). It re-reads the log file(s) from disk on
-// every call — audit.log is capped at 10MB by rotation (plus one .1
-// backup), so a full parse is cheap even on a long-running install.
+// every call — audit.log is capped at 10MB by rotation (plus up to
+// maxBackups rotated files), so a full parse is cheap even on a
+// long-running install.
 func (l *Logger) List(opts ListOptions, limit, offset int) (entries []Entry, total int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -127,8 +203,14 @@ func (l *Logger) List(opts ListOptions, limit, offset int) (entries []Entry, tot
 		}
 	}
 
+	var paths []string
+	for i := maxBackups; i >= 1; i-- {
+		paths = append(paths, l.path+"."+strconv.Itoa(i))
+	}
+	paths = append(paths, l.path)
+
 	var all []Entry
-	for _, p := range []string{l.path + ".1", l.path} {
+	for _, p := range paths {
 		es, ferr := readEntries(p)
 		if ferr != nil && !os.IsNotExist(ferr) {
 			return nil, 0, ferr

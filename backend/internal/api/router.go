@@ -295,8 +295,6 @@ func NewRouter(
 
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAtLeast("operator"))
-			r.Post("/pools", h.CreatePool)
-			r.Put("/pools/{name}", h.UpdatePool)
 			r.Post("/volumes", h.CreateVolume)
 			r.Patch("/volumes/{pool}/{name}", h.ResizeVolume)
 			r.Post("/upload-iso", h.UploadISO)
@@ -307,6 +305,13 @@ func NewRouter(
 
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireRole(modelsRoleAdmin()))
+			// V12-SEC-04: creating/updating a storage pool is a host-level
+			// mutation (pool paths map to host directories; CIFS creds in
+			// UpdatePool), so it must be admin-only — operators keep full
+			// read access (GET /pools) and volume/ISO uploads, but cannot
+			// define or reconfigure pools.
+			r.Post("/pools", h.CreatePool)
+			r.Put("/pools/{name}", h.UpdatePool)
 			r.Delete("/pools/{name}", h.DeletePool)
 			r.Delete("/volumes/{pool}/{name}", h.DeleteVolume)
 			r.Delete("/isos/{pool}/{name}", h.DeleteISO)

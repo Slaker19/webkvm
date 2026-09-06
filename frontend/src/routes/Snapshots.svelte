@@ -45,7 +45,7 @@
     const q = search.toLowerCase().trim();
     if (!q) return snapshots;
     return snapshots.filter(
-      (s) => s.vm_name.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)
+      (s) => (s.vm_name || '').toLowerCase().includes(q) || (s.name || '').toLowerCase().includes(q)
     );
   });
 

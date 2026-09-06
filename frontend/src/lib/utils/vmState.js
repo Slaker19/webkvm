@@ -22,11 +22,14 @@ const BADGE_CLASS = {
 };
 
 /** Tailwind background-color class for a status dot, e.g. `bg-status-running`. */
+// Unknown/other libvirt states (blocked, idle, pmsuspended, …) render as the
+// neutral grey (shutoff) instead of red "crashed" — an unrecognized state
+// must not look like a failure.
 export function stateDotClass(state) {
-  return DOT_CLASS[state] || DOT_CLASS.crashed;
+  return DOT_CLASS[state] || DOT_CLASS.shutoff;
 }
 
 /** CSS class for a full status pill/badge, e.g. `badge-running` (see app.css). */
 export function stateBadgeClass(state) {
-  return BADGE_CLASS[state] || BADGE_CLASS.crashed;
+  return BADGE_CLASS[state] || BADGE_CLASS.shutoff;
 }

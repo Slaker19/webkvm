@@ -299,6 +299,31 @@ func (c *Connector) GetStorageVolume(poolName, volName string) (models.StorageVo
 	return volumeToModel(vol, poolName)
 }
 
+// VolumeExists reports whether a volume named volName already exists in
+// poolName. Same semantics as GetStorageVolume without building the
+// model (and without formatting errors): a failed lookup means absent.
+// Used by the appliance deploy pre-flight so a deployment whose target
+// filename is already taken is rejected BEFORE os.Rename can overwrite
+// the existing volume's backing file.
+func (c *Connector) VolumeExists(poolName, volName string) (bool, error) {
+	if err := c.ensureConnected(); err != nil {
+		return false, err
+	}
+	if poolName == "" || volName == "" {
+		return false, fmt.Errorf("empty pool or volume name")
+	}
+	pool, err := c.conn.LookupStoragePoolByName(poolName)
+	if err != nil {
+		return false, fmt.Errorf("lookup pool: %w", err)
+	}
+	defer pool.Free()
+
+	if _, err := pool.LookupStorageVolByName(volName); err == nil {
+		return true, nil
+	}
+	return false, nil
+}
+
 func (c *Connector) ListStorageVolumes(poolName string) ([]models.StorageVolume, error) {
 	if err := c.ensureConnected(); err != nil {
 		return nil, err
@@ -437,6 +462,13 @@ func (c *Connector) CreateStorageVolume(req models.CreateVolumeRequest) (models.
 	format := req.Format
 	if format == "" {
 		format = "qcow2"
+	}
+	// Whitelist the format: it is interpolated into XML and later into
+	// qemu-img invocations, so anything outside qcow2/raw is rejected.
+	switch format {
+	case "qcow2", "raw":
+	default:
+		return models.StorageVolume{}, fmt.Errorf("unsupported volume format %q (allowed: qcow2, raw)", format)
 	}
 
 	xmlStr := fmt.Sprintf(`<volume>

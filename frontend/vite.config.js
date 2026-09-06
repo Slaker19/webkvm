@@ -35,4 +35,12 @@ export default defineConfig({
       target: 'esnext',
     },
   },
+  test: {
+    // V12-FE-04: Vitest runs PURE functions only — node environment,
+    // explicitly no jsdom in this version. Scope stays confined to
+    // src/lib/utils/** so Svelte components (which need a DOM) are
+    // never pulled into the test graph.
+    environment: 'node',
+    include: ['src/lib/utils/**/*.test.js'],
+  },
 });

@@ -27,6 +27,25 @@
   let showedDisconnect = false;
   let openedThisAttempt = false;
   let failedAttempts = 0;
+  // V12-FE-01: every setTimeout this component schedules goes through
+  // later(), so onDestroy can cancel them all. Without this, a pending
+  // reconnect timer could call connect() on an unmounted component
+  // (fetching a ticket, opening a WS, writing into a disposed xterm).
+  let timers = [];
+
+  function later(fn, ms) {
+    const id = setTimeout(() => {
+      timers = timers.filter((t) => t !== id);
+      fn();
+    }, ms);
+    timers.push(id);
+    return id;
+  }
+
+  function clearAllTimers() {
+    for (const id of timers) clearTimeout(id);
+    timers = [];
+  }
 
   // Guest serial TTYs are a fixed classic grid; matching it exactly is
   // what keeps TUIs (btop/mc) from garbling.
@@ -108,7 +127,7 @@
         // capped so a dead session never spams forever.
         if (autoRetry && status !== 'error') {
           const wait = Math.min(2000 * Math.pow(2, failedAttempts), 10000);
-          setTimeout(() => connect(), wait);
+          later(() => connect(), wait);
         }
       };
       ws.onerror = () => {};
@@ -205,9 +224,9 @@
     // otherwise the terminal keeps stale dimensions (huge glyphs) —
     // and tell the PTY about each corrected size once it's actually
     // computed, or the guest keeps drawing at the old geometry.
-    setTimeout(() => fit(sendResize), 50);
-    setTimeout(() => fit(sendResize), 150);
-    setTimeout(() => fit(sendResize), 300);
+    later(() => fit(sendResize), 50);
+    later(() => fit(sendResize), 150);
+    later(() => fit(sendResize), 300);
   }
 
   // Closes a socket we're intentionally done with, detaching its
@@ -240,7 +259,7 @@
     ws = null;
     if (term) term.reset();
     status = 'idle';
-    setTimeout(connect, 250);
+    later(connect, 250);
   }
 
   function disconnect() {
@@ -258,6 +277,7 @@
   });
 
   onDestroy(() => {
+    clearAllTimers();
     disconnect();
     if (ro) ro.disconnect();
     if (term)

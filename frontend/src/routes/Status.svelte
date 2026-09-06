@@ -32,6 +32,23 @@
   let backupsLoading = $state(false);
 
   let logInterval = null;
+  // V12-FE-01: one-shot timers (restart/backup feedback) are tracked and
+  // cancelled on unmount so they never touch an unmounted component.
+  let timers = [];
+
+  function later(fn, ms) {
+    const id = setTimeout(() => {
+      timers = timers.filter((x) => x !== id);
+      fn();
+    }, ms);
+    timers.push(id);
+    return id;
+  }
+
+  function clearAllTimers() {
+    for (const id of timers) clearTimeout(id);
+    timers = [];
+  }
 
   async function loadStatus() {
     loading = true;
@@ -74,7 +91,7 @@
       showRestartConfirm = false;
       actionMsg = t('status.serviceRestarting');
       toast.success(t('status.serviceRestartingToast'));
-      setTimeout(() => {
+      later(() => {
         actionMsg = '';
         loadStatus();
       }, 8000);
@@ -125,7 +142,7 @@
       });
       toast.success(t('status.backupCompleted'));
       await loadBackups();
-      setTimeout(() => {
+      later(() => {
         actionMsg = '';
       }, 8000);
     } catch (e) {
@@ -173,6 +190,7 @@
     loadBackups();
     return () => {
       if (logInterval) clearInterval(logInterval);
+      clearAllTimers();
     };
   });
 </script>

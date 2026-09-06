@@ -8,7 +8,7 @@
   import BlockCard from '$lib/components/BlockCard.svelte';
   import Tabs from '$lib/components/Tabs.svelte';
   import { upsertTask, updateTask, finishTask } from '$lib/stores/tasks.svelte.js';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { fade } from 'svelte/transition';
   import { api, auth } from '$lib/stores/auth.svelte.js';
   import { t } from '../lib/i18n.svelte.js';
@@ -244,7 +244,7 @@
     load();
     loadMetrics();
     // Deep link: /vms/:id?serial=1 scrolls to the embedded serial console.
-    if (getRoute().query?.serial === '1') setTimeout(gotoSerial, 400);
+    if (getRoute().query?.serial === '1') later(gotoSerial, 400);
     const offMetrics = events.onVmMetrics((e) => {
       if (e.vm_id !== vmId) return;
       metrics = e.data;
@@ -263,6 +263,28 @@
       off();
       offMetrics();
     };
+  });
+
+  // V12-FE-01: one-shot timers (deep-link scroll, notes/export feedback)
+  // are tracked and cancelled on unmount.
+  let timers = [];
+
+  function later(fn, ms) {
+    const id = setTimeout(() => {
+      timers = timers.filter((x) => x !== id);
+      fn();
+    }, ms);
+    timers.push(id);
+    return id;
+  }
+
+  function clearAllTimers() {
+    for (const id of timers) clearTimeout(id);
+    timers = [];
+  }
+
+  onDestroy(() => {
+    clearAllTimers();
   });
 
   async function loadMetrics() {
@@ -423,7 +445,7 @@
       await api.updateVMMeta(vmId, { notes: eNotes });
       eNotesOriginal = eNotes;
       notesStatus = 'saved';
-      setTimeout(() => {
+      later(() => {
         if (notesStatus === 'saved') notesStatus = '';
       }, 2000);
     } catch (e) {
@@ -1254,7 +1276,7 @@
       };
       finishTask(taskId, 'success', t('vmDetail.exportComplete'), 100);
       toast.success(t('vmDetail.exportComplete'));
-      setTimeout(() => {
+      later(() => {
         showExport = false;
         exportProgress = null;
         exportAbort = null;
@@ -1268,7 +1290,7 @@
           label: t('vmDetail.exportCancelled'),
         };
         finishTask(taskId, 'error', t('vmDetail.exportCancelled'), 0);
-        setTimeout(() => {
+        later(() => {
           showExport = false;
           exportProgress = null;
           exportAbort = null;

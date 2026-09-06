@@ -106,6 +106,7 @@ dist: binary
 		scripts/setup-network.sh scripts/setup-bridge.sh \
 		scripts/Caddyfile scripts/generate-self-signed.sh \
 		scripts/install-caddy-systemd.sh scripts/install-webkvm.sh \
+		scripts/smoke.sh \
 		Makefile
 	@sha256sum backend/webkvm backend/webkvm-cli > dist/SHA256SUMS
 	@echo ""
@@ -300,3 +301,37 @@ clean: stop
 	rm -f backend/webkvm backend/webkvm-cli
 	rm -rf frontend/dist backend/internal/frontend/dist
 	@echo "Cleaned."
+
+# ---- Release (V12-OPS-01) ----
+
+# release — assemble the release artifacts (dist tarball + SHA256SUMS)
+# from the current tree. With RELEASE_PUBLISH=1 it also creates the
+# GitHub release via the gh CLI (tag must already exist). The CI
+# workflow .github/workflows/release.yml performs the same build in a
+# clean environment on every `v*` tag push, so `make release` is for
+# local verification/pre-release staging.
+release: dist
+	@test "$(VERSION)" != "dev" || { \
+		echo "ERROR: VERSION is 'dev' — tag the release first:" >&2; \
+		echo "  git tag vX.Y.Z && git push origin vX.Y.Z" >&2; \
+		exit 1; \
+	}
+	@echo ""
+	@echo "Release artifacts ready for v$(VERSION):"
+	@ls -l dist/
+	@echo ""
+	@if [ "$$RELEASE_PUBLISH" = "1" ]; then \
+		command -v gh >/dev/null 2>&1 || { echo "ERROR: gh CLI not found" >&2; exit 1; }; \
+		git tag -l "v$(VERSION)" | grep -qx "v$(VERSION)" || { \
+			echo "ERROR: tag v$(VERSION) does not exist — create it first" >&2; exit 1; }; \
+		REPO="$$(git remote get-url origin 2>/dev/null | sed 's#https://github.com/##; s#\.git$$##' || echo '')"; \
+		[ -n "$$REPO" ] || { echo "ERROR: cannot determine origin repo" >&2; exit 1; }; \
+		gh release create "v$(VERSION)" dist/* \
+			--repo "$$REPO" \
+			--title "WebKVM v$(VERSION)" \
+			--notes "Checksums in SHA256SUMS. Full changelog: https://github.com/$$REPO/blob/main/CHANGELOG.md"; \
+		echo "Published v$(VERSION) to GitHub ($$REPO)."; \
+	else \
+		echo "To publish (or re-run with RELEASE_PUBLISH=1):"; \
+		echo "  gh release create v$(VERSION) dist/* --title \"WebKVM v$(VERSION)\""; \
+	fi

@@ -100,16 +100,16 @@ confirm() { # confirm VAR "question" default
       local ans
       read -r -p "  ${q} [${dflt}]: " ans < /dev/tty > /dev/tty
       [[ -z "${ans}" ]] && ans="${dflt}"
-      eval "${var}=\"${ans}\""
+      printf -v "${var}" '%s' "${ans}"
       return
     fi
-    if [[ -n "${dflt}" ]]; then eval "${var}=\"${dflt}\""; fi
+    if [[ -n "${dflt}" ]]; then printf -v "${var}" '%s' "${dflt}"; fi
     return
   fi
   local ans
   read -r -p "  ${q} [${dflt}]: " ans
   [[ -z "${ans}" ]] && ans="${dflt}"
-  eval "${var}=\"${ans}\""
+  printf -v "${var}" '%s' "${ans}"
 }
 prompt_select() { # prompt_select VAR "question" "opt1|label" "opt2|label" default
   local var="$1" q="$2"; shift 2
@@ -121,7 +121,7 @@ prompt_select() { # prompt_select VAR "question" "opt1|label" "opt2|label" defau
       # fall through to interactive prompt via /dev/tty
       :
     else
-      eval "${var}=\"${default}\""
+      printf -v "${var}" '%s' "${default}"
       return
     fi
   fi
@@ -141,9 +141,9 @@ prompt_select() { # prompt_select VAR "question" "opt1|label" "opt2|label" defau
   fi
   [[ -z "${ans}" ]] && ans="${default}"
   if [[ "${ans}" =~ ^[0-9]+$ ]] && [[ -n "${opts[${ans}]:-}" ]]; then
-    eval "${var}=\"${opts[${ans}]}\""
+    printf -v "${var}" '%s' "${opts[${ans}]}"
   else
-    eval "${var}=\"${ans}\""
+    printf -v "${var}" '%s' "${ans}"
   fi
 }
 
@@ -420,7 +420,9 @@ else
     if [[ -n "${BIN_SHA256}" && "${BIN_SHA256}" =~ ^[[:xdigit:]]{64}$ ]]; then
       printf '%s  %s\n' "${BIN_SHA256}" "${DOWNLOADED_BIN}" | sha256sum --check --status || die "downloaded binary checksum mismatch"
     else
-      log "WARNING: could not verify checksum (no SHA256SUMS in release)"
+      # Fail closed: this binary runs as root — installing it unverified
+      # would be an avatar of RCE.
+      die "checksum could not be verified (no SHA256SUMS entry for this asset); refusing to install an unverified binary as root"
     fi
     SOURCE_BIN="${DOWNLOADED_BIN}"
   else

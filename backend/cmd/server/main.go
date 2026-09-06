@@ -247,7 +247,7 @@ func main() {
 	// consulted on every GenerateToken (TTL) and every Middleware
 	// invocation (allow_api_tokens), so a Settings page change takes
 	// effect on the next request — no restart.
-	authMgr := auth.NewManager(cfg.JWTSecret, settingsStore)
+	authMgr := auth.NewManagerWithPath(cfg.JWTSecret, settingsStore, cfg.RevokedFile())
 	loginLimiter := auth.NewLoginRateLimiterWithSettings(settingsStore)
 
 	// API tokens: long-lived Bearer tokens for scripting. The store
@@ -295,6 +295,16 @@ func main() {
 		logger.Error("audit_log_init_failed", "err", err)
 		os.Exit(1)
 	}
+	// Durability contract (V12-OPS-05): flush + fsync + close the audit
+	// log on shutdown so the last acknowledged entries are never lost to
+	// a buffered write.
+	defer auditLogger.Close()
+
+	// Job sweeper (V12-OPS-06): purge finished ISO/appliance jobs older
+	// than 24h on a 5-minute ticker. queued/running jobs are never
+	// removed, regardless of age.
+	api.StartJobSweeper(eventCtx, 5*time.Minute, 24*time.Hour, logger.Info)
+	logger.Info("job_sweeper_started", "interval", "5m", "ttl", "24h")
 
 	// Nodes registry: every libvirt host the backend knows about.
 	// The local node is auto-created from cfg.LibvirtURI; remote

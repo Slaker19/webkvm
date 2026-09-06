@@ -9,7 +9,7 @@
    * target also gets a VM selector so you can back up "all VMs",
    * "only these N VMs", or "every VM except these".
    */
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/stores/auth.svelte.js';
   import { navigate } from '$lib/router.svelte.js';
   import { toast } from '$lib/components/ui/toast';
@@ -112,6 +112,15 @@
     jobsPoller = null;
   }
 
+  // Unconditional stop used only by onDestroy — while this component is
+  // mounted, stopJobsPoller() deliberately keeps polling across an active
+  // job; once we unmount, nothing must survive.
+  function forceStopJobsPoller() {
+    if (!jobsPoller) return;
+    clearInterval(jobsPoller);
+    jobsPoller = null;
+  }
+
   async function pollJobs() {
     let all;
     try {
@@ -182,6 +191,14 @@
 
   onMount(async () => {
     await load();
+  });
+
+  // V12-FE-01: the live-jobs poller must die with this component. The
+  // global TaskCenter poller keeps the task list in sync while the user
+  // is away from the Backup page; Backup's own poller only makes sense
+  // while it is mounted.
+  onDestroy(() => {
+    forceStopJobsPoller();
   });
 
   async function load() {
@@ -442,6 +459,11 @@
   }
 
   async function runBackup(target) {
+    // V12-FE-02: synchronous guard — the button's disabled state covers
+    // an *already running* job, but nothing else stopped a double-click
+    // during the brief await of backupNow() itself.
+    if (runningBackups[target.id]) return;
+    runningBackups = { ...runningBackups, [target.id]: true };
     try {
       const res = await api.backupNow(target.id);
       const job = res.job;
@@ -467,6 +489,8 @@
       ensureJobsPoller();
     } catch (err) {
       toast.error(err.message);
+    } finally {
+      runningBackups = { ...runningBackups, [target.id]: false };
     }
   }
 

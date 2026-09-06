@@ -618,12 +618,16 @@ type DownloadISORequest struct {
 }
 
 // DownloadJob tracks progress of a background ISO download
-
+//
+// UpdatedAt (unix seconds) is bumped on every create/update so the job
+// sweeper (V12-OPS-06) can purge finished entries older than the TTL
+// without ever touching queued/running ones.
 type DownloadJob struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name,omitempty"`
-	URL      string  `json:"url,omitempty"`
-	Progress float64 `json:"progress"`
-	Status   string  `json:"status"`
-	Error    string  `json:"error,omitempty"`
+	ID        string  `json:"id"`
+	Name      string  `json:"name,omitempty"`
+	URL       string  `json:"url,omitempty"`
+	Progress  float64 `json:"progress"`
+	Status    string  `json:"status"`
+	Error     string  `json:"error,omitempty"`
+	UpdatedAt int64   `json:"updated_at,omitempty"`
 }

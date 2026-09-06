@@ -12,6 +12,8 @@
   let vms = $state([]);
   let selectedIndex = $state(0);
   let inputEl = $state(null);
+  // V12-FE-01
+  let focusTimer = null;
 
   const sidebarModeLabelKey = {
     full: 'layout.sidebarFull',
@@ -116,7 +118,7 @@
         .listVMs()
         .then((d) => (vms = d || []))
         .catch(() => {});
-      setTimeout(() => inputEl?.focus(), 10);
+      focusTimer = setTimeout(() => inputEl?.focus(), 10);
     }
   });
 
@@ -156,6 +158,7 @@
   });
 
   onDestroy(() => {
+    if (focusTimer) clearTimeout(focusTimer);
     if (typeof window !== 'undefined') {
       window.removeEventListener('keydown', handleKeydown);
       window.removeEventListener('open-command-palette', handleOpenPalette);

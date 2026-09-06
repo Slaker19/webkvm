@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -345,20 +347,24 @@ func (h *Handler) ResetVMPassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func generatePasswordString(length int) string {
+	// Unbiased, fail-closed: crypto/rand errors propagate (we panic rather
+	// than fall back to a weak/known password), and rejection sampling
+	// removes the modulo bias the old byte%len(charset) scheme had.
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, length)
-	// Read from /dev/urandom for better randomness
-	f, err := os.Open("/dev/urandom")
-	if err == nil {
-		defer f.Close()
-		if _, err := f.Read(b); err != nil {
-			slog.Warn("generatePasswordString_urandom_read_failed", "err", err)
+	const maxUnbiased = uint64(4294967296) / uint64(len(charset)) * uint64(len(charset))
+	b := make([]byte, 4)
+	out := make([]byte, 0, length)
+	for len(out) < length {
+		if _, err := rand.Read(b); err != nil {
+			panic("crypto/rand unavailable: " + err.Error())
 		}
+		x := binary.BigEndian.Uint32(b)
+		if uint64(x) >= maxUnbiased {
+			continue
+		}
+		out = append(out, charset[x%uint32(len(charset))])
 	}
-	for i := range b {
-		b[i] = charset[int(b[i])%len(charset)]
-	}
-	return string(b)
+	return string(out)
 }
 
 // VMConsoleTicket issues a short-lived single-use ticket authorizing one

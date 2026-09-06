@@ -48,6 +48,7 @@ echo "=============================="
 # Publish connection details inside the guest (bashrc + motd).
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : WordPress
@@ -144,6 +145,7 @@ echo "=============================="
 # logging in immediately sees which app this VM runs and how to reach it.
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : Nextcloud
@@ -214,6 +216,7 @@ systemctl enable --now odoo
 # Publish connection details inside the guest (bashrc + motd).
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : Odoo
@@ -280,6 +283,7 @@ systemctl reload apache2
 # Publish connection details inside the guest (bashrc + motd).
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : Moodle
@@ -344,6 +348,7 @@ COMPOSE
 cd /opt/wg-easy && docker compose up -d
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : WireGuard Easy
@@ -399,6 +404,7 @@ COMPOSE
 cd /opt/openvpn-ui && docker compose up -d
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : OpenVPN UI
@@ -435,6 +441,7 @@ docker run -d --name portainer --restart=always \
   portainer/portainer-ce:lts
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : Portainer CE
@@ -510,6 +517,7 @@ systemctl daemon-reload
 systemctl enable --now gitea
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : Gitea
@@ -547,6 +555,7 @@ docker run -d --name vaultwarden --restart unless-stopped \
   vaultwarden/server:latest
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : Vaultwarden
@@ -599,6 +608,7 @@ systemctl daemon-reload
 systemctl enable --now minio
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : MinIO
@@ -647,6 +657,7 @@ COMPOSE
 cd /opt/npm && docker compose up -d
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : Nginx Proxy Manager
@@ -689,6 +700,7 @@ COMPOSE
 cd /opt/homer && docker compose up -d
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : Homer Dashboard
@@ -747,6 +759,7 @@ COMPOSE
 cd /opt/pihole && docker compose up -d
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : Pi-hole
@@ -815,6 +828,7 @@ YAML
 cd /opt/AdGuardHome && ./AdGuardHome -s install
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : AdGuard Home
@@ -864,6 +878,7 @@ COMPOSE
 cd /opt/beszel && docker compose up -d
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : Beszel
@@ -904,6 +919,7 @@ COMPOSE
 cd /opt/uptime-kuma && docker compose up -d
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
+install -m 600 /dev/null /etc/webkvm-app.txt
 cat > /etc/webkvm-app.txt <<EOF
 ==========================================
  WebKVM App : Uptime Kuma
@@ -917,5 +933,27 @@ append_info() { [ -f "$1" ] || return 0; grep -qF "$MARK" "$1" || printf '\n%s\n
 append_info /root/.bashrc
 UHOME=$(getent passwd 1000 | cut -d: -f6); [ -n "$UHOME" ] && append_info "$UHOME/.bashrc"
 echo "Uptime Kuma provisioned."
+`,
+	"docker-ce": `#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+# Official Docker CE via the docker apt repo (V12-CAT-07). NO curl|sh:
+# a pinned, signed apt source is auditable, upgradeable with the distro
+# and gives docker compose v2 as a first-class plugin.
+ARCH=$(dpkg --print-architecture)
+. /etc/os-release
+install -m 0755 -d /etc/apt/keyrings
+if [ ! -s /etc/apt/keyrings/docker.asc ]; then
+  curl -fsSL --proto '=https' --tlsv1.2 \
+    "https://download.docker.com/linux/${ID}/gpg" -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+fi
+printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/%s %s stable\n' \
+  "$ARCH" "$ID" "$VERSION_CODENAME" > /etc/apt/sources.list.d/docker.list
+apt-get update -y
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker
+# sanity: the compose plugin must be wired so "docker compose" works
+docker compose version
 `,
 }

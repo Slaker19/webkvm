@@ -1,0 +1,111 @@
+name: Release
+
+# Builds the self-contained release tarball (embedded frontend + backend
+# binary + CLI + installer scripts) and creates a GitHub release with the
+# SHA256SUMS checksum file. Triggered automatically on any `v*` tag push,
+# or manually from the Actions tab.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to verify (e.g. v1.2.0)'
+        required: false
+
+# The build needs to create the GitHub release, so write access to
+# contents is required.
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.26"
+  NODE_VERSION: "24"
+
+jobs:
+  release:
+    name: Build tarball + publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # git describe needs the tag history
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The backend imports libvirt.org/go/libvirt, which needs the C
+      # headers at build time (CGO_ENABLED=1).
+      - name: Install libvirt dev headers
+        run: sudo apt-get update && sudo apt-get install -y libvirt-dev pkg-config
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Build backend binary + CLI (versioned)
+        run: |
+          cd backend
+          mkdir -p internal/frontend/dist
+          cp -r ../frontend/dist/* internal/frontend/dist/
+          # On a tag push, git describe yields the tag (vX.Y.Z). On a
+          # manual dispatch, the operator supplies the version explicitly.
+          VERSION=${{ github.event.inputs.version || '' }}
+          [ -n "$VERSION" ] || VERSION=$(git describe --tags --always)
+          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          CGO_ENABLED=1 go build -buildvcs=false \
+            -ldflags "-s -w -X 'main.Version=$VERSION' -X 'main.BuildTime=$BUILD_TIME'" \
+            -o webkvm ./cmd/server/
+          CGO_ENABLED=0 go build -buildvcs=false \
+            -ldflags "-s -w -X 'main.Version=$VERSION' -X 'main.BuildTime=$BUILD_TIME'" \
+            -o webkvm-cli ./cmd/cli/
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Assemble dist tarball + SHA256SUMS
+        run: |
+          VERSION="${{ env.VERSION }}"
+          mkdir -p dist
+          tar -czf "dist/webkvm-$VERSION.tar.gz" \
+            backend/webkvm \
+            backend/webkvm-cli \
+            install.sh \
+            packaging/standalone/install.sh \
+            packaging/standalone/uninstall.sh \
+            scripts/setup-network.sh scripts/setup-bridge.sh \
+            scripts/Caddyfile scripts/generate-self-signed.sh \
+            scripts/install-caddy-systemd.sh scripts/install-webkvm.sh \
+            scripts/smoke.sh \
+            Makefile
+          (cd dist && sha256sum "webkvm-$VERSION.tar.gz" > SHA256SUMS)
+          echo "== artifacts =="
+          ls -l dist/
+          cat dist/SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ env.VERSION }}"
+          # Idempotent: a re-run (workflow_dispatch, or a tag that already
+          # has a release from a previous attempt) must not fail. Delete
+          # any prior release for this tag (keeps the tag itself), then
+          # recreate it with the freshly built artifacts.
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "release $VERSION already exists — replacing it"
+            gh release delete "$VERSION" --yes
+          fi
+          gh release create "$VERSION" dist/* \
+            --title "WebKVM $VERSION" \
+            --notes "Checksums in SHA256SUMS. Full changelog: https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md" \
+            --verify-tag

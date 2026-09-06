@@ -2,6 +2,7 @@
   import * as Dialog from './ui/dialog';
   import { Button } from './ui/button';
   import { Copy, Check, AlertTriangle } from '@lucide/svelte';
+  import { onDestroy } from 'svelte';
 
   let {
     open = $bindable(false),
@@ -12,12 +13,19 @@
   } = $props();
 
   let copied = $state(false);
+  // V12-FE-01
+  let copyTimer = null;
 
   function copyToClipboard() {
     navigator.clipboard.writeText(`Username: ${username}\nPassword: ${password}`);
     copied = true;
-    setTimeout(() => (copied = false), 2000);
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => (copied = false), 2000);
   }
+
+  onDestroy(() => {
+    clearTimeout(copyTimer);
+  });
 
   function handleClose() {
     if (onClose) onClose();

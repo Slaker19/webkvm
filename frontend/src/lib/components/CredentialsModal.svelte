@@ -2,10 +2,13 @@
   import * as Dialog from './ui/dialog';
   import { Button } from './ui/button';
   import { Copy, Check, AlertTriangle, Database } from '@lucide/svelte';
+  import { onDestroy } from 'svelte';
 
   let { open = $bindable(false), info = null, onClose = null } = $props();
 
   let copied = $state(false);
+  // V12-FE-01
+  let copyTimer = null;
 
   const hasDB = $derived(Boolean(info && (info.engine || info.db_name || info.db_user)));
 
@@ -21,8 +24,13 @@
     lines.push('Recuerda cambiar todas las contraseñas al terminar.');
     navigator.clipboard.writeText(lines.join('\n'));
     copied = true;
-    setTimeout(() => (copied = false), 2000);
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => (copied = false), 2000);
   }
+
+  onDestroy(() => {
+    clearTimeout(copyTimer);
+  });
 
   function handleClose() {
     if (onClose) onClose();

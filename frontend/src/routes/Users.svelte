@@ -23,6 +23,9 @@
   const PAGE_SIZE = 10;
 
   let showAdd = $state(false);
+  // V12-FE-02: in-flight mutation guards.
+  let userAdding = $state(false);
+  let userSaving = $state(false);
   let newUsername = $state('');
   let newPassword = $state('');
   let newRole = $state('operator');
@@ -60,7 +63,7 @@
   const filtered = $derived.by(() => {
     const q = search.toLowerCase().trim();
     if (!q) return users;
-    return users.filter((u) => u.username.toLowerCase().includes(q));
+    return users.filter((u) => (u.username || '').toLowerCase().includes(q));
   });
 
   const paginated = $derived(filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE));
@@ -105,7 +108,9 @@
   }
 
   async function addUser() {
+    if (userAdding) return;
     if (!newUsername || !newPassword || newPassword.length < 8) return;
+    userAdding = true;
     // Capture names BEFORE resetting (was a pre-existing toast bug —
     // the name was used after being cleared).
     const createdName = newUsername;
@@ -126,6 +131,8 @@
       await load();
     } catch (e) {
       toast.error(e.message);
+    } finally {
+      userAdding = false;
     }
   }
 
@@ -154,6 +161,7 @@
   }
 
   async function saveEdit() {
+    if (userSaving) return;
     const data = {};
     if (editPassword) data.password = editPassword;
     if (editRole) data.role = editRole;
@@ -178,6 +186,7 @@
     // Per-user pool allowlist (empty = all pools). Sent as an array so
     // a cleared selection resets to "all pools".
     data.allowed_pools = editAllowedPools;
+    userSaving = true;
     try {
       await api.updateUser(editing, data);
       editing = null;
@@ -185,6 +194,8 @@
       await load();
     } catch (e) {
       toast.error(e.message);
+    } finally {
+      userSaving = false;
     }
   }
 
@@ -264,7 +275,7 @@
         </div>
       {/if}
       <div>
-        <Button onclick={addUser} disabled={!newUsername || newPassword.length < 8}
+        <Button onclick={addUser} disabled={userAdding || !newUsername || newPassword.length < 8}
           >{t('common.create')}</Button
         >
       </div>
@@ -624,7 +635,7 @@
     </div>
     <Dialog.Footer>
       <Button variant="outline" onclick={() => (editing = null)}>{t('common.cancel')}</Button>
-      <Button onclick={saveEdit}>{t('common.save')}</Button>
+      <Button onclick={saveEdit} disabled={userSaving}>{t('common.save')}</Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

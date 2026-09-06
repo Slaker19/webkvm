@@ -270,9 +270,6 @@ canvas{display:block;margin:auto}
   <button id="btnToggleInfo" title="Connection info">
     <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
   </button>
-  <button id="btnTogglePower" title="Power">
-    <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg>
-  </button>
   <div class="sep"></div>
   <button id="btnReconnect" class="reconnect" title="Reconnect" style="display:none">
     <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 0 1 9-9"/></svg>
@@ -470,56 +467,6 @@ document.getElementById('btnToggleInfo').onclick = function () {
         if (rfb._fb_width && rfb._fb_height)
             document.getElementById('infoRes').textContent = rfb._fb_width + 'x' + rfb._fb_height;
     }
-};
-
-/* ---- power panel ---- */
-function powerAction(action, cb) {
-    var x = new XMLHttpRequest();
-    x.open('POST', '/api/vms/' + vmId + '/' + action + '?vt=' + encodeURIComponent(vt), true);
-    x.onload = function () {
-        if (x.status >= 200 && x.status < 300) { cb(null); return; }
-        var msg = 'Request failed (' + x.status + ')';
-        try {
-            var j = JSON.parse(x.responseText);
-            if (j && j.error) msg = j.error;
-        } catch (e) { /* non-JSON error body, keep the generic message */ }
-        cb(msg);
-    };
-    x.onerror = function () { cb('Network error'); };
-    x.send();
-}
-
-document.getElementById('btnTogglePower').onclick = function () {
-    if (activePanel === 'power') { closePanel(); return; }
-    var powerHtml =
-      '<div class="pbtn" data-action="reboot"><div class="kicon"><svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" width="14" height="14"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v6h-6"/></svg></div><span class="klabel">Reboot</span></div>' +
-      '<div class="pbtn" data-action="shutdown"><div class="kicon"><svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" width="14" height="14"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg></div><span class="klabel">Shutdown</span></div>' +
-      '<div class="pbtn danger" data-action="forceoff"><div class="kicon"><svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg></div><span class="klabel">Force off</span></div>' +
-      '<div id="powerConfirmSlot"></div>';
-    openPanel('power', 'Power', powerHtml);
-    panelBody.querySelectorAll('.pbtn').forEach(function (btn) {
-        btn.onclick = function () {
-            var action = btn.getAttribute('data-action');
-            var slot = document.getElementById('powerConfirmSlot');
-            slot.innerHTML =
-              '<div class="pconfirm"><span style="flex:1">' + (action === 'forceoff' ? 'Force off may cause data loss.' : 'Are you sure?') + '</span>' +
-              '<button class="pno">Cancel</button><button class="pyes">Confirm</button></div>';
-            slot.querySelector('.pno').onclick = function () { slot.innerHTML = ''; };
-            slot.querySelector('.pyes').onclick = function () {
-                slot.innerHTML = '<div class="pconfirm"><span style="flex:1">Sending…</span></div>';
-                powerAction(action, function (err) {
-                    if (err) {
-                        slot.innerHTML = '<div class="pconfirm"><span class="perr" style="flex:1"></span></div>';
-                        slot.querySelector('.perr').textContent = err;
-                        setTimeout(function () { slot.innerHTML = ''; }, 5000);
-                    } else {
-                        slot.innerHTML = '<div class="pconfirm"><span style="flex:1;color:#4ade80">Sent.</span></div>';
-                        setTimeout(function () { closePanel(); }, 900);
-                    }
-                });
-            };
-        };
-    });
 };
 
 /* ---- close panel ---- */

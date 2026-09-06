@@ -74,7 +74,12 @@
 
   $effect(() => {
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      // V12-FE-01: cancel any pending "g x" prefix timer on unmount.
+      if (gPrefixTimer) clearTimeout(gPrefixTimer);
+      gPrefixTimer = null;
+    };
   });
 
   const groups = [

@@ -8,7 +8,7 @@
   import StatCard from '$lib/components/StatCard.svelte';
   import { formatBytes } from '$lib/format.js';
   import { upsertTask, updateTask, finishTask } from '$lib/stores/tasks.svelte.js';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { api, auth } from '$lib/stores/auth.svelte.js';
   import { toast } from '$lib/components/ui/toast';
   import { Button } from '$lib/components/ui/button';
@@ -32,11 +32,27 @@
   let downloadProgress = $state(0);
   let downloading = $state(false);
   let downloadMessage = $state('');
+  // V12-FE-01: the ISO-download progress poller lives at component scope
+  // so onDestroy can stop it if the user navigates away mid-download.
+  let downloadInterval = $state(null);
+
+  function stopDownloadInterval() {
+    if (downloadInterval) clearInterval(downloadInterval);
+    downloadInterval = null;
+  }
+
+  onDestroy(() => {
+    stopDownloadInterval();
+  });
 
   let showCreatePool = $state(false);
   let poolName = $state('');
   let poolPath = $state('');
   let poolPurpose = $state('disk');
+  // V12-FE-02: in-flight mutation flags (double-click guards).
+  let poolCreating = $state(false);
+  let volCreating = $state(false);
+  let volResizing = $state(false);
 
   let showCreateVol = $state(false);
   let volName = $state('');
@@ -115,13 +131,19 @@
   }
 
   async function createPool() {
+    if (poolCreating) return;
+    if (!auth.isAdmin()) {
+      toast.error(t('storage.poolAdminOnly'));
+      return;
+    }
     if (!poolName || !poolPath) return;
+    poolCreating = true;
     try {
       await api.createPool({
         name: poolName,
-        type: 'dir',
         path: poolPath,
         purpose: poolPurpose,
+        type: 'dir',
       });
       const createdName = poolName;
       poolName = '';
@@ -131,7 +153,16 @@
       toast.success(t('storage.poolCreated', { name: createdName }));
       await load();
     } catch (e) {
+      if (e && e.status === 403) {
+        // V12-SEC-04: un operator forzó el POST saltándose la UI. No
+        // colapsa la vista; mensaje claro + resetea el diálogo.
+        toast.error(t('storage.poolAdminOnly'));
+        showCreatePool = false;
+        return;
+      }
       toast.error(e.message);
+    } finally {
+      poolCreating = false;
     }
   }
 
@@ -159,7 +190,9 @@
   }
 
   async function createVolume() {
+    if (volCreating) return;
     if (!volName) return;
+    volCreating = true;
     try {
       await api.createVolume({
         name: volName,
@@ -175,6 +208,8 @@
       await load();
     } catch (e) {
       toast.error(e.message);
+    } finally {
+      volCreating = false;
     }
   }
 
@@ -199,7 +234,9 @@
   }
 
   async function resizeVolume() {
+    if (volResizing) return;
     if (!resizeVolName) return;
+    volResizing = true;
     try {
       await api.resizeVolume(resizeVolPool, resizeVolName, resizeVolSize);
       showResizeVol = false;
@@ -208,6 +245,8 @@
       await load();
     } catch (e) {
       toast.error(e.message);
+    } finally {
+      volResizing = false;
     }
   }
 
@@ -262,7 +301,6 @@
     downloading = true;
     downloadProgress = 0;
     downloadMessage = t('storage.startingDownload');
-    let intervalId;
     let taskId = null;
     try {
       const data = await api.downloadISO(downloadURL, downloadName || undefined, selectedISOPool);
@@ -279,7 +317,7 @@
       });
 
       await new Promise((resolve) => {
-        intervalId = setInterval(async () => {
+        downloadInterval = setInterval(async () => {
           try {
             const job = await api.getDownloadJob(jobId);
             if (!job) return;
@@ -295,8 +333,7 @@
             } else if (job.status === 'completed') {
               downloadProgress = 100;
               downloadMessage = t('storage.downloadComplete');
-              clearInterval(intervalId);
-              intervalId = null;
+              stopDownloadInterval();
               downloadURL = '';
               downloadName = '';
               showDownloadISO = false;
@@ -305,8 +342,7 @@
               resolve();
             } else if (job.status === 'error') {
               toast.error(job.error || t('storage.downloadFailed'));
-              clearInterval(intervalId);
-              intervalId = null;
+              stopDownloadInterval();
               downloadMessage = '';
               downloadProgress = 0;
               finishTask(taskId, 'error', job.error || t('storage.downloadFailed'), 0);
@@ -321,7 +357,7 @@
     } catch (e) {
       toast.error(e.message);
     } finally {
-      if (intervalId) clearInterval(intervalId);
+      stopDownloadInterval();
       downloading = false;
     }
   }
@@ -508,9 +544,22 @@
         <h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
           {t('storage.storagePools')}
         </h2>
-        <Button size="sm" variant="outline" onclick={() => (showCreatePool = !showCreatePool)}>
-          {showCreatePool ? t('common.cancel') : '+ ' + t('storage.createPool')}
-        </Button>
+        <div class="flex items-center gap-3">
+          {#if !auth.isAdmin()}
+            <span class="text-xs text-muted-foreground">
+              {t('storage.poolAdminOnly')}
+            </span>
+          {/if}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!auth.isAdmin()}
+            title={auth.isAdmin() ? undefined : t('storage.poolAdminOnly')}
+            onclick={() => (showCreatePool = !showCreatePool)}
+          >
+            {showCreatePool ? t('common.cancel') : '+ ' + t('storage.createPool')}
+          </Button>
+        </div>
       </div>
 
       {#if showCreatePool}
@@ -534,7 +583,9 @@
               placeholder="/path/to/pool (or an NFS/SMB mountpoint)"
               class="flex-1 min-w-[200px]"
             />
-            <Button onclick={createPool}>{t('common.create')}</Button>
+            <Button disabled={poolCreating} onclick={createPool}>
+              {#if poolCreating}<Spinner size="sm" />{:else}{t('common.create')}{/if}
+            </Button>
           </div>
         </div>
       {/if}
@@ -687,7 +738,9 @@
               <option value="qcow2">qcow2</option>
               <option value="raw">raw</option>
             </select>
-            <Button onclick={createVolume}>{t('common.create')}</Button>
+            <Button disabled={volCreating} onclick={createVolume}>
+              {#if volCreating}<Spinner size="sm" />{:else}{t('common.create')}{/if}
+            </Button>
           </div>
         </div>
       {/if}
@@ -705,7 +758,9 @@
               class="w-24 tnum"
             />
             <span class="text-xs text-muted-foreground">GB</span>
-            <Button onclick={resizeVolume}>{t('storage.resize')}</Button>
+            <Button disabled={volResizing} onclick={resizeVolume}>
+              {#if volResizing}<Spinner size="sm" />{:else}{t('storage.resize')}{/if}
+            </Button>
             <Button variant="outline" onclick={() => (showResizeVol = false)}
               >{t('common.cancel')}</Button
             >

@@ -2,6 +2,7 @@ package user
 
 import (
 	"crypto/rand"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"webkvm/internal/models"
 
@@ -22,6 +24,7 @@ import (
 type Store struct {
 	mu       sync.RWMutex
 	filePath string
+	dataDir  string
 	users    map[string]*models.User
 }
 
@@ -34,6 +37,7 @@ func NewStore(dataDir string) (*Store, error) {
 	path := filepath.Join(dataDir, "users.json")
 	s := &Store{
 		filePath: path,
+		dataDir:  dataDir,
 		users:    make(map[string]*models.User),
 	}
 
@@ -181,6 +185,7 @@ func (s *Store) Update(username string, req models.UpdateUserRequest) (*models.U
 		return nil, fmt.Errorf("user not found")
 	}
 
+	var adminPasswordChanged bool
 	if req.Password != nil {
 		if err := validatePasswordStrength(*req.Password); err != nil {
 			return nil, err
@@ -190,6 +195,13 @@ func (s *Store) Update(username string, req models.UpdateUserRequest) (*models.U
 			return nil, fmt.Errorf("hash password: %w", err)
 		}
 		u.PasswordHash = string(hash)
+		// The initial-secret file cleanup is armed but only executed
+		// after save() below succeeds (V12-SEC-03: strictly
+		// transactional — a failed write must not destroy the only
+		// record of the admin's initial password).
+		if username == "admin" {
+			adminPasswordChanged = true
+		}
 		u.MustChangePassword = false
 	}
 	if req.Role != nil {
@@ -239,6 +251,9 @@ func (s *Store) Update(username string, req models.UpdateUserRequest) (*models.U
 	if err := s.save(); err != nil {
 		return nil, err
 	}
+	if adminPasswordChanged {
+		s.clearInitialAdminPasswordFilesLocked(username)
+	}
 
 	cp := *u
 	return &cp, nil
@@ -265,7 +280,13 @@ func (s *Store) ChangePassword(username, oldPassword, newPassword string) error 
 	}
 	u.PasswordHash = string(hash)
 	u.MustChangePassword = false
-	return s.save()
+	if err := s.save(); err != nil {
+		// V12-SEC-03: strictly transactional — only after a successful
+		// persist may the initial-secret files be destroyed.
+		return err
+	}
+	s.clearInitialAdminPasswordFilesLocked(username)
+	return nil
 }
 
 // MarkLogin records the last login timestamp (best-effort, errors
@@ -441,12 +462,116 @@ func (s *Store) assertAtLeastOneAdminLocked(exclude string, role string) error {
 	return nil
 }
 
+// validatePasswordStrength is the single password-quality gate. Every
+// password a human sets — user self-service change, admin create, admin
+// reset — flows through here (the guest's OS password is a separate
+// concern in the VM console). Policy:
+//   - minimum 12 characters (grandfathered: existing hashes are never
+//     re-validated until their next change),
+//   - if shorter than 16, at least 3 of 4 character classes must be
+//     present (lower, upper, digit, symbol),
+//   - must not be an exact (case-insensitive) member of the embedded
+//     common-password denylist, which absorbs trivial transformations
+//     like "Password1" or "P@ssw0rd2" that evade naive rules.
+//
+// clearInitialAdminPasswordFiles removes admin-password.initial and
+// admin-password.reset AFTER the store persisted a password change that
+// cleared the admin's MustChangePassword flag. Strictly transactional:
+// called only when save() returned nil, so a failed store write never
+// destroys the only record of the admin's initial password. The caller
+// must hold s.mu (reads the in-memory flag captured before the change).
+func (s *Store) clearInitialAdminPasswordFilesLocked(username string) {
+	if username != "admin" || s.dataDir == "" {
+		return
+	}
+	for _, fn := range []string{"admin-password.initial", "admin-password.reset"} {
+		p := filepath.Join(s.dataDir, fn)
+		if err := os.Remove(p); err != nil {
+			if !os.IsNotExist(err) {
+				slog.Warn("admin_password_file_remove_failed", "path", p, "err", err)
+			}
+			// Nonexistent is the happy path (already cleaned or never written).
+			continue
+		}
+		slog.Info("admin_password_file_removed", "path", p)
+	}
+}
+
 func validatePasswordStrength(pw string) error {
-	if len(pw) < 8 {
-		return errors.New("password must be at least 8 characters")
+	if len(pw) < 12 {
+		return errors.New("password must be at least 12 characters (16+ releases the complexity requirement)")
 	}
 	if len(pw) > 128 {
 		return errors.New("password must be at most 128 characters")
+	}
+	if err := checkDenylist(pw); err != nil {
+		return err
+	}
+	if len(pw) < 16 {
+		classes := 0
+		classes += boolToInt(strings.IndexFunc(pw, unicode.IsLower) >= 0)
+		classes += boolToInt(strings.IndexFunc(pw, unicode.IsUpper) >= 0)
+		classes += boolToInt(strings.IndexFunc(pw, unicode.IsDigit) >= 0)
+		classes += boolToInt(strings.IndexFunc(pw, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		}) >= 0)
+		if classes < 3 {
+			return errors.New("passwords under 16 characters need at least 3 of: lowercase, uppercase, digit, symbol")
+		}
+	}
+	return nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// commonPasswordsRaw is the compiled-in denylist (see
+// common_passwords.txt next to this file). Matched lowercased, exact string.
+//
+//go:embed common_passwords.txt
+var commonPasswordsFS embed.FS
+
+var commonPasswordsRaw = mustReadDenylist()
+
+func mustReadDenylist() string {
+	b, err := commonPasswordsFS.ReadFile("common_passwords.txt")
+	if err != nil {
+		panic(fmt.Sprintf("embedded denylist missing: %v", err))
+	}
+	return string(b)
+}
+
+var commonPasswords = buildDenylist()
+
+func buildDenylist() map[string]struct{} {
+	set := make(map[string]struct{}, 2048)
+	for _, line := range strings.Split(commonPasswordsRaw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		set[strings.ToLower(line)] = struct{}{}
+	}
+	return set
+}
+
+// checkDenylist rejects passwords appearing verbatim (case-insensitive)
+// in the denylist, as well as the classic "word + digit/symbol" tail
+// decorations of an entry (e.g. "Password1", "freedom123").
+func checkDenylist(pw string) error {
+	low := strings.ToLower(pw)
+	if _, bad := commonPasswords[low]; bad {
+		return errors.New("password appears in the common-password list; pick something unique")
+	}
+	trimmed := strings.TrimRight(low, "0123456789!@#$%^&*()")
+	if trimmed != "" && trimmed != low {
+		if _, bad := commonPasswords[trimmed]; bad {
+			return errors.New("password is a decorated version of a common password; pick something unique")
+		}
 	}
 	return nil
 }

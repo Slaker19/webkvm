@@ -91,7 +91,8 @@ else
       printf '%s  %s\n' "${BIN_SHA256}" "${TMP}" | sha256sum --check --status || die "downloaded binary checksum mismatch"
       log "checksum verified"
     else
-      log "WARNING: could not verify checksum (no SHA256SUMS entry found for this asset)"
+      # Fail closed: this binary runs as root.
+      die "no SHA256SUMS entry found for this asset; refusing to install an unverified binary as root"
     fi
   else
     # No GitHub release published — fall back to the binary committed
@@ -99,8 +100,12 @@ else
     # intentionally versioned). /releases/latest has proper "latest"
     # semantics; /tags does not, so this branch — not the tags list —
     # is what a truly-latest lookup should prefer. No checksum is
-    # available on this path; the health check + rollback below is the
-    # only safety net.
+    # available on this path; the health check + rollback below is NOT a
+    # substitute for verification on a root-run binary. Fail closed unless
+    # the operator explicitly opts in.
+    if [[ "${WEBKVM_ALLOW_UNVERIFIED:-0}" != "1" ]]; then
+      die "no GitHub release with SHA256SUMS found; refusing to install an unverified binary as root. Set WEBKVM_ALLOW_UNVERIFIED=1 to override at your own risk."
+    fi
     TAG="$(curl -fsSL "https://api.github.com/repos/Slaker19/webkvm/tags" 2>/dev/null | grep -o '"name": *"[^"]*"' | head -1 | cut -d'"' -f4 || echo "main")"
     log "no GitHub release found; downloading binary committed at tag ${TAG} (unverified)..."
     curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \

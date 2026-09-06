@@ -28,7 +28,7 @@ import (
 type OVATarget string
 
 const (
-	OVATargetVMware OVATarget = "vmware" // VirtualBox, VMware Workstation/ESXi
+	OVATargetVMware  OVATarget = "vmware"  // VirtualBox, VMware Workstation/ESXi
 	OVATargetLibvirt OVATarget = "libvirt" // Proxmox, libvirt, GNOME Boxes, this app
 )
 
@@ -43,9 +43,9 @@ const (
 // OVAOptions controls the writer. Sensible defaults are applied by
 // ExportDomainOVA when the caller passes a zero-valued struct.
 type OVAOptions struct {
-	Target     OVATarget     // "vmware" (default) or "libvirt"
-	Compress   OVACompress   // "zstd" (default) — currently the only option
-	ZstdLevel  int            // 1..22, default 19
+	Target    OVATarget   // "vmware" (default) or "libvirt"
+	Compress  OVACompress // "zstd" (default) — currently the only option
+	ZstdLevel int         // 1..22, default 19
 }
 
 // diskEntry is the per-disk metadata that flows through OVF building
@@ -570,8 +570,8 @@ func buildOVF(name string, entries []diskEntry, memKB, vcpus int64, guestOS, tar
 `, ns, ns, rasd, vssd, xsi,
 		refs.String(),
 		disks.String(),
-		name, name, ovfOS, ovfOS,
-		fmt.Sprintf("WebKVM export of %s", name),
+		xmlEscape(name), xmlEscape(name), xmlEscape(ovfOS), xmlEscape(ovfOS),
+		fmt.Sprintf("WebKVM export of %s", xmlEscape(name)),
 		hw.String())
 }
 
@@ -1022,8 +1022,8 @@ func ovfToLibvirtXML(ovf, poolPath string) (string, error) {
 	// Parse the OVF with a tolerant struct.
 	var doc struct {
 		VirtualSystem struct {
-			Name              string `xml:"Name"`
-			OperatingSystem   struct {
+			Name            string `xml:"Name"`
+			OperatingSystem struct {
 				Description string `xml:"Description"`
 			} `xml:"OperatingSystemSection"`
 			VirtualHardware struct {
@@ -1031,10 +1031,10 @@ func ovfToLibvirtXML(ovf, poolPath string) (string, error) {
 					ElementName string `xml:"ElementName"`
 				} `xml:"System"`
 				Items []struct {
-					ResourceType  int    `xml:"ResourceType"`
-					ElementName   string `xml:"ElementName"`
-					VirtualQuantity int64 `xml:"VirtualQuantity"`
-					HostResource  string `xml:"HostResource"`
+					ResourceType    int    `xml:"ResourceType"`
+					ElementName     string `xml:"ElementName"`
+					VirtualQuantity int64  `xml:"VirtualQuantity"`
+					HostResource    string `xml:"HostResource"`
 				} `xml:"Item"`
 			} `xml:"VirtualHardwareSection"`
 		} `xml:"VirtualSystem"`
@@ -1081,7 +1081,7 @@ func ovfToLibvirtXML(ovf, poolPath string) (string, error) {
       <source file='%s'/>
       <target dev='vda' bus='virtio'/>
     </disk>
-`, diskPath)
+`, xmlEscape(diskPath))
 	}
 	if disks.Len() == 0 {
 		return "", fmt.Errorf("OVF has no disk references")
@@ -1109,7 +1109,7 @@ func ovfToLibvirtXML(ovf, poolPath string) (string, error) {
     <graphics type='vnc' listen='0.0.0.0'/>
   </devices>
 </domain>
-`, doc.VirtualSystem.Name, memKiB, vcpus, disks.String()), nil
+`, xmlEscape(doc.VirtualSystem.Name), memKiB, vcpus, disks.String()), nil
 }
 
 // xmlDecode is encoding/xml.Unmarshal; aliased here so callers in

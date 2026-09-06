@@ -1207,24 +1207,22 @@ func attrValue(xml, attr string) string {
 }
 
 func (c *Connector) createDiskInPool(poolName, volName string, sizeMB int64, format string) error {
+	// Defense in depth: volName ends up both in the volume XML below and
+	// as a backing file path, so reject anything outside the safe charset
+	// regardless of what upstream validation did.
+	if !nameRE.MatchString(volName) {
+		return fmt.Errorf("invalid volume name %q (allowed: A-Z a-z 0-9 . _ -)", volName)
+	}
+	switch format {
+	case "qcow2", "raw":
+	default:
+		return fmt.Errorf("unsupported volume format %q (allowed: qcow2, raw)", format)
+	}
 	pool, err := c.conn.LookupStoragePoolByName(poolName)
 	if err != nil {
 		return fmt.Errorf("lookup pool: %w", err)
 	}
 	defer pool.Free()
-
-	// Validate format
-	validFormats := []string{"qcow2", "raw"}
-	valid := false
-	for _, f := range validFormats {
-		if format == f {
-			valid = true
-			break
-		}
-	}
-	if !valid {
-		format = "qcow2" // Default to qcow2 if invalid
-	}
 
 	volXML := fmt.Sprintf(`<volume>
         <name>%s</name>
@@ -2661,6 +2659,25 @@ func (c *Connector) resolveUniqueDomainName(name string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("could not find a free name after 1000 attempts starting at %s", name)
+}
+
+// DomainExists reports whether a domain with exactly this name is already
+// defined, regardless of power state. Same lookup semantics as
+// resolveUniqueDomainName: a failed LookupDomainByName means the name is
+// free. Used by the appliance deploy pre-flight so a deployment is
+// rejected BEFORE any image I/O can overwrite an existing disk.
+func (c *Connector) DomainExists(name string) (bool, error) {
+	if err := c.ensureConnected(); err != nil {
+		return false, err
+	}
+	if name == "" {
+		return false, fmt.Errorf("empty name")
+	}
+	_, err := c.conn.LookupDomainByName(name)
+	if err == nil {
+		return true, nil
+	}
+	return false, nil
 }
 
 // normalizeMachineType rewrites versioned machine attributes (e.g.

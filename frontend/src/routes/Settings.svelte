@@ -45,23 +45,25 @@
     }
   });
 
-  // Group fields by Section, preserving schema order.
+  // Group fields by Section, preserving schema order. Defensive:
+  // a malformed schema (missing section name) must never crash the page.
   const sections = $derived.by(() => {
-    if (!schema) return [];
+    if (!schema?.fields) return [];
     const order = [];
     const map = new Map();
     for (const f of schema.fields) {
-      if (!map.has(f.section)) {
-        order.push(f.section);
-        map.set(f.section, []);
+      const section = f.section || 'general';
+      if (!map.has(section)) {
+        order.push(section);
+        map.set(section, []);
       }
-      map.get(f.section).push(f);
+      map.get(section).push(f);
     }
-    return order.map((name) => ({ name, fields: map.get(name) }));
+    return order.map((name) => ({ name: name || '', fields: map.get(name) || [] }));
   });
 
   const activeFields = $derived(
-    sections.find((s) => s.name.toLowerCase() === activeTab)?.fields || []
+    sections.find((s) => (s.name || '').toLowerCase() === activeTab)?.fields || []
   );
 
   // True if the user has unsaved changes.
@@ -90,7 +92,7 @@
       // decided some don't need explicit action (e.g. token_ttl,
       // which is read per request).
       const liveKeys = Object.keys(editing).filter((k) => {
-        const f = schema.fields.find((f) => f.key === k);
+        const f = schema?.fields?.find((f) => f.key === k);
         return f && f.hot_reload;
       });
       if (liveKeys.length > 0) {
@@ -143,7 +145,7 @@
   }
 
   const tabs = $derived([
-    ...sections.map((s) => ({ name: s.name.toLowerCase(), label: s.name })),
+    ...sections.map((s) => ({ name: (s.name || '').toLowerCase(), label: s.name || '' })),
     { name: 'notifications', label: t('settings.notifications') },
   ]);
 </script>

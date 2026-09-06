@@ -80,6 +80,9 @@ rollback if anything fails.
   storage, networking, firewall, backups, users/roles.
 - **[docs/DOCKER.md](docs/DOCKER.md)** — running WebKVM in a container against
   your host's existing libvirtd.
+- **[docs/runbooks/RUNBOOKS.md](docs/runbooks/RUNBOOKS.md)** — runbooks de
+  operaciones (V12-OPS-04): upgrade/rollback, disaster recovery, modelo de
+  seguridad y auditoría, tareas day-2, smoke test.
 
 ## Build from source
 

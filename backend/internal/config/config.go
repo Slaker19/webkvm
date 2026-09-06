@@ -241,6 +241,13 @@ func (c *Config) AuditLogFile() string {
 	return filepath.Join(c.DataDir, "audit.log")
 }
 
+// RevokedFile is the persistent JWT blacklist state (revoked token jti
+// hashes until their original expiry), so a backend restart cannot
+// resurrect tokens revoked before the restart.
+func (c *Config) RevokedFile() string {
+	return filepath.Join(c.DataDir, "revoked.json")
+}
+
 // ErrNotConfigured indicates the config couldn't be loaded because
 // a required value was missing or invalid.
 var ErrNotConfigured = errors.New("config: not configured")

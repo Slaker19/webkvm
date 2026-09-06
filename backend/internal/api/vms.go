@@ -133,17 +133,6 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	vm, err := h.lv.CreateDomain(req)
-	if err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	// Record the owner in the VM metadata for quota accounting.
-	if owner != "" {
-		_, _ = h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
-	}
-	// Optional cloud-init provisioning (user / password / SSH key / hostname).
-	var createdPassword string
 	// Fail fast on invalid cloud-init payloads BEFORE the VM is created,
 	// so a bad form gets a clean 400 instead of a half-provisioned VM.
 	if req.CloudInit != nil {
@@ -153,6 +142,18 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	vm, err := h.lv.CreateDomain(req)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Record the owner in VM metadata for quota accounting.
+	if owner != "" {
+		_, _ = h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
+	}
+	// Optional cloud-init provisioning (user / password / SSH key / hostname).
+	var createdPassword string
 	if req.CloudInit != nil {
 		// Remember the cloud-init username for later password resets.
 		if req.CloudInit.User != "" {
@@ -197,7 +198,14 @@ func (h *Handler) UpdateVM(w http.ResponseWriter, r *http.Request) {
 		if req.VCPUs != nil || req.RAMMB != nil {
 			if owner := h.ownerOf(id); owner != "" {
 				cur, err := h.lv.GetDomain(id)
-				if err == nil {
+				if err != nil {
+					// M-04: fail closed on growth — a failed lookup used to
+					// let vCPU/RAM grow silently past quota.
+					slog.Error("vm_update_quota_check_failed", "err", err, "vm", id)
+					jsonErr(w, http.StatusServiceUnavailable, "cannot verify quota: "+err.Error())
+					return
+				}
+				{
 					addVCPU := int64(0)
 					addRAM := int64(0)
 					if req.VCPUs != nil && *req.VCPUs > cur.VCPUs {
@@ -629,29 +637,34 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 		}
 		// Estimate the clone's size from the source before cloning.
 		src, err := h.lv.GetDomain(id)
-		if err == nil {
-			diskGB := vmTotalDiskGB(src)
-			if err := h.checkQuota(owner, 1, int64(src.VCPUs), src.RAMMB, diskGB); err != nil {
-				jsonErr(w, http.StatusConflict, err.Error())
-				return
-			}
-			clonePool := req.Pool
-			if clonePool == "" {
-				clonePool = h.defaultPool()
-			}
-			u, uerr := h.userStore.Get(owner)
-			if uerr != nil {
-				jsonErr(w, http.StatusUnauthorized, "user not found")
-				return
-			}
-			if err := assertPoolAllowed(u, clonePool); err != nil {
-				jsonErr(w, http.StatusForbidden, err.Error())
-				return
-			}
-			if err := h.checkDiskQuota(owner, map[string]int64{clonePool: diskGB}); err != nil {
-				jsonErr(w, http.StatusConflict, err.Error())
-				return
-			}
+		if err != nil {
+			// M-04: fail closed — a failed lookup used to skip quota/ACL
+			// entirely and let the clone through.
+			slog.Error("clone_quota_check_failed", "err", err, "src", id)
+			jsonErr(w, http.StatusServiceUnavailable, "cannot verify quota: "+err.Error())
+			return
+		}
+		diskGB := vmTotalDiskGB(src)
+		if err := h.checkQuota(owner, 1, int64(src.VCPUs), src.RAMMB, diskGB); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		clonePool := req.Pool
+		if clonePool == "" {
+			clonePool = h.defaultPool()
+		}
+		u, uerr := h.userStore.Get(owner)
+		if uerr != nil {
+			jsonErr(w, http.StatusUnauthorized, "user not found")
+			return
+		}
+		if err := assertPoolAllowed(u, clonePool); err != nil {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if err := h.checkDiskQuota(owner, map[string]int64{clonePool: diskGB}); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
 		}
 	}
 	vm, err := h.lv.CloneDomain(id, req)
@@ -746,7 +759,15 @@ func (h *Handler) ResizeDomainDisk(w http.ResponseWriter, r *http.Request) {
 	// disk's actual current size/pool (not the VM's first-disk figure).
 	if owner := h.ownerOf(id); owner != "" {
 		if u, gerr := h.userStore.Get(owner); gerr == nil && u.Role != models.RoleAdmin {
-			if cur, err := h.lv.GetDomain(id); err == nil {
+			cur, err := h.lv.GetDomain(id)
+			if err != nil {
+				// M-04: fail closed on growth — a failed lookup used to
+				// skip the disk-cap check silently.
+				slog.Error("disk_resize_quota_check_failed", "err", err, "vm", id)
+				jsonErr(w, http.StatusServiceUnavailable, "cannot verify quota: "+err.Error())
+				return
+			}
+			{
 				pool := h.defaultPool()
 				curSize := cur.DiskGB
 				for _, d := range cur.Disks {

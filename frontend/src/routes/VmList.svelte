@@ -5,7 +5,7 @@
   import Spinner from '$lib/components/Spinner.svelte';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import { upsertTask, updateTask, finishTask } from '$lib/stores/tasks.svelte.js';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { api } from '$lib/stores/auth.svelte.js';
   import { events } from '$lib/stores/events.svelte.js';
   import { getRoute, navigate } from '$lib/router.svelte.js';
@@ -146,6 +146,8 @@
   let netOptions = $state([]); // [{name, type}]
   let showDeployConfirm = $state(false);
   let deployApp = $state(null); // appliance elegido para instalar
+  // V12-FE-02: guards the deploy submit against double-clicks.
+  let deployBusy = $state(false);
   let showAppError = $state(false);
   let appErrorTitle = $state('');
   let appErrorMessage = $state('');
@@ -154,6 +156,18 @@
   let pendingNavId = $state(null);
   let appDeploying = $state(null); // { jobId, name, status, pct, error }
   let appPoller = $state(null);
+  // Strict abort (V12-FE-01): after this many CONSECUTIVE 404s the poller
+  // stops — the job vanished from the backend (e.g. purged by the 24h job
+  // sweeper). Any non-404 error resets the counter, so a generic network
+  // blip can never trip a false positive.
+  const MAX_CONSECUTIVE_404 = 10;
+  let appPoller404s = 0;
+
+  function stopAppPoller() {
+    if (appPoller) clearInterval(appPoller);
+    appPoller = null;
+    appPoller404s = 0;
+  }
   // Admin CRUD for the appliance catalog.
   let showAppEditor = $state(false);
   let appEditorMode = $state('create'); // 'create' | 'edit'
@@ -227,6 +241,9 @@ apt-get update -y
 
   async function quickAction(vm, action) {
     const key = `${vm.id}:${action}`;
+    // V12-FE-02: never fire the same mutation twice (double-click / key
+    // repeat). A busy flag is set synchronously before any await.
+    if (quickBusy === key) return;
     quickBusy = key;
     menuFor = null;
     try {
@@ -299,7 +316,7 @@ apt-get update -y
     if (q) {
       out = out.filter(
         (v) =>
-          v.name.toLowerCase().includes(q) ||
+          (v.name || '').toLowerCase().includes(q) ||
           (v.alias && v.alias.toLowerCase().includes(q)) ||
           (v.ip && v.ip.includes(q))
       );
@@ -345,6 +362,13 @@ apt-get update -y
       off();
       offMetrics();
     };
+  });
+
+  // V12-FE-01: never leave the appliance-job poller running after this
+  // page unmounts — a leaked interval would keep hitting the API (and
+  // re-rendering toasts) while the user is elsewhere.
+  onDestroy(() => {
+    stopAppPoller();
   });
 
   async function loadVMs() {
@@ -858,7 +882,7 @@ apt-get update -y
       return;
     }
     // Second confirmation: require the exact appliance name.
-    if (appDeleteText.trim() !== appDeleteTarget.name) {
+    if (appDeleteText.trim() !== (appDeleteTarget?.name || '')) {
       appDeleteError = 'Type the appliance name to confirm';
       return;
     }
@@ -941,6 +965,11 @@ apt-get update -y
   }
 
   async function deployAppliance(app, vmName) {
+    // V12-FE-02: the confirm dialog stays open during the (async) API
+    // call, so a double-click could otherwise fire two deploys. Set the
+    // flag synchronously and clear it in finally.
+    if (deployBusy) return;
+    deployBusy = true;
     try {
       const body = { name: vmName };
       // If the appliance supports cloud-init and the user provided a user
@@ -988,17 +1017,20 @@ apt-get update -y
         appErrorMessage = msg;
         showAppError = true;
       }
+    } finally {
+      deployBusy = false;
     }
   }
 
   async function pollApplianceJob() {
     if (!appDeploying?.jobId) {
-      if (appPoller) clearInterval(appPoller);
-      appPoller = null;
+      stopAppPoller();
       return;
     }
     try {
       const job = await api.getDownloadJob(appDeploying.jobId);
+      // Any successful response (even a stale job) clears the 404 streak.
+      appPoller404s = 0;
       appDeploying = {
         jobId: job.id,
         name: appDeploying.name,
@@ -1007,8 +1039,7 @@ apt-get update -y
         error: job.error || '',
       };
       if (job.status === 'completed' || job.status === 'error') {
-        if (appPoller) clearInterval(appPoller);
-        appPoller = null;
+        stopAppPoller();
         if (job.status === 'completed') {
           const name = appDeploying.name;
           appDeploying = null;
@@ -1036,8 +1067,25 @@ apt-get update -y
           appDeploying = { ...appDeploying, status: 'error', error: job.error || '' };
         }
       }
-    } catch {
-      // transient; keep polling
+    } catch (err) {
+      // V12-FE-01: only a strict run of CONSECUTIVE 404s aborts the
+      // poller (the job no longer exists server-side — e.g. the 24h job
+      // sweeper purged it). Generic network failures (offline, 5xx, …)
+      // are transient and reset the counter instead of aborting.
+      if (err && err.status === 404) {
+        appPoller404s += 1;
+        if (appPoller404s >= MAX_CONSECUTIVE_404) {
+          stopAppPoller();
+          appDeploying = {
+            ...appDeploying,
+            status: 'error',
+            error: t('vms.applianceJobGone'),
+          };
+          toast.error(t('vms.applianceJobGone'), { duration: 8000 });
+        }
+      } else {
+        appPoller404s = 0;
+      }
     }
   }
 
@@ -1436,8 +1484,10 @@ apt-get update -y
                         <button
                           type="button"
                           class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                          disabled={quickBusy === `${vm.id}:start`}
                           onclick={() => quickAction(vm, 'start')}
                         >
+                          {#if quickBusy === `${vm.id}:start`}<Spinner class="w-3.5 h-3.5" />{/if}
                           <span class="w-1.5 h-1.5 rounded-full bg-success"></span>
                           {quickBusy === `${vm.id}:start` ? t('vms.starting') : t('vms.start')}
                         </button>
@@ -1445,16 +1495,24 @@ apt-get update -y
                         <button
                           type="button"
                           class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                          disabled={quickBusy === `${vm.id}:shutdown`}
                           onclick={() => quickAction(vm, 'shutdown')}
                         >
+                          {#if quickBusy === `${vm.id}:shutdown`}<Spinner
+                              class="w-3.5 h-3.5"
+                            />{/if}
                           <span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
                           {t('vms.shutdown')}
                         </button>
                         <button
                           type="button"
                           class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted text-destructive flex items-center gap-2"
+                          disabled={quickBusy === `${vm.id}:forceoff`}
                           onclick={() => quickAction(vm, 'forceoff')}
                         >
+                          {#if quickBusy === `${vm.id}:forceoff`}<Spinner
+                              class="w-3.5 h-3.5"
+                            />{/if}
                           <span class="w-1.5 h-1.5 rounded-full bg-destructive"></span>
                           {t('vms.forceOff')}
                         </button>
@@ -1476,8 +1534,10 @@ apt-get update -y
                       <button
                         type="button"
                         class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                        disabled={quickBusy === `${vm.id}:clone`}
                         onclick={() => quickAction(vm, 'clone')}
                       >
+                        {#if quickBusy === `${vm.id}:clone`}<Spinner class="w-3.5 h-3.5" />{/if}
                         {t('vms.clone')}
                       </button>
                       <button
@@ -1491,8 +1551,12 @@ apt-get update -y
                         <button
                           type="button"
                           class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                          disabled={quickBusy === `${vm.id}:template`}
                           onclick={() => quickAction(vm, 'template')}
                         >
+                          {#if quickBusy === `${vm.id}:template`}<Spinner
+                              class="w-3.5 h-3.5"
+                            />{/if}
                           {t('vms.makeTemplateShort')}
                         </button>
                       {/if}
@@ -2395,8 +2459,11 @@ set -e
       >
         {t('common.cancel')}
       </Button>
-      <Button onclick={() => deployAppliance(deployApp, appNames[deployApp.id]?.trim() || '')}>
-        {#if appDeploying}<Spinner size="sm" color="text-white" />{:else}{t(
+      <Button
+        disabled={deployBusy}
+        onclick={() => deployAppliance(deployApp, appNames[deployApp.id]?.trim() || '')}
+      >
+        {#if deployBusy}<Spinner size="sm" color="text-white" />{:else}{t(
             'vms.installAppliance'
           )}{/if}
       </Button>

@@ -11,6 +11,7 @@
    */
   import { Input } from '$lib/components/ui/input';
   import { t } from '../i18n.svelte.js';
+  import { onDestroy } from 'svelte';
 
   let {
     value = $bindable(''),
@@ -39,6 +40,11 @@
     clearTimeout(timer);
     onInput('');
   }
+
+  // V12-FE-01: cancel a pending debounce when the component unmounts.
+  onDestroy(() => {
+    clearTimeout(timer);
+  });
 </script>
 
 <div class="relative {className}">

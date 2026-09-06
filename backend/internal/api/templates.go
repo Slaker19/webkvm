@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"webkvm/internal/audit"
@@ -99,37 +100,49 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Owner for quota + accounting.
+	// Owner for quota + accounting. The QUOTA OWNER IS THE CALLER:
+	// instantiating someone else's (typically admin-owned) template must
+	// count against the user who creates the new VM, not the template's
+	// owner — otherwise an admin template would be quota-exempt for
+	// everyone who instantiates it.
 	owner, role, _ := audit.FromRequest(r)
 	if role != models.RoleAdmin {
-		o := meta.OwnerID
+		o := owner
 		if o == "" {
-			o = owner
+			o = meta.OwnerID
 		}
 		src, serr := h.lv.GetDomain(id)
-		if serr == nil {
-			diskGB := vmTotalDiskGB(src)
-			u, uerr := h.userStore.Get(o)
-			if uerr != nil {
-				jsonErr(w, http.StatusUnauthorized, "user not found")
-				return
-			}
-			tplPool := req.Pool
-			if tplPool == "" {
-				tplPool = h.defaultPool()
-			}
-			if err := assertPoolAllowed(u, tplPool); err != nil {
-				jsonErr(w, http.StatusForbidden, err.Error())
-				return
-			}
-			if err := h.checkQuota(o, 1, int64(src.VCPUs), src.RAMMB, diskGB); err != nil {
-				jsonErr(w, http.StatusConflict, err.Error())
-				return
-			}
-			if err := h.checkDiskQuota(o, map[string]int64{h.defaultPool(): diskGB}); err != nil {
-				jsonErr(w, http.StatusConflict, err.Error())
-				return
-			}
+		if serr != nil {
+			// M-04: fail closed — previously a failing GetDomain silently
+			// skipped quota/ACL enforcement and allowed the clone anyway.
+			slog.Error("instantiate_template_quota_check_failed", "err", serr, "tpl", id)
+			jsonErr(w, http.StatusServiceUnavailable, "cannot verify quota: "+serr.Error())
+			return
+		}
+		diskGB := vmTotalDiskGB(src)
+		u, uerr := h.userStore.Get(o)
+		if uerr != nil {
+			jsonErr(w, http.StatusUnauthorized, "user not found")
+			return
+		}
+		tplPool := req.Pool
+		if tplPool == "" {
+			tplPool = h.defaultPool()
+		}
+		if err := assertPoolAllowed(u, tplPool); err != nil {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if err := h.checkQuota(o, 1, int64(src.VCPUs), src.RAMMB, diskGB); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		// A-01: charge the pool the VM will actually land on, not the
+		// default pool — a user with a small cap on tplPool could
+		// otherwise bypass it.
+		if err := h.checkDiskQuota(o, map[string]int64{tplPool: diskGB}); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
 		}
 	}
 

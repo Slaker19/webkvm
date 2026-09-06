@@ -35,23 +35,23 @@ type SystemInfo struct {
 }
 
 type BackendInfo struct {
-	Version  string `json:"version"`
-	GOOS     string `json:"goos"`
-	GOARCH   string `json:"goarch"`
-	Goroutines int   `json:"goroutines"`
+	Version    string `json:"version"`
+	GOOS       string `json:"goos"`
+	GOARCH     string `json:"goarch"`
+	Goroutines int    `json:"goroutines"`
 }
 
 type LibvirtInfo struct {
-	Connected bool   `json:"connected"`
-	URI       string `json:"uri"`
+	Connected  bool   `json:"connected"`
+	URI        string `json:"uri"`
 	Hypervisor string `json:"hypervisor,omitempty"`
 }
 
 type HostInfo struct {
-	Hostname  string `json:"hostname"`
-	Kernel    string `json:"kernel"`
-	OS        string `json:"os"`
-	Arch      string `json:"arch"`
+	Hostname string `json:"hostname"`
+	Kernel   string `json:"kernel"`
+	OS       string `json:"os"`
+	Arch     string `json:"arch"`
 }
 
 type PoolDiskInfo struct {
@@ -287,11 +287,11 @@ func (h *Handler) SystemBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit.Log(auditFor(r, "system.backup", "webkvm-backup", map[string]interface{}{
-		"filename":  result.Filename,
-		"size":      result.Size,
-		"sha256":    result.SHA256,
-		"duration":  result.DurationMS,
-		"host":      result.Host,
+		"filename": result.Filename,
+		"size":     result.Size,
+		"sha256":   result.SHA256,
+		"duration": result.DurationMS,
+		"host":     result.Host,
 	}))
 	jsonResp(w, http.StatusOK, result)
 }
@@ -308,10 +308,10 @@ func (h *Handler) SystemListBackups(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := "/mnt/webkvm-backup/webkvm-" + host
 	out := struct {
-		Mounted  bool       `json:"mounted"`
-		Host     string     `json:"host"`
-		Dir      string     `json:"dir"`
-		Backups  []BackupInfo `json:"backups"`
+		Mounted bool         `json:"mounted"`
+		Host    string       `json:"host"`
+		Dir     string       `json:"dir"`
+		Backups []BackupInfo `json:"backups"`
 	}{Host: host, Dir: dir}
 
 	entries, err := os.ReadDir(dir)
@@ -455,6 +455,13 @@ func (h *Handler) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusForbidden, "update requires the backend to run as root")
 		return
 	}
+	// Opt-in gate: git pull + build + systemctl restart is an intentional
+	// root-RCE path for a compromised admin session; require the operator
+	// to consciously enable it via env so it is OFF by default.
+	if os.Getenv("WEBKVM_ALLOW_UPDATE") != "1" {
+		jsonErr(w, http.StatusForbidden, "system update is disabled; set WEBKVM_ALLOW_UPDATE=1 in the service environment to enable it")
+		return
+	}
 	if h.cfg.RepoDir == "" {
 		jsonErr(w, http.StatusServiceUnavailable, "REPO_DIR not set; cannot auto-update")
 		return
@@ -466,7 +473,7 @@ func (h *Handler) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 	h.audit.Log(auditFor(r, "system.update", "webkvm", map[string]interface{}{"repo": h.cfg.RepoDir}))
 	// Run update in background, log progress to /var/log/webkvm/update.log
 	go func() {
-		log, _ := os.OpenFile("/var/log/webkvm/update.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		log, _ := os.OpenFile("/var/log/webkvm/update.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if log != nil {
 			defer log.Close()
 		}

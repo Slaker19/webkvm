@@ -29,6 +29,15 @@ var (
 	jobsMu  sync.RWMutex
 )
 
+// Job GC policy (V12-OPS-06): finished jobs (completed/error) older than
+// jobTTL are purged by a dedicated goroutine every jobSweepInterval.
+// queued/running jobs are NEVER purged, no matter how old they get — an
+// in-flight download keeps its entry until it reaches a terminal state.
+const (
+	jobTTL           = 24 * time.Hour
+	jobSweepInterval = 5 * time.Minute
+)
+
 var poolPathDenyList = []string{
 	"/etc",
 	"/proc",
@@ -60,6 +69,7 @@ func validatePoolPath(p string) error {
 
 func storeJob(j *models.DownloadJob) {
 	jobsMu.Lock()
+	j.UpdatedAt = time.Now().Unix()
 	isoJobs[j.ID] = j
 	jobsMu.Unlock()
 }
@@ -81,17 +91,49 @@ func updateJob(id string, progress float64, status string, errMsg string) {
 		j.Progress = progress
 		j.Status = status
 		j.Error = errMsg
+		j.UpdatedAt = time.Now().Unix()
 	}
 }
 
-func cleanOldJobs() {
+// pruneExpiredJobs removes jobs that reached a terminal state
+// (completed/error) more than ttl ago. queued/running jobs are never
+// touched. Thread-safe. Returns the number of purged jobs.
+func pruneExpiredJobs(now time.Time, ttl time.Duration) int {
 	jobsMu.Lock()
 	defer jobsMu.Unlock()
+	cutoff := now.Add(-ttl).Unix()
+	n := 0
 	for id, j := range isoJobs {
-		if j.Status == "completed" || j.Status == "error" {
+		if (j.Status == "completed" || j.Status == "error") &&
+			j.UpdatedAt > 0 && j.UpdatedAt <= cutoff {
 			delete(isoJobs, id)
+			n++
 		}
 	}
+	return n
+}
+
+// StartJobSweeper launches the background garbage collector for finished
+// download/appliance jobs. It ticks every interval and purges only
+// terminal jobs older than ttl; the loop stops when ctx is cancelled
+// (server shutdown). log is optional and receives a single line per run
+// that actually purged something.
+func StartJobSweeper(ctx context.Context, interval, ttl time.Duration, log func(msg string, args ...any)) {
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				n := pruneExpiredJobs(time.Now(), ttl)
+				if n > 0 && log != nil {
+					log("jobs_purged", "count", n, "ttl", ttl.String())
+				}
+			}
+		}
+	}()
 }
 
 // progressReportingWriter wraps dst and reports the cumulative number of
@@ -700,6 +742,20 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusInternalServerError, "failed to write file: "+err.Error())
 			return
 		}
+		// A-02: ContentLength is client-controlled and can be absent
+		// (chunked) or lower than what was actually written, so re-charge
+		// quota against the real on-disk size and delete the file (freeing
+		// the space) if the user is now over their cap.
+		if role != models.RoleAdmin {
+			fi, statErr := os.Stat(destPath)
+			if statErr == nil {
+				if err := h.checkDiskQuota(owner, map[string]int64{poolName: bytesToGB(fi.Size())}); err != nil {
+					os.Remove(destPath)
+					jsonErr(w, http.StatusConflict, "upload exceeded disk quota ("+err.Error()+"); file deleted")
+					return
+				}
+			}
+		}
 	}
 
 	if name == "" {
@@ -824,7 +880,10 @@ func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 		Status:   "queued",
 	}
 	storeJob(job)
-	cleanOldJobs()
+	// Opportunistic GC on the submit path: finished jobs past the TTL
+	// are dropped immediately (in addition to the periodic sweeper), so
+	// a burst of activity can't grow the map unboundedly between ticks.
+	pruneExpiredJobs(time.Now(), jobTTL)
 
 	user, role, ip := audit.FromRequest(r)
 	h.audit.Log(audit.Entry{

@@ -137,17 +137,9 @@
     return route.name === id;
   }
 
-  function go(path, external) {
-    if (external) {
-      window.open(
-        path + '?token=' + encodeURIComponent(auth.token),
-        '_blank',
-        'noopener,noreferrer'
-      );
-    } else {
-      navigate(path);
-      onNavigate();
-    }
+  function go(path) {
+    navigate(path);
+    onNavigate();
   }
 </script>
 
@@ -191,7 +183,7 @@
       <div class="space-y-0.5">
         {#each group.items as item (item.id)}
           <button
-            onclick={() => go(item.path, item.external)}
+            onclick={() => go(item.path)}
             aria-current={isActive(item.id) ? 'page' : undefined}
             title={showLabels ? undefined : item.label}
             class="relative w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm font-medium transition-colors duration-150 {showLabels
