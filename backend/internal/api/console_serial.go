@@ -323,7 +323,7 @@ func (h *Handler) ResetVMPassword(w http.ResponseWriter, r *http.Request) {
 	newPassword := generatePasswordString(8)
 	if err := h.compute.SetUserPassword(id, username, newPassword); err != nil {
 		slog.Error("password_reset_failed", "vm_id", id, "user", username, "err", err)
-		jsonErr(w, http.StatusBadGateway, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 

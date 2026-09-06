@@ -1011,6 +1011,8 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 	vm := models.VM{
 		ID:         uuidStr,
 		Name:       name,
+		Type:       "vm",
+		Hypervisor: "kvm",
 		State:      vmState,
 		VCPUs:      int(info.NrVirtCpu),
 		RAMMB:      int64(info.MaxMem) / 1024,

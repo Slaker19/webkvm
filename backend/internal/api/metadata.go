@@ -22,7 +22,7 @@ func (h *Handler) GetVMMeta(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	meta, err := h.compute.GetVMMeta(id)
 	if err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 	jsonResp(w, http.StatusOK, meta)
@@ -46,7 +46,7 @@ func (h *Handler) UpdateVMMeta(w http.ResponseWriter, r *http.Request) {
 	}
 	meta, err := h.compute.UpdateVMMeta(id, upd)
 	if err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 	h.audit.Log(auditFor(r, "vm.meta_update", id, nil))

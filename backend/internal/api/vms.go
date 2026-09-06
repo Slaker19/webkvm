@@ -244,7 +244,7 @@ func (h *Handler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 	vm, _ := h.compute.GetDomain(id)
 	deleteDisks := r.URL.Query().Get("disks") == "true"
 	if err := h.compute.DeleteDomain(id); err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 	var disksDeleted []string
@@ -280,6 +280,22 @@ func (h *Handler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusOK, map[string]any{"status": "deleted", "disks_deleted": disksDeleted})
 }
 
+// vmActionErr writes the right HTTP status for an instance operation:
+// compute.ErrNotImplemented → 501 (the hypervisor backend does not
+// support this operation, e.g. an LXD container before Fase 2), anything
+// else → 500. Keeps containers from surfacing confusing internal errors.
+func (h *Handler) vmActionErr(w http.ResponseWriter, err error, humanize func(error) string) {
+	if errors.Is(err, compute.ErrNotImplemented) {
+		jsonErr(w, http.StatusNotImplemented, err.Error())
+		return
+	}
+	if humanize != nil {
+		jsonErr(w, http.StatusInternalServerError, humanize(err))
+		return
+	}
+	jsonErr(w, http.StatusInternalServerError, err.Error())
+}
+
 func (h *Handler) StartVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.checkStartQuota(id); err != nil {
@@ -287,7 +303,7 @@ func (h *Handler) StartVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.compute.StartDomain(id); err != nil {
-		jsonErr(w, http.StatusInternalServerError, humanizeStartError(err))
+		h.vmActionErr(w, err, humanizeStartError)
 		return
 	}
 	// Re-apply the firewall so port forwards for this VM take effect
@@ -305,7 +321,7 @@ func (h *Handler) StartVM(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ShutdownVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.compute.ShutdownDomain(id); err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 	h.audit.Log(auditFor(r, "vm.shutdown", id, nil))
@@ -315,7 +331,7 @@ func (h *Handler) ShutdownVM(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ForceOffVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.compute.ForceOffDomain(id); err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 	h.audit.Log(auditFor(r, "vm.forceoff", id, nil))
@@ -325,7 +341,7 @@ func (h *Handler) ForceOffVM(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RebootVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.compute.RebootDomain(id); err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 	if h.fwMgr != nil {
@@ -340,7 +356,7 @@ func (h *Handler) RebootVM(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) SuspendVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := h.compute.SuspendDomain(id); err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 	h.audit.Log(auditFor(r, "vm.suspend", id, nil))
@@ -354,7 +370,7 @@ func (h *Handler) ResumeVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.compute.ResumeDomain(id); err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 	h.audit.Log(auditFor(r, "vm.resume", id, nil))
@@ -421,7 +437,7 @@ func (h *Handler) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 	h.audit.Log(auditFor(r, "vm.snapshot_create", id, map[string]interface{}{
@@ -436,7 +452,7 @@ func (h *Handler) DeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 	sid := chi.URLParam(r, "sid")
 	allocated, err := h.compute.DeleteSnapshot(id, sid)
 	if err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 	h.audit.Log(auditFor(r, "vm.snapshot_delete", id, map[string]interface{}{
@@ -450,7 +466,7 @@ func (h *Handler) RevertSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sid := chi.URLParam(r, "sid")
 	if err := h.compute.RevertSnapshot(id, sid); err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.vmActionErr(w, err, nil)
 		return
 	}
 	h.audit.Log(auditFor(r, "vm.snapshot_revert", id, map[string]interface{}{"snap": sid}))

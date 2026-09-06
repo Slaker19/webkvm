@@ -27,6 +27,10 @@ var (
 	// ErrMemorySnapshotRequiresRunning is returned when a memory
 	// snapshot is requested on a powered-off instance.
 	ErrMemorySnapshotRequiresRunning = errors.New("a memory snapshot requires the VM to be running")
+	// ErrNotImplemented is returned by backends for operations the
+	// hypervisor does not support (Fase 1: most LXD methods). Handlers
+	// map it to HTTP 501 Not Implemented.
+	ErrNotImplemented = errors.New("this operation is not supported by the current hypervisor backend")
 )
 
 // ExportBackupOptions controls a backup export stream.

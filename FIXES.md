@@ -1,5 +1,46 @@
 # FIXES — Correcciones aplicadas (2026-09-05)
 
+## v1.4 — Fase 1: El Conector LXD (2026-09-06)
+
+- **`internal/compute/lxd/lxd.go` (nuevo)** — `LXDBackend` implementa los 87
+  métodos de `compute.Backend` contra el demonio LXD vía el **cliente oficial
+  `github.com/canonical/lxd/client`** (SNV 2026-09). Conexión por unix socket:
+  `DefaultSocketPath()` = `/var/snap/lxd/common/lxd/unix.socket` (fallback
+  `/var/lib/lxd/unix.socket`); `NewLXDBackend(socket)` con `ServerInfo()`.
+- **Implementación gradual (fail-safe)**: Fase 1 implementa el **read path**
+  (`ListDomains` → `GetInstances(InstanceTypeAny)` mapeando cada instancia al
+  `models.VM` con `Type`/`Hypervisor`; `GetDomain`; `DomainExists`). **Todos los
+  demás métodos devuelven `compute.ErrNotImplemented`** → HTTP 501 limpio vía
+  `h.vmActionErr` (mapper central: 501 vs 500) en start/shutdown/force/reboot/
+  suspend/resume/delete/snapshots/meta/password. `Capabilities()` = todo `false`.
+- **Modelo unificado (D2)**: `models.VM` gana `Type` ("vm"|"container") y
+  `Hypervisor` ("kvm"|"lxd"); `domainToVM` (KVM) los fija; `instanceToVM` (LXD)
+  los mapea (contenedor→type=container; LXD VM→type=vm; estado Running/Stopped/
+  Frozen/Error→running/shutoff/paused/crashed; vcpu/RAM desde `limits.cpu`/
+  `limits.memory` con parser de unidades; `boot.autostart`→Autostart).
+- **Backend compuesto**: `internal/compute/combined.go` — `Combined{primary:
+  KVM, secondary: LXD}` (vía embedding + override de métodos con id que
+  **enrutan por instancia**): las ops de un contenedor aterrizan en el backend
+  LXD (501), no fugan "domain not found" del primario. `ListDomains`/`GetDomain`
+  fusionan ambos; un fallo del secundario es no-fatal (KVM nunca se oculta).
+- **Config**: `WEBKVM_LXD_ENABLED` (default off) + `LXD_SOCKET` (config.go).
+  `main.go`: si LXD conecta → `NewCombined` + log `lxd_connected`; si no → KVM
+  solo (fail-safe, cero regresión).
+- **Tests** (`-race`): `instanceToVM` (mapeo tipo/estado/vcpu/RAM/autostart),
+  `parseMemoryMB`, `parseIntConfig`, fail-safe (stubs → `ErrNotImplemented`),
+  **gate connect+list contra un demonio LXD simulado sobre unix socket**
+  (`TestLXDBackendConnectAndList`), socket ausente → error limpio; `Combined`
+  (merge, secundario caído no-fatal, GetDomain fallback, **routing de ops de
+  contenedor al secundario**). Assert compile-time `var _ compute.Backend =
+  (*LXDBackend)(nil)`.
+- **Gates**: `golangci-lint` 0 issues · build/vet OK · `go test -race ./...`
+  verde (solo los 2 `backupstore` root preexistentes). **Smoke real en VM
+  (v1.3.1-fase1)**: con `WEBKVM_LXD_ENABLED=1` + `LXD_SOCKET` a un daemon LXD
+  simulado → journal `lxd_connected server_version=6.0.0-fake`, `GET /api/vms`
+  lista **5 instancias (3 VMs kvm + contenedores web/db lxd)**, `start web` →
+  **501 limpio**; al quitar el drop-in → KVM-only restaurado y smoke de Fase 0
+  idéntico (cero regresión).
+
 ## v1.4 — Fase 0: ComputeBackend (la costura; riesgo cero) (2026-09-06)
 
 - **`internal/compute/backend.go` (nuevo)** — interfaz **`compute.Backend`** completa

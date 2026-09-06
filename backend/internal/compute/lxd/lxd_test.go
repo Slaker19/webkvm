@@ -1,0 +1,191 @@
+package lxd
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/canonical/lxd/shared/api"
+
+	"webkvm/internal/compute"
+	"webkvm/internal/models"
+)
+
+// TestInstanceToVM maps a running container to the neutral model.
+func TestInstanceToVM(t *testing.T) {
+	inst := &api.Instance{
+		Name:   "web",
+		Status: "Running",
+		Type:   string(api.InstanceTypeContainer),
+		Config: map[string]string{
+			"limits.cpu":     "2",
+			"limits.memory":  "1GiB",
+			"boot.autostart": "true",
+		},
+	}
+	vm := instanceToVM(inst)
+	if vm.ID != "web" || vm.Name != "web" {
+		t.Errorf("id/name = %q/%q", vm.ID, vm.Name)
+	}
+	if vm.Type != "container" || vm.Hypervisor != "lxd" {
+		t.Errorf("type/hypervisor = %q/%q", vm.Type, vm.Hypervisor)
+	}
+	if vm.State != models.VMStateRunning {
+		t.Errorf("state = %q, want running", vm.State)
+	}
+	if vm.VCPUs != 2 {
+		t.Errorf("vcpus = %d, want 2", vm.VCPUs)
+	}
+	if vm.RAMMB != 1024 {
+		t.Errorf("ram_mb = %d, want 1024 (1GiB)", vm.RAMMB)
+	}
+	if !vm.Autostart {
+		t.Error("autostart should be true")
+	}
+}
+
+// An LXD virtual-machine maps Type=vm; a stopped container -> shutoff.
+func TestInstanceToVM_VMTypeAndStates(t *testing.T) {
+	lxdVM := instanceToVM(&api.Instance{
+		Name: "vm1", Status: "Running", Type: string(api.InstanceTypeVM),
+	})
+	if lxdVM.Type != "vm" {
+		t.Errorf("lxd VM type = %q, want vm", lxdVM.Type)
+	}
+	stopped := instanceToVM(&api.Instance{Name: "c1", Status: "Stopped", Type: "container"})
+	if stopped.State != models.VMStateShutoff {
+		t.Errorf("stopped state = %q, want shutoff", stopped.State)
+	}
+	frozen := instanceToVM(&api.Instance{Name: "c2", Status: "Frozen", Type: "container"})
+	if frozen.State != models.VMStatePaused {
+		t.Errorf("frozen state = %q, want paused", frozen.State)
+	}
+}
+
+func TestParseMemoryMB(t *testing.T) {
+	cases := map[string]int64{
+		"1GiB": 1024, "2GB": 2000, "512MiB": 512, "256MB": 256,
+		"": 0, "bogus": 0, "1KiB": 1,
+	}
+	for in, want := range cases {
+		if got := parseMemoryMB(in); got != want {
+			t.Errorf("parseMemoryMB(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestParseIntConfig(t *testing.T) {
+	if parseIntConfig("4") != 4 {
+		t.Error("plain int should parse")
+	}
+	if parseIntConfig("2-4") != 0 || parseIntConfig("50%") != 0 || parseIntConfig("") != 0 {
+		t.Error("ranges/percentages/empty should map to 0")
+	}
+}
+
+// TestLXDBackendFailSafe: every not-yet-implemented operation returns
+// the ErrNotImplemented sentinel (which the handlers surface as 501).
+func TestLXDBackendFailSafe(t *testing.T) {
+	b := &LXDBackend{} // no client needed for stubs
+	ops := []func() error{
+		func() error { return b.StartDomain("x") },
+		func() error { _, err := b.CreateDomain(models.CreateVMRequest{}); return err },
+		func() error {
+			_, err := b.ExportDomain(context.Background(), "x", compute.ExportBackupOptions{}, nil)
+			return err
+		},
+		func() error { _, err := b.OpenSerialConsole("x"); return err },
+		func() error { _, err := b.ListSnapshots("x"); return err },
+		func() error { _, err := b.ListStoragePools(); return err },
+	}
+	for i, op := range ops {
+		if err := op(); !errors.Is(err, compute.ErrNotImplemented) {
+			t.Errorf("op %d: err = %v, want compute.ErrNotImplemented", i, err)
+		}
+	}
+	if c := b.Capabilities(); c.SupportsOVA || c.SupportsVNC || c.SupportsSnapshots {
+		t.Errorf("LXD capabilities must all be false in Fase 1, got %+v", c)
+	}
+}
+
+// fakeLXDServer is a minimal LXD daemon over a unix socket: enough for
+// ConnectLXDUnix (GET /1.0) and GetInstances (GET /1.0/instances).
+func fakeLXDServer(t *testing.T, instances []api.Instance) string {
+	t.Helper()
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "unix.socket")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/1.0", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"type":"sync","status":"Success","status_code":200,"metadata":{"api_extensions":["instances","snapshots","resources","networks"],"api_status":"stable","api_version":"1.0","auth":"trusted","public":false,"environment":{"server_version":"6.0.0-fake","certificate":""}}}`)
+	})
+	mux.HandleFunc("/1.0/instances", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		meta, _ := json.Marshal(instances)
+		fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":%s}`, meta)
+	})
+	go http.Serve(l, mux)
+	t.Cleanup(func() { l.Close(); _ = os.Remove(sock) })
+	return sock
+}
+
+// TestLXDBackendConnectAndList is the Fase 1 gate: connect to the LXD
+// daemon over a unix socket (simulated) and list instances mapped to the
+// neutral model — the exact path the backend follows in production.
+func TestLXDBackendConnectAndList(t *testing.T) {
+	instances := []api.Instance{
+		{Name: "web", Status: "Running", Type: "container",
+			Config: map[string]string{"limits.cpu": "2", "limits.memory": "1GiB"}},
+		{Name: "db", Status: "Stopped", Type: "container",
+			Config: map[string]string{"limits.memory": "512MiB"}},
+	}
+	sock := fakeLXDServer(t, instances)
+
+	b, err := NewLXDBackend(sock)
+	if err != nil {
+		t.Fatalf("connect to LXD socket: %v", err)
+	}
+	if v, err := b.ServerInfo(); err != nil || v != "6.0.0-fake" {
+		t.Fatalf("ServerInfo = %q, %v", v, err)
+	}
+	vms, err := b.ListDomains()
+	if err != nil {
+		t.Fatalf("list instances: %v", err)
+	}
+	if len(vms) != 2 {
+		t.Fatalf("got %d instances, want 2: %+v", len(vms), vms)
+	}
+	if vms[0].Name != "web" || vms[0].State != models.VMStateRunning || vms[0].RAMMB != 1024 {
+		t.Errorf("web mapping wrong: %+v", vms[0])
+	}
+	if vms[1].Name != "db" || vms[1].State != models.VMStateShutoff || vms[1].Hypervisor != "lxd" {
+		t.Errorf("db mapping wrong: %+v", vms[1])
+	}
+}
+
+// TestNewLXDBackendMissingSocket: a missing socket returns an error so
+// the caller can degrade to KVM-only (fail-safe, no crash).
+func TestNewLXDBackendMissingSocket(t *testing.T) {
+	_, err := NewLXDBackend(filepath.Join(t.TempDir(), "no-such.socket"))
+	if err == nil {
+		t.Fatal("expected connection error for a missing socket")
+	}
+	if strings.Contains(err.Error(), "panic") {
+		t.Fatalf("should be a clean error, got %v", err)
+	}
+}
+
+// The official client import must not leak into the neutral interface:
+// compute.Backend is implemented by *LXDBackend (compile-time check).
+var _ compute.Backend = (*LXDBackend)(nil)

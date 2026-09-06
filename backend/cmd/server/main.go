@@ -18,6 +18,7 @@ import (
 	"webkvm/internal/config"
 	"webkvm/internal/configstore"
 	"webkvm/internal/compute"
+	"webkvm/internal/compute/lxd"
 	"webkvm/internal/events"
 	"webkvm/internal/firewall"
 	"webkvm/internal/libvirt"
@@ -36,6 +37,17 @@ var (
 	Version   = "dev"
 	BuildTime = "unknown"
 )
+
+// mustLXDVersion returns the LXD daemon version ("" on error) for the
+// startup log. Errors are non-fatal — connectivity was already proven
+// by NewLXDBackend.
+func mustLXDVersion(b *lxd.LXDBackend) string {
+	v, err := b.ServerInfo()
+	if err != nil {
+		return ""
+	}
+	return v
+}
 
 func main() {
 	// version / --version: print the build-time -ldflags version (the
@@ -515,8 +527,21 @@ func main() {
 	// V1.4-Fase 0: the ComputeBackend seam. KVM is the only backend; the
 	// adapter wraps the existing connector so api handlers never touch
 	// libvirt types. Bind the managed-bridge/network predicates too.
-	computeBackend := compute.NewKVMBackend(lv)
+	var computeBackend compute.Backend = compute.NewKVMBackend(lv)
 	compute.BindHelpers(libvirt.IsManagedBridge, libvirt.IsManagedNetwork)
+
+	// V1.4-Fase 1: optional LXD container backend. Fail-safe: when
+	// disabled or when the daemon socket is unreachable, the backend
+	// degrades to KVM-only with zero regression.
+	if cfg.LXDEnabled {
+		lxdSocket := cfg.LXDSocket
+		if lxdBackend, lerr := lxd.NewLXDBackend(lxdSocket); lerr != nil {
+			logger.Warn("lxd_disabled", "err", lerr, "socket", lxdSocket)
+		} else {
+			computeBackend = compute.NewCombined(computeBackend, lxdBackend)
+			logger.Info("lxd_connected", "socket", lxdSocket, "server_version", mustLXDVersion(lxdBackend))
+		}
+	}
 
 	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter)
 

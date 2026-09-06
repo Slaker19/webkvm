@@ -11,8 +11,14 @@ const (
 )
 
 type VM struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
+	ID   string  `json:"id"`
+	Name string  `json:"name"`
+	// Type is the instance kind: "vm" (KVM or LXD virtual machine) or
+	// "container" (LXC). Added in v1.4 Fase 1 so the UI can render
+	// containers alongside VMs (unified model).
+	Type string `json:"type"`
+	// Hypervisor is the backend that owns this instance: "kvm" or "lxd".
+	Hypervisor string `json:"hypervisor"`
 	State      VMState `json:"state"`
 	VCPUs      int     `json:"vcpus"`
 	RAMMB      int64   `json:"ram_mb"`

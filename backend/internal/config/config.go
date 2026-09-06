@@ -61,7 +61,21 @@ type Config struct {
 	// plain HTTP on a trusted LAN (no TLS at all) can set
 	// WEBKVM_COOKIE_SECURE=0 or the browsers will refuse to store the
 	// session cookie.
+	// SecureCookies forces Set-Cookie to add the Secure flag. It is
+	// ONLY safe to enable when serving over HTTPS (native TLS or a
+	// reverse proxy). The installed systemd unit sets it to 0 because
+	// it serves plain HTTP behind a reverse proxy on localhost.
 	SecureCookies bool
+
+	// LXDEnabled (v1.4 Fase 1) toggles the optional LXD container
+	// backend. LXD is disabled by default: when off (or the daemon
+	// socket is unreachable) the backend degrades to KVM-only with
+	// zero regression.
+	LXDEnabled bool
+	// LXDSocket is the unix socket of the LXD daemon. Defaults to
+	// /var/snap/lxd/common/lxd/unix.socket (the snap install path),
+	// falling back to /var/lib/lxd/unix.socket (apt install path).
+	LXDSocket string
 }
 
 // Load assembles the config from environment variables. For the JWT
@@ -119,6 +133,8 @@ func Load() (*Config, error) {
 		CORSOrigin:   envStrFrom("CORS_ORIGIN", "*", dotenv),
 		LogFile:      envStrFrom("WEBKVM_LOG_FILE", "", dotenv),
 		SecureCookies: envBoolFrom("WEBKVM_COOKIE_SECURE", true, dotenv),
+		LXDEnabled:   envBoolFrom("WEBKVM_LXD_ENABLED", false, dotenv),
+		LXDSocket:    envStrFrom("LXD_SOCKET", "", dotenv),
 	}, nil
 }
 
