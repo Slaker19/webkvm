@@ -54,12 +54,12 @@ func (h *Handler) PowerVMNow(w http.ResponseWriter, r *http.Request) {
 	action := chi.URLParam(r, "action")
 	switch action {
 	case "start":
-		if err := h.lv.StartDomain(id); err != nil {
+		if err := h.compute.StartDomain(id); err != nil {
 			jsonErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	case "stop":
-		if err := h.lv.ShutdownDomain(id); err != nil {
+		if err := h.compute.ShutdownDomain(id); err != nil {
 			jsonErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}

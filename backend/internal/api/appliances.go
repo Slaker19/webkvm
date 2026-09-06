@@ -336,7 +336,7 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 // (active or inactive). Error is non-nil only when libvirt itself failed
 // to answer.
 func (h *Handler) networkExists(name string) (bool, error) {
-	nets, err := h.lv.ListNetworks()
+	nets, err := h.compute.ListNetworks()
 	if err != nil {
 		return false, err
 	}
@@ -347,7 +347,7 @@ func (h *Handler) networkExists(name string) (bool, error) {
 // exists and is running (active). Error is non-nil only when libvirt
 // itself failed to answer (V13-DATA-02 pre-flight).
 func (h *Handler) poolExistsActive(name string) (exists, active bool, err error) {
-	pools, lerr := h.lv.ListStoragePools()
+	pools, lerr := h.compute.ListStoragePools()
 	if lerr != nil {
 		return false, false, lerr
 	}
@@ -397,7 +397,7 @@ func fileInode(path string) uint64 {
 // non-nil when libvirt itself failed to answer (caller must fail
 // closed: a target we cannot verify is a target we must not overwrite).
 func (h *Handler) verifyDeployTargetFree(poolName, vmName string) (exists bool, verifyErr error) {
-	exists, err := h.lv.DomainExists(vmName)
+	exists, err := h.compute.DomainExists(vmName)
 	if err != nil {
 		return false, fmt.Errorf("cannot verify deploy target: %w", err)
 	}
@@ -406,7 +406,7 @@ func (h *Handler) verifyDeployTargetFree(poolName, vmName string) (exists bool, 
 	}
 	// Filesystem truth first: a dir pool only registers volumes on
 	// refresh, so a raw leftover file may not appear as a volume yet.
-	poolPath, ferr := h.lv.GetPoolPath(poolName)
+	poolPath, ferr := h.compute.GetPoolPath(poolName)
 	if ferr != nil {
 		return false, fmt.Errorf("cannot resolve pool before deploy: %w", ferr)
 	}
@@ -414,7 +414,7 @@ func (h *Handler) verifyDeployTargetFree(poolName, vmName string) (exists bool, 
 		if _, err := os.Stat(filepath.Join(poolPath, cand)); err == nil {
 			return true, nil
 		}
-		vexists, verr := h.lv.VolumeExists(poolName, cand)
+		vexists, verr := h.compute.VolumeExists(poolName, cand)
 		if verr != nil {
 			return false, fmt.Errorf("cannot verify deploy target: %w", verr)
 		}
@@ -435,7 +435,7 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 	unlock := h.acquireDeployLock(vmName)
 	defer unlock()
 
-	poolPath, err := h.lv.GetPoolPath(poolName)
+	poolPath, err := h.compute.GetPoolPath(poolName)
 	if err != nil {
 		updateJob(jobID, 0, "error", "resolve pool: "+err.Error())
 		return
@@ -599,7 +599,7 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 		if rerr := os.Remove(poolDest); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
 			slog.Error("appliance_deploy_cleanup_failed", "job", jobID, "file", poolDest, "err", rerr)
 		}
-		if rerr := h.lv.RefreshPool(poolName); rerr != nil {
+		if rerr := h.compute.RefreshPool(poolName); rerr != nil {
 			slog.Warn("appliance_deploy_cleanup_refresh", "job", jobID, "pool", poolName, "err", rerr)
 		}
 		if h.audit != nil {
@@ -636,10 +636,10 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 		}
 	}
 
-	if err := h.lv.RefreshPool(poolName); err != nil {
+	if err := h.compute.RefreshPool(poolName); err != nil {
 		slog.Warn("appliance_deploy_refresh_failed", "job", jobID, "pool", poolName, "err", err)
 	}
-	if _, err := h.lv.GetStorageVolume(poolName, poolFileName); err != nil {
+	if _, err := h.compute.GetStorageVolume(poolName, poolFileName); err != nil {
 		removePoolImage("volume did not register after refresh")
 		updateJob(jobID, 99, "error", "image did not register as volume: "+err.Error())
 		return
@@ -682,19 +682,19 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 	if !assertStillOurs("before create VM") {
 		return
 	}
-	vm, err := h.lv.CreateDomain(req)
+	vm, err := h.compute.CreateDomain(req)
 	if err != nil {
 		updateJob(jobID, 99, "error", "create VM: "+err.Error())
 		removePoolImage("create VM failed")
 		return
 	}
 	if owner != "" {
-		_, _ = h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
+		_, _ = h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
 	}
 	if req.CloudInit != nil {
 		if req.CloudInit.User != "" {
 			u := req.CloudInit.User
-			_, _ = h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{CiUser: &u})
+			_, _ = h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{CiUser: &u})
 		}
 		// Inject the app's provisioning script into the cloud-init seed so it
 		// runs on first boot to install the software. Database credentials
@@ -729,7 +729,7 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 		if meta != nil {
 			if b, merr := json.Marshal(meta); merr == nil {
 				s := string(b)
-				_, _ = h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{AppInfo: &s})
+				_, _ = h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{AppInfo: &s})
 			}
 		}
 	}

@@ -196,4 +196,3 @@ func (h *Handler) GetHostMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResp(w, http.StatusOK, h.hostMetrics.Series())
 }
-

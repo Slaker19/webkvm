@@ -345,6 +345,25 @@ func TestResolveScope(t *testing.T) {
 			t.Errorf("expected 2, got %d", len(got))
 		}
 	})
+	t.Run("tags", func(t *testing.T) {
+		// V13-D-01: tag-based selection (backup policy).
+		rt := &Runner{
+			vms: stubVMSource([]models.VM{
+				{ID: "vm-1", Tags: []string{"prod"}},
+				{ID: "vm-2", Tags: []string{"dev"}},
+				{ID: "vm-3", Tags: []string{"prod", "backup"}},
+				{ID: "vm-4"}, // no tags
+			}),
+			logger: discardLogger(),
+		}
+		got, err := rt.resolveScope(Target{VMFilter: "tags", VMTags: []string{"prod"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 || got[0].ID != "vm-1" || got[1].ID != "vm-3" {
+			t.Errorf("tags filter = %+v, want [vm-1 vm-3]", got)
+		}
+	})
 	t.Run("nil source", func(t *testing.T) {
 		r2 := &Runner{vms: nil, logger: discardLogger()}
 		got, err := r2.resolveScope(Target{VMFilter: "all"})

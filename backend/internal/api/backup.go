@@ -14,24 +14,25 @@ import (
 
 	"webkvm/internal/audit"
 	"webkvm/internal/backupstore"
+	"webkvm/internal/compute"
 	"webkvm/internal/config"
-	"webkvm/internal/libvirt"
 	"webkvm/internal/models"
 )
 
 // --- Targets ---
 
 type backupTargetCreateRequest struct {
-	Name       string                      `json:"name"`
-	Type       string                      `json:"type"`
-	Path       string                      `json:"path"`
-	VMFilter   string                      `json:"vm_filter"`
-	VMIDs      []string                    `json:"vm_ids"`
-	Host       string                      `json:"host"`
-	Port       int                         `json:"port"`
-	Username   string                      `json:"username"`
-	Password   string                      `json:"password"`
-	SSHKeyPath string                      `json:"ssh_key_path"`
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`
+	Path       string   `json:"path"`
+	VMFilter   string   `json:"vm_filter"`
+	VMIDs      []string `json:"vm_ids"`
+	VMTags     []string `json:"vm_tags"` // V13-D-01
+	Host       string   `json:"host"`
+	Port       int      `json:"port"`
+	Username   string   `json:"username"`
+	Password   string   `json:"password"`
+	SSHKeyPath string   `json:"ssh_key_path"`
 	// S3 (TargetS3, V13-BCK-06).
 	Bucket    string `json:"bucket"`
 	Region    string `json:"region"`
@@ -43,7 +44,7 @@ type backupTargetCreateRequest struct {
 	// VerifyOnWrite (V13-BCK-04): verify the uploaded archive after a
 	// successful upload; the job fails and the corrupt copy is purged
 	// on a checksum mismatch.
-	VerifyOnWrite bool                       `json:"verify_on_write"`
+	VerifyOnWrite bool                        `json:"verify_on_write"`
 	Retention     backupstore.RetentionPolicy `json:"retention"`
 }
 
@@ -68,19 +69,20 @@ func (h *Handler) CreateBackupTarget(w http.ResponseWriter, r *http.Request) {
 	t, err := h.backupStore.CreateTargetOpts(req.Name, req.Path,
 		backupstore.TargetType(req.Type), req.VMFilter, req.VMIDs,
 		backupstore.TargetOptions{
-			Host:        req.Host,
-			Port:        req.Port,
-			Username:    req.Username,
-			Password:    req.Password,
-			SSHKeyPath:  req.SSHKeyPath,
-			Bucket:      req.Bucket,
-			Region:      req.Region,
-			Endpoint:    req.Endpoint,
-			AccessKey:   req.AccessKey,
-			SecretKey:   req.SecretKey,
-			KnownHosts:  &req.KnownHosts,
+			VMTags:        req.VMTags,
+			Host:          req.Host,
+			Port:          req.Port,
+			Username:      req.Username,
+			Password:      req.Password,
+			SSHKeyPath:    req.SSHKeyPath,
+			Bucket:        req.Bucket,
+			Region:        req.Region,
+			Endpoint:      req.Endpoint,
+			AccessKey:     req.AccessKey,
+			SecretKey:     req.SecretKey,
+			KnownHosts:    &req.KnownHosts,
 			VerifyOnWrite: &req.VerifyOnWrite,
-			Retention:   req.Retention,
+			Retention:     req.Retention,
 		})
 	if err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
@@ -111,26 +113,27 @@ func (h *Handler) UpdateBackupTarget(w http.ResponseWriter, r *http.Request) {
 	// secret; only a non-empty, unmasked value overwrites it. Clearing
 	// a credential is an explicit ClearSecret=true decision.
 	var req struct {
-		Name         *string                      `json:"name"`
-		Path         *string                      `json:"path"`
-		Type         *string                      `json:"type"`
-		VMFilter     *string                      `json:"vm_filter"`
-		VMIDs        *[]string                    `json:"vm_ids"`
-		Enabled      *bool                        `json:"enabled"`
-		Host         *string                      `json:"host"`
-		Port         *int                         `json:"port"`
-		Username     *string                      `json:"username"`
-		Password     *string                      `json:"password"`
-		SSHKeyPath   *string                      `json:"ssh_key_path"`
-		Bucket       *string                      `json:"bucket"`
-		Region       *string                      `json:"region"`
-		Endpoint     *string                      `json:"endpoint"`
-		AccessKey    *string                      `json:"access_key"`
-		SecretKey    *string                      `json:"secret_key"`
-		KnownHosts   *[]string                    `json:"known_hosts"`
-		VerifyOnWrite *bool                       `json:"verify_on_write"`
-		ClearSecret  *bool                        `json:"clear_secret"`
-		Retention    *backupstore.RetentionPolicy `json:"retention"`
+		Name          *string                      `json:"name"`
+		Path          *string                      `json:"path"`
+		Type          *string                      `json:"type"`
+		VMFilter      *string                      `json:"vm_filter"`
+		VMIDs         *[]string                    `json:"vm_ids"`
+		VMTags        *[]string                    `json:"vm_tags"`
+		Enabled       *bool                        `json:"enabled"`
+		Host          *string                      `json:"host"`
+		Port          *int                         `json:"port"`
+		Username      *string                      `json:"username"`
+		Password      *string                      `json:"password"`
+		SSHKeyPath    *string                      `json:"ssh_key_path"`
+		Bucket        *string                      `json:"bucket"`
+		Region        *string                      `json:"region"`
+		Endpoint      *string                      `json:"endpoint"`
+		AccessKey     *string                      `json:"access_key"`
+		SecretKey     *string                      `json:"secret_key"`
+		KnownHosts    *[]string                    `json:"known_hosts"`
+		VerifyOnWrite *bool                        `json:"verify_on_write"`
+		ClearSecret   *bool                        `json:"clear_secret"`
+		Retention     *backupstore.RetentionPolicy `json:"retention"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -153,7 +156,7 @@ func (h *Handler) UpdateBackupTarget(w http.ResponseWriter, r *http.Request) {
 	var opts *backupstore.TargetOptions
 	if req.Host != nil || req.Port != nil || req.Username != nil || req.Password != nil || req.SSHKeyPath != nil ||
 		req.Bucket != nil || req.Region != nil || req.Endpoint != nil || req.AccessKey != nil || req.SecretKey != nil ||
-		req.KnownHosts != nil || req.VerifyOnWrite != nil || req.Retention != nil || clearSecret {
+		req.KnownHosts != nil || req.VerifyOnWrite != nil || req.Retention != nil || clearSecret || req.VMTags != nil {
 		o := backupstore.TargetOptions{ClearSecret: clearSecret}
 		if req.Host != nil {
 			o.Host = *req.Host
@@ -188,6 +191,9 @@ func (h *Handler) UpdateBackupTarget(w http.ResponseWriter, r *http.Request) {
 			o.Retention = *req.Retention
 		} else {
 			o.Retention = existingRetention // partial update keeps retention
+		}
+		if req.VMTags != nil {
+			o.VMTags = *req.VMTags
 		}
 		opts = &o
 	}
@@ -689,7 +695,7 @@ func (h *Handler) RestoreAsVM(w http.ResponseWriter, r *http.Request) {
 	if req.Pool == "" {
 		req.Pool = config.DiskPoolName
 	}
-	importOpts := libvirt.ImportOpts{
+	importOpts := compute.ImportOpts{
 		Network:   req.Network,
 		VCPUs:     req.VCPUs,
 		RAMMB:     req.RAMMB,
@@ -736,7 +742,7 @@ func (h *Handler) RestoreAsVM(w http.ResponseWriter, r *http.Request) {
 	// at least as large as the compressed file we're about to
 	// stream into the destination pool. Fail fast with a clear
 	// message instead of a half-written qcow2.
-	if poolPath, perr := h.lv.GetPoolPath(req.Pool); perr == nil {
+	if poolPath, perr := h.compute.GetPoolPath(req.Pool); perr == nil {
 		var st syscall.Statfs_t
 		if serr := syscall.Statfs(poolPath, &st); serr == nil {
 			free := int64(st.Bavail) * int64(st.Bsize)

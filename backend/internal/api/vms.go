@@ -16,9 +16,9 @@ import (
 
 	"webkvm/internal/audit"
 	"webkvm/internal/cloudinit"
+	"webkvm/internal/compute"
 	"webkvm/internal/config"
 	"webkvm/internal/firewall"
-	"webkvm/internal/libvirt"
 	"webkvm/internal/models"
 	"webkvm/internal/vmsched"
 
@@ -26,11 +26,13 @@ import (
 )
 
 func (h *Handler) ListVMs(w http.ResponseWriter, r *http.Request) {
-	vms, err := h.lv.ListDomains()
+	vms, err := h.compute.ListDomains()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// V13-D-01: tag-based visibility for non-admins.
+	vms = h.filterVMsByTagACL(r, vms)
 	jsonResp(w, http.StatusOK, vms)
 }
 
@@ -67,7 +69,7 @@ func humanizeStartError(err error) string {
 
 func (h *Handler) GetVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vm, err := h.lv.GetDomain(id)
+	vm, err := h.compute.GetDomain(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
@@ -144,14 +146,14 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	vm, err := h.lv.CreateDomain(req)
+	vm, err := h.compute.CreateDomain(req)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// Record the owner in VM metadata for quota accounting.
 	if owner != "" {
-		_, _ = h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
+		_, _ = h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
 	}
 	// Optional cloud-init provisioning (user / password / SSH key / hostname).
 	var createdPassword string
@@ -159,7 +161,7 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		// Remember the cloud-init username for later password resets.
 		if req.CloudInit.User != "" {
 			u := req.CloudInit.User
-			_, _ = h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{CiUser: &u})
+			_, _ = h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{CiUser: &u})
 		}
 		createdPassword = req.CloudInit.Password
 		if err := h.applyCloudInit(vm.ID, vm.Name, req.CloudInit); err != nil {
@@ -198,7 +200,7 @@ func (h *Handler) UpdateVM(w http.ResponseWriter, r *http.Request) {
 	if _, role, _ := audit.FromRequest(r); role != models.RoleAdmin {
 		if req.VCPUs != nil || req.RAMMB != nil {
 			if owner := h.ownerOf(id); owner != "" {
-				cur, err := h.lv.GetDomain(id)
+				cur, err := h.compute.GetDomain(id)
 				if err != nil {
 					// M-04: fail closed on growth — a failed lookup used to
 					// let vCPU/RAM grow silently past quota.
@@ -226,7 +228,7 @@ func (h *Handler) UpdateVM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	vm, err := h.lv.UpdateDomain(id, req)
+	vm, err := h.compute.UpdateDomain(id, req)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -239,9 +241,9 @@ func (h *Handler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	// Capture the VM name BEFORE undefining: the disk-cleanup naming
 	// convention (<vm>.qcow2, <vm>-<dev>.qcow2) is name-based.
-	vm, _ := h.lv.GetDomain(id)
+	vm, _ := h.compute.GetDomain(id)
 	deleteDisks := r.URL.Query().Get("disks") == "true"
-	if err := h.lv.DeleteDomain(id); err != nil {
+	if err := h.compute.DeleteDomain(id); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -249,7 +251,7 @@ func (h *Handler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 	if deleteDisks && vm.Name != "" {
 		var skipped []string
 		var derr error
-		disksDeleted, skipped, derr = h.lv.DeleteVMDiskFiles(vm.Name)
+		disksDeleted, skipped, derr = h.compute.DeleteVMDiskFiles(vm.Name)
 		if derr != nil {
 			h.logError("vm_disk_cleanup_failed", derr, vm.Name)
 		} else if len(skipped) > 0 {
@@ -284,7 +286,7 @@ func (h *Handler) StartVM(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusConflict, err.Error())
 		return
 	}
-	if err := h.lv.StartDomain(id); err != nil {
+	if err := h.compute.StartDomain(id); err != nil {
 		jsonErr(w, http.StatusInternalServerError, humanizeStartError(err))
 		return
 	}
@@ -302,7 +304,7 @@ func (h *Handler) StartVM(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ShutdownVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := h.lv.ShutdownDomain(id); err != nil {
+	if err := h.compute.ShutdownDomain(id); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -312,7 +314,7 @@ func (h *Handler) ShutdownVM(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ForceOffVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := h.lv.ForceOffDomain(id); err != nil {
+	if err := h.compute.ForceOffDomain(id); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -322,7 +324,7 @@ func (h *Handler) ForceOffVM(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) RebootVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := h.lv.RebootDomain(id); err != nil {
+	if err := h.compute.RebootDomain(id); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -337,7 +339,7 @@ func (h *Handler) RebootVM(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) SuspendVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := h.lv.SuspendDomain(id); err != nil {
+	if err := h.compute.SuspendDomain(id); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -351,7 +353,7 @@ func (h *Handler) ResumeVM(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusConflict, err.Error())
 		return
 	}
-	if err := h.lv.ResumeDomain(id); err != nil {
+	if err := h.compute.ResumeDomain(id); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -361,7 +363,7 @@ func (h *Handler) ResumeVM(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	snaps, err := h.lv.ListSnapshots(id)
+	snaps, err := h.compute.ListSnapshots(id)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -384,14 +386,14 @@ type SnapshotWithVM struct {
 // rather than failing the whole request, so one broken domain doesn't
 // take down the fleet view.
 func (h *Handler) ListAllSnapshots(w http.ResponseWriter, r *http.Request) {
-	vms, err := h.lv.ListDomains()
+	vms, err := h.compute.ListDomains()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	out := make([]SnapshotWithVM, 0, len(vms))
 	for _, vm := range vms {
-		snaps, err := h.lv.ListSnapshots(vm.ID)
+		snaps, err := h.compute.ListSnapshots(vm.ID)
 		if err != nil {
 			continue
 		}
@@ -413,9 +415,9 @@ func (h *Handler) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	snap, err := h.lv.CreateSnapshot(id, req)
+	snap, err := h.compute.CreateSnapshot(id, req)
 	if err != nil {
-		if errors.Is(err, libvirt.ErrMemorySnapshotRequiresRunning) {
+		if errors.Is(err, compute.ErrMemorySnapshotRequiresRunning) {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -432,7 +434,7 @@ func (h *Handler) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sid := chi.URLParam(r, "sid")
-	allocated, err := h.lv.DeleteSnapshot(id, sid)
+	allocated, err := h.compute.DeleteSnapshot(id, sid)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -447,7 +449,7 @@ func (h *Handler) DeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RevertSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sid := chi.URLParam(r, "sid")
-	if err := h.lv.RevertSnapshot(id, sid); err != nil {
+	if err := h.compute.RevertSnapshot(id, sid); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -459,7 +461,7 @@ func (h *Handler) RevertSnapshot(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ListDisks(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vm, err := h.lv.GetDomain(id)
+	vm, err := h.compute.GetDomain(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
@@ -500,7 +502,7 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err := h.lv.AttachDisk(id, req); err != nil {
+	if err := h.compute.AttachDisk(id, req); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -511,7 +513,7 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteDisk(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	dev := chi.URLParam(r, "dev")
-	if err := h.lv.DetachDisk(id, dev); err != nil {
+	if err := h.compute.DetachDisk(id, dev); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -533,7 +535,7 @@ func (h *Handler) UpdateDisk(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusForbidden, err.Error())
 		return
 	}
-	if err := h.lv.UpdateDiskSource(id, dev, req.Source); err != nil {
+	if err := h.compute.UpdateDiskSource(id, dev, req.Source); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -562,7 +564,7 @@ func (h *Handler) ChangeDiskBus(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "bus must be one of: virtio, sata, scsi, ide")
 		return
 	}
-	if err := h.lv.ChangeDiskBus(id, dev, req.Bus); err != nil {
+	if err := h.compute.ChangeDiskBus(id, dev, req.Bus); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -574,7 +576,7 @@ func (h *Handler) ChangeDiskBus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ListNetIfaces(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vm, err := h.lv.GetDomain(id)
+	vm, err := h.compute.GetDomain(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
@@ -593,7 +595,7 @@ func (h *Handler) CreateNetIface(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "network is required")
 		return
 	}
-	if err := h.lv.AttachNetworkIface(id, req); err != nil {
+	if err := h.compute.AttachNetworkIface(id, req); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -608,7 +610,7 @@ func (h *Handler) DeleteNetIface(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid mac encoding")
 		return
 	}
-	if err := h.lv.DetachNetworkIface(id, mac); err != nil {
+	if err := h.compute.DetachNetworkIface(id, mac); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -637,7 +639,7 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 			owner = o
 		}
 		// Estimate the clone's size from the source before cloning.
-		src, err := h.lv.GetDomain(id)
+		src, err := h.compute.GetDomain(id)
 		if err != nil {
 			// M-04: fail closed — a failed lookup used to skip quota/ACL
 			// entirely and let the clone through.
@@ -668,13 +670,13 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	vm, err := h.lv.CloneDomain(id, req)
+	vm, err := h.compute.CloneDomain(id, req)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if owner != "" {
-		_, _ = h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
+		_, _ = h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
 	}
 	h.audit.Log(auditFor(r, "vm.clone", id, map[string]interface{}{"new_id": vm.ID, "name": req.Name}))
 	jsonResp(w, http.StatusCreated, vm)
@@ -682,7 +684,7 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) GetBootDevice(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	device, err := h.lv.GetBootDevice(id)
+	device, err := h.compute.GetBootDevice(id)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -703,7 +705,7 @@ func (h *Handler) SetBootDevice(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "device is required")
 		return
 	}
-	if err := h.lv.SetBootDevice(id, req.Device); err != nil {
+	if err := h.compute.SetBootDevice(id, req.Device); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -714,7 +716,7 @@ func (h *Handler) SetBootDevice(w http.ResponseWriter, r *http.Request) {
 // GetAutostart returns the libvirtd autostart flag for a VM.
 func (h *Handler) GetAutostart(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	enabled, err := h.lv.GetDomainAutostart(id)
+	enabled, err := h.compute.GetDomainAutostart(id)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -732,7 +734,7 @@ func (h *Handler) SetAutostart(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := h.lv.SetDomainAutostart(id, req.Enabled); err != nil {
+	if err := h.compute.SetDomainAutostart(id, req.Enabled); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -760,7 +762,7 @@ func (h *Handler) ResizeDomainDisk(w http.ResponseWriter, r *http.Request) {
 	// disk's actual current size/pool (not the VM's first-disk figure).
 	if owner := h.ownerOf(id); owner != "" {
 		if u, gerr := h.userStore.Get(owner); gerr == nil && u.Role != models.RoleAdmin {
-			cur, err := h.lv.GetDomain(id)
+			cur, err := h.compute.GetDomain(id)
 			if err != nil {
 				// M-04: fail closed on growth — a failed lookup used to
 				// skip the disk-cap check silently.
@@ -788,7 +790,7 @@ func (h *Handler) ResizeDomainDisk(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	newBytes, err := h.lv.ResizeDomainDisk(r.Context(), id, dev, req.SizeGB)
+	newBytes, err := h.compute.ResizeDomainDisk(r.Context(), id, dev, req.SizeGB)
 	if err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -821,7 +823,7 @@ func (h *Handler) ResizeDomainDisk(w http.ResponseWriter, r *http.Request) {
 // estimate is the upper bound on the output size.
 func (h *Handler) ExportVM(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vm, err := h.lv.GetDomain(id)
+	vm, err := h.compute.GetDomain(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
@@ -837,7 +839,7 @@ func (h *Handler) ExportVM(w http.ResponseWriter, r *http.Request) {
 	// goroutine (after the headers are already sent) and the
 	// client receives a truncated download with HTTP 200 instead
 	// of a clean 500 with an actionable error.
-	if err := h.lv.ValidateDomainDisks(id); err != nil {
+	if err := h.compute.ValidateDomainDisks(id); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -887,24 +889,24 @@ func (h *Handler) exportBackup(w http.ResponseWriter, r *http.Request, id string
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	opts := libvirt.ExportBackupOptions{
+	opts := compute.ExportBackupOptions{
 		Compress:    compress,
 		ZstdLevel:   zstdLevel,
 		RepackDisks: repack,
 	}
 	h.streamLibvirtWrite(w, r, func(pw io.Writer) error {
-		_, err := h.lv.ExportDomain(r.Context(), id, opts, pw)
+		_, err := h.compute.ExportDomain(r.Context(), id, opts, pw)
 		return err
 	})
 }
 
 func (h *Handler) exportOVA(w http.ResponseWriter, r *http.Request, id, target string) {
-	var ovaTarget libvirt.OVATarget
+	var ovaTarget compute.OVATarget
 	switch target {
 	case "vmware", "":
-		ovaTarget = libvirt.OVATargetVMware
+		ovaTarget = compute.OVATargetVMware
 	case "libvirt":
-		ovaTarget = libvirt.OVATargetLibvirt
+		ovaTarget = compute.OVATargetLibvirt
 	default:
 		jsonErr(w, http.StatusBadRequest, "target must be 'vmware' or 'libvirt'")
 		return
@@ -927,13 +929,13 @@ func (h *Handler) exportOVA(w http.ResponseWriter, r *http.Request, id, target s
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	opts := libvirt.OVAOptions{
+	opts := compute.OVAOptions{
 		Target:    ovaTarget,
-		Compress:  libvirt.OVACompressZstd,
+		Compress:  compute.OVACompressZstd,
 		ZstdLevel: zstdLevel,
 	}
 	h.streamLibvirtWrite(w, r, func(pw io.Writer) error {
-		return h.lv.ExportDomainOVA(r.Context(), id, opts, pw)
+		return h.compute.ExportDomainOVA(r.Context(), id, opts, pw)
 	})
 }
 
@@ -1048,7 +1050,7 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 			return
 		}
 	}
-	importOpts := libvirt.ImportOpts{
+	importOpts := compute.ImportOpts{
 		Network: network,
 	}
 	if v := r.FormValue("vcpus"); v != "" {
@@ -1115,7 +1117,7 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 	// important because /tmp is often a small tmpfs and large
 	// uploads (OVA/WebKVM backups of multi-GB disks) can fill it
 	// up, causing the import to abort with a network error.
-	poolPath, err := h.lv.GetPoolPath(pool)
+	poolPath, err := h.compute.GetPoolPath(pool)
 	if err != nil {
 		h.audit.Log(auditFor(r, "vm.import_failed", "unknown", map[string]interface{}{
 			"filename": hdr.Filename,
@@ -1179,19 +1181,19 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 	}
 	// Assign the importing user as the owner for quota accounting.
 	if owner, _, _ := audit.FromRequest(r); owner != "" {
-		_, _ = h.lv.UpdateVMMeta(uuid, models.VMMetaUpdate{OwnerID: &owner})
+		_, _ = h.compute.UpdateVMMeta(uuid, models.VMMetaUpdate{OwnerID: &owner})
 
 		// V13-DATA-01 (anti-TOCTOU): quota was checked against the
 		// *declared* import size before streaming. Re-check against the
 		// REAL on-disk footprint of the materialized disk; on exceed,
 		// delete the just-imported VM and its disk and fail the request
 		// (no orphan, no silent over-quota import).
-		if imported, gerr := h.lv.GetDomain(uuid); gerr == nil && len(imported.Disks) > 0 {
+		if imported, gerr := h.compute.GetDomain(uuid); gerr == nil && len(imported.Disks) > 0 {
 			vol := filepath.Base(imported.Disks[0].Source)
 			if rerr := h.recheckDiskQuota(owner, pool, vol); rerr != nil {
-				_ = h.lv.DeleteDomain(uuid)
+				_ = h.compute.DeleteDomain(uuid)
 				if imported.Name != "" {
-					_, _, _ = h.lv.DeleteVMDiskFiles(imported.Name)
+					_, _, _ = h.compute.DeleteVMDiskFiles(imported.Name)
 				}
 				h.audit.Log(auditFor(r, "vm.import_quota_rollback", uuid, map[string]interface{}{
 					"name": imported.Name, "volume": vol, "error": rerr.Error(),
@@ -1238,7 +1240,7 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 // in lock-step. The audit logging stays in the caller
 // because the audit event names differ ("vm.import" vs
 // "vm.restore").
-func (h *Handler) importLocalArchive(sourcePath, sourceFilename string, sourceSize int64, newName, pool string, requireOVA bool, opts libvirt.ImportOpts) (uuid, resolvedName string, warnings []string, format string, err error) {
+func (h *Handler) importLocalArchive(sourcePath, sourceFilename string, sourceSize int64, newName, pool string, requireOVA bool, opts compute.ImportOpts) (uuid, resolvedName string, warnings []string, format string, err error) {
 	f, err := os.Open(sourcePath)
 	if err != nil {
 		return "", "", nil, "", fmt.Errorf("open source: %w", err)
@@ -1274,9 +1276,9 @@ func (h *Handler) importLocalArchive(sourcePath, sourceFilename string, sourceSi
 
 	switch {
 	case isOVA:
-		uuid, resolvedName, err = h.lv.ImportOVA(sourcePath, newName, pool)
+		uuid, resolvedName, err = h.compute.ImportOVA(sourcePath, newName, pool)
 	default:
-		uuid, resolvedName, warnings, err = h.lv.ImportDomain(sourcePath, newName, pool, opts)
+		uuid, resolvedName, warnings, err = h.compute.ImportDomain(sourcePath, newName, pool, opts)
 	}
 	if err != nil {
 		return "", "", nil, format, err

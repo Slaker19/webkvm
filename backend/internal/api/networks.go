@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"net/http"
 
-	"webkvm/internal/libvirt"
+	"webkvm/internal/compute"
 	"webkvm/internal/models"
 
 	"github.com/go-chi/chi/v5"
 )
 
 func (h *Handler) ListNetworks(w http.ResponseWriter, r *http.Request) {
-	nets, err := h.lv.ListNetworks()
+	nets, err := h.compute.ListNetworks()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -29,7 +29,7 @@ func (h *Handler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	net, err := h.lv.CreateNetwork(req)
+	net, err := h.compute.CreateNetwork(req)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -49,7 +49,7 @@ func (h *Handler) UpdateNetwork(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	net, err := h.lv.UpdateNetwork(name, req)
+	net, err := h.compute.UpdateNetwork(name, req)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -65,11 +65,11 @@ func (h *Handler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
 	// layer also enforces this as defense in depth — see
 	// libvirt.IsManagedNetwork and the check inside
 	// Connector.DeleteNetwork.
-	if libvirt.IsManagedNetwork(id) {
+	if compute.IsManagedNetwork(id) {
 		jsonErr(w, http.StatusForbidden, fmt.Sprintf("network %q is managed by webVM and cannot be deleted via the API; remove the underlying Linux bridge manually (or re-run setup-bridge.sh) if you really want it gone", id))
 		return
 	}
-	if err := h.lv.DeleteNetwork(id); err != nil {
+	if err := h.compute.DeleteNetwork(id); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -79,7 +79,7 @@ func (h *Handler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) StartNetwork(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	net, err := h.lv.StartNetwork(id)
+	net, err := h.compute.StartNetwork(id)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -90,7 +90,7 @@ func (h *Handler) StartNetwork(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) StopNetwork(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	net, err := h.lv.StopNetwork(id)
+	net, err := h.compute.StopNetwork(id)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return

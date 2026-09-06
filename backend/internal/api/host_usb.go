@@ -9,7 +9,7 @@ import (
 // ListHostUSBDevices returns the USB devices on the host available
 // for passthrough. Admin only (wired under /api/host's admin group).
 func (h *Handler) ListHostUSBDevices(w http.ResponseWriter, r *http.Request) {
-	devs, err := h.lv.ListHostUSBDevices()
+	devs, err := h.compute.ListHostUSBDevices()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -34,7 +34,7 @@ func (h *Handler) AttachUSBDevice(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "vendor_id and product_id are required")
 		return
 	}
-	if err := h.lv.AttachUSBDevice(id, req.VendorID, req.ProductID); err != nil {
+	if err := h.compute.AttachUSBDevice(id, req.VendorID, req.ProductID); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -47,7 +47,7 @@ func (h *Handler) DetachUSBDevice(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	vendorID := chi.URLParam(r, "vendorId")
 	productID := chi.URLParam(r, "productId")
-	if err := h.lv.DetachUSBDevice(id, vendorID, productID); err != nil {
+	if err := h.compute.DetachUSBDevice(id, vendorID, productID); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

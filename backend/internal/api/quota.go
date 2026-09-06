@@ -19,7 +19,7 @@ func (h *Handler) ownerOf(vmID string) string {
 	if h.lv == nil {
 		return ""
 	}
-	meta, err := h.lv.GetVMMeta(vmID)
+	meta, err := h.compute.GetVMMeta(vmID)
 	if err != nil {
 		return ""
 	}
@@ -64,7 +64,7 @@ func (h *Handler) usageOf(username string) (quotaUsage, error) {
 	if h.lv == nil {
 		return u, nil
 	}
-	vms, err := h.lv.ListDomains()
+	vms, err := h.compute.ListDomains()
 	if err != nil {
 		return u, err
 	}
@@ -88,7 +88,7 @@ func (h *Handler) diskUsageByPool(username string) (map[string]int64, error) {
 	if h.lv == nil {
 		return out, nil
 	}
-	vms, err := h.lv.ListDomains()
+	vms, err := h.compute.ListDomains()
 	if err != nil {
 		return out, err
 	}
@@ -124,7 +124,7 @@ func (h *Handler) defaultPool() string {
 	if h.lv == nil {
 		return ""
 	}
-	return h.lv.DiskPoolName()
+	return h.compute.DiskPoolName()
 }
 
 // enforceDiskQuota is the pure disk-quota check: given the owner's
@@ -198,7 +198,7 @@ func (h *Handler) realVolumeDiskGB(pool, volName string) (int64, error) {
 	if h.lv == nil {
 		return 0, fmt.Errorf("libvirt not connected")
 	}
-	sv, err := h.lv.GetStorageVolume(pool, volName)
+	sv, err := h.compute.GetStorageVolume(pool, volName)
 	if err != nil {
 		return 0, err
 	}
@@ -254,7 +254,7 @@ func (h *Handler) runningUsageOf(username, excludeID string) (quotaUsage, error)
 	if h.lv == nil {
 		return u, nil
 	}
-	vms, err := h.lv.ListDomains()
+	vms, err := h.compute.ListDomains()
 	if err != nil {
 		return u, err
 	}
@@ -315,7 +315,7 @@ func (h *Handler) checkStartQuota(id string) error {
 	if !q.Enabled() {
 		return nil
 	}
-	vm, err := h.lv.GetDomain(id)
+	vm, err := h.compute.GetDomain(id)
 	if err != nil {
 		// Can't size the VM; let libvirt report the start error instead.
 		return nil

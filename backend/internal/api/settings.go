@@ -25,9 +25,9 @@ type SettingsSetRequest struct {
 
 // SettingsSetResponse is the PUT /api/settings response.
 type SettingsSetResponse struct {
-	Applied        []string             `json:"applied"`
-	Failed         map[string]string    `json:"failed,omitempty"`
-	PendingRestart []string             `json:"pending_restart"`
+	Applied        []string          `json:"applied"`
+	Failed         map[string]string `json:"failed,omitempty"`
+	PendingRestart []string          `json:"pending_restart"`
 }
 
 // SettingsResetResponse is the POST /api/settings/reset response.

@@ -57,7 +57,7 @@ func (h *Handler) validateDiskSourcePath(path string) error {
 	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
 		resolved = real
 	}
-	pools, err := h.lv.ListStoragePools()
+	pools, err := h.compute.ListStoragePools()
 	if err != nil {
 		return fmt.Errorf("could not validate source path")
 	}

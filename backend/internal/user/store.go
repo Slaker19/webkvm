@@ -164,6 +164,7 @@ func (s *Store) Create(req models.CreateUserRequest) (*models.User, error) {
 		Active:       true,
 		Quota:        req.Quota,
 		AllowedPools: req.AllowedPools,
+		AllowedTags:  req.AllowedTags,
 	}
 	s.users[req.Username] = u
 	if err := s.save(); err != nil {
@@ -246,6 +247,9 @@ func (s *Store) Update(username string, req models.UpdateUserRequest) (*models.U
 		// Non-nil replaces the allowlist; an empty slice clears it so
 		// the user may use every pool again.
 		u.AllowedPools = *req.AllowedPools
+	}
+	if req.AllowedTags != nil {
+		u.AllowedTags = *req.AllowedTags
 	}
 
 	if err := s.save(); err != nil {

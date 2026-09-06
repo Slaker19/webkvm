@@ -215,7 +215,7 @@ func TestSystemListBackups_DirMissingReturnsEmpty(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	var body struct {
-		Mounted bool        `json:"mounted"`
+		Mounted bool         `json:"mounted"`
 		Backups []BackupInfo `json:"backups"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {

@@ -28,11 +28,11 @@ func (h *Handler) UpdateNotifyConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Config         notify.Config `json:"config"`
-		WebhookSecret  string        `json:"webhook_secret"`
-		SMTPUser       string        `json:"smtp_user"`
-		SMTPPassword   string        `json:"smtp_password"`
-		ClearSecret    bool          `json:"clear_secret"`
+		Config        notify.Config `json:"config"`
+		WebhookSecret string        `json:"webhook_secret"`
+		SMTPUser      string        `json:"smtp_user"`
+		SMTPPassword  string        `json:"smtp_password"`
+		ClearSecret   bool          `json:"clear_secret"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())

@@ -9,6 +9,7 @@ import (
 	"webkvm/internal/audit"
 	"webkvm/internal/auth"
 	"webkvm/internal/backupstore"
+	"webkvm/internal/compute"
 	"webkvm/internal/config"
 	"webkvm/internal/configstore"
 	"webkvm/internal/events"
@@ -29,6 +30,7 @@ import (
 func NewRouter(
 	cfg *config.Config,
 	lv *libvirt.Connector,
+	compute compute.Backend,
 	authMgr *auth.Manager,
 	globalRateLimiter *auth.GlobalRateLimiter,
 	loginLimiter *auth.LoginRateLimiter,
@@ -90,6 +92,7 @@ func NewRouter(
 
 	h := &Handler{
 		lv:           lv,
+		compute:      compute,
 		auth:         authMgr,
 		loginLimiter: loginLimiter,
 		userStore:    us,
@@ -127,6 +130,7 @@ func NewRouter(
 	})
 	r.Get("/api/health", h.Health)
 	r.Get("/api/alerts/active", h.ListActiveAlerts)
+	r.Get("/api/tags", h.ListAllTags)
 	r.Get("/api/events", h.EventsSSE)
 	r.Post("/api/events/ticket", h.EventsTicket)
 
@@ -491,6 +495,8 @@ func NewRouter(
 			r.Post("/apply", h.ApplyHostFirewall)
 			r.Post("/confirm", h.ConfirmHostFirewall)
 			r.Post("/rollback", h.RollbackHostFirewall)
+			r.Get("/export", h.ExportHostFirewall)
+			r.Post("/import", h.ImportHostFirewall)
 		})
 	})
 

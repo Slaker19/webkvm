@@ -12,6 +12,7 @@ import (
 	"webkvm/internal/audit"
 	"webkvm/internal/auth"
 	"webkvm/internal/backupstore"
+	"webkvm/internal/compute"
 	"webkvm/internal/config"
 	"webkvm/internal/configstore"
 	"webkvm/internal/events"
@@ -26,7 +27,12 @@ import (
 )
 
 type Handler struct {
-	lv           *libvirt.Connector
+	lv *libvirt.Connector
+	// compute is the generic ComputeBackend (v1.4 Fase 0): every instance
+	// operation goes through this seam. h.lv is kept ONLY for
+	// hypervisor-infrastructure concerns (raw connection, connectivity
+	// checks, host/system libvirt queries).
+	compute      compute.Backend
 	auth         *auth.Manager
 	loginLimiter *auth.LoginRateLimiter
 	userStore    *user.Store

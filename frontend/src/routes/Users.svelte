@@ -150,6 +150,21 @@
     const rows = Object.entries(pq).map(([pool, gb]) => ({ pool, gb }));
     editQPoolRows = rows.length ? rows : [{ pool: '', gb: 0 }];
     editAllowedPools = u.allowed_pools ? [...u.allowed_pools] : [];
+    // V13-D-01: tag allowlist (RBAC). Loaded eagerly for the editor.
+    editAllowedTags = u.allowed_tags ? [...u.allowed_tags] : [];
+    loadAllTags();
+  }
+
+  let allTags = $state([]);
+  let editAllowedTags = $state([]);
+
+  async function loadAllTags() {
+    try {
+      const r = await api.listTags();
+      allTags = r.tags || [];
+    } catch {
+      allTags = [];
+    }
   }
 
   function addPoolRow() {
@@ -186,6 +201,8 @@
     // Per-user pool allowlist (empty = all pools). Sent as an array so
     // a cleared selection resets to "all pools".
     data.allowed_pools = editAllowedPools;
+    // V13-D-01: tag allowlist (empty = no tag grants).
+    data.allowed_tags = editAllowedTags;
     userSaving = true;
     try {
       await api.updateUser(editing, data);
@@ -523,6 +540,27 @@
           <p class="text-[10px] text-muted-foreground mt-1">{t('users.allowedPoolsHint')}</p>
         {:else}
           <p class="text-[10px] text-muted-foreground">{t('users.allowedPoolsLoading')}</p>
+        {/if}
+      </div>
+      <!-- V13-D-01: tag allowlist (RBAC policy) -->
+      <div class="border-t border-border pt-2">
+        <div class="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">
+          {t('users.allowedTagsTitle')}
+        </div>
+        {#if editRole === 'admin'}
+          <p class="text-[10px] text-muted-foreground">{t('users.allowedTagsAdmin')}</p>
+        {:else if allTags.length}
+          <div class="flex flex-wrap gap-x-3 gap-y-1">
+            {#each allTags as tag (tag)}
+              <label class="flex items-center gap-1 text-xs text-muted-foreground">
+                <input type="checkbox" bind:group={editAllowedTags} value={tag} class="rounded" />
+                {tag}
+              </label>
+            {/each}
+          </div>
+          <p class="text-[10px] text-muted-foreground mt-1">{t('users.allowedTagsHint')}</p>
+        {:else}
+          <p class="text-[10px] text-muted-foreground">{t('users.allowedTagsEmpty')}</p>
         {/if}
       </div>
       <div class="border-t border-border pt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-2">

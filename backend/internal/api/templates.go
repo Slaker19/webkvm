@@ -16,7 +16,7 @@ import (
 // must be shut off (a running VM cannot be safely used as a template).
 func (h *Handler) MakeVMTemplate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vm, err := h.lv.GetDomain(id)
+	vm, err := h.compute.GetDomain(id)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -26,7 +26,7 @@ func (h *Handler) MakeVMTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t := true
-	if _, err := h.lv.UpdateVMMeta(id, models.VMMetaUpdate{Template: &t}); err != nil {
+	if _, err := h.compute.UpdateVMMeta(id, models.VMMetaUpdate{Template: &t}); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -39,7 +39,7 @@ func (h *Handler) MakeVMTemplate(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) UnsetVMTemplate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	f := false
-	if _, err := h.lv.UpdateVMMeta(id, models.VMMetaUpdate{Template: &f}); err != nil {
+	if _, err := h.compute.UpdateVMMeta(id, models.VMMetaUpdate{Template: &f}); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -49,14 +49,14 @@ func (h *Handler) UnsetVMTemplate(w http.ResponseWriter, r *http.Request) {
 
 // ListTemplates returns the VMs flagged as templates.
 func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
-	vms, err := h.lv.ListDomains()
+	vms, err := h.compute.ListDomains()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	out := []models.VM{}
 	for _, vm := range vms {
-		meta, err := h.lv.GetVMMeta(vm.ID)
+		meta, err := h.compute.GetVMMeta(vm.ID)
 		if err != nil {
 			continue
 		}
@@ -90,7 +90,7 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The source must be a template.
-	meta, err := h.lv.GetVMMeta(id)
+	meta, err := h.compute.GetVMMeta(id)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -111,7 +111,7 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 		if o == "" {
 			o = meta.OwnerID
 		}
-		src, serr := h.lv.GetDomain(id)
+		src, serr := h.compute.GetDomain(id)
 		if serr != nil {
 			// M-04: fail closed — previously a failing GetDomain silently
 			// skipped quota/ACL enforcement and allowed the clone anyway.
@@ -155,7 +155,7 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	cloneReq := models.CloneVMRequest{Name: req.Name, Pool: req.Pool, Network: req.Network}
-	vm, err := h.lv.CloneDomain(id, cloneReq)
+	vm, err := h.compute.CloneDomain(id, cloneReq)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -164,7 +164,7 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 	// group membership — it is a fresh, normal VM.
 	noTemplate := false
 	emptyGroups := []string{}
-	if _, err := h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{
+	if _, err := h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{
 		Template: &noTemplate,
 		Groups:   &emptyGroups,
 	}); err != nil {
@@ -177,7 +177,7 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 	if req.CloudInit != nil {
 		if req.CloudInit.User != "" {
 			u := req.CloudInit.User
-			_, _ = h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{CiUser: &u})
+			_, _ = h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{CiUser: &u})
 			createdPassword = req.CloudInit.Password
 		}
 		if err := h.applyCloudInit(vm.ID, vm.Name, req.CloudInit); err != nil {
@@ -195,7 +195,7 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 
 	// Owner bookkeeping.
 	if owner != "" {
-		_, _ = h.lv.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
+		_, _ = h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
 	}
 	h.audit.Log(auditFor(r, "vm.instantiate", id, map[string]any{"new_id": vm.ID, "name": req.Name}))
 	resp := map[string]any{"id": vm.ID, "name": vm.Name}

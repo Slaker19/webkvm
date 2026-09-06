@@ -1,5 +1,73 @@
 # FIXES — Correcciones aplicadas (2026-09-05)
 
+## v1.4 — Fase 0: ComputeBackend (la costura; riesgo cero) (2026-09-06)
+
+- **`internal/compute/backend.go` (nuevo)** — interfaz **`compute.Backend`** completa
+  (87 métodos del `Connector`, agrupados): lifecycle, discos/dispositivos/USB,
+  snapshots, storage/pools/volúmenes/ISO, redes, consola/cloud-init/meta,
+  backup/export/OVA/import, + `Capabilities()` (SupportsOVA/VNC/USB/serial/
+  NoCloudISO/qemu-guest-agent/nft/…).
+- **Neutralización de tipos**: `compute.ExportBackupOptions`, `ImportOpts`,
+  `OVATarget`/`OVACompress`/`OVAOptions`, `GraphicsInfo`, `SecretRef`,
+  `ConsoleStream` (interfaz), sentinels `ErrDomainNotRunning`/
+  `ErrMemorySnapshotRequiresRunning`, `PoolPurposeDisk/ISO`, `IsManagedBridge/
+  IsManagedNetwork` (bindeados por `BindHelpers`). **Cero tipos libvirt en las
+  firmas de los handlers**.
+- **`internal/compute/kvm.go` (nuevo)** — `KVMBackend`: adapter fino que delega
+  en el `*libvirt.Connector` y traduce tipos (compute↔libvirt); `kvmErr()`
+  traduce sentinels; `lvConsoleStream` envuelve el stream de consola. `Capabilities`
+  = todo soportado.
+- **Aislamiento estricto en `api/*.go` (~20 ficheros)**: `h.lv.M` → `h.compute.M`;
+  los handlers solo interactúan con la interfaz. **Infra exenta (directiva 4)**:
+  `Get()`, `EnsureConnected()`, `IsConnected()`, `MetricsCollector`,
+  `HostMetricsCollector` siguen en el conector (`h.lv` se conserva para eso).
+  `api.NewRouter` recibe `compute.Backend`.
+- `main.go`: `compute.NewKVMBackend(lv)` + `compute.BindHelpers(...)`.
+- **Tests**: `compute/backend_test.go` — assert compile-time
+  `var _ Backend = (*KVMBackend)(nil)`, capabilities KVM, predicados neutrales
+  antes de bind, sentinels. Canarios verdes: `deploylock_test`, `pools_rbac_test`,
+  `cat08_test`, `api`, `libvirt`, `cmd/server`.
+- **Gates**: `golangci-lint` 0 issues · `go build`/`go vet` OK · `go test -race
+  ./...` verde (solo los 2 `backupstore` root preexistentes). **Smoke real en la
+  VM (v1.3.1-fase0)**: lista de VMs idéntica, lifecycle start/shutdown, meta,
+  snapshots, backup default, firewall, tickets de consola/VNC, pools
+  (ISOS/webkvm-disks), networks — **cero regresión** a través de la costura.
+
+## Sprint D (v1.3) — V13-D-01..04: Tags como política, búsqueda global, import firewall blindado y dashboard (2026-09-06)
+
+- **D-01 — Tags como política estricta (RBAC + backups)**:
+  - `VMMeta`/`VMMetaUpdate`/`VM` ganan `Tags []string`, persistidos en el XML de
+    metadata de libvirt (junto a Groups). API `PUT /api/vms/{id}/meta` + `GET
+    /api/tags` (todos los tags en uso, ordenados).
+  - **ACL**: `User.AllowedTags` (Create/Update/Response). `requireVMAccess`
+    concede acceso si el usuario posee la VM **o** si `AllowedTags` intersecta
+    los tags de la VM; `ListVMs` filtra por tag para no-admins con política.
+    Los tags son política real, no pegatinas.
+  - **Backups por tag**: `VMFilter="tags"` + `Target.VMTags`; `resolveScope`
+    incluye toda VM cuyo `Tags` intersecte el allowlist ("toda VM con `prod` va
+    a este S3"). Validación `vm_filter=tags requires at least one vm_tag`.
+- **D-02 — Búsqueda global (Command Palette)**: `Ctrl+K`/`Cmd+K` ya abría el
+  palette; el filtro de VMs ahora cruza **nombre, IP, tags y estado** (subtitle
+  con tags, keywords indexados).
+- **D-03 — Import de firewall blindado**: `GET /api/firewall/host/export`
+  (JSON portable) y `POST /api/firewall/host/import` que recorre la MISMA
+  cadena estricta que el editor: `ValidateHostFirewall` (anti-lockout) →
+  aplicación atómica `nft -c` + `nft -f` → **Safe Apply con ventana de 30s /
+  auto-rollback**. Acepta `{firewall:{…}}` o el JSON desnudo; límite 1 MB.
+  UI: botones Export/Import en Firewall.svelte.
+- **D-04 — Dashboard consolidado** (Status.svelte): CPU/RAM del host con
+  `Chart.svelte` (SVG nativo, sin librerías pesadas) desde `GET /api/host/metrics`,
+  alertas activas (`/api/alerts/active`) y últimos jobs de backup
+  (`/api/backup/jobs`), cargados en paralelo.
+- **Tests** (`-race`): `resolveScope` modo tags (runner_test), `vmHasAnyTagFromSlice`
+  (api/tagpolicy_test), `normalizeVMFilter` acepta "tags". Frontend: lint,
+  vitest 14/14, build, prettier, **i18n 1328×3** (check-i18n OK).
+- **Gate real en VM (v1.3.0-d04)**: tags persistidos en metadata libvirt ✓ ·
+  `/api/tags` ✓ · target `vm_filter=tags` + backup generó el archivo de fedora
+  ✓ · **ACL por tag live: operador con `allowed_tags=["prod"]` ve y arranca la
+  VM etiquetada** ✓ · firewall export→import → `pending_confirm` → confirm ✓ ·
+  dashboard: host metrics (55 puntos), alertas, jobs ✓ · cleanup completo ✓.
+
 ## Sprint C (v1.3) — V13-C-03/C-04: Histórico de métricas (time-series) y Alertas (2026-09-06)
 
 - **`metrics/history.go` (nuevo)** — almacén time-series con **Zero DB Bloat**:

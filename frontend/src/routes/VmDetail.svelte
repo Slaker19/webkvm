@@ -250,6 +250,17 @@
   // separate, unregistered tags that never matched the real group.
   let eGroupsSet = $state(new Set());
   let eGroupsList = $state([]); // groups available to assign
+  // V13-D-01: arbitrary tags (RBAC policy labels), unlike groups they are
+  // free-form and not registered anywhere.
+  let eTagsSet = $state(new Set());
+  let eTagsInput = $state('');
+
+  function addTag() {
+    const tag = eTagsInput.trim().replace(/,+$/, '');
+    if (!tag) return;
+    eTagsSet = new Set(eTagsSet).add(tag);
+    eTagsInput = '';
+  }
   let coverFile = $state(null);
   let coverPreview = $state(null);
   let uploadingCover = $state(false);
@@ -443,11 +454,13 @@
       eNotes = meta.notes || '';
       eNotesOriginal = meta.notes || '';
       eGroupsSet = new Set(meta.groups || []);
+      eTagsSet = new Set(meta.tags || []);
     } catch {
       eAlias = vm?.alias || '';
       eNotes = '';
       eNotesOriginal = '';
       eGroupsSet = new Set(vm?.groups || []);
+      eTagsSet = new Set(vm?.tags || []);
     }
     // Initialize iface edit state for each network interface.
     const edits = {};
@@ -492,9 +505,10 @@
         alias: eAlias,
         notes: eNotes,
         groups: groups,
+        tags: Array.from(eTagsSet),
       });
       eNotesOriginal = eNotes;
-      vm = { ...vm, alias: eAlias, groups };
+      vm = { ...vm, alias: eAlias, groups, tags: Array.from(eTagsSet) };
       toast.success('Identity updated');
       // Close on success — leaving the dialog open with no visible
       // change (besides a toast easy to miss) read as "the button
@@ -3149,7 +3163,7 @@
     </Dialog.Header>
 
     <div class="flex gap-1 border-b border-border mb-4">
-      {#each [['alias', t('vmDetail.tabAlias')], ['cover', t('vmDetail.tabCover')], ['network', t('vmDetail.tabNetwork')], ['notes', t('vmDetail.tabNotes')], ['groups', t('vmDetail.tabGroups')]] as [k, label]}
+      {#each [['alias', t('vmDetail.tabAlias')], ['cover', t('vmDetail.tabCover')], ['network', t('vmDetail.tabNetwork')], ['notes', t('vmDetail.tabNotes')], ['groups', t('vmDetail.tabGroups')], ['tags', t('vmDetail.tabTags')]] as [k, label]}
         <button
           onclick={() => (identityTab = k)}
           class="px-3 py-2 text-sm border-b-2 -mb-px transition-colors {identityTab === k
@@ -3409,6 +3423,49 @@
             </div>
           {/if}
           <p class="text-xs text-muted-foreground mt-1.5">{@html t('vmDetail.groupsHelper')}</p>
+        </div>
+        <div class="flex justify-end gap-2 pt-2">
+          <Button variant="outline" onclick={() => (showIdentity = false)}
+            >{t('common.close')}</Button
+          >
+          <Button onclick={saveIdentityBasics} disabled={savingIdentity}
+            >{savingIdentity ? t('vmDetail.notesSaving') : t('common.save')}</Button
+          >
+        </div>
+      </div>
+    {:else if identityTab === 'tags'}
+      <div class="space-y-3">
+        <div>
+          <span class="block text-sm font-medium mb-1.5">{t('vmDetail.tagsLabel')}</span>
+          <div class="flex flex-wrap gap-1.5 mb-2">
+            {#each Array.from(eTagsSet) as tag (tag)}
+              <button
+                type="button"
+                onclick={() => {
+                  const next = new Set(eTagsSet);
+                  next.delete(tag);
+                  eTagsSet = next;
+                }}
+                class="text-xs px-2.5 py-1 rounded-full border border-accent/40 bg-accent/15 text-accent"
+                >{tag} ×</button
+              >
+            {/each}
+          </div>
+          <div class="flex items-center gap-2">
+            <Input
+              value={eTagsInput}
+              oninput={(e) => (eTagsInput = e.currentTarget.value)}
+              placeholder={t('vmDetail.tagsPlaceholder')}
+              onkeydown={(e) => {
+                if (e.key === 'Enter' || e.key === ',') {
+                  e.preventDefault();
+                  addTag();
+                }
+              }}
+            />
+            <Button size="sm" variant="outline" onclick={addTag}>{t('vmDetail.addTag')}</Button>
+          </div>
+          <p class="text-xs text-muted-foreground mt-1.5">{t('vmDetail.tagsHelper')}</p>
         </div>
         <div class="flex justify-end gap-2 pt-2">
           <Button variant="outline" onclick={() => (showIdentity = false)}

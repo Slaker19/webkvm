@@ -33,6 +33,8 @@
     ArrowDownToLine,
     ArrowUpFromLine,
     Eye,
+    Download,
+    Upload,
   } from '@lucide/svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
@@ -57,6 +59,8 @@
   let previewRuleset = $state(null); // dialog content
   let previewing = $state(false);
   let applying = $state(false);
+  let importing = $state(false);
+  let fileInputEl = $state(null);
 
   let timer = $state(null);
 
@@ -212,6 +216,52 @@
       toast.error(err.message);
     }
   }
+
+  // V13-D-03: export/import. Import runs the EXACT hardened chain as the
+  // editor (anti-lockout validation + nft -c + Safe Apply 30s) via the
+  // dedicated backend endpoint — the imported file is never trusted
+  // blindly and always lands in the confirm/rollback window.
+  async function exportFirewall() {
+    try {
+      const fw = await api.exportHostFirewall();
+      const blob = new Blob([JSON.stringify(fw, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'webkvm-firewall.json';
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(t('firewall.exported'));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  function pickImportFile() {
+    fileInputEl?.click();
+  }
+
+  async function onImportFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    importing = true;
+    try {
+      const text = await file.text();
+      const fw = JSON.parse(text);
+      const r = await api.importHostFirewall(fw);
+      pendingDeadline = r.deadline * 1000;
+      now = Date.now();
+      await load();
+      toast.info(t('firewall.importStaged', { secs: r.window_secs || 30 }));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      importing = false;
+    }
+  }
 </script>
 
 <div class="max-w-6xl mx-auto px-4 py-6 space-y-6">
@@ -222,6 +272,21 @@
           ? t('firewall.previewing')
           : t('firewall.preview')}
       </Button>
+      <Button size="sm" variant="outline" onclick={exportFirewall} disabled={loading}>
+        <Download class="w-4 h-4 mr-1.5" />{t('firewall.export')}
+      </Button>
+      <Button size="sm" variant="outline" onclick={pickImportFile} disabled={importing || loading}>
+        <Upload class="w-4 h-4 mr-1.5" />{importing
+          ? t('firewall.importing')
+          : t('firewall.import')}
+      </Button>
+      <input
+        bind:this={fileInputEl}
+        type="file"
+        accept="application/json,.json"
+        class="hidden"
+        onchange={onImportFile}
+      />
       <Button size="sm" onclick={applyNow} disabled={applying || hasPending || loading}>
         {applying ? t('firewall.applying') : t('firewall.apply')}
       </Button>

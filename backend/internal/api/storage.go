@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"webkvm/internal/audit"
+	"webkvm/internal/compute"
 	"webkvm/internal/config"
-	"webkvm/internal/libvirt"
 	"webkvm/internal/models"
 
 	"github.com/go-chi/chi/v5"
@@ -236,7 +236,7 @@ func isBlockedIP(ip net.IP) bool {
 }
 
 func (h *Handler) ListPools(w http.ResponseWriter, r *http.Request) {
-	pools, err := h.lv.ListStoragePools()
+	pools, err := h.compute.ListStoragePools()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -280,7 +280,7 @@ func (h *Handler) CreatePool(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.Purpose != "" && req.Purpose != libvirt.PoolPurposeDisk && req.Purpose != libvirt.PoolPurposeISO {
+	if req.Purpose != "" && req.Purpose != compute.PoolPurposeDisk && req.Purpose != compute.PoolPurposeISO {
 		jsonErr(w, http.StatusBadRequest, "purpose must be 'disk' or 'iso'")
 		return
 	}
@@ -288,7 +288,7 @@ func (h *Handler) CreatePool(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid path: "+err.Error())
 		return
 	}
-	pool, err := h.lv.CreateStoragePool(r.Context(), req)
+	pool, err := h.compute.CreateStoragePool(r.Context(), req)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -331,7 +331,7 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 			"cifs auth requires both source_username and source_password")
 		return
 	}
-	pool, err := h.lv.UpdateStoragePool(r.Context(), name, req)
+	pool, err := h.compute.UpdateStoragePool(r.Context(), name, req)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -367,14 +367,14 @@ func (h *Handler) DeletePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Guard: refuse to delete a pool whose volumes are attached to VMs.
-	vols, err := h.lv.ListStorageVolumes(name)
+	vols, err := h.compute.ListStorageVolumes(name)
 	if err != nil && !strings.Contains(err.Error(), "not found") {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	var allAtts []models.VolumeAttachment
 	for _, v := range vols {
-		atts, aerr := h.lv.FindVolumeAttachments(name, v.Name)
+		atts, aerr := h.compute.FindVolumeAttachments(name, v.Name)
 		if aerr != nil {
 			continue
 		}
@@ -390,7 +390,7 @@ func (h *Handler) DeletePool(w http.ResponseWriter, r *http.Request) {
 			name, len(allAtts), strings.Join(names, ", ")))
 		return
 	}
-	if err := h.lv.DeletePool(name); err != nil {
+	if err := h.compute.DeletePool(name); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -402,7 +402,7 @@ func (h *Handler) ListVolumes(w http.ResponseWriter, r *http.Request) {
 	if poolName == "" {
 		poolName = config.DiskPoolName
 	}
-	vols, err := h.lv.ListStorageVolumes(poolName)
+	vols, err := h.compute.ListStorageVolumes(poolName)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -443,7 +443,7 @@ func (h *Handler) CreateVolume(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	vol, err := h.lv.CreateStorageVolume(req)
+	vol, err := h.compute.CreateStorageVolume(req)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -456,11 +456,11 @@ func (h *Handler) DeleteVolume(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	// Guard: refuse to delete a volume that is attached to any VM,
 	// running or not. Detach the disk first.
-	if atts, err := h.lv.FindVolumeAttachments(pool, name); err == nil && len(atts) > 0 {
+	if atts, err := h.compute.FindVolumeAttachments(pool, name); err == nil && len(atts) > 0 {
 		volumeInUse(w, fmt.Sprintf("volume %s/%s", pool, name), atts)
 		return
 	}
-	if err := h.lv.DeleteStorageVolume(pool, name); err != nil {
+	if err := h.compute.DeleteStorageVolume(pool, name); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -492,7 +492,7 @@ func (h *Handler) ResizeVolume(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusForbidden, err.Error())
 			return
 		}
-		if cur, err := h.lv.GetStorageVolume(pool, name); err == nil {
+		if cur, err := h.compute.GetStorageVolume(pool, name); err == nil {
 			delta := req.Capacity - bytesToGB(cur.Capacity)
 			if delta > 0 {
 				if err := h.checkDiskQuota(owner, map[string]int64{pool: delta}); err != nil {
@@ -502,7 +502,7 @@ func (h *Handler) ResizeVolume(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err := h.lv.ResizeStorageVolume(pool, name, req.Capacity); err != nil {
+	if err := h.compute.ResizeStorageVolume(pool, name, req.Capacity); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -512,7 +512,7 @@ func (h *Handler) ResizeVolume(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListISOs(w http.ResponseWriter, r *http.Request) {
 	poolName := r.URL.Query().Get("pool")
 	if poolName != "" {
-		isos, err := h.lv.GetISOs(poolName)
+		isos, err := h.compute.GetISOs(poolName)
 		if err != nil {
 			jsonErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -525,14 +525,14 @@ func (h *Handler) ListISOs(w http.ResponseWriter, r *http.Request) {
 	// can live, so a pool tagged "disk" is scanned too — otherwise an
 	// ISO uploaded there would be invisible in the default "all pools"
 	// view even though GetISOs(pool) finds it fine when asked directly.
-	allPools, err := h.lv.ListStoragePools()
+	allPools, err := h.compute.ListStoragePools()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	var isos []models.ISOScanResult
 	for _, p := range allPools {
-		poolISOs, err := h.lv.GetISOs(p.Name)
+		poolISOs, err := h.compute.GetISOs(p.Name)
 		if err != nil {
 			continue
 		}
@@ -551,11 +551,11 @@ func (h *Handler) DeleteISO(w http.ResponseWriter, r *http.Request) {
 		pool = config.ISOPoolName
 	}
 	// Guard: refuse to delete an ISO mounted in any VM's CD-ROM.
-	if atts, err := h.lv.FindVolumeAttachments(pool, name); err == nil && len(atts) > 0 {
+	if atts, err := h.compute.FindVolumeAttachments(pool, name); err == nil && len(atts) > 0 {
 		volumeInUse(w, fmt.Sprintf("ISO %s/%s", pool, name), atts)
 		return
 	}
-	if err := h.lv.DeleteISO(name, pool); err != nil {
+	if err := h.compute.DeleteISO(name, pool); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -584,7 +584,7 @@ func (h *Handler) RenameISO(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.lv.RenameISO(name, safeNew, pool); err != nil {
+	if err := h.compute.RenameISO(name, safeNew, pool); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -619,7 +619,7 @@ func (h *Handler) UploadISO(w http.ResponseWriter, r *http.Request) {
 	if poolName == "" {
 		poolName = config.ISOPoolName
 	}
-	poolPath, err := h.lv.GetPoolPath(poolName)
+	poolPath, err := h.compute.GetPoolPath(poolName)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "failed to resolve pool: "+err.Error())
 		return
@@ -640,7 +640,7 @@ func (h *Handler) UploadISO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.lv.RefreshPool(poolName); err != nil {
+	if err := h.compute.RefreshPool(poolName); err != nil {
 		jsonErr(w, http.StatusInternalServerError, "uploaded but failed to refresh pool: "+err.Error())
 		return
 	}
@@ -739,7 +739,7 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		poolPath, perr := h.lv.GetPoolPath(poolName)
+		poolPath, perr := h.compute.GetPoolPath(poolName)
 		if perr != nil {
 			jsonErr(w, http.StatusInternalServerError, "failed to resolve pool: "+perr.Error())
 			return
@@ -779,7 +779,7 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.lv.RefreshPool(poolName); err != nil {
+	if err := h.compute.RefreshPool(poolName); err != nil {
 		jsonErr(w, http.StatusInternalServerError, "uploaded but failed to refresh pool: "+err.Error())
 		return
 	}
@@ -813,7 +813,7 @@ func (h *Handler) UploadISOByCURL(w http.ResponseWriter, r *http.Request) {
 	if poolName == "" {
 		poolName = config.ISOPoolName
 	}
-	poolPath, err := h.lv.GetPoolPath(poolName)
+	poolPath, err := h.compute.GetPoolPath(poolName)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "failed to resolve pool: "+err.Error())
 		return
@@ -834,7 +834,7 @@ func (h *Handler) UploadISOByCURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.lv.RefreshPool(poolName); err != nil {
+	if err := h.compute.RefreshPool(poolName); err != nil {
 		fmt.Println("Warning: refresh pool failed:", err)
 	}
 
@@ -913,7 +913,7 @@ func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) doDownloadISO(jobID string, name, poolName string) {
-	poolPath, err := h.lv.GetPoolPath(poolName)
+	poolPath, err := h.compute.GetPoolPath(poolName)
 	if err != nil {
 		updateJob(jobID, 0, "error", "failed to resolve pool: "+err.Error())
 		return
@@ -1042,7 +1042,7 @@ func (h *Handler) doDownloadISO(jobID string, name, poolName string) {
 		return
 	}
 
-	if err := h.lv.RefreshPool(poolName); err != nil {
+	if err := h.compute.RefreshPool(poolName); err != nil {
 		fmt.Println("Warning: refresh pool failed:", err)
 	}
 

@@ -84,18 +84,28 @@
     const actionFiltered = actionCommands.filter(
       (c) => !q || c.label().toLowerCase().includes(q) || c.keywords.includes(q)
     );
+    // V13-D-02: global search across names, IPs, TAGS and state.
     const vmFiltered = vms
-      .filter((v) => !q || v.name.toLowerCase().includes(q) || (v.ip && v.ip.includes(q)))
+      .filter(
+        (v) =>
+          !q ||
+          v.name.toLowerCase().includes(q) ||
+          (v.ip && v.ip.includes(q)) ||
+          (v.tags || []).some((tag) => tag.toLowerCase().includes(q)) ||
+          v.state.includes(q)
+      )
       .map((v) => ({
         id: `vm-${v.id}`,
         label: () => v.name,
         subtitle:
           v.state === 'running' && v.ip
-            ? `${t('common.running')} · ${v.ip}`
-            : t(`common.${v.state}`, v.state),
+            ? `${t('common.running')} · ${v.ip}${v.tags?.length ? ` · ${v.tags.join(', ')}` : ''}`
+            : `${t(`common.${v.state}`, v.state)}${
+                v.tags?.length ? ` · ${v.tags.join(', ')}` : ''
+              }`,
         path: `/vms/${v.id}`,
         icon: 'computer',
-        keywords: `vm ${v.state}`,
+        keywords: `vm ${v.state} ${(v.tags || []).join(' ')}`,
       }));
     return [...navFiltered, ...vmFiltered, ...actionFiltered];
   });

@@ -80,7 +80,7 @@ var upgrader = websocket.Upgrader{
 
 func (h *Handler) GetGraphics(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	info, err := h.lv.GetVNCInfo(id)
+	info, err := h.compute.GetVNCInfo(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
@@ -90,7 +90,7 @@ func (h *Handler) GetGraphics(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) VNCProxy(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	info, err := h.lv.GetVNCInfo(id)
+	info, err := h.compute.GetVNCInfo(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
@@ -579,12 +579,12 @@ document.addEventListener('keydown', function (e) {
 
 func (h *Handler) DownloadRDP(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vm, err := h.lv.GetDomain(id)
+	vm, err := h.compute.GetDomain(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	ip := h.lv.GetDomainIP(id)
+	ip := h.compute.GetDomainIP(id)
 	if ip == "" {
 		ip = h.serverIP()
 	}
@@ -601,7 +601,7 @@ administrative session:i:1
 
 func (h *Handler) DownloadSPICE(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	info, err := h.lv.GetVNCInfo(id)
+	info, err := h.compute.GetVNCInfo(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
@@ -628,7 +628,7 @@ func (h *Handler) SetClipboard(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := h.lv.GuestSetClipboard(id, req.Text); err != nil {
+	if err := h.compute.GuestSetClipboard(id, req.Text); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

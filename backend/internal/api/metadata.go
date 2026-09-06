@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 // GetVMMeta returns the WebKVM metadata (alias, notes, cover, groups) for a VM.
 func (h *Handler) GetVMMeta(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	meta, err := h.lv.GetVMMeta(id)
+	meta, err := h.compute.GetVMMeta(id)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -43,7 +44,7 @@ func (h *Handler) UpdateVMMeta(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	meta, err := h.lv.UpdateVMMeta(id, upd)
+	meta, err := h.compute.UpdateVMMeta(id, upd)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -138,7 +139,7 @@ func (h *Handler) UploadCover(w http.ResponseWriter, r *http.Request) {
 	// had already cached — showing the deleted/old image after a
 	// re-upload even though the new file was saved correctly.
 	url := fmt.Sprintf("/api/covers/%s%s?v=%d", cleanID, ext, time.Now().UnixNano())
-	if _, err := h.lv.UpdateVMMeta(id, models.VMMetaUpdate{Cover: &url}); err != nil {
+	if _, err := h.compute.UpdateVMMeta(id, models.VMMetaUpdate{Cover: &url}); err != nil {
 		os.Remove(dst) // lgtm[go/path-injection]
 		jsonErr(w, http.StatusInternalServerError, "save cover meta: "+err.Error())
 		return
@@ -155,7 +156,7 @@ func (h *Handler) UploadCover(w http.ResponseWriter, r *http.Request) {
 // DeleteCover removes the cover image (both file and metadata).
 func (h *Handler) DeleteCover(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	meta, err := h.lv.GetVMMeta(id)
+	meta, err := h.compute.GetVMMeta(id)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -172,7 +173,7 @@ func (h *Handler) DeleteCover(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	empty := ""
-	if _, err := h.lv.UpdateVMMeta(id, models.VMMetaUpdate{Cover: &empty}); err != nil {
+	if _, err := h.compute.UpdateVMMeta(id, models.VMMetaUpdate{Cover: &empty}); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -217,7 +218,7 @@ func (h *Handler) UpdateNetIface(w http.ResponseWriter, r *http.Request) {
 		}
 		req.MAC = &normalized
 	}
-	if err := h.lv.UpdateNetworkIface(id, mac, req); err != nil {
+	if err := h.compute.UpdateNetworkIface(id, mac, req); err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -231,7 +232,7 @@ func (h *Handler) CheckVLANSupport(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "network query parameter required")
 		return
 	}
-	v, err := h.lv.CheckVLANSupport(network)
+	v, err := h.compute.CheckVLANSupport(network)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -251,6 +252,35 @@ func normalizeMAC(s string) (string, error) {
 		return "", fmt.Errorf("invalid MAC address %q (expect XX:XX:XX:XX:XX:XX)", s)
 	}
 	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5]), nil
+}
+
+// ListAllTags (V13-D-01) returns every distinct tag in use across all
+// VMs, so the admin UI can offer them for policy assignment (AllowedTags,
+// backup-by-tag). Admin/operator scoped.
+func (h *Handler) ListAllTags(w http.ResponseWriter, r *http.Request) {
+	if h.lv == nil {
+		jsonResp(w, http.StatusOK, map[string]any{"tags": []string{}})
+		return
+	}
+	vms, err := h.compute.ListDomains()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	set := map[string]bool{}
+	for _, vm := range vms {
+		for _, tag := range vm.Tags {
+			if tag != "" {
+				set[tag] = true
+			}
+		}
+	}
+	tags := make([]string, 0, len(set))
+	for tag := range set {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	jsonResp(w, http.StatusOK, map[string]any{"tags": tags})
 }
 
 // GetVMMetrics returns the in-memory metric series for a VM. The series

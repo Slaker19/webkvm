@@ -68,6 +68,9 @@
   let newTargetVerifyOnWrite = $state(false);
   let newTargetVMFilter = $state('all');
   let newTargetVMIDs = $state([]);
+  // V13-D-01: backup-by-tag policy — VMFilter="tags" selects every VM
+  // carrying one of these tags (e.g. "any VM tagged prod → S3").
+  let newTargetVMTags = $state([]);
   let newTargetEnabled = $state(true);
   // Retention: 0 = keep everything. newTargetRetentionKeepLast / KeepDays
   // are the "Conservar últimas N / N días" values (0 = unlimited). The
@@ -260,6 +263,7 @@
       path: newTargetPath.trim(),
       vm_filter: newTargetVMFilter,
       vm_ids: newTargetVMIDs,
+      vm_tags: newTargetVMTags,
       enabled: newTargetEnabled,
       retention: {
         keep_last: newTargetRetentionKeepLast || 0,
@@ -339,6 +343,10 @@
       toast.error(t('backup.pickAtLeastOneVm'));
       return;
     }
+    if (newTargetVMFilter === 'tags' && newTargetVMTags.length === 0) {
+      toast.error(t('backup.pickAtLeastOneTag'));
+      return;
+    }
     if (editSaving) return;
     editSaving = true;
     try {
@@ -395,6 +403,7 @@
     newTargetVerifyOnWrite = !!target.verify_on_write;
     newTargetVMFilter = target.vm_filter || 'all';
     newTargetVMIDs = Array.isArray(target.vm_ids) ? [...target.vm_ids] : [];
+    newTargetVMTags = Array.isArray(target.vm_tags) ? [...target.vm_tags] : [];
     newTargetEnabled = target.enabled !== false; // default to enabled
     newTargetRetentionKeepLast = target.retention?.keep_last || 0;
     newTargetRetentionKeepDays = target.retention?.keep_days || 0;
@@ -426,6 +435,7 @@
     newTargetVerifyOnWrite = false;
     newTargetVMFilter = 'all';
     newTargetVMIDs = [];
+    newTargetVMTags = [];
     newTargetEnabled = true;
     newTargetRetentionKeepLast = 0;
     newTargetRetentionKeepDays = 0;
@@ -462,6 +472,7 @@
       newTargetVerifyOnWrite = false;
       newTargetVMFilter = 'all';
       newTargetVMIDs = [];
+      newTargetVMTags = [];
       newTargetEnabled = true;
       newTargetRetentionKeepLast = 0;
       newTargetRetentionKeepDays = 0;
@@ -1724,8 +1735,35 @@
           />
           {t('backup.allExcept')}
         </label>
+        <label class="flex items-center gap-1.5 text-sm cursor-pointer">
+          <input
+            type="radio"
+            name="vm-filter"
+            value="tags"
+            checked={newTargetVMFilter === 'tags'}
+            onchange={() => (newTargetVMFilter = 'tags')}
+            class="accent-accent"
+          />
+          {t('backup.byTag')}
+        </label>
       </div>
-      {#if newTargetVMFilter !== 'all'}
+      {#if newTargetVMFilter === 'tags'}
+        <!-- V13-D-01: backup-by-tag policy selector. -->
+        <Input
+          value={newTargetVMTags.join(', ')}
+          oninput={(e) => {
+            newTargetVMTags = e.currentTarget.value
+              .split(/[\s,;]+/)
+              .map((s) => s.trim())
+              .filter(Boolean);
+          }}
+          placeholder={t('backup.tagsPlaceholder')}
+          class="mb-2"
+        />
+        <p class="text-xs text-muted-foreground">
+          {t('backup.tagsHint', { n: newTargetVMTags.length })}
+        </p>
+      {:else if newTargetVMFilter !== 'all'}
         <Input bind:value={vmSearch} placeholder={t('backup.searchVms')} class="mb-2" />
         <div
           class="border border-border rounded-md bg-background max-h-48 overflow-y-auto p-1 space-y-0.5"

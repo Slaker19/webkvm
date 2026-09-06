@@ -88,7 +88,7 @@ func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Pool disk usage.
-	pools, _ := h.lv.ListStoragePools()
+	pools, _ := h.compute.ListStoragePools()
 	for _, p := range pools {
 		info := PoolDiskInfo{Name: p.Name, Path: p.Path}
 		var stat syscall.Statfs_t

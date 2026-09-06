@@ -18,9 +18,9 @@ import (
 // (name + color), shared across all VMs. Membership (which VMs belong to
 // which group) is stored in each VM's <webkvm:meta><groups> element.
 type groupsStore struct {
-	mu      sync.Mutex
-	path    string
-	byName  map[string]models.Group
+	mu     sync.Mutex
+	path   string
+	byName map[string]models.Group
 }
 
 func newGroupsStore(path string) *groupsStore {
@@ -86,7 +86,7 @@ func (h *Handler) ListGroups(w http.ResponseWriter, r *http.Request) {
 
 	counts := map[string]int{}
 	if err := h.lv.EnsureConnected(); err == nil {
-		allVMs, _ := h.lv.ListDomains()
+		allVMs, _ := h.compute.ListDomains()
 		for _, vm := range allVMs {
 			for _, name := range vm.Groups {
 				counts[name]++
@@ -184,9 +184,9 @@ func (h *Handler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 	if oldName != req.Name {
 		var renameFailures []string
 		if err := h.lv.EnsureConnected(); err == nil {
-			allVMs, _ := h.lv.ListDomains()
+			allVMs, _ := h.compute.ListDomains()
 			for _, vm := range allVMs {
-				meta, err := h.lv.GetVMMeta(vm.ID)
+				meta, err := h.compute.GetVMMeta(vm.ID)
 				if err != nil {
 					continue
 				}
@@ -198,7 +198,7 @@ func (h *Handler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				if changed {
-					if err := h.lv.SetVMMeta(vm.ID, meta); err != nil {
+					if err := h.compute.SetVMMeta(vm.ID, meta); err != nil {
 						renameFailures = append(renameFailures, vm.ID)
 					}
 				}
@@ -235,9 +235,9 @@ func (h *Handler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 
 	// Scrub the tag from every VM's metadata.
 	if err := h.lv.EnsureConnected(); err == nil {
-		allVMs, _ := h.lv.ListDomains()
+		allVMs, _ := h.compute.ListDomains()
 		for _, vm := range allVMs {
-			meta, err := h.lv.GetVMMeta(vm.ID)
+			meta, err := h.compute.GetVMMeta(vm.ID)
 			if err != nil {
 				continue
 			}
@@ -248,7 +248,7 @@ func (h *Handler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if len(filtered) != len(meta.Groups) {
-				_ = h.lv.SetVMMeta(vm.ID, models.VMMeta{
+				_ = h.compute.SetVMMeta(vm.ID, models.VMMeta{
 					Alias: meta.Alias, Notes: meta.Notes, Cover: meta.Cover,
 					Groups: filtered, UpdatedAt: meta.UpdatedAt,
 				})

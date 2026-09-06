@@ -4,6 +4,7 @@
   import StatCard from '$lib/components/StatCard.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import { api } from '$lib/stores/auth.svelte.js';
+  import Chart from '$lib/components/Chart.svelte';
   import { toast } from '$lib/components/ui/toast';
   import { Button } from '$lib/components/ui/button';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
@@ -18,6 +19,39 @@
   let logsAuto = $state(false);
   let actionMsg = $state('');
   let actionErr = $state('');
+
+  // V13-D-04 dashboard: host metrics (native SVG charts), active alerts,
+  // and recent backup jobs — all lightweight, no heavy chart libs.
+  let hostMetrics = $state(null);
+  let activeAlerts = $state([]);
+  let backupJobs = $state([]);
+  let dashboardLoading = $state(true);
+
+  const hostCpuPoints = $derived(
+    (hostMetrics?.points || []).map((p) => ({ t: p.t, v: p.cpu_usage }))
+  );
+  const hostRamPct = $derived(
+    (hostMetrics?.points || [])
+      .filter((p) => p.total_ram > 0)
+      .map((p) => ({ t: p.t, v: (p.used_ram / p.total_ram) * 100 }))
+  );
+
+  async function loadDashboard() {
+    try {
+      const [hm, al, jb] = await Promise.all([
+        api.hostMetrics(),
+        api.listActiveAlerts(),
+        api.listBackupJobs(),
+      ]);
+      hostMetrics = hm;
+      activeAlerts = al.alerts || [];
+      backupJobs = (jb.jobs || []).slice(0, 5);
+    } catch {
+      // non-fatal: the rest of the Status page still renders
+    } finally {
+      dashboardLoading = false;
+    }
+  }
 
   let showRestartConfirm = $state(false);
   let restartLoading = $state(false);
@@ -188,6 +222,7 @@
     loadStatus();
     loadLogs();
     loadBackups();
+    loadDashboard();
     return () => {
       if (logInterval) clearInterval(logInterval);
       clearAllTimers();
@@ -215,6 +250,91 @@
   {#if actionErr}
     <Alert variant="error">{actionErr}</Alert>
   {/if}
+
+  <!-- V13-D-04: consolidated dashboard (fast, native SVG charts) -->
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+    <div class="lg:col-span-2 rounded-xl border border-border bg-background p-4">
+      <p class="text-sm font-semibold mb-1">{t('status.dashboardTitle')}</p>
+      <p class="text-xs text-muted-foreground mb-3">{t('status.dashboardDesc')}</p>
+      {#if dashboardLoading}
+        <div class="grid grid-cols-2 gap-4 py-6">
+          <div class="h-20 bg-muted/40 rounded animate-pulse"></div>
+          <div class="h-20 bg-muted/40 rounded animate-pulse"></div>
+        </div>
+      {:else}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <div class="flex items-baseline justify-between mb-1.5">
+              <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider"
+                >{t('status.hostCpu')}</span
+              >
+              <span class="text-sm tnum"
+                >{hostCpuPoints.length
+                  ? hostCpuPoints[hostCpuPoints.length - 1].v.toFixed(1)
+                  : '0.0'}%</span
+              >
+            </div>
+            <Chart points={hostCpuPoints} yMax={100} height={70} />
+          </div>
+          <div>
+            <div class="flex items-baseline justify-between mb-1.5">
+              <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider"
+                >{t('status.hostRam')}</span
+              >
+              <span class="text-sm tnum"
+                >{hostRamPct.length ? hostRamPct[hostRamPct.length - 1].v.toFixed(1) : '0.0'}%</span
+              >
+            </div>
+            <Chart points={hostRamPct} yMax={100} height={70} color="var(--info, var(--accent))" />
+          </div>
+        </div>
+      {/if}
+    </div>
+    <div class="rounded-xl border border-border bg-background p-4">
+      <p class="text-sm font-semibold mb-1">{t('status.alertsTitle')}</p>
+      <p class="text-xs text-muted-foreground mb-3">
+        {t('status.alertsCount', { n: activeAlerts.length })}
+      </p>
+      <div class="space-y-1.5 max-h-40 overflow-y-auto">
+        {#each activeAlerts as alert (alert.vm_id + alert.rule?.id)}
+          <div
+            class="flex items-center gap-2 text-xs rounded-lg bg-destructive/10 border border-destructive/30 px-2 py-1.5"
+          >
+            <span class="w-2 h-2 rounded-full bg-destructive shrink-0"></span>
+            <span class="flex-1 min-w-0 truncate">
+              {alert.vm_id.slice(0, 8)} · {alert.rule?.metric || ''}
+              {alert.rule?.above ? '>' : '<'}
+              {alert.rule?.threshold || 0}
+            </span>
+          </div>
+        {:else}
+          <p class="text-sm text-muted-foreground">{t('status.noAlerts')}</p>
+        {/each}
+      </div>
+      <div class="border-t border-border mt-3 pt-3">
+        <p class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+          {t('status.lastBackups')}
+        </p>
+        <div class="space-y-1">
+          {#each backupJobs as job (job.id)}
+            <div class="flex items-center gap-2 text-xs">
+              <span
+                class="w-1.5 h-1.5 rounded-full shrink-0 {job.status === 'success'
+                  ? 'bg-success'
+                  : job.status === 'error'
+                    ? 'bg-destructive'
+                    : 'bg-warning'}"
+              ></span>
+              <span class="flex-1 min-w-0 truncate">{job.filename || t('backup.title')}</span>
+              <span class="text-muted-foreground tnum shrink-0">{job.status}</span>
+            </div>
+          {:else}
+            <p class="text-sm text-muted-foreground">{t('status.noBackups')}</p>
+          {/each}
+        </div>
+      </div>
+    </div>
+  </div>
 
   {#if loading && !status}
     <!-- Skeleton loading state -->

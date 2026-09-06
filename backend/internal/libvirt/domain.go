@@ -1068,6 +1068,7 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 		vm.Alias = meta.Alias
 		vm.Cover = meta.Cover
 		vm.Groups = meta.Groups
+		vm.Tags = meta.Tags
 	}
 
 	if state == libvirt.DOMAIN_RUNNING {

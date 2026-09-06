@@ -65,6 +65,8 @@ type TargetOptions struct {
 	// lines, as pasted from ssh-keyscan or a dial error. Empty list =
 	// refuse every connection (no blind trust-on-first-use).
 	KnownHosts *[]string
+	// VMTags (V13-D-01) is the tag allowlist for VMFilter=="tags".
+	VMTags []string
 	// VerifyOnWrite (V13-BCK-04): when true, the runner re-reads the
 	// uploaded primary archive (streamed, never in RAM) and compares
 	// its sha256 against the local copy; a mismatch fails the job and
@@ -130,12 +132,18 @@ type Target struct {
 	//   "all"     → back up every VM on the host (default).
 	//   "include" → back up only the VMs in VMIDs.
 	//   "exclude" → back up every VM except the ones in VMIDs.
+	//   "tags"    → back up every VM carrying one of VMTags (V13-D-01).
 	// Empty string is treated as "all" for backward compatibility
 	// with targets written before this field existed.
 	VMFilter string `json:"vm_filter"`
 	// VMIDs is the list referenced by VMFilter. Ignored when
-	// VMFilter is "all" or empty.
+	// VMFilter is "all", "tags" or empty.
 	VMIDs []string `json:"vm_ids,omitempty"`
+	// VMTags (V13-D-01) is the tag allowlist referenced by
+	// VMFilter=="tags". A VM whose metadata carries any of these tags
+	// is included in the run. This turns tags into real backup policy
+	// ("any VM tagged prod goes to this S3 target").
+	VMTags []string `json:"vm_tags,omitempty"`
 	// Enabled lets the operator pause a target without removing
 	// it. Disabled targets still appear in the UI but neither
 	// manual backups nor scheduled runs touch them.
@@ -726,6 +734,9 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 	if filter == "include" && len(vmIDs) == 0 {
 		return Target{}, errors.New("vm_filter=include requires at least one vm_id")
 	}
+	if filter == "tags" && len(opts.VMTags) == 0 {
+		return Target{}, errors.New("vm_filter=tags requires at least one vm_tag")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.targets {
@@ -745,6 +756,7 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 		Path:      path,
 		VMFilter:  filter,
 		VMIDs:     vmIDs,
+		VMTags:    opts.VMTags,
 		Enabled:   true,
 		Host:      opts.Host,
 		Port:      port,
@@ -795,10 +807,10 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 // "all"; anything else must be one of the three known values.
 func normalizeVMFilter(f string) (string, error) {
 	switch strings.TrimSpace(f) {
-	case "", "all", "include", "exclude":
+	case "", "all", "include", "exclude", "tags":
 		return f, nil
 	default:
-		return "", fmt.Errorf("vm_filter must be one of all|include|exclude, got %q", f)
+		return "", fmt.Errorf("vm_filter must be one of all|include|exclude|tags, got %q", f)
 	}
 }
 
@@ -930,10 +942,18 @@ func (s *Store) UpdateTarget(
 		if filter == "include" && (vmIDs == nil || len(*vmIDs) == 0) {
 			return Target{}, errors.New("vm_filter=include requires at least one vm_id")
 		}
+		// "tags" with an empty allowlist would back up nothing (or,
+		// worse, be treated as "all"). Refuse it.
+		if filter == "tags" && len(t.VMTags) == 0 {
+			return Target{}, errors.New("vm_filter=tags requires at least one vm_tag")
+		}
 		t.VMFilter = filter
 	}
 	if vmIDs != nil {
 		t.VMIDs = *vmIDs
+	}
+	if opts != nil && opts.VMTags != nil {
+		t.VMTags = opts.VMTags
 	}
 	if enabled != nil {
 		t.Enabled = *enabled

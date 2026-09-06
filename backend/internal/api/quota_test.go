@@ -8,11 +8,11 @@ func TestBytesToGB(t *testing.T) {
 		want int64
 	}{
 		{0, 0},
-		{100, 1},                 // < 1GB rounds up to 1
-		{1 << 30, 2},             // exactly 1GB → 2 (rounded up, defensive)
-		{5 * (1 << 30), 6},       // 5GB → 6
-		{1 << 40, 1025},          // 1TB → 1025
-		{10 * (1 << 30) + 100, 11},
+		{100, 1},           // < 1GB rounds up to 1
+		{1 << 30, 2},       // exactly 1GB → 2 (rounded up, defensive)
+		{5 * (1 << 30), 6}, // 5GB → 6
+		{1 << 40, 1025},    // 1TB → 1025
+		{10*(1<<30) + 100, 11},
 	}
 	for _, c := range cases {
 		if got := bytesToGB(c.in); got != c.want {

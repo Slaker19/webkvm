@@ -36,6 +36,7 @@ type xmlMetaRoot struct {
 	Notes     string     `xml:"notes,omitempty"`
 	Cover     string     `xml:"cover,omitempty"`
 	Groups    []string   `xml:"groups>group,omitempty"`
+	Tags      []string   `xml:"tags>tag,omitempty"`
 	Owner     string     `xml:"owner,omitempty"`
 	Template  bool       `xml:"template,omitempty"`
 	CiUser    string     `xml:"ci_user,omitempty"`
@@ -72,6 +73,7 @@ func (c *Connector) GetVMMeta(uuid string) (models.VMMeta, error) {
 		Notes:     root.Notes,
 		Cover:     root.Cover,
 		Groups:    root.Groups,
+		Tags:      root.Tags,
 		OwnerID:   root.Owner,
 		Template:  root.Template,
 		CiUser:    root.CiUser,
@@ -96,6 +98,7 @@ func (c *Connector) SetVMMeta(uuid string, meta models.VMMeta) error {
 		Notes:     meta.Notes,
 		Cover:     meta.Cover,
 		Groups:    meta.Groups,
+		Tags:      meta.Tags,
 		Owner:     meta.OwnerID,
 		Template:  meta.Template,
 		CiUser:    meta.CiUser,
@@ -137,6 +140,13 @@ func (c *Connector) UpdateVMMeta(uuid string, upd models.VMMetaUpdate) (models.V
 			current.Groups = nil
 		} else {
 			current.Groups = *upd.Groups
+		}
+	}
+	if upd.Tags != nil {
+		if *upd.Tags == nil {
+			current.Tags = nil
+		} else {
+			current.Tags = *upd.Tags
 		}
 	}
 	if upd.OwnerID != nil {

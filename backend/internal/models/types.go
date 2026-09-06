@@ -38,6 +38,7 @@ type VM struct {
 	Alias      string      `json:"alias,omitempty"`
 	Cover      string      `json:"cover,omitempty"`
 	Groups     []string    `json:"groups,omitempty"`
+	Tags       []string    `json:"tags,omitempty"`
 	Disks      []DiskInfo  `json:"disks,omitempty"`
 	Networks   []NetIface  `json:"networks,omitempty"`
 	USBDevices []USBDevice `json:"usb_devices,omitempty"`
@@ -356,6 +357,10 @@ type VMMeta struct {
 	Notes  string   `xml:"notes"     json:"notes,omitempty"`
 	Cover  string   `xml:"cover"     json:"cover,omitempty"`
 	Groups []string `xml:"groups>group,omitempty" json:"groups,omitempty"`
+	// Tags (V13-D-01) are RBAC policy labels: non-admins with matching
+	// AllowedTags can access the VM, and backup targets can select VMs
+	// by tag. They travel in the libvirt metadata XML alongside Groups.
+	Tags []string `xml:"tags>tag,omitempty" json:"tags,omitempty"`
 	// OwnerID is the username that owns this VM (used for per-user
 	// quotas). Admin/operator-created VMs may leave it empty.
 	OwnerID string `xml:"owner,omitempty" json:"owner_id,omitempty"`
@@ -379,6 +384,9 @@ type VMMetaUpdate struct {
 	Notes  *string   `json:"notes,omitempty"`
 	Cover  *string   `json:"cover,omitempty"`
 	Groups *[]string `json:"groups,omitempty"`
+	// Tags *[]string replaces the VM's tag set (V13-D-01); nil =
+	// unchanged, empty slice = clear.
+	Tags *[]string `json:"tags,omitempty"`
 	// OwnerID is settable by admins only (enforced in the handler).
 	OwnerID *string `json:"owner_id,omitempty"`
 	// Template toggles the template flag.
@@ -555,6 +563,10 @@ type User struct {
 	// VM/disk operations. Empty means "all pools". Admins are always
 	// exempt. This is the per-user pool visibility/ACL.
 	AllowedPools []string `json:"allowed_pools,omitempty"`
+	// AllowedTags (V13-D-01) grants access to any VM carrying one of
+	// these tags, in addition to owned VMs. Empty means "owned VMs only".
+	// Admins are always exempt. This turns tags into a real RBAC policy.
+	AllowedTags []string `json:"allowed_tags,omitempty"`
 }
 
 // UserResponse is the API-facing projection of User; it is what gets
@@ -570,6 +582,7 @@ type UserResponse struct {
 	LastLoginAt        string   `json:"last_login_at,omitempty"`
 	Quota              Quota    `json:"quota,omitempty"`
 	AllowedPools       []string `json:"allowed_pools,omitempty"`
+	AllowedTags        []string `json:"allowed_tags,omitempty"`
 }
 
 func (u *User) ToResponse() UserResponse {
@@ -583,6 +596,7 @@ func (u *User) ToResponse() UserResponse {
 		LastLoginAt:        u.LastLoginAt,
 		Quota:              u.Quota,
 		AllowedPools:       u.AllowedPools,
+		AllowedTags:        u.AllowedTags,
 	}
 }
 
@@ -594,6 +608,8 @@ type CreateUserRequest struct {
 	Quota    Quota  `json:"quota,omitempty"`
 	// AllowedPools, when non-empty, restricts the user to these pools.
 	AllowedPools []string `json:"allowed_pools,omitempty"`
+	// AllowedTags, when non-empty, grants tag-based access (V13-D-01).
+	AllowedTags []string `json:"allowed_tags,omitempty"`
 }
 
 type UpdateUserRequest struct {
@@ -606,6 +622,9 @@ type UpdateUserRequest struct {
 	// AllowedPools, when non-nil, replaces the user's pool allowlist
 	// (pass an empty slice to clear the restriction).
 	AllowedPools *[]string `json:"allowed_pools,omitempty"`
+	// AllowedTags, when non-nil, replaces the user's tag allowlist
+	// (V13-D-01).
+	AllowedTags *[]string `json:"allowed_tags,omitempty"`
 }
 
 // ChangeMyPasswordRequest is the body of PUT /api/users/me/password.

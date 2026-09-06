@@ -17,6 +17,7 @@ import (
 	"webkvm/internal/backupstore"
 	"webkvm/internal/config"
 	"webkvm/internal/configstore"
+	"webkvm/internal/compute"
 	"webkvm/internal/events"
 	"webkvm/internal/firewall"
 	"webkvm/internal/libvirt"
@@ -511,7 +512,13 @@ func main() {
 	vmScheduler.Start()
 	logger.Info("vmsched_ready")
 
-	router := api.NewRouter(cfg, lv, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter)
+	// V1.4-Fase 0: the ComputeBackend seam. KVM is the only backend; the
+	// adapter wraps the existing connector so api handlers never touch
+	// libvirt types. Bind the managed-bridge/network predicates too.
+	computeBackend := compute.NewKVMBackend(lv)
+	compute.BindHelpers(libvirt.IsManagedBridge, libvirt.IsManagedNetwork)
+
+	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter)
 
 	srv := &http.Server{
 		Addr:    net.JoinHostPort(cfg.BindAddr, fmt.Sprintf("%d", cfg.Port)),

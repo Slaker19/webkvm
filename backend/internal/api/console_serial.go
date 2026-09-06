@@ -19,11 +19,10 @@ import (
 	"github.com/creack/pty"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
-	lv "libvirt.org/go/libvirt"
 
 	"webkvm/internal/audit"
 	"webkvm/internal/auth"
-	"webkvm/internal/libvirt"
+	"webkvm/internal/compute"
 	"webkvm/internal/models"
 )
 
@@ -77,17 +76,14 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 	grace := 30 * time.Second // covers a full guest reboot cycle
 	deadline := time.Now().Add(grace)
 
-	var stream *lv.Stream
+	var stream compute.ConsoleStream
+	var oerr error
 	for {
-		dom, st, oerr := h.lv.OpenSerialConsole(id)
-		if dom != nil {
-			_ = dom.Free() // domain handle isn't needed past OpenConsole
-		}
+		stream, oerr = h.compute.OpenSerialConsole(id)
 		if oerr == nil {
-			stream = st
 			break
 		}
-		retryable := errors.Is(oerr, libvirt.ErrDomainNotRunning) ||
+		retryable := errors.Is(oerr, compute.ErrDomainNotRunning) ||
 			strings.Contains(oerr.Error(), "Active console session")
 		if !retryable || time.Now().After(deadline) {
 			slog.Warn("serial_grace_exhausted", "vm_id", id, "err", oerr)
@@ -113,18 +109,12 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 			var oerr error
 			ok := false
 			for i := 0; i < 40; i++ { // ~30s grace per reacquire
-				var d *lv.Domain
-				var st *lv.Stream
-				d, st, oerr = h.lv.OpenSerialConsole(id)
-				if d != nil {
-					_ = d.Free()
-				}
+				stream, oerr = h.compute.OpenSerialConsole(id)
 				if oerr == nil {
-					stream = st
 					ok = true
 					break
 				}
-				if !errors.Is(oerr, libvirt.ErrDomainNotRunning) &&
+				if !errors.Is(oerr, compute.ErrDomainNotRunning) &&
 					!strings.Contains(oerr.Error(), "Active console session") {
 					break
 				}
@@ -305,7 +295,7 @@ func (h *Handler) HostTerminal(w http.ResponseWriter, r *http.Request) {
 // or guest agent).
 func (h *Handler) ResetVMPassword(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vm, err := h.lv.GetDomain(id)
+	vm, err := h.compute.GetDomain(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
@@ -323,7 +313,7 @@ func (h *Handler) ResetVMPassword(w http.ResponseWriter, r *http.Request) {
 	// If it is missing (e.g. the VM was imported, not created through
 	// WebKVM), we cannot guess it — guessing "admin" is wrong now that
 	// system-group names are rejected, so fail with a clear instruction.
-	meta, _ := h.lv.GetVMMeta(id)
+	meta, _ := h.compute.GetVMMeta(id)
 	username := meta.CiUser
 	if username == "" {
 		jsonErr(w, http.StatusConflict, "this VM was not created with a WebKVM cloud-init user, so WebKVM does not know which user to reset. Log in with the serial console and change the password there, or re-create the VM with cloud-init provisioning.")
@@ -331,7 +321,7 @@ func (h *Handler) ResetVMPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newPassword := generatePasswordString(8)
-	if err := h.lv.SetUserPassword(id, username, newPassword); err != nil {
+	if err := h.compute.SetUserPassword(id, username, newPassword); err != nil {
 		slog.Error("password_reset_failed", "vm_id", id, "user", username, "err", err)
 		jsonErr(w, http.StatusBadGateway, err.Error())
 		return
@@ -374,7 +364,7 @@ func generatePasswordString(length int) string {
 // credentials ever travel in URLs.
 func (h *Handler) VMConsoleTicket(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if _, err := h.lv.GetDomain(id); err != nil {
+	if _, err := h.compute.GetDomain(id); err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -392,7 +382,7 @@ func (h *Handler) VMConsoleTicket(w http.ResponseWriter, r *http.Request) {
 // single-use ticket). Same ownership gate as the /vnc route itself.
 func (h *Handler) VNCTicket(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if _, err := h.lv.GetDomain(id); err != nil {
+	if _, err := h.compute.GetDomain(id); err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
 	}

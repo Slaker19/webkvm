@@ -12,7 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"webkvm/internal/libvirt"
+	"webkvm/internal/compute"
 )
 
 // ifaceNameRe restricts the names we'll accept for new bridges and
@@ -27,11 +27,11 @@ func validIfaceName(name string) bool {
 
 // hostBridge describes a Linux bridge interface present on the host.
 type hostBridge struct {
-	Name       string   `json:"name"`
-	State      string   `json:"state"`
-	IP         string   `json:"ip,omitempty"`
-	Slaves     []string `json:"slaves"`
-	VLanAware  bool     `json:"vlan_aware"`
+	Name      string   `json:"name"`
+	State     string   `json:"state"`
+	IP        string   `json:"ip,omitempty"`
+	Slaves    []string `json:"slaves"`
+	VLanAware bool     `json:"vlan_aware"`
 	// Protected is true for the bridge that webVM's setup-bridge.sh
 	// auto-creates. The API refuses to delete it and the UI greys
 	// out the delete button — see IsManagedBridge in
@@ -61,7 +61,7 @@ func (h *Handler) ListHostBridges(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(name, "virbr") {
 			continue
 		}
-		br := hostBridge{Name: name, Protected: libvirt.IsManagedBridge(name)}
+		br := hostBridge{Name: name, Protected: compute.IsManagedBridge(name)}
 		if data, err := os.ReadFile(filepath.Join(base, "operstate")); err == nil {
 			br.State = strings.TrimSpace(string(data))
 		}
@@ -410,7 +410,7 @@ func (h *Handler) DeleteHostBridge(w http.ResponseWriter, r *http.Request) {
 	// stray UI click silently dropped the host's IP). Operators who
 	// really want it gone can do it on the host (ip link del br0)
 	// or re-run scripts/setup-bridge.sh with a different name.
-	if libvirt.IsManagedBridge(name) {
+	if compute.IsManagedBridge(name) {
 		jsonErr(w, http.StatusForbidden, fmt.Sprintf("bridge %q is managed by webVM and cannot be deleted via the API; tear it down on the host (ip link del %s) if you really want it gone", name, name))
 		return
 	}
@@ -423,7 +423,7 @@ func (h *Handler) DeleteHostBridge(w http.ResponseWriter, r *http.Request) {
 	// bridge. Otherwise deleting the bridge would silently break
 	// every VM attached to it, mid-flight.
 	if h.lv != nil {
-		nets, err := h.lv.ListNetworks()
+		nets, err := h.compute.ListNetworks()
 		if err == nil {
 			for _, n := range nets {
 				if n.Bridge == name {

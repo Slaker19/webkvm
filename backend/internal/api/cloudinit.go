@@ -28,11 +28,11 @@ func (h *Handler) applyCloudInit(vmID, vmName string, req *models.CloudInitReque
 	// Trim whitespace/newlines: a pasted SSH key often ends with a
 	// trailing newline, which would otherwise be rejected.
 	cfg := cloudinit.Config{
-		User:             strings.TrimSpace(req.User),
-		Password:         req.Password,
-		SSHKey:           strings.TrimSpace(req.SSHKey),
-		Hostname:         strings.TrimSpace(req.Hostname),
-		ProvisionScript:  req.ProvisionScript,
+		User:            strings.TrimSpace(req.User),
+		Password:        req.Password,
+		SSHKey:          strings.TrimSpace(req.SSHKey),
+		Hostname:        strings.TrimSpace(req.Hostname),
+		ProvisionScript: req.ProvisionScript,
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -50,7 +50,7 @@ func (h *Handler) applyCloudInit(vmID, vmName string, req *models.CloudInitReque
 		Bus:    "sata",
 		Source: isoPath,
 	}
-	if err := h.lv.AttachDisk(vmID, attach); err != nil {
+	if err := h.compute.AttachDisk(vmID, attach); err != nil {
 		_ = os.Remove(isoPath)
 		return err
 	}

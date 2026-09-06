@@ -170,10 +170,10 @@ func (h *Handler) ApplyHostFirewall(w http.ResponseWriter, r *http.Request) {
 		}))
 	}
 	jsonResp(w, http.StatusOK, map[string]any{
-		"status":       "pending_confirm",
-		"deadline":     deadline.Unix(),
-		"window_secs":  int(time.Until(deadline).Seconds()),
-		"previous":     prev,
+		"status":      "pending_confirm",
+		"deadline":    deadline.Unix(),
+		"window_secs": int(time.Until(deadline).Seconds()),
+		"previous":    prev,
 	})
 }
 
@@ -220,4 +220,75 @@ func (h *Handler) RollbackHostFirewall(w http.ResponseWriter, r *http.Request) {
 		}))
 	}
 	jsonResp(w, http.StatusOK, map[string]any{"status": "rolled_back", "firewall": fw})
+}
+
+// ExportHostFirewall (admin) returns the current CONFIRMED host
+// firewall as a portable JSON payload (the same shape Import consumes).
+// The frontend saves it as a .json file for backup/migration.
+func (h *Handler) ExportHostFirewall(w http.ResponseWriter, r *http.Request) {
+	if !h.fwHostReady() {
+		jsonErr(w, http.StatusServiceUnavailable, "firewall subsystem not initialized")
+		return
+	}
+	fw, ok := h.fwMgr.HostRules()
+	if !ok {
+		jsonErr(w, http.StatusServiceUnavailable, "host firewall store not initialized")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="webkvm-firewall.json"`)
+	jsonResp(w, http.StatusOK, fw)
+}
+
+// ImportHostFirewall (admin) applies an uploaded firewall JSON through
+// the EXACT same hardened chain as the manual editor (V13-D-03):
+// strict validation incl. anti-lockout, atomic nft -c + nft -f, and the
+// Safe-Apply protocol with a 30s confirm window / auto-rollback. The
+// body may be either a bare HostFirewall {"input":…,"forwards":…} or the
+// exported {"firewall":{…}} envelope.
+func (h *Handler) ImportHostFirewall(w http.ResponseWriter, r *http.Request) {
+	if !h.fwHostReady() {
+		jsonErr(w, http.StatusServiceUnavailable, "firewall subsystem not initialized")
+		return
+	}
+	// Max 1 MB — a firewall config is a handful of rules; anything bigger
+	// is not a legitimate import.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	var fw firewall.HostFirewall
+	if envelope, ok := raw["firewall"]; ok {
+		if err := json.Unmarshal(envelope, &fw); err != nil {
+			jsonErr(w, http.StatusBadRequest, "invalid firewall payload: "+err.Error())
+			return
+		}
+	} else {
+		data, _ := json.Marshal(raw)
+		if err := json.Unmarshal(data, &fw); err != nil {
+			jsonErr(w, http.StatusBadRequest, "invalid firewall payload: "+err.Error())
+			return
+		}
+	}
+	// StageHostApply = ValidateHostFirewall (anti-lockout) + atomic
+	// nft apply + Safe-Apply window. Exactly the editor's chain.
+	prev, deadline, err := h.fwMgr.StageHostApply(fw)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if h.audit != nil {
+		h.audit.Log(auditFor(r, "firewall.host.import", "webkvm", map[string]any{
+			"input_rules": len(fw.Input), "forward_rules": len(fw.Forwards),
+			"deadline": deadline.Unix(),
+		}))
+	}
+	jsonResp(w, http.StatusOK, map[string]any{
+		"status":      "pending_confirm",
+		"deadline":    deadline.Unix(),
+		"window_secs": int(time.Until(deadline).Seconds()),
+		"previous":    prev,
+	})
 }

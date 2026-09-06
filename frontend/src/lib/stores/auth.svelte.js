@@ -756,6 +756,12 @@ export const api = {
   setVMAlerterRules: (id, rules) =>
     request(`/vms/${id}/alerts`, { method: 'PUT', body: JSON.stringify({ rules }) }),
   listActiveAlerts: () => request('/alerts/active'),
+  // --- Tags + dashboard (V13-D-01 / V13-D-04) ---
+  listTags: () => request('/tags'),
+  hostMetrics: () => request('/host/metrics'),
+  importHostFirewall: (firewall) =>
+    request('/firewall/host/import', { method: 'POST', body: JSON.stringify(firewall) }),
+  exportHostFirewall: () => request('/firewall/host/export'),
   // restoreAsVM is the operator-friendly restore: it takes the
   // backup archive already on disk in the target's path and
   // creates a new VM in libvirt from it (no re-upload round-

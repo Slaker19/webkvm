@@ -822,6 +822,10 @@ func (r *Runner) resolveScope(tgt Target) ([]models.VM, error) {
 	for _, id := range tgt.VMIDs {
 		included[id] = struct{}{}
 	}
+	tagSet := make(map[string]struct{}, len(tgt.VMTags))
+	for _, tag := range tgt.VMTags {
+		tagSet[tag] = struct{}{}
+	}
 	var out []models.VM
 	switch filter {
 	case "all":
@@ -836,6 +840,17 @@ func (r *Runner) resolveScope(tgt Target) ([]models.VM, error) {
 		for _, vm := range all {
 			if _, drop := included[vm.ID]; !drop {
 				out = append(out, vm)
+			}
+		}
+	case "tags":
+		// V13-D-01: tag-based backup policy — any VM carrying one of the
+		// target's tags is in scope ("every VM tagged prod goes to S3").
+		for _, vm := range all {
+			for _, tag := range vm.Tags {
+				if _, ok := tagSet[tag]; ok {
+					out = append(out, vm)
+					break
+				}
 			}
 		}
 	default:

@@ -16,12 +16,12 @@ const requestIDHeader = "X-Request-ID"
 
 // requestLogger is middleware that:
 //
-//   1. Assigns a request_id (echoing X-Request-ID from the client if present).
-//   2. Builds a request-scoped logger with request_id, method, path, remote_ip.
-//   3. Stores the logger in the request context for handlers.
-//   4. Logs one structured line at the end with method, path, status,
-//      duration_ms, user (if auth ran), and request_id.
-//   5. Echoes the request_id back in the X-Request-ID response header.
+//  1. Assigns a request_id (echoing X-Request-ID from the client if present).
+//  2. Builds a request-scoped logger with request_id, method, path, remote_ip.
+//  3. Stores the logger in the request context for handlers.
+//  4. Logs one structured line at the end with method, path, status,
+//     duration_ms, user (if auth ran), and request_id.
+//  5. Echoes the request_id back in the X-Request-ID response header.
 func requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
