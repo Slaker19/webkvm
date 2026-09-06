@@ -80,7 +80,7 @@ func (s *Store) Load() error {
 		return err
 	}
 	var file struct {
-		Version int                     `json:"version"`
+		Version int                    `json:"version"`
 		VMs     map[string]*VMFirewall `json:"vms"`
 	}
 	if err := json.Unmarshal(data, &file); err != nil {

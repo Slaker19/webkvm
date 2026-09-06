@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 // HostPorts returns the essential host ports that must always be
@@ -24,9 +26,29 @@ type IPResolver func(vmID string) string
 // Manager builds and applies the nftables ruleset for every VM.
 type Manager struct {
 	store   *Store
+	host    *HostStore
 	resolve IPResolver
 	webPort int
 	logger  *slog.Logger
+
+	// applyMu serializes safe-apply state transitions (stage/confirm/
+	// rollback) so a per-VM Apply() can never race a pending host
+	// apply's rollback timer.
+	applyMu sync.Mutex
+	// pending holds a staged-but-unconfirmed host apply (V13-C-01
+	// Safe Apply): the new ruleset is live in the kernel, but the
+	// previous confirmed ruleset is kept so RollbackHostApply can
+	// restore it if the operator does not Confirm within the deadline.
+	pending       *pendingApply
+	rollbackAfter time.Duration
+}
+
+// pendingApply is the in-flight Safe-Apply transaction.
+type pendingApply struct {
+	prev     HostFirewall
+	next     HostFirewall
+	deadline time.Time
+	timer    *time.Timer
 }
 
 // NewManager wires the store, the IP resolver (usually
@@ -35,7 +57,29 @@ func NewManager(store *Store, resolve IPResolver, webPort int, logger *slog.Logg
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Manager{store: store, resolve: resolve, webPort: webPort, logger: logger}
+	return &Manager{
+		store:         store,
+		resolve:       resolve,
+		webPort:       webPort,
+		logger:        logger,
+		rollbackAfter: 30 * time.Second,
+	}
+}
+
+// SetHostStore attaches the host firewall store (V13-C-01). Safe to
+// call before the first Apply; nil keeps the previous behaviour.
+func (m *Manager) SetHostStore(hs *HostStore) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.host = hs
+}
+
+// RollbackDeadline sets the Safe-Apply confirmation window. Only used
+// by tests to exercise the rollback path without waiting 30 seconds.
+func (m *Manager) RollbackDeadline(d time.Duration) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.rollbackAfter = d
 }
 
 // Apply rebuilds and applies the whole ruleset. It returns a map of
@@ -71,11 +115,24 @@ func (m *Manager) Apply() (map[string]int, error) {
 	return pending, nil
 }
 
-// BuildRuleset renders the nftables ruleset text for all VMs. Empty
-// string means "no rules".
+// BuildRuleset renders the nftables ruleset text for all VMs plus the
+// host firewall. Empty string means "no rules".
 func (m *Manager) BuildRuleset() string {
-	all := m.store.All()
-	if len(all) == 0 {
+	var host HostFirewall
+	if m.host != nil {
+		host = m.host.Get()
+	}
+	if m.pending != nil {
+		host = m.pending.next
+	}
+	return m.buildRulesetWith(host, m.store.All())
+}
+
+// buildRulesetWith renders the complete ruleset for a given host
+// firewall and VM set. Split from BuildRuleset so Safe-Apply can render
+// the NEXT ruleset before it is persisted.
+func (m *Manager) buildRulesetWith(host HostFirewall, all []VMFirewall) string {
+	if len(all) == 0 && host.IsEmpty() {
 		return ""
 	}
 
@@ -87,7 +144,8 @@ func (m *Manager) BuildRuleset() string {
 	// time the table doesn't exist yet.
 	b.WriteString("table ip webkvm {\n")
 
-	// Input chain: policy accept, safety rails first, then rules.
+	// Input chain: policy accept, safety rails first (anti-lockout,
+	// non-deletable), then per-VM rules, then host input rules.
 	b.WriteString("\tchain input {\n")
 	b.WriteString("\t\ttype filter hook input priority filter; policy accept;\n")
 	for _, p := range HostPorts(m.webPort) {
@@ -102,22 +160,53 @@ func (m *Manager) BuildRuleset() string {
 				continue
 			}
 			for _, p := range protoList(r.Proto) {
-				fmt.Fprintf(&b, "\t\t%s dport %d %s\n", p, r.Port, r.Action)
+				fmt.Fprintf(&b, "\t\t%s dport %d %s\n", p, r.Port, nftVerdict(r.Action))
 			}
+		}
+	}
+	for _, r := range host.Input {
+		if !validProto(r.Proto) || r.Port < 1 || r.Port > 65535 {
+			continue
+		}
+		if r.Action != "allow" && r.Action != "drop" {
+			continue
+		}
+		prefix := ""
+		if r.Src != "" {
+			prefix = "ip saddr " + r.Src + " "
+		}
+		for _, p := range protoList(r.Proto) {
+			fmt.Fprintf(&b, "\t\t%s%s dport %d %s\n", prefix, p, r.Port, nftVerdict(r.Action))
 		}
 	}
 	b.WriteString("\t}\n")
 
-	// Prerouting chain: DNAT port forwards.
-	hasForward := false
-	// targets collects the resolved guest IPs so the postrouting
-	// masquerade chain (built below) rewrites return traffic for
-	// every successfully-forwarded VM. It is populated here — in the
-	// same loop where we validate and resolve each forward — because
-	// the Applied flag we set on the local copy is discarded; a second
-	// pass over the (unmodified) store would see Applied==false and
-	// silently drop masquerade on the very first apply.
+	// Prerouting chain: DNAT port forwards (host forwards first, then
+	// per-VM forwards). targets collects every resolved guest IP so the
+	// postrouting masquerade chain rewrites return traffic for all of
+	// them.
 	var targets []string
+	hasForward := false
+	emitForward := func(line string) {
+		if !hasForward {
+			b.WriteString("\tchain prerouting {\n")
+			b.WriteString("\t\ttype nat hook prerouting priority dstnat; policy accept;\n")
+			hasForward = true
+		}
+		b.WriteString(line)
+	}
+	for _, f := range host.Forwards {
+		if !validProto(f.Proto) || f.HostPort < 1 || f.HostPort > 65535 || f.GuestPort < 1 || f.GuestPort > 65535 {
+			continue
+		}
+		if net.ParseIP(f.GuestIP) == nil {
+			continue
+		}
+		targets = append(targets, f.GuestIP)
+		for _, p := range protoList(f.Proto) {
+			emitForward(fmt.Sprintf("\t\t%s dport %d dnat to %s:%d\n", p, f.HostPort, f.GuestIP, f.GuestPort))
+		}
+	}
 	for _, fw := range all {
 		for i := range fw.Forwards {
 			f := &fw.Forwards[i]
@@ -136,20 +225,15 @@ func (m *Manager) BuildRuleset() string {
 			}
 			f.Applied = true
 			targets = append(targets, ip)
-			if !hasForward {
-				b.WriteString("\tchain prerouting {\n")
-				b.WriteString("\t\ttype nat hook prerouting priority dstnat; policy accept;\n")
-				hasForward = true
-			}
 			for _, p := range protoList(f.Proto) {
-				fmt.Fprintf(&b, "\t\t%s dport %d dnat to %s:%d\n", p, f.HostPort, ip, f.GuestPort)
+				emitForward(fmt.Sprintf("\t\t%s dport %d dnat to %s:%d\n", p, f.HostPort, ip, f.GuestPort))
 			}
 		}
 	}
 	if hasForward {
 		b.WriteString("\t}\n")
 
-		// Postrouting: masquerade replies only toward forwarded VMs.
+		// Postrouting: masquerade replies only toward forwarded targets.
 		if len(targets) > 0 {
 			b.WriteString("\tchain postrouting {\n")
 			b.WriteString("\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
@@ -218,4 +302,165 @@ func protoList(p string) []string {
 		return []string{"tcp", "udp"}
 	}
 	return nil
+}
+
+// nftVerdict translates webkvm's rule actions into nftables verdicts.
+// The UI (and the persisted store) use "allow"/"drop"; nftables only
+// knows "accept"/"drop". Emitting "allow" is a syntax error that would
+// abort the whole nft -f transaction — always translate.
+func nftVerdict(action string) string {
+	if action == "allow" {
+		return "accept"
+	}
+	return action
+}
+
+// --- Safe Apply (V13-C-01) ---
+//
+// The Safe-Apply protocol protects the administrator from locking
+// themselves out (or breaking the host's networking) with a bad
+// ruleset:
+//
+//  1. StageHostApply validates the new rules, renders the complete
+//     ruleset (host + per-VM) and applies it ATOMICALLY via nft -f
+//     (a single transaction; a syntax error aborts before anything
+//     changes). The new rules are live in the kernel immediately.
+//  2. A timer starts (default 30s). If the operator does not call
+//     ConfirmHostApply before the deadline — e.g. they applied a rule
+//     that cut their own SSH/UI connection — the timer fires and
+//     RollbackHostApply restores the previous confirmed ruleset
+//     automatically.
+//  3. ConfirmHostApply persists the staged rules to the host store and
+//     cancels the timer, making them the new baseline.
+//
+// Only one Safe-Apply can be in flight at a time; per-VM Apply() calls
+// (from the VmDetail page) never disturb a pending host apply.
+
+// StageHostApply validates and applies `next`, keeping `prev` for
+// rollback. It returns the previous ruleset and the confirm deadline.
+func (m *Manager) StageHostApply(next HostFirewall) (prev HostFirewall, deadline time.Time, err error) {
+	if err := ValidateHostFirewall(next, m.webPort); err != nil {
+		return prev, deadline, err
+	}
+	if m.host == nil {
+		return prev, deadline, errors.New("host firewall store not attached")
+	}
+
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+
+	if m.pending != nil {
+		return prev, deadline, errors.New("a firewall apply is already pending confirmation; confirm or roll it back first")
+	}
+
+	prev = m.host.Get()
+	ruleset := m.buildRulesetWith(next, m.store.All())
+	if ruleset == "" {
+		if err := m.flushTable(); err != nil {
+			return prev, deadline, err
+		}
+	} else if err := m.applyRuleset(ruleset); err != nil {
+		return prev, deadline, err
+	}
+
+	m.pending = &pendingApply{prev: prev, next: next}
+	m.pending.deadline = time.Now().Add(m.rollbackAfter)
+	m.logger.Info("firewall_safe_apply_staged", "deadline_seconds", m.rollbackAfter.Seconds(),
+		"input_rules", len(next.Input), "forward_rules", len(next.Forwards))
+
+	// Rollback timer: fire once if Confirm never arrives.
+	m.pending.timer = time.AfterFunc(m.rollbackAfter, func() {
+		rolled, rerr := m.RollbackHostApply()
+		if rerr != nil {
+			m.logger.Error("firewall_safe_apply_auto_rollback_failed", "err", rerr)
+			return
+		}
+		if rolled {
+			m.logger.Warn("firewall_safe_apply_timeout_rolled_back",
+				"msg", "the firewall changes were not confirmed within the deadline; the previous ruleset has been restored")
+		}
+	})
+
+	return prev, m.pending.deadline, nil
+}
+
+// ConfirmHostApply persists the staged rules as the new baseline and
+// cancels the rollback timer.
+func (m *Manager) ConfirmHostApply() error {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	if m.pending == nil {
+		return ErrNoPendingApply
+	}
+	next := m.pending.next
+	if m.pending.timer != nil {
+		m.pending.timer.Stop()
+	}
+	m.pending = nil
+	if err := m.host.Set(next); err != nil {
+		// Persist failed: the kernel still has the staged rules but
+		// the disk baseline is stale. Log loudly; the next Apply will
+		// rewrite from the store, so this is a disk problem, not a
+		// network one.
+		m.logger.Error("firewall_confirm_persist_failed", "err", err)
+		return err
+	}
+	m.logger.Info("firewall_safe_apply_confirmed", "input_rules", len(next.Input), "forward_rules", len(next.Forwards))
+	return nil
+}
+
+// RollbackHostApply restores the previous confirmed ruleset and clears
+// the pending state. Returns whether there was anything to roll back.
+func (m *Manager) RollbackHostApply() (bool, error) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	if m.pending == nil {
+		return false, nil
+	}
+	if m.pending.timer != nil {
+		m.pending.timer.Stop()
+	}
+	prev := m.pending.prev
+	m.pending = nil
+	ruleset := m.buildRulesetWith(prev, m.store.All())
+	if ruleset == "" {
+		if err := m.flushTable(); err != nil {
+			return true, err
+		}
+	} else if err := m.applyRuleset(ruleset); err != nil {
+		return true, err
+	}
+	m.logger.Info("firewall_safe_apply_rolled_back", "input_rules", len(prev.Input), "forward_rules", len(prev.Forwards))
+	return true, nil
+}
+
+// PendingApply returns the in-flight Safe-Apply (if any) and its
+// deadline, so the API can tell the UI a confirmation is awaited.
+func (m *Manager) PendingApply() (HostFirewall, time.Time, bool) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	if m.pending == nil {
+		return HostFirewall{}, time.Time{}, false
+	}
+	return m.pending.next, m.pending.deadline, true
+}
+
+// HostRules returns the CONFIRMED host firewall and whether a host
+// store is attached. The API GET endpoint uses it.
+func (m *Manager) HostRules() (HostFirewall, bool) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	if m.host == nil {
+		return HostFirewall{}, false
+	}
+	return m.host.Get(), true
+}
+
+// RenderRuleset renders the nftables text for a candidate host
+// firewall WITHOUT applying anything (preview for the editor).
+func (m *Manager) RenderRuleset(host HostFirewall) (string, error) {
+	if err := ValidateHostFirewall(host, m.webPort); err != nil {
+		return "", err
+	}
+	return m.buildRulesetWith(host, m.store.All()), nil
 }

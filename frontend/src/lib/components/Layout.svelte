@@ -50,6 +50,7 @@
     nodes: () => t('nodes.title'),
     snapshots: () => t('snapshots.title'),
     backup: () => t('backup.title'),
+    firewall: () => t('firewall.title'),
     settings: () => t('settings.title'),
     status: () => t('status.title'),
     account: () => t('account.title'),

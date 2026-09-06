@@ -1,5 +1,57 @@
 # FIXES — Correcciones aplicadas (2026-09-05)
 
+## Sprint C (v1.3) — V13-C-01/C-02: Editor de Firewall (host) con Safe Apply y templates (2026-09-06)
+
+- **`firewall/host.go` (nuevo)** — firewall a nivel de HOST:
+  - `HostInputRule` (proto/port/src/action) para el tráfico hacia el host y
+    `HostForwardRule` (DNAT host:port → guest IP:port) para tráfico hacia VMs.
+  - `HostStore` persiste el ruleset CONFIRMADO en `firewall-host.json` (0600).
+  - `ValidateHostFirewall` + **anti-lockout (crítico)**: se rechazan las reglas
+    `drop` sobre puertos de gestión (`ProtectedPorts` = 22, puerto UI, 5900-5903);
+    además la cadena input mantiene `policy accept` y **rails ACCEPT implícitos y
+    no borrables** ANTES de cualquier regla. Doble línea de defensa: imposible
+    bloquearse el acceso a la propia herramienta.
+- **`firewall/nft.go`**:
+  - `BuildRuleset` (refactor → `buildRulesetWith`) incorpora reglas host: rails +
+    reglas por-VM + reglas input del host en la cadena `input`; forwards del host +
+    por-VM en `prerouting`; masquerade agregada por IP destino.
+  - **Aplicación atómica**: `nft -c` (check) + `nft -f` sobre archivo temporal;
+    un error de sintaxis aborta toda la transacción sin tocar nada (ya era así).
+  - **Fix de bug real preexistente**: `allow` no es veredicto válido de nft
+    (`nftVerdict` traduce `allow`→`accept`). Las reglas "allow" de antes habrían
+    fallado el `nft -c` en producción. Ahora se emiten como `accept`.
+  - **Safe Apply (V13-C-01)**: `StageHostApply` (valida → aplica → inicia ventana
+    de 30s + timer de rollback), `ConfirmHostApply` (persiste + cancela timer),
+    `RollbackHostApply` (restaura el ruleset anterior). Solo una aplicación en
+    vuelo (single-flight); un `Apply()` por-VM no interfiere con el estado.
+- **API** (`/api/firewall/host`, admin): `GET /` (rules + protected_ports +
+  pending), `POST /preview` (render nft sin tocar nada), `POST /apply`
+  (`pending_confirm` + deadline), `POST /confirm`, `POST /rollback`. Audit para
+  apply/confirm/rollback. `main.go`: `NewHostStore` + `SetHostStore` + apply al
+  arranque (sobrevive reinicios).
+- **Frontend `Firewall.svelte` (nuevo)**:
+  - Secciones **claramente separadas**: "Forward (VM traffic)" y "Input (traffic
+    to this host)", cada una con tabla (proto/port/src/action o host/guest),
+    añadir/eliminar/reordenar (up/down).
+  - **Rails de gestión bloqueados**: franja "Always open (management ports)" con
+    candado, no editable.
+  - **Safe Apply UI**: barra con countdown (30s) y botones Confirm/Rollback; si el
+    deadline expira sin confirmar, recarga mostrando el ruleset restaurado.
+  - **Templates (C-02)**: presets web-server / ssh-gateway / media (util puro
+    `firewallTemplates.js` + vitest), botón "Preview rules" con el nft exacto.
+  - Ruta `/firewall` (admin) + nav + `nav.firewall` + bloque `firewall` i18n
+    **+50 claves ×3 idiomas (1279 cada uno, check-i18n OK)**.
+- **Tests** (`host_test.go`, `-race`): anti-lockout (drop en puertos protegidos
+  rechazado, allow permitido), malformed reject, ruleset host (src ip saddr +
+  dnat + masquerade + rails primero), Safe Apply confirm persiste / **timeout
+  150ms auto-rollback** / single-flight / sin pending, `HostStore` 0600 + reload.
+  Frontend: vitest `firewallTemplates` (templates, moveRule, ids únicos) → 14/14.
+- **Gate real en la VM (v1.3.0-c02)**: GET protected_ports ✓ · preview (allow→
+  accept, dnat) ✓ · apply→pending ✓ · confirm persiste y regla en el kernel
+  (`nft list` muestra `dport 8443 accept`) ✓ · **drop en :22 → 400 anti-lockout** ✓
+  · rollback manual restaura [8443] ✓ · **auto-rollback tras 30s sin confirmar** ✓
+  · cleanup a ruleset vacío (tabla eliminada) ✓.
+
 ## Sprint B (v1.3) — V13-BCK-06: API & Frontend (formulario S3, retention UI, verifyOnWrite, fingerprints, secretos preservados) (2026-09-06)
 
 - **API `backup.go`**:

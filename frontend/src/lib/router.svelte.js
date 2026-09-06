@@ -44,6 +44,7 @@ const ROUTES = [
   { pattern: 'storage', name: 'storage' },
   { pattern: 'networks', name: 'networks' },
   { pattern: 'backup', name: 'backup', roles: ['admin'] },
+  { pattern: 'firewall', name: 'firewall', roles: ['admin'] },
   { pattern: 'users', name: 'users', roles: ['admin'] },
   { pattern: 'nodes', name: 'nodes', roles: ['admin'] },
   { pattern: 'snapshots', name: 'snapshots' },

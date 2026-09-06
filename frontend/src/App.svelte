@@ -35,6 +35,7 @@
     nodes: () => import('./routes/Nodes.svelte'),
     snapshots: () => import('./routes/Snapshots.svelte'),
     backup: () => import('./routes/Backup.svelte'),
+    firewall: () => import('./routes/Firewall.svelte'),
     status: () => import('./routes/Status.svelte'),
     'host-console': () => import('./routes/HostConsole.svelte'),
     settings: () => import('./routes/Settings.svelte'),

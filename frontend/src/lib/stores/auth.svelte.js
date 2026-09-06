@@ -742,6 +742,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ run }),
     }),
+  // --- Host firewall (V13-C-01 / V13-C-02) ---
+  getHostFirewall: () => request('/firewall/host'),
+  previewHostFirewall: (firewall) =>
+    request('/firewall/host/preview', { method: 'POST', body: JSON.stringify({ firewall }) }),
+  applyHostFirewall: (firewall) =>
+    request('/firewall/host/apply', { method: 'POST', body: JSON.stringify({ firewall }) }),
+  confirmHostFirewall: () => request('/firewall/host/confirm', { method: 'POST' }),
+  rollbackHostFirewall: () => request('/firewall/host/rollback', { method: 'POST' }),
   // restoreAsVM is the operator-friendly restore: it takes the
   // backup archive already on disk in the target's path and
   // creates a new VM in libvirt from it (no re-upload round-

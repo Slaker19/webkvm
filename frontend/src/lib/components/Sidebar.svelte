@@ -96,6 +96,13 @@
           roles: ['admin'],
         },
         {
+          id: 'firewall',
+          path: '/firewall',
+          labelKey: 'nav.firewall',
+          icon: 'shield',
+          roles: ['admin'],
+        },
+        {
           id: 'settings',
           path: '/settings',
           labelKey: 'nav.settings',

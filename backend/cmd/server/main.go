@@ -455,6 +455,14 @@ func main() {
 		ipResolver = lv.GetDomainIP
 	}
 	fwMgr := firewall.NewManager(fwStore, ipResolver, cfg.Port, logger)
+	// V13-C-01: host firewall store + Safe Apply. The confirmed host
+	// ruleset is loaded and applied at startup so it survives restarts
+	// and never drifts.
+	fwHostStore := firewall.NewHostStore(cfg.DataDir)
+	if ferr := fwHostStore.Load(); ferr != nil {
+		logger.Warn("firewall_host_load_failed", "err", ferr)
+	}
+	fwMgr.SetHostStore(fwHostStore)
 	if _, ferr := fwMgr.Apply(); ferr != nil {
 		logger.Warn("firewall_apply_failed", "err", ferr)
 	} else {

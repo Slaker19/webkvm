@@ -470,6 +470,16 @@ func NewRouter(
 		})
 	})
 	r.Get("/api/backup/jobs", h.ListBackupJobs)
+	r.Route("/api/firewall/host", func(r chi.Router) {
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireRole(modelsRoleAdmin()))
+			r.Get("/", h.GetHostFirewall)
+			r.Post("/preview", h.PreviewHostFirewall)
+			r.Post("/apply", h.ApplyHostFirewall)
+			r.Post("/confirm", h.ConfirmHostFirewall)
+			r.Post("/rollback", h.RollbackHostFirewall)
+		})
+	})
 
 	return r
 }
