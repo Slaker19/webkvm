@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from 'svelte';
   import { fly } from 'svelte/transition';
   import { auth, api } from './lib/stores/auth.svelte.js';
   import { getRoute, navigate } from './lib/router.svelte.js';
@@ -83,9 +84,16 @@
       .catch((err) => (loadError = err));
   }
 
+  // V13-SEC-01: the session is a cookie, so on load we re-validate it
+  // via /auth/me (the cookie rides along). Until that returns, the app
+  // shows a bootstrap spinner instead of flashing the login page.
+  onMount(() => {
+    auth.bootstrap();
+  });
+
   // Manage SSE connection lifecycle based on auth state
   $effect(() => {
-    if (auth.token) {
+    if (auth.isLoggedIn) {
       events.connect();
     } else {
       events.disconnect();
@@ -96,7 +104,7 @@
   // must_change_password=true. The Account page is the only place
   // that can clear the flag.
   $effect(() => {
-    if (auth.token && auth.mustChangePassword) {
+    if (auth.isLoggedIn && auth.mustChangePassword) {
       if (route.name !== 'account') {
         navigate('/account');
       }
@@ -106,25 +114,25 @@
   // RBAC: if the matched route declares a `roles` list and the
   // current role isn't in it, render AccessDenied.
   const access = $derived.by(() => {
-    if (!auth.token) return { allowed: true };
+    if (!auth.isLoggedIn) return { allowed: true };
     if (!route.roles) return { allowed: true };
     if (route.roles.includes(auth.role || '')) return { allowed: true };
     return { allowed: false, reason: `Requires role: ${route.roles.join(' or ')}` };
   });
 
-  // On token rotation, re-validate the cached user/role by calling
+  // On session changes, re-validate the cached user/role by calling
   // /auth/me so a freshly-demoted user doesn't keep stale perms.
   $effect(() => {
-    if (auth.token) {
+    if (auth.isLoggedIn) {
       api
         .me()
         .then((u) => {
           if (u.username !== auth.user || u.role !== auth.role) {
-            auth.setToken(auth.token, u.username, u.role, u.must_change_password);
+            auth.setSession(u.username, u.role, u.must_change_password);
           }
         })
         .catch(() => {
-          /* 401 etc — auth.logout() already handled */
+          /* 401 etc — auth.onUnauthorized() already handled */
         });
     }
   });
@@ -132,7 +140,11 @@
 
 <Toaster />
 
-{#if !auth.token}
+{#if auth.status === 'checking'}
+  <div class="flex items-center justify-center min-h-screen bg-background">
+    <Spinner size="lg" />
+  </div>
+{:else if !auth.isLoggedIn}
   <Login />
 {:else if !access.allowed}
   <Layout>

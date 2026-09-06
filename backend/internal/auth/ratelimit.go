@@ -91,11 +91,11 @@ func NewLoginRateLimiterWithEnv(envValue string) *LoginRateLimiter {
 	}
 	trusted := parseTrustedCIDRs(envValue)
 	return &LoginRateLimiter{
-		failures: make(map[string]*rlBucket),
-		limit:    5,
-		window:   15 * time.Minute,
-		lockout:  15 * time.Minute,
-		trusted:  trusted,
+		failures:  make(map[string]*rlBucket),
+		limit:     5,
+		window:    15 * time.Minute,
+		lockout:   15 * time.Minute,
+		trusted:   trusted,
 		skipCheck: nil, // see isTrusted
 	}
 }
@@ -138,19 +138,26 @@ func peerIP(r *http.Request) net.IP {
 // IP via X-Forwarded-For: loopback, an env-configured CIDR, or a live
 // server.trusted_cidrs entry.
 func (l *LoginRateLimiter) isTrustedProxyPeer(ip net.IP) bool {
+	return isTrustedPeer(ip, l.trusted, l.settings)
+}
+
+// isTrustedPeer is the shared, settings-aware CIDR check used by both
+// rate limiters: loopback is always trusted, then any env-configured
+// CIDR, then the live server.trusted_cidrs entries from the store.
+func isTrustedPeer(ip net.IP, trusted []*net.IPNet, settings TrustedCIDRProvider) bool {
 	if ip == nil {
 		return false
 	}
 	if ip.IsLoopback() {
 		return true
 	}
-	for _, n := range l.trusted {
+	for _, n := range trusted {
 		if n.Contains(ip) {
 			return true
 		}
 	}
-	if l.settings != nil {
-		for _, cidr := range l.settings.GetList("server.trusted_cidrs") {
+	if settings != nil {
+		for _, cidr := range settings.GetList("server.trusted_cidrs") {
 			if _, n, err := net.ParseCIDR(strings.TrimSpace(cidr)); err == nil && n.Contains(ip) {
 				return true
 			}
@@ -172,9 +179,23 @@ func (l *LoginRateLimiter) isTrustedProxyPeer(ip net.IP) bool {
 // never consulted here at all, so server.trust_proxy had no effect on
 // the rate limiter no matter how an operator configured it.
 func (l *LoginRateLimiter) clientIP(r *http.Request) net.IP {
+	return clientIPOf(r, l.trusted, l.settings)
+}
+
+// clientIPOf resolves the request's real client IP. X-Forwarded-For is
+// honored ONLY when server.trust_proxy is live-enabled in settings AND
+// the immediate TCP peer is itself a trusted proxy source — i.e. only
+// when the request actually arrived via a proxy we trust to set that
+// header honestly. Without the peer check, ANY request landing on a
+// process whose immediate peer happens to be loopback (the case for
+// every request when a local reverse proxy fronts the backend, a
+// topology this project documents and ships packaging for) would
+// resolve to "loopback" and bypass the limiter for 100% of traffic
+// regardless of the real client.
+func clientIPOf(r *http.Request, trusted []*net.IPNet, settings TrustedCIDRProvider) net.IP {
 	peer := peerIP(r)
-	trustProxy := l.settings != nil && l.settings.GetBool("server.trust_proxy")
-	if trustProxy && l.isTrustedProxyPeer(peer) {
+	trustProxy := settings != nil && settings.GetBool("server.trust_proxy")
+	if trustProxy && isTrustedPeer(peer, trusted, settings) {
 		if v := r.Header.Get("X-Forwarded-For"); v != "" {
 			first := v
 			if i := strings.Index(v, ","); i >= 0 {

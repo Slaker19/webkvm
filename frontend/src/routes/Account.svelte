@@ -154,7 +154,7 @@
   }
 
   $effect(() => {
-    if (auth.token) load();
+    if (auth.isLoggedIn) load();
   });
 </script>
 

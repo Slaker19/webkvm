@@ -34,6 +34,10 @@ type Manager struct {
 	// validation fails. It returns (username, role, error) and is
 	// implemented by the API-tokens store (see internal/tokens).
 	tokenValidator TokenValidator
+	// secureCookies (V13-SEC-01) controls the Secure flag on the
+	// session/CSRF cookies. Default false for zero-value safety; main.go
+	// sets it from config (default true).
+	secureCookies bool
 }
 
 // TokenValidator checks a raw token string and returns the
@@ -46,6 +50,14 @@ type TokenValidator func(token string) (username, role string, err error)
 func (m *Manager) SetTokenValidator(v TokenValidator) {
 	m.tokenValidator = v
 }
+
+// SetSecureCookies sets the Secure flag used when writing session/CSRF
+// cookies (V13-SEC-01). Call from main with config.SecureCookies.
+func (m *Manager) SetSecureCookies(secure bool) { m.secureCookies = secure }
+
+// SecureCookies reports whether session/CSRF cookies carry the Secure
+// flag (V13-SEC-01).
+func (m *Manager) SecureCookies() bool { return m.secureCookies }
 
 type Claims struct {
 	Username           string `json:"username"`
@@ -304,10 +316,20 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		}
 
 		tokenStr := ""
+		viaCookie := false
 		if authHeader := r.Header.Get("Authorization"); authHeader != "" {
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
 				tokenStr = parts[1]
+			}
+		}
+		if tokenStr == "" {
+			// V13-SEC-01: the SPA session authenticates via an HttpOnly
+			// cookie. API tokens still arrive as Bearer (scripting);
+			// they are never accepted as a cookie.
+			if session := SessionToken(r); session != "" {
+				tokenStr = session
+				viaCookie = true
 			}
 		}
 		if tokenStr == "" && consolePath {
@@ -346,6 +368,20 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 
 		r.Header.Set("X-User", claims.Username)
 		r.Header.Set("X-Role", claims.Role)
+		// V13-SEC-01 CSRF: a session authenticated via cookie must prove it
+		// initiated state-changing requests by echoing the CSRF cookie back
+		// as X-CSRF-Token (double-submit). SameSite=Lax already blocks the
+		// cookie on cross-site POSTs; this is the belt-and-braces layer for
+		// every mutating /api route. Login is exempt (it creates the
+		// session); Bearer-authenticated requests (API tokens) are exempt
+		// because a cookie-based CSRF attack cannot forge a Bearer header.
+		if viaCookie && IsUnsafeMethod(r.Method) &&
+			strings.HasPrefix(path, "/api/") && path != "/api/auth/login" {
+			if !CSRFValid(r.Header.Get("X-CSRF-Token"), CSRFValue(r)) {
+				http.Error(w, `{"error":"invalid csrf token"}`, http.StatusForbidden)
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
 }

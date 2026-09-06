@@ -54,6 +54,14 @@ type Config struct {
 	// to restrict CORS. Defaults to "*" (all origins) for LAN
 	// compatibility. Override with CORS_ORIGIN env var.
 	CORSOrigin string
+
+	// SecureCookies (V13-SEC-01) marks the session/CSRF cookies with the
+	// Secure flag. Defaults true — the right choice for every HTTPS
+	// deployment (native TLS or behind a TLS proxy). Operators running
+	// plain HTTP on a trusted LAN (no TLS at all) can set
+	// WEBKVM_COOKIE_SECURE=0 or the browsers will refuse to store the
+	// session cookie.
+	SecureCookies bool
 }
 
 // Load assembles the config from environment variables. For the JWT
@@ -110,6 +118,7 @@ func Load() (*Config, error) {
 		PublicHost:   envStrFrom("PUBLIC_HOST", "", dotenv),
 		CORSOrigin:   envStrFrom("CORS_ORIGIN", "*", dotenv),
 		LogFile:      envStrFrom("WEBKVM_LOG_FILE", "", dotenv),
+		SecureCookies: envBoolFrom("WEBKVM_COOKIE_SECURE", true, dotenv),
 	}, nil
 }
 
@@ -290,6 +299,32 @@ func envIntFrom(key string, fallback int, dotenv map[string]string) int {
 	if v, ok := dotenv[key]; ok {
 		if i, err := strconv.Atoi(v); err == nil {
 			return i
+		}
+	}
+	return fallback
+}
+
+// envBoolFrom parses a boolean env var (.env-aware): "1", "true", "yes"
+// and "on" are true; anything else is false. Falls back to dotenv then
+// the default.
+func envBoolFrom(key string, fallback bool, dotenv map[string]string) bool {
+	parse := func(s string) (bool, bool) {
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "1", "true", "yes", "on":
+			return true, true
+		case "0", "false", "no", "off":
+			return false, true
+		}
+		return false, false
+	}
+	if v := os.Getenv(key); v != "" {
+		if b, ok := parse(v); ok {
+			return b
+		}
+	}
+	if v, ok := dotenv[key]; ok {
+		if b, ok2 := parse(v); ok2 {
+			return b
 		}
 	}
 	return fallback

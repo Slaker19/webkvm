@@ -53,13 +53,31 @@
   let newTargetUsername = $state('');
   let newTargetPassword = $state('');
   let newTargetSSHKeyPath = $state('');
+  // S3 (TargetS3, V13-BCK-06)
+  let newTargetEndpoint = $state('');
+  let newTargetBucket = $state('');
+  let newTargetRegion = $state('');
+  let newTargetAccessKey = $state('');
+  let newTargetSecretKey = $state('');
+  // SFTP strict host-key allowlist (V13-BCK-05): one fingerprint per
+  // line, e.g. "ssh-ed25519 SHA256:ABC…".
+  let newTargetKnownHosts = $state('');
+  // Per-target verify-on-write (V13-BCK-04): after a successful
+  // upload, re-read the archive and checksum it; on mismatch the job
+  // fails and the corrupt remote copy is purged.
+  let newTargetVerifyOnWrite = $state(false);
   let newTargetVMFilter = $state('all');
   let newTargetVMIDs = $state([]);
   let newTargetEnabled = $state(true);
   // Retention: 0 = keep everything. newTargetRetentionKeepLast / KeepDays
-  // are the "Conservar últimas N / N días" values (0 = unlimited).
+  // are the "Conservar últimas N / N días" values (0 = unlimited). The
+  // keep-daily/weekly/monthly tiers (V13-BCK-03) keep the N newest runs
+  // per UTC day / ISO week / calendar month.
   let newTargetRetentionKeepLast = $state(0);
   let newTargetRetentionKeepDays = $state(0);
+  let newTargetRetentionKeepDaily = $state(0);
+  let newTargetRetentionKeepWeekly = $state(0);
+  let newTargetRetentionKeepMonthly = $state(0);
   let testing = $state(false);
   let testResult = $state(null); // {ok, message} | null
   // editSaving is true while a create/update request is in flight;
@@ -246,6 +264,9 @@
       retention: {
         keep_last: newTargetRetentionKeepLast || 0,
         keep_days: newTargetRetentionKeepDays || 0,
+        keep_daily: newTargetRetentionKeepDaily || 0,
+        keep_weekly: newTargetRetentionKeepWeekly || 0,
+        keep_monthly: newTargetRetentionKeepMonthly || 0,
       },
     };
     if (newTargetType === 'sftp') {
@@ -254,13 +275,28 @@
       body.username = newTargetUsername.trim();
       if (newTargetPassword) body.password = newTargetPassword;
       if (newTargetSSHKeyPath.trim()) body.ssh_key_path = newTargetSSHKeyPath.trim();
+      const known = newTargetKnownHosts
+        .split(/[\n,;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (known.length) body.known_hosts = known;
+      body.verify_on_write = newTargetVerifyOnWrite;
+    } else if (newTargetType === 's3') {
+      // Path is the optional object-key prefix.
+      body.endpoint = newTargetEndpoint.trim();
+      body.bucket = newTargetBucket.trim();
+      body.region = newTargetRegion.trim();
+      if (newTargetAccessKey.trim()) body.access_key = newTargetAccessKey.trim();
+      if (newTargetSecretKey.trim()) body.secret_key = newTargetSecretKey.trim();
+      body.verify_on_write = newTargetVerifyOnWrite;
     }
     return body;
   }
 
   async function testTarget() {
     const body = buildTargetBody();
-    if (!body.path) {
+    // S3 targets treat the path as an optional object-key prefix.
+    if (!body.path && body.type !== 's3') {
       toast.error(t('backup.pathRequired'));
       return;
     }
@@ -288,8 +324,15 @@
   // addTarget handles both the Add and the Edit submit. The mode
   // is dictated by editingTarget: null = add, otherwise = update.
   async function addTarget() {
-    if (!newTargetName.trim() || !newTargetPath.trim()) {
+    // S3 targets treat the path as an optional object-key prefix, so
+    // only name is mandatory for them.
+    const s3 = newTargetType === 's3';
+    if (!newTargetName.trim() || (!s3 && !newTargetPath.trim())) {
       toast.error(t('backup.namePathRequired'));
+      return;
+    }
+    if (s3 && (!newTargetBucket.trim() || (!newTargetEndpoint.trim() && !newTargetRegion.trim()))) {
+      toast.error(t('backup.s3BucketRegionRequired'));
       return;
     }
     if (newTargetVMFilter === 'include' && newTargetVMIDs.length === 0) {
@@ -337,13 +380,27 @@
     newTargetHost = target.host || '';
     newTargetPort = target.port || 22;
     newTargetUsername = target.username || '';
+    // Secrets never come back from the API — leave blank so the
+    // backend keeps the stored value (V13-BCK-06).
     newTargetPassword = '';
     newTargetSSHKeyPath = '';
+    newTargetEndpoint = target.endpoint || '';
+    newTargetBucket = target.bucket || '';
+    newTargetRegion = target.region || '';
+    newTargetAccessKey = '';
+    newTargetSecretKey = '';
+    newTargetKnownHosts = Array.isArray(target.known_hosts)
+      ? target.known_hosts.join('\n')
+      : target.known_hosts || '';
+    newTargetVerifyOnWrite = !!target.verify_on_write;
     newTargetVMFilter = target.vm_filter || 'all';
     newTargetVMIDs = Array.isArray(target.vm_ids) ? [...target.vm_ids] : [];
     newTargetEnabled = target.enabled !== false; // default to enabled
     newTargetRetentionKeepLast = target.retention?.keep_last || 0;
     newTargetRetentionKeepDays = target.retention?.keep_days || 0;
+    newTargetRetentionKeepDaily = target.retention?.keep_daily || 0;
+    newTargetRetentionKeepWeekly = target.retention?.keep_weekly || 0;
+    newTargetRetentionKeepMonthly = target.retention?.keep_monthly || 0;
     vmSearch = '';
     testResult = null;
     showAddTarget = true;
@@ -360,11 +417,21 @@
     newTargetUsername = '';
     newTargetPassword = '';
     newTargetSSHKeyPath = '';
+    newTargetEndpoint = '';
+    newTargetBucket = '';
+    newTargetRegion = '';
+    newTargetAccessKey = '';
+    newTargetSecretKey = '';
+    newTargetKnownHosts = '';
+    newTargetVerifyOnWrite = false;
     newTargetVMFilter = 'all';
     newTargetVMIDs = [];
     newTargetEnabled = true;
     newTargetRetentionKeepLast = 0;
     newTargetRetentionKeepDays = 0;
+    newTargetRetentionKeepDaily = 0;
+    newTargetRetentionKeepWeekly = 0;
+    newTargetRetentionKeepMonthly = 0;
     vmSearch = '';
     testResult = null;
   }
@@ -386,9 +453,21 @@
       newTargetUsername = '';
       newTargetPassword = '';
       newTargetSSHKeyPath = '';
+      newTargetEndpoint = '';
+      newTargetBucket = '';
+      newTargetRegion = '';
+      newTargetAccessKey = '';
+      newTargetSecretKey = '';
+      newTargetKnownHosts = '';
+      newTargetVerifyOnWrite = false;
       newTargetVMFilter = 'all';
       newTargetVMIDs = [];
       newTargetEnabled = true;
+      newTargetRetentionKeepLast = 0;
+      newTargetRetentionKeepDays = 0;
+      newTargetRetentionKeepDaily = 0;
+      newTargetRetentionKeepWeekly = 0;
+      newTargetRetentionKeepMonthly = 0;
       vmSearch = '';
       testResult = null;
     }
@@ -509,31 +588,86 @@
     }
   }
 
-  // verifyFile is a one-shot sha256 read; we don't keep the result
-  // around, just toast it. If the user wants to inspect the hash
-  // they can re-click or use the (future) dedicated detail view.
+  // V13-BCK-04: on-demand verification is ASYNC on the backend — the
+  // API returns 202 immediately and the sha256 is computed in a
+  // background goroutine, persisting last_verified / last_verify_error
+  // onto the file. The frontend fires the request, then polls the file
+  // listing until the persisted outcome (past the request time) shows
+  // up, then renders it in the result dialog.
   let verifying = $state({}); // `${targetId}/${filename}` -> bool
-  // verifyResult holds the outcome shown in a dialog so the
-  // verification is visible and informative (not just a toast).
-  let verifyResult = $state(null); // { name, filename, size, modified, sha256 }
+  let verifyResult = $state(null); // { name, filename, size, modified, sha256, lastVerified }
+
+  // pollVerifyOutcome polls listBackupsOnTarget until the file carries
+  // a fresh last_verified (success) or a last_verify_error (failure).
+  async function pollVerifyOutcome(targetId, filename, startedAt, onDone) {
+    const deadline = startedAt + 90000; // 90s safety cap for multi-GB archives
+    for (;;) {
+      if (Date.now() > deadline) {
+        onDone({ timeout: true });
+        return;
+      }
+      try {
+        const r = await api.listBackupsOnTarget(targetId);
+        const list = r.backups || [];
+        const found = filename.includes('config/')
+          ? r.config && r.config.filename === filename
+            ? r.config
+            : null
+          : list.find((f) => f.filename === filename) || null;
+        if (found) {
+          const at = found.last_verified ? new Date(found.last_verified).getTime() : 0;
+          if (found.last_verify_error) {
+            onDone({ error: found.last_verify_error, entry: found });
+            return;
+          }
+          if (at && at >= startedAt) {
+            onDone({ entry: found });
+            return;
+          }
+        }
+      } catch {
+        // transient network hiccup; keep polling until the deadline
+      }
+      await new Promise((res) => setTimeout(res, 1200));
+    }
+  }
 
   async function verifyFile(targetId, filename) {
     const key = `${targetId}/${filename}`;
+    if (verifying[key]) return;
     verifying = { ...verifying, [key]: true };
+    const startedAt = Date.now();
+    let busy = true;
     try {
-      const r = await api.verifyBackup(targetId, filename);
+      await api.verifyBackup(targetId, filename); // 202 — fires the async job
+    } catch (err) {
+      busy = false;
+      toast.error(err.message);
+    }
+    if (!busy) {
+      verifying = { ...verifying, [key]: false };
+      return;
+    }
+    await pollVerifyOutcome(targetId, filename, startedAt, (res) => {
+      verifying = { ...verifying, [key]: false };
+      if (res.timeout) {
+        toast.error(t('backup.verifyTimeout'));
+        return;
+      }
+      if (res.error) {
+        toast.error(t('backup.verifyFailed', { error: res.error }));
+        return;
+      }
+      const e = res.entry;
       verifyResult = {
         name: displayVmName(filename) || filename,
         filename,
-        size: r.size,
-        modified: r.modified,
-        sha256: r.sha256 || '',
+        size: e?.size,
+        modified: e?.modified,
+        sha256: e?.sha256 || '',
+        lastVerified: e?.last_verified,
       };
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      verifying = { ...verifying, [key]: false };
-    }
+    });
   }
 
   function copySha() {
@@ -636,21 +770,37 @@
 
   // --- Stable "latest configuration" snapshot actions ------------
   async function verifyConfig(target) {
+    const filename = 'config/webkvm-config-latest.tar.zst';
+    if (configVerifying[target.id]) return;
     configVerifying = { ...configVerifying, [target.id]: true };
+    const startedAt = Date.now();
     try {
-      const r = await api.verifyBackup(target.id, 'config/webkvm-config-latest.tar.zst');
+      await api.verifyBackup(target.id, filename); // 202 — fires the async job
+    } catch (err) {
+      configVerifying = { ...configVerifying, [target.id]: false };
+      toast.error(err.message);
+      return;
+    }
+    await pollVerifyOutcome(target.id, filename, startedAt, (res) => {
+      configVerifying = { ...configVerifying, [target.id]: false };
+      if (res.timeout) {
+        toast.error(t('backup.verifyTimeout'));
+        return;
+      }
+      if (res.error) {
+        toast.error(t('backup.verifyFailed', { error: res.error }));
+        return;
+      }
+      const e = res.entry;
       verifyResult = {
         name: 'config',
-        filename: r.filename,
-        size: r.size,
-        modified: r.modified,
-        sha256: r.sha256 || '',
+        filename: e?.filename || filename,
+        size: e?.size,
+        modified: e?.modified,
+        sha256: e?.sha256 || '',
+        lastVerified: e?.last_verified,
       };
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      configVerifying = { ...configVerifying, [target.id]: false };
-    }
+    });
   }
 
   async function restoreConfig(target) {
@@ -1371,6 +1521,7 @@
         <option value="nfs">{t('backup.nfsMounted')}</option>
         <option value="smb">{t('backup.smbMounted')}</option>
         <option value="sftp">{t('backup.sftpType')}</option>
+        <option value="s3">{t('backup.s3Type')}</option>
       </select>
     </div>
     {#if newTargetType === 'sftp'}
@@ -1417,10 +1568,84 @@
         </div>
       </div>
       <p class="text-xs text-muted-foreground">{t('backup.sftpHint')}</p>
+      <div>
+        <label class="text-sm font-medium block mb-1" for="add-tgt-known-hosts"
+          >{t('backup.knownHosts')}</label
+        >
+        <textarea
+          id="add-tgt-known-hosts"
+          bind:value={newTargetKnownHosts}
+          rows="2"
+          placeholder="ssh-ed25519 SHA256:ABC123…"
+          class="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm font-mono placeholder:opacity-60"
+        ></textarea>
+        <p class="text-xs text-muted-foreground mt-1">
+          {t('backup.knownHostsHint')}
+          {#if !editingTarget}
+            {t('backup.knownHostsTestHint')}
+          {/if}
+        </p>
+      </div>
+    {/if}
+    {#if newTargetType === 's3'}
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label class="text-sm font-medium block mb-1" for="add-tgt-endpoint"
+            >{t('backup.endpoint')}</label
+          >
+          <Input
+            id="add-tgt-endpoint"
+            bind:value={newTargetEndpoint}
+            placeholder="https://s3.us-east-1.amazonaws.com"
+          />
+        </div>
+        <div>
+          <label class="text-sm font-medium block mb-1" for="add-tgt-region"
+            >{t('backup.region')}</label
+          >
+          <Input id="add-tgt-region" bind:value={newTargetRegion} placeholder="us-east-1" />
+        </div>
+      </div>
+      <div>
+        <label class="text-sm font-medium block mb-1" for="add-tgt-bucket"
+          >{t('backup.bucket')}</label
+        >
+        <Input id="add-tgt-bucket" bind:value={newTargetBucket} placeholder="webkvm-backups" />
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label class="text-sm font-medium block mb-1" for="add-tgt-ak"
+            >{t('backup.accessKey')}</label
+          >
+          <Input
+            id="add-tgt-ak"
+            bind:value={newTargetAccessKey}
+            autocomplete="off"
+            placeholder={editingTarget ? '••••••••' : ''}
+          />
+        </div>
+        <div>
+          <label class="text-sm font-medium block mb-1" for="add-tgt-sk"
+            >{t('backup.secretKey')}</label
+          >
+          <Input
+            id="add-tgt-sk"
+            bind:value={newTargetSecretKey}
+            type="password"
+            autocomplete="new-password"
+            placeholder={editingTarget ? '••••••••' : ''}
+          />
+        </div>
+      </div>
+      <p class="text-xs text-muted-foreground">{t('backup.s3Hint')}</p>
     {/if}
     <div>
       <label class="text-sm font-medium block mb-1" for="add-tgt-path">
-        {newTargetType === 'sftp' ? t('backup.remoteDir') : t('backup.path')}
+        {newTargetType === 'sftp'
+          ? t('backup.remoteDir')
+          : newTargetType === 's3'
+            ? t('backup.s3Prefix')
+            : t('backup.path')}
         {#if editingTarget && editingTarget.id === 'default'}
           <span class="text-xs text-muted-foreground font-normal"
             >{t('backup.pinnedByBackend')}</span
@@ -1430,7 +1655,11 @@
       <Input
         id="add-tgt-path"
         bind:value={newTargetPath}
-        placeholder={newTargetType === 'sftp' ? '/backups/webkvm' : '/mnt/backups'}
+        placeholder={newTargetType === 'sftp'
+          ? '/backups/webkvm'
+          : newTargetType === 's3'
+            ? 'optional-prefix'
+            : '/mnt/backups'}
         class="font-mono"
         disabled={!!(editingTarget && editingTarget.id === 'default')}
       />
@@ -1537,12 +1766,22 @@
       {/if}
     </div>
 
+    {#if newTargetType === 'sftp' || newTargetType === 's3'}
+      <div class="pt-1 border-t border-border">
+        <Switch
+          bind:checked={newTargetVerifyOnWrite}
+          label={t('backup.verifyOnWrite')}
+          description={t('backup.verifyOnWriteDesc')}
+        />
+      </div>
+    {/if}
+
     <div class="pt-1 border-t border-border space-y-3">
       <div>
         <span class="text-sm font-medium">{t('backup.retentionTitle')}</span>
         <p class="text-xs text-muted-foreground">{t('backup.retentionDesc')}</p>
       </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <div class="space-y-1.5">
           <Label for="retention-keep-last">{t('backup.retentionKeepLast')}</Label>
           <Input
@@ -1560,6 +1799,36 @@
             type="number"
             min="0"
             bind:value={newTargetRetentionKeepDays}
+            placeholder={t('backup.retentionUnlimited')}
+          />
+        </div>
+        <div class="space-y-1.5">
+          <Label for="retention-keep-daily">{t('backup.retentionKeepDaily')}</Label>
+          <Input
+            id="retention-keep-daily"
+            type="number"
+            min="0"
+            bind:value={newTargetRetentionKeepDaily}
+            placeholder={t('backup.retentionUnlimited')}
+          />
+        </div>
+        <div class="space-y-1.5">
+          <Label for="retention-keep-weekly">{t('backup.retentionKeepWeekly')}</Label>
+          <Input
+            id="retention-keep-weekly"
+            type="number"
+            min="0"
+            bind:value={newTargetRetentionKeepWeekly}
+            placeholder={t('backup.retentionUnlimited')}
+          />
+        </div>
+        <div class="space-y-1.5">
+          <Label for="retention-keep-monthly">{t('backup.retentionKeepMonthly')}</Label>
+          <Input
+            id="retention-keep-monthly"
+            type="number"
+            min="0"
+            bind:value={newTargetRetentionKeepMonthly}
             placeholder={t('backup.retentionUnlimited')}
           />
         </div>
@@ -1689,6 +1958,10 @@
           <span class="tnum">{fmtBytes(verifyResult.size)}</span>
           <span class="text-muted-foreground">{t('backup.verifyModified')}</span>
           <span>{fmtDate(verifyResult.modified)}</span>
+          {#if verifyResult.lastVerified}
+            <span class="text-muted-foreground">{t('backup.verifiedAt')}</span>
+            <span>{fmtDate(verifyResult.lastVerified)}</span>
+          {/if}
         </div>
         <div>
           <div class="text-xs font-medium mb-1">SHA-256</div>

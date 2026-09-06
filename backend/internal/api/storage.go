@@ -241,6 +241,22 @@ func (h *Handler) ListPools(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// V13-DATA-02: scope the list to the caller's AllowedPools so the
+	// deploy modal (and every other consumer) only ever sees eligible
+	// pools. Admins and unrestricted users see everything.
+	if user, role, _ := audit.FromRequest(r); role != models.RoleAdmin && user != "" {
+		if u, uerr := h.userStore.Get(user); uerr == nil {
+			if set, all := poolAllowSet(u); !all {
+				filtered := pools[:0]
+				for _, p := range pools {
+					if set[p.Name] {
+						filtered = append(filtered, p)
+					}
+				}
+				pools = filtered
+			}
+		}
+	}
 	jsonResp(w, http.StatusOK, pools)
 }
 

@@ -2,7 +2,6 @@ package backupstore
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -20,67 +19,98 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// pinnedHostKeys implements trust-on-first-use (TOFU) host key
-// verification for SFTP backup targets, scoped to this process's
-// lifetime (it is intentionally NOT persisted to disk — see
-// hostKeyCallbackFor). Keyed by target ID.
+// lastPresentedHostKey records the host key fingerprint presented by
+// the most recent SFTP dial so the ad-hoc "Test connection" path can
+// surface it for the operator to copy into the target's known-host
+// allowlist (V13-BCK-05). Not a pin — a record of what a dial saw.
 var (
-	pinnedHostKeysMu sync.Mutex
-	pinnedHostKeys   = map[string]string{}
+	lastPresentedKeyMu sync.Mutex
+	lastPresentedKey   string
 )
 
-// hostKeyCallbackFor returns a TOFU HostKeyCallback for tgt: the first
-// successful connection to this target ID in the current process's
-// lifetime pins the presented key's SHA256 fingerprint, and every
-// later connection to the same target must present the same key or
-// the dial is refused.
+// hostKeyFingerprint formats a presented host key the way ssh-keyscan
+// prints it, e.g. "ssh-ed25519 SHA256:ABC123...".
+func hostKeyFingerprint(key ssh.PublicKey) string {
+	return key.Type() + " " + ssh.FingerprintSHA256(key)
+}
+
+func recordLastPresentedKey(fp string) {
+	lastPresentedKeyMu.Lock()
+	lastPresentedKey = fp
+	lastPresentedKeyMu.Unlock()
+}
+
+// LastPresentedHostKey returns the fingerprint of the host key most
+// recently presented by a TestSFTP dial ("" if none yet). TestSFTP
+// appends it to its success message so the operator can copy it into
+// the target's known_hosts without a separate ssh-keyscan.
+func LastPresentedHostKey() string {
+	lastPresentedKeyMu.Lock()
+	defer lastPresentedKeyMu.Unlock()
+	return lastPresentedKey
+}
+
+// configuredFingerprints extracts the SHA256 host-key fingerprints an
+// operator has pinned for a target. Entries may be bare "SHA256:..."
+// strings or full "ssh-ed25519 SHA256:..." lines (as pasted from
+// ssh-keyscan or a dial error); whitespace/newline separated lists are
+// accepted.
+func configuredFingerprints(known []string) map[string]bool {
+	out := make(map[string]bool)
+	for _, entry := range known {
+		for _, tok := range strings.Fields(entry) {
+			if t := strings.TrimSpace(tok); strings.HasPrefix(t, "SHA256:") {
+				out[t] = true
+			}
+		}
+	}
+	return out
+}
+
+// hostKeyCallbackFor returns a STRICT host key validator for a target.
+// The blind trust-on-first-use pinning is gone (V13-BCK-05): a
+// configured target with no known-host fingerprints is REFUSED, and
+// every presented key is matched against the operator-pinned allowlist.
 //
-// This narrows, but does not eliminate, the window for an on-path
-// attacker to silently impersonate a configured SFTP target: plain
-// ssh.InsecureIgnoreHostKey() accepts whatever key is presented on
-// EVERY connection, so a MITM active for even one backup/restore run
-// goes completely undetected and can swap in an arbitrary archive for
-// a later restore. Pinning only in memory (not to the target's
-// on-disk config) means an attacker who can force a webkvm restart
-// still gets a fresh trust-on-first-use window — full protection
-// would require the operator to record and manage the expected key
-// out-of-band (e.g. via known_hosts), which is a bigger workflow
-// change than this fix takes on — but it turns a permanent blind
-// spot into one bounded by the process's uptime.
+// When a dial fails because the host is unknown or the key changed, the
+// callback returns an error that embeds the server's PRESENTED
+// fingerprint (e.g. "ssh-ed25519 SHA256:…"), so the operator can copy
+// it into the target's "known host fingerprints" field to authorize the
+// host explicitly — no silent first-use trust, no insecure ignore.
 //
-// tgt.ID is empty for the ad-hoc "Test connection" dial (the target
-// isn't saved yet), so that path is intentionally left unpinned —
-// each test may reasonably target a different, not-yet-configured
-// host.
+// The ad-hoc "Test connection" dial (tgt.ID == "") has no target to pin
+// against yet, so it is allowed through but always records the
+// presented fingerprint so TestSFTP can report it.
 func hostKeyCallbackFor(tgt Target) ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		presented := ssh.FingerprintSHA256(key)
+		full := hostKeyFingerprint(key)
+		recordLastPresentedKey(full)
 		if tgt.ID == "" {
+			// Ad-hoc test dial; nothing pinned yet.
 			return nil
 		}
-		sum := sha256.Sum256(key.Marshal())
-		fp := "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:])
-
-		pinnedHostKeysMu.Lock()
-		defer pinnedHostKeysMu.Unlock()
-		if existing, ok := pinnedHostKeys[tgt.ID]; ok {
-			if existing != fp {
-				return fmt.Errorf("SFTP host key for target %q changed since the last connection in this session "+
-					"(expected %s, got %s from %s) — refusing to connect; this could mean the server was "+
-					"reprovisioned, or something is impersonating it. Restart webkvm to accept the new key "+
-					"if this change is expected", tgt.ID, existing, fp, hostname)
-			}
+		if len(tgt.KnownHosts) == 0 {
+			return fmt.Errorf(
+				"ssh host key of %q is not trusted: this target has no known host fingerprints configured. "+
+					"Presented key: %s. Copy that fingerprint into the target's \"known host fingerprints\" "+
+					"field to authorize this host explicitly", hostname, full)
+		}
+		if configuredFingerprints(tgt.KnownHosts)[presented] {
 			return nil
 		}
-		pinnedHostKeys[tgt.ID] = fp
-		slog.Warn("sftp_host_key_pinned", "target", tgt.ID, "host", hostname, "fingerprint", fp,
-			"msg", "no host key was pinned yet for this SFTP backup target; trusting the key presented on this first connection (trust-on-first-use, valid for this process's uptime)")
-		return nil
+		return fmt.Errorf(
+			"ssh host key of %q does not match any configured fingerprint. Presented key: %s, expected one of %v — "+
+				"refusing to connect; the server may have been reprovisioned or something is impersonating it",
+			hostname, full, tgt.KnownHosts)
 	}
 }
 
 // TestSFTP dials a candidate SFTP destination (before it is saved)
 // and returns a human message. Used by the "Test" button in the Add
-// Target dialog.
+// Target dialog. The host key fingerprint presented by the server is
+// appended to the success message so the operator can copy it into
+// the target's known-host allowlist (V13-BCK-05).
 func TestSFTP(host string, port int, username, password, keyPath, remoteDir string) (string, error) {
 	if port == 0 {
 		port = 22
@@ -99,13 +129,17 @@ func TestSFTP(host string, port int, username, password, keyPath, remoteDir stri
 	}
 	defer client.Close()
 	defer conn.Close()
+	fpSuffix := ""
+	if fp := LastPresentedHostKey(); fp != "" {
+		fpSuffix = " · host key: " + fp
+	}
 	if remoteDir != "" {
 		if err := client.MkdirAll(remoteDir); err != nil {
 			return "", fmt.Errorf("remote directory %s not usable: %w", remoteDir, err)
 		}
-		return "connected; remote directory ready", nil
+		return "connected; remote directory ready" + fpSuffix, nil
 	}
-	return "connected", nil
+	return "connected" + fpSuffix, nil
 }
 
 // dialSFTP opens an SSH connection to the remote target and returns
@@ -130,9 +164,10 @@ func dialSFTP(tgt Target) (*sftp.Client, *ssh.Client, error) {
 	cfg := &ssh.ClientConfig{
 		User: tgt.Username,
 		Auth: authMethods,
-		// Trust-on-first-use, pinned per target ID for this process's
-		// uptime — see hostKeyCallbackFor's doc comment for the
-		// threat model and its limits.
+		// Strict known-host validation (V13-BCK-05): the presented
+		// key must match the target's configured fingerprints, or the
+		// dial fails and surfaces the server's fingerprint so the
+		// operator can authorize it explicitly. No trust-on-first-use.
 		HostKeyCallback: hostKeyCallbackFor(tgt),
 		Timeout:         15 * time.Second,
 	}
@@ -226,15 +261,12 @@ func sftpVerify(tgt Target, filename string) (BackupFile, error) {
 	}
 	defer f.Close()
 	h := sha256.New()
-	buf := make([]byte, 64*1024)
-	for {
-		n, err := f.Read(buf)
-		if n > 0 {
-			h.Write(buf[:n])
-		}
-		if err != nil {
-			break
-		}
+	// V13-BCK-04: stream straight from the remote file into the hash —
+	// the archive never touches local disk and never loads into RAM.
+	// io.Copy also propagates a mid-stream read error (a manual read
+	// loop used to swallow it and return a truncated checksum).
+	if _, err := io.Copy(h, f); err != nil {
+		return BackupFile{}, fmt.Errorf("sftp read %s: %w", filename, err)
 	}
 	info, err := f.Stat()
 	if err != nil {
@@ -306,6 +338,12 @@ func sftpDeleteRun(tgt Target, runSuffix string) (int, error) {
 // feed into the libvirt import path. The caller MUST invoke the
 // returned cleanup once done (it is nil when tgt is not SFTP).
 func StageFileForRestore(tgt Target, filename string, dataDir string) (localPath string, size int64, cleanup func(), err error) {
+	switch tgt.Type {
+	case TargetSFTP:
+		// (sftp branch below)
+	case TargetS3:
+		return s3StageFileForRestore(tgt, filename, dataDir)
+	}
 	if tgt.Type != TargetSFTP {
 		return "", 0, nil, nil
 	}

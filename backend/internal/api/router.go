@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"webkvm/internal/appliances"
@@ -28,6 +29,7 @@ func NewRouter(
 	cfg *config.Config,
 	lv *libvirt.Connector,
 	authMgr *auth.Manager,
+	globalRateLimiter *auth.GlobalRateLimiter,
 	loginLimiter *auth.LoginRateLimiter,
 	us *user.Store,
 	hub *events.Hub,
@@ -50,15 +52,26 @@ func NewRouter(
 	r.Use(middleware.Recoverer)
 	r.Use(requestLogger)
 	origins := strings.FieldsFunc(cfg.CORSOrigin, func(r rune) bool { return r == ',' || r == ' ' })
+	// V13-SEC-01: cookie sessions need AllowCredentials when a real
+	// cross-origin deployment is configured (explicit origins). A
+	// wildcard "*" cannot carry credentials, so it stays as-is
+	// (same-origin installs don't need CORS at all).
+	allowCreds := len(origins) > 0 && !slices.Contains(origins, "*")
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   origins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
-		AllowCredentials: false,
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		AllowCredentials: allowCreds,
 		MaxAge:           300,
 	}))
 	SetAllowedOrigins(origins)
 	r.Use(authMgr.Middleware)
+	// V13-SEC-02: global per-IP rate limit. Mounted AFTER the JWT
+	// middleware so the Bearer exemption can only match already-validated
+	// API-token requests (a forged header is 401'd before we ever see it).
+	if globalRateLimiter != nil {
+		r.Use(globalRateLimiter.Middleware)
+	}
 	r.Use(auth.MustChangeEnforcer(
 		us.MustChangePassword,
 		// Paths the user is allowed to hit even with must_change=true.

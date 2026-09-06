@@ -1,7 +1,21 @@
-let tokenState = $state(localStorage.getItem('token') || '');
+// V13-SEC-01: the session JWT lives in an HttpOnly cookie (never in JS).
+// The SPA tracks only the *session status* ('checking'|'in'|'out') plus
+// the non-secret identity, re-validated via /auth/me on every load. The
+// CSRF value is the double-submit token echoed back as X-CSRF-Token on
+// state-changing requests.
+const STATUS = { CHECKING: 'checking', IN: 'in', OUT: 'out' };
+
+let statusState = $state(STATUS.CHECKING);
 let userState = $state(localStorage.getItem('user') || '');
 let roleState = $state(localStorage.getItem('role') || '');
 let mustChangeState = $state(localStorage.getItem('must_change') === '1');
+let csrfState = $state('');
+
+function readCSRFCookie() {
+  if (typeof document === 'undefined') return '';
+  const m = /(?:^|; )webkvm_csrf=([^;]+)/.exec(document.cookie);
+  return m ? decodeURIComponent(m[1]) : '';
+}
 
 // Imported lazily to avoid a circular dep at module-load
 // time (auth store ↔ router both want to be importable
@@ -14,14 +28,24 @@ async function redirectToLogin(reason) {
   } catch {
     // If the router fails to load, fall back to a hard
     // navigation so the user is not stuck on a broken
-    // page with a dead token.
+    // page with a dead session.
     location.href = '/login' + (reason ? '?reason=' + reason : '');
   }
 }
 
+function clearSessionState() {
+  userState = '';
+  roleState = '';
+  mustChangeState = false;
+  csrfState = '';
+  localStorage.removeItem('user');
+  localStorage.removeItem('role');
+  localStorage.removeItem('must_change');
+}
+
 export const auth = {
-  get token() {
-    return tokenState;
+  get status() {
+    return statusState;
   },
   get user() {
     return userState;
@@ -30,18 +54,18 @@ export const auth = {
     return roleState;
   },
   get isLoggedIn() {
-    return !!tokenState;
+    return statusState === STATUS.IN;
   },
   get mustChangePassword() {
     return mustChangeState;
   },
 
-  setToken(t, u, r, mustChange = false) {
-    tokenState = t;
+  setSession(u, r, mustChange = false, csrf = '') {
     userState = u;
     roleState = r || '';
     mustChangeState = !!mustChange;
-    localStorage.setItem('token', t);
+    csrfState = csrf || readCSRFCookie();
+    statusState = STATUS.IN;
     localStorage.setItem('user', u);
     localStorage.setItem('role', r || '');
     localStorage.setItem('must_change', mustChange ? '1' : '0');
@@ -52,15 +76,46 @@ export const auth = {
     localStorage.setItem('must_change', v ? '1' : '0');
   },
 
+  // Called on every app load: re-validate the cookie session.
+  async bootstrap() {
+    statusState = STATUS.CHECKING;
+    try {
+      const u = await api.me();
+      auth.setSession(u.username, u.role, u.must_change_password, readCSRFCookie());
+      return true;
+    } catch {
+      // request() already called onUnauthorized() on 401 (status -> out).
+      if (statusState !== STATUS.OUT) statusState = STATUS.OUT;
+      clearSessionState();
+      statusState = STATUS.OUT;
+      return false;
+    }
+  },
+
+  // Expired/invalid session: clear local state and bounce to /login.
+  onUnauthorized(reason = 'session_expired') {
+    clearSessionState();
+    statusState = STATUS.OUT;
+    redirectToLogin(reason);
+  },
+
+  // Server-side logout clears the HttpOnly cookie (fire-and-forget; the
+  // server ignores failures), then we reset the local state.
   logout() {
-    tokenState = '';
-    userState = '';
-    roleState = '';
-    mustChangeState = false;
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    localStorage.removeItem('role');
-    localStorage.removeItem('must_change');
+    if (statusState === STATUS.IN) {
+      api
+        .logoutApi()
+        .catch(() => {
+          /* cookie may already be gone */
+        })
+        .finally(() => {
+          clearSessionState();
+          statusState = STATUS.OUT;
+        });
+    } else {
+      clearSessionState();
+      statusState = STATUS.OUT;
+    }
   },
 
   isAdmin() {
@@ -81,14 +136,23 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path, opts = {}) {
-  const headers = { 'Content-Type': 'application/json', ...opts.headers };
-  if (tokenState) headers['Authorization'] = `Bearer ${tokenState}`;
+const UNSAFE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
 
-  const res = await fetch(`${BASE}${path}`, { ...opts, headers });
+async function request(path, opts = {}) {
+  const method = (opts.method || 'GET').toUpperCase();
+  const headers = { 'Content-Type': 'application/json', ...opts.headers };
+  // V13-SEC-01: cookie session + double-submit CSRF on mutations.
+  if (UNSAFE_METHODS.includes(method) && csrfState) headers['X-CSRF-Token'] = csrfState;
+
+  const res = await fetch(`${BASE}${path}`, {
+    ...opts,
+    method,
+    headers,
+    credentials: 'include',
+  });
 
   if (res.status === 401) {
-    auth.logout();
+    auth.onUnauthorized();
     // The previous behaviour was to throw a generic
     // "Unauthorized" toast and leave the user on the page
     // — fine for deliberate logout, terrible for an
@@ -99,7 +163,6 @@ async function request(path, opts = {}) {
     // with a `reason=session_expired` so the login page
     // can show "Tu sesión expiró" instead of the silent
     // failure.
-    redirectToLogin('session_expired');
     throw new ApiError('Session expired', 401, 'unauthorized');
   }
 
@@ -256,7 +319,7 @@ export const api = {
         if (xhr.status >= 200 && xhr.status < 300) {
           resolve(JSON.parse(xhr.responseText || '{}'));
         } else if (xhr.status === 401) {
-          auth.logout();
+          auth.onUnauthorized();
           reject(new ApiError('Unauthorized', 401, 'unauthorized'));
         } else {
           let msg = 'Upload failed';
@@ -272,7 +335,8 @@ export const api = {
       xhr.addEventListener('error', () => reject(new ApiError('Upload failed', 0, 'network')));
 
       xhr.open('POST', `${BASE}/storage/upload-iso`);
-      if (tokenState) xhr.setRequestHeader('Authorization', `Bearer ${tokenState}`);
+      xhr.withCredentials = true;
+      if (csrfState) xhr.setRequestHeader('X-CSRF-Token', csrfState);
       xhr.send(formData);
     });
   },
@@ -299,7 +363,7 @@ export const api = {
         if (xhr.status >= 200 && xhr.status < 300) {
           resolve(JSON.parse(xhr.responseText || '{}'));
         } else if (xhr.status === 401) {
-          auth.logout();
+          auth.onUnauthorized();
           reject(new ApiError('Unauthorized', 401, 'unauthorized'));
         } else {
           let msg = 'Upload failed';
@@ -315,7 +379,8 @@ export const api = {
       xhr.addEventListener('error', () => reject(new ApiError('Upload failed', 0, 'network')));
 
       xhr.open('POST', `${BASE}/storage/upload-disk`);
-      if (tokenState) xhr.setRequestHeader('Authorization', `Bearer ${tokenState}`);
+      xhr.withCredentials = true;
+      if (csrfState) xhr.setRequestHeader('X-CSRF-Token', csrfState);
       xhr.send(formData);
     });
   },
@@ -406,7 +471,8 @@ export const api = {
       const formData = new FormData();
       formData.append('file', file);
       xhr.open('POST', `${BASE}/vms/${vmId}/cover`);
-      xhr.setRequestHeader('Authorization', `Bearer ${tokenState}`);
+      xhr.withCredentials = true;
+      if (csrfState) xhr.setRequestHeader('X-CSRF-Token', csrfState);
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
@@ -415,7 +481,7 @@ export const api = {
             resolve({});
           }
         } else if (xhr.status === 401) {
-          auth.logout();
+          auth.onUnauthorized();
           reject(new ApiError('Unauthorized', 401, 'unauthorized'));
         } else {
           let msg = `HTTP ${xhr.status}`;
@@ -452,11 +518,11 @@ export const api = {
     const qs = params.toString();
     const url = `${BASE}/vms/${id}/export${qs ? '?' + qs : ''}`;
     const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${auth.token}` },
+      credentials: 'include',
       signal: opts.signal,
     });
     if (res.status === 401) {
-      auth.logout();
+      auth.onUnauthorized();
       throw new ApiError('Unauthorized', 401, 'unauthorized');
     }
     if (!res.ok) {
@@ -520,7 +586,8 @@ export const api = {
         });
       }
       xhr.open('POST', `${BASE}/vms/import`);
-      xhr.setRequestHeader('Authorization', `Bearer ${auth.token}`);
+      xhr.withCredentials = true;
+      if (csrfState) xhr.setRequestHeader('X-CSRF-Token', csrfState);
       // Imports can take many minutes for multi-GB archives (upload
       // + extract + libvirt define). 30 minutes covers a 5 GB file
       // on a slow link with margin. Without this, the browser's
@@ -529,7 +596,7 @@ export const api = {
       xhr.timeout = 30 * 60 * 1000;
       xhr.onload = () => {
         if (xhr.status === 401) {
-          auth.logout();
+          auth.onUnauthorized();
           reject(new ApiError('Unauthorized', 401, 'unauthorized'));
           return;
         }
@@ -566,10 +633,10 @@ export const api = {
   systemStatus: () => request('/system/status'),
   systemLogs: async (lines = 200) => {
     const res = await fetch(`${BASE}/system/logs?lines=${lines}`, {
-      headers: { Authorization: `Bearer ${tokenState}` },
+      credentials: 'include',
     });
     if (res.status === 401) {
-      auth.logout();
+      auth.onUnauthorized();
       throw new ApiError('Unauthorized', 401, 'unauthorized');
     }
     if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status, 'logs_failed');

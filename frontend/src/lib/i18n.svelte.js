@@ -304,6 +304,8 @@ const messages = {
         'Download an official disk image and deploy it as a ready-to-run VM with recommended resources.',
       noAppliances: 'No appliances available.',
       installAppliance: 'Install',
+      deployPool: 'Storage pool',
+      deployPoolDefault: 'Default pool',
       deployingAppliance: 'Deploying {name}…',
       deployQueued: 'Queued…',
       deployDownloading: 'Downloading image…',
@@ -1160,6 +1162,9 @@ const messages = {
       retentionDesc: 'Prune old runs automatically after each successful backup.',
       retentionKeepLast: 'Keep last N runs',
       retentionKeepDays: 'Keep N days',
+      retentionKeepDaily: 'Newest per day',
+      retentionKeepWeekly: 'Newest per week',
+      retentionKeepMonthly: 'Newest per month',
       retentionUnlimited: 'Unlimited (0)',
       retentionHint:
         'Runs are removed as whole units; the most recent run and the configuration snapshot are never deleted. Leave both at 0 to keep everything (manual cleanup).',
@@ -1265,6 +1270,27 @@ const messages = {
       sftpHint:
         'WebKVM connects directly over SSH/SFTP — no mount needed. Use a password or an SSH key on this host.',
       remoteDir: 'Remote directory',
+      knownHosts: 'Known host fingerprints',
+      knownHostsHint:
+        'Allowed server host keys, one per line (ssh-ed25519 SHA256:…). Empty = connections are refused until a fingerprint is added — no blind trust-on-first-use.',
+      knownHostsTestHint:
+        'Tip: click "Test connection" first — the server fingerprint is shown in the result. Paste it here to authorize the host.',
+      endpoint: 'Endpoint',
+      region: 'Region',
+      bucket: 'Bucket',
+      accessKey: 'Access key',
+      secretKey: 'Secret key',
+      s3Type: 'S3 / MinIO (object store)',
+      s3Hint:
+        'Any S3-compatible store. Empty endpoint = AWS (region is then required); MinIO/R2/B2 use their own endpoint. Credentials are stored encrypted in the backend and never sent back to this page.',
+      s3Prefix: 'Object prefix (optional)',
+      s3BucketRegionRequired: 'A bucket, and an endpoint or a region, are required for S3 targets',
+      verifyOnWrite: 'Verify after upload',
+      verifyOnWriteDesc:
+        'Re-read the uploaded archive and check its checksum. On a mismatch the backup fails and the corrupt remote copy is purged.',
+      verifyTimeout: 'Verification is still running; check the Files tab shortly.',
+      verifyFailed: 'Verification failed: {error}',
+      verifiedAt: 'Verified at',
       pathRequired: 'A path is required',
       testing: 'Testing…',
       test: 'Test connection',
@@ -1619,6 +1645,8 @@ const messages = {
         'Descarga una imagen de disco oficial y despliégalá como VM lista con los recursos recomendados.',
       noAppliances: 'No hay aplicaciones disponibles.',
       installAppliance: 'Instalar',
+      deployPool: 'Pool de almacenamiento',
+      deployPoolDefault: 'Pool por defecto',
       deployingAppliance: 'Desplegando {name}…',
       deployQueued: 'En cola…',
       deployDownloading: 'Descargando imagen…',
@@ -2486,6 +2514,9 @@ const messages = {
       retentionDesc: 'Elimina automáticamente las ejecuciones antiguas tras cada copia con éxito.',
       retentionKeepLast: 'Conservar últimas N ejecuciones',
       retentionKeepDays: 'Conservar N días',
+      retentionKeepDaily: 'Más reciente por día',
+      retentionKeepWeekly: 'Más reciente por semana',
+      retentionKeepMonthly: 'Más reciente por mes',
       retentionUnlimited: 'Ilimitado (0)',
       retentionHint:
         'Las ejecuciones se eliminan como un todo; la ejecución más reciente y la copia de configuración nunca se borran. Deja ambos en 0 para conservarlo todo (limpieza manual).',
@@ -2591,6 +2622,27 @@ const messages = {
       sftpHint:
         'WebKVM conecta directamente por SSH/SFTP, sin montaje. Usa una contraseña o una clave SSH de este host.',
       remoteDir: 'Directorio remoto',
+      knownHosts: 'Huellas de host conocidas',
+      knownHostsHint:
+        'Claves de host permitidas del servidor, una por línea (ssh-ed25519 SHA256:…). Vacío = se rechaza la conexión hasta añadir una huella; sin trust-on-first-use ciego.',
+      knownHostsTestHint:
+        'Consejo: pulsa primero "Probar conexión"; la huella del servidor aparece en el resultado. Pégala aquí para autorizar el host.',
+      endpoint: 'Endpoint',
+      region: 'Región',
+      bucket: 'Bucket',
+      accessKey: 'Clave de acceso',
+      secretKey: 'Clave secreta',
+      s3Type: 'S3 / MinIO (almacén de objetos)',
+      s3Hint:
+        'Cualquier almacén compatible con S3. Endpoint vacío = AWS (la región pasa a ser obligatoria); MinIO/R2/B2 usan su propio endpoint. Las credenciales se guardan cifradas en el backend y nunca vuelven a esta página.',
+      s3Prefix: 'Prefijo de objeto (opcional)',
+      s3BucketRegionRequired: 'Se requieren un bucket y un endpoint o una región para destinos S3',
+      verifyOnWrite: 'Verificar tras la subida',
+      verifyOnWriteDesc:
+        'Relee el archivo subido y comprueba su checksum. Si no coincide, la copia falla y se purga la copia remota corrupta.',
+      verifyTimeout: 'La verificación sigue en curso; consulta la pestaña Archivos en breve.',
+      verifyFailed: 'Verificación fallida: {error}',
+      verifiedAt: 'Verificada en',
       pathRequired: 'Se requiere una ruta',
       testing: 'Comprobando…',
       test: 'Probar conexión',
@@ -2945,6 +2997,8 @@ const messages = {
         'Descarrega una imatge de disc oficial i desplega-la com a VM llesta amb els recursos recomanats.',
       noAppliances: 'No hi ha aplicacions disponibles.',
       installAppliance: 'Instal·la',
+      deployPool: "Pool d'emmagatzematge",
+      deployPoolDefault: 'Pool per defecte',
       deployingAppliance: 'Desplegant {name}…',
       deployQueued: 'A la cua…',
       deployDownloading: 'Descarregant imatge…',
@@ -3812,6 +3866,9 @@ const messages = {
         'Elimina automàticament les execucions antigues després de cada còpia amb èxit.',
       retentionKeepLast: 'Conservar últimes N execucions',
       retentionKeepDays: 'Conservar N dies',
+      retentionKeepDaily: 'Més recent per dia',
+      retentionKeepWeekly: 'Més recent per setmana',
+      retentionKeepMonthly: 'Més recent per mes',
       retentionUnlimited: 'Il·limitat (0)',
       retentionHint:
         "Les execucions s'eliminen com un tot; l'execució més recent i la còpia de configuració mai no se suprimeixen. Deixa tots dos en 0 per conservar-ho tot (neteja manual).",
@@ -3917,6 +3974,29 @@ const messages = {
       sftpHint:
         "WebKVM connecta directament per SSH/SFTP, sense muntatge. Fes servir una contrasenya o una clau SSH d'aquest host.",
       remoteDir: 'Directori remot',
+      knownHosts: 'Empremtes de host conegudes',
+      knownHostsHint:
+        'Claus de host permeses del servidor, una per línia (ssh-ed25519 SHA256:…). Buit = es rebutja la connexió fins a afegir una empremta; sense trust-on-first-use cec.',
+      knownHostsTestHint:
+        'Consell: prem primer "Prova la connexió"; l\'empremta del servidor surt al resultat. Enganxa-la aquí per autoritzar el host.',
+      endpoint: 'Endpoint',
+      region: 'Regió',
+      bucket: 'Bucket',
+      accessKey: "Clau d'accés",
+      secretKey: 'Clau secreta',
+      s3Type: "S3 / MinIO (magatzem d'objectes)",
+      s3Hint:
+        'Qualsevol magatzem compatible amb S3. Endpoint buit = AWS (la regió passa a ser obligatòria); MinIO/R2/B2 fan servir el seu propi endpoint. Les credencials es guarden xifrades al backend i mai no tornen a aquesta pàgina.',
+      s3Prefix: "Prefix d'objecte (opcional)",
+      s3BucketRegionRequired:
+        'Es requereixen un bucket i un endpoint o una regió per a destinacions S3',
+      verifyOnWrite: 'Verificar després de la pujada',
+      verifyOnWriteDesc:
+        'Torna a llegir el fitxer pujat i comprova el seu checksum. Si no coincideix, la còpia falla i es purga la còpia remota corrupta.',
+      verifyTimeout:
+        "La verificació continua en curs; consulta la pestanya Fitxers d'aquí a una estona.",
+      verifyFailed: 'Verificació fallida: {error}',
+      verifiedAt: 'Verificada en',
       pathRequired: 'Es requereix una ruta',
       testing: 'Comprovant…',
       test: 'Prova la connexió',

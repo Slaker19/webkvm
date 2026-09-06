@@ -119,7 +119,7 @@ func TestDeleteBackupFile(t *testing.T) {
 	for _, bad := range []string{
 		"../../etc/passwd",
 		"foo.tar.gz",
-		"webkvm-testhost-20260625T12000Z.tar.gz", // too short
+		"webkvm-testhost-20260625T12000Z.tar.gz",  // too short
 		"webkvm-testhost-20260625T120000X.tar.gz", // bad timestamp suffix
 		"webkvm-testhost-2026-06-25T12-00-00Z.tar.gz",
 	} {

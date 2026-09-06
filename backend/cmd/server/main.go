@@ -248,6 +248,13 @@ func main() {
 	// invocation (allow_api_tokens), so a Settings page change takes
 	// effect on the next request — no restart.
 	authMgr := auth.NewManagerWithPath(cfg.JWTSecret, settingsStore, cfg.RevokedFile())
+	authMgr.SetSecureCookies(cfg.SecureCookies)
+
+	// V13-SEC-02: global per-IP rate limiter (token bucket + sweeper).
+	// settingsStore implements auth.RateLimitSettings, so enabled/rps/
+	// burst/trusted_cidrs reload live from the Settings page.
+	globalRateLimiter := auth.NewGlobalRateLimiter(settingsStore)
+	defer globalRateLimiter.Close()
 	loginLimiter := auth.NewLoginRateLimiterWithSettings(settingsStore)
 
 	// API tokens: long-lived Bearer tokens for scripting. The store
@@ -364,6 +371,11 @@ func main() {
 	)
 	go backupRunner.Start(eventCtx)
 	logger.Info("backupstore_loaded", "targets", len(backupStore.ListTargets()), "schedules", len(backupStore.ListSchedules()))
+	// V13-BCK-03: retention janitor — a dedicated 6h goroutine, decoupled
+	// from the cron ticker that fires backup jobs. A failing target is
+	// logged and skipped; it never aborts the cycle.
+	backupstore.StartRetentionJanitor(eventCtx, 6*time.Hour, backupStore, logger)
+	logger.Info("retention_janitor_started", "interval", "6h")
 
 	// Metrics collector: 5s sampling, in-memory ring buffer per VM.
 	metrics := libvirt.NewMetricsCollector(lv, hub)
@@ -470,7 +482,7 @@ func main() {
 	vmScheduler.Start()
 	logger.Info("vmsched_ready")
 
-	router := api.NewRouter(cfg, lv, authMgr, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler)
+	router := api.NewRouter(cfg, lv, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler)
 
 	srv := &http.Server{
 		Addr:    net.JoinHostPort(cfg.BindAddr, fmt.Sprintf("%d", cfg.Port)),

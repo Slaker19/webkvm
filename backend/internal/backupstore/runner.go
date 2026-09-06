@@ -25,6 +25,7 @@ import (
 	"webkvm/internal/models"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/minio/minio-go/v7"
 	"github.com/robfig/cron/v3"
 )
 
@@ -270,21 +271,70 @@ func (r *Runner) runJob(ctx context.Context, tgt Target, job Job, scheduleID str
 
 	destDir := tgt.Path
 	var staging string
-	if tgt.Type == TargetSFTP {
+	switch tgt.Type {
+	case TargetSFTP:
+		staging = filepath.Join(r.dataDir, "backup-staging", tgt.ID+"-"+randHex(4))
+		destDir = staging
+	case TargetS3:
+		// Object stores can't stream from a "directory" path the way a
+		// local FS does, so stage the run locally first (like SFTP) and
+		// stream each file up from disk.
 		staging = filepath.Join(r.dataDir, "backup-staging", tgt.ID+"-"+randHex(4))
 		destDir = staging
 	}
 	files, totalBytes, err := r.writeBackup(tgt, destDir, report)
-	if err == nil && tgt.Type == TargetSFTP {
-		report(90, "uploading", map[string]any{"path": tgt.Path})
-		up, uErr := uploadSFTPRun(tgt, staging, files)
-		_ = os.RemoveAll(staging)
-		if uErr != nil {
-			err = fmt.Errorf("sftp upload: %w", uErr)
-		} else {
-			totalBytes = up
+	if err == nil {
+		switch tgt.Type {
+		case TargetSFTP:
+			report(90, "uploading", map[string]any{"path": tgt.Path})
+			up, uErr := uploadSFTPRun(tgt, staging, files)
+			if uErr != nil {
+				err = fmt.Errorf("sftp upload: %w", uErr)
+			} else {
+				totalBytes = up
+			}
+		case TargetS3:
+			// V13-BCK-02: stream each archive from disk into the bucket.
+			// The bucket is created on demand; the upload is cancellable
+			// via the job context.
+			report(90, "uploading", map[string]any{"bucket": tgt.Bucket})
+			if cerr := s3EnsureBucket(ctx, tgt); cerr != nil {
+				err = fmt.Errorf("s3 ensure bucket: %w", cerr)
+			} else {
+				up, uErr := s3UploadRun(ctx, tgt, staging, files)
+				if uErr != nil {
+					err = fmt.Errorf("s3 upload: %w", uErr)
+				} else {
+					totalBytes = up
+				}
+			}
 		}
-	} else if err != nil && staging != "" {
+		// V13-BCK-04: post-write verification. Must run while the local
+		// staging copy still exists (its sha256 is the expected value the
+		// remote archive is compared against). On mismatch the JOB FAILS
+		// and the corrupt remote copy is purged — a poisoned archive is
+		// never left behind and never restored. Only remote types need it
+		// (a local target's "upload" is a same-path write that always
+		// matches itself).
+		if err == nil && (tgt.Type == TargetSFTP || tgt.Type == TargetS3) &&
+			tgt.VerifyOnWrite && len(files) > 0 {
+			primary := primaryOf(files)
+			if primary != "" {
+				report(94, "verifying", map[string]any{"file": primary})
+				if verr := verifyWrittenPrimary(r.store, tgt, staging, primary); verr != nil {
+					err = fmt.Errorf("post-write verification failed: %w", verr)
+					r.logger.Error("backup_verify_failed",
+						"target", tgt.ID, "file", primary, "err", verr,
+						"action", "job marked failed and corrupt remote copy purged")
+				} else {
+					r.logger.Info("backup_verify_ok", "target", tgt.ID, "file", primary)
+				}
+			}
+		}
+		if staging != "" {
+			_ = os.RemoveAll(staging)
+		}
+	} else if staging != "" {
 		_ = os.RemoveAll(staging)
 	}
 	job.EndedAt = time.Now().UTC()
@@ -328,28 +378,23 @@ func (r *Runner) runJob(ctx context.Context, tgt Target, job Job, scheduleID str
 		r.logger.Error("backup_job_update_failed", "job_id", job.ID, "err", uerr)
 	}
 
-	// Optional post-write verify. The user can also click Verify
-	// from the Files tab at any time, which calls VerifyBackup
-	// directly without re-running the backup. We verify the
-	// config tar (the primary file) only; the per-VM tars are
-	// large and the SHA256 cost is non-trivial.
-	if r.config().VerifyOnWrite && job.Filename != "" {
-		if _, err := VerifyBackup(tgt, job.Filename); err != nil {
-			r.logger.Warn("backup_verify_failed", "target", tgt.ID, "file", job.Filename, "err", err)
-		}
-	}
-
-	// Automatic retention: prune old runs if the target has a
-	// retention policy. This never removes the run we just wrote
-	// (it is the newest) and always removes whole runs, never
-	// individual files, so an in-progress run is never torn apart.
+	// Automatic retention: prune old runs if the target has a retention
+	// policy. This never removes the run we just wrote (it is the newest)
+	// and always removes whole runs, never individual files, so an
+	// in-progress run is never torn apart. V13-BCK-03: run it
+	// ASYNCHRONOUSLY so a slow remote (S3/SMB) never delays job completion
+	// or the next scheduled run — it only touches the store + network, not
+	// r.mu, so it cannot serialize against the cron ticker.
 	if tgt.Retention.Enabled() {
-		removed, rerr := ApplyRetention(r.store, tgt)
-		if rerr != nil {
-			r.logger.Warn("backup_retention_failed", "target", tgt.ID, "err", rerr)
-		} else if removed > 0 {
-			r.logger.Info("backup_retention_applied", "target", tgt.ID, "removed_runs", removed)
-		}
+		pruneTgt := tgt
+		go func() {
+			removed, rerr := ApplyRetention(r.store, pruneTgt)
+			if rerr != nil {
+				r.logger.Warn("backup_retention_failed", "target", pruneTgt.ID, "err", rerr)
+			} else if removed > 0 {
+				r.logger.Info("backup_retention_applied", "target", pruneTgt.ID, "removed_runs", removed)
+			}
+		}()
 	}
 
 	if scheduleID != "" {
@@ -394,8 +439,8 @@ func (p *byteProgressWriter) Write(b []byte) (int, error) {
 // writeBackup is the Phase II write path. Each backup run now
 // produces N+1 archives in tgt.Path:
 //
-//   webkvm-<host>-<UTC>-<rand>-<vmname>.tar.zst  (one per in-scope VM)
-//   webkvm-<host>-<UTC>-<rand>-config.tar.zst    (always; app state)
+//	webkvm-<host>-<UTC>-<rand>-<vmname>.tar.zst  (one per in-scope VM)
+//	webkvm-<host>-<UTC>-<rand>-config.tar.zst    (always; app state)
 //
 // The N per-VM archives are byte-compatible with the
 // browser-downloaded WebKVM export (Phase II-B4), so a
@@ -413,17 +458,17 @@ func (p *byteProgressWriter) Write(b []byte) (int, error) {
 //
 // Selection rules (unchanged from Phase I):
 //
-//   1. Resolve which VMs are in scope from tgt.VMFilter /
-//      tgt.VMIDs, asking the VMSource. A nil VMSource is
-//      allowed and produces 0 VM archives (config-only).
-//   2. For each in-scope VM, include the file backing of
-//      every disk whose Device != "cdrom" and whose Source
-//      is under r.dataDir. CDROMs and out-of-tree disks
-//      are skipped. Files larger than MaxFileSizeMB are
-//      also skipped (the size filter is now Go-side in
-//      the producer; the old --exclude=*.%dM-and-larger
-//      GNU tar flag was a no-op).
-//   3. Always include the app-state config tar.
+//  1. Resolve which VMs are in scope from tgt.VMFilter /
+//     tgt.VMIDs, asking the VMSource. A nil VMSource is
+//     allowed and produces 0 VM archives (config-only).
+//  2. For each in-scope VM, include the file backing of
+//     every disk whose Device != "cdrom" and whose Source
+//     is under r.dataDir. CDROMs and out-of-tree disks
+//     are skipped. Files larger than MaxFileSizeMB are
+//     also skipped (the size filter is now Go-side in
+//     the producer; the old --exclude=*.%dM-and-larger
+//     GNU tar flag was a no-op).
+//  3. Always include the app-state config tar.
 //
 // The per-disk size cap defaults to 1 TiB (effectively
 // "unlimited" for any reasonable VM). The previous default
@@ -957,6 +1002,20 @@ func LatestConfigInfo(tgt Target) (BackupFile, bool, error) {
 		}
 		return BackupFile{TargetID: tgt.ID, Filename: configGlobalRel, Size: info.Size(), Modified: info.ModTime().UTC()}, true, nil
 	}
+	if tgt.Type == TargetS3 {
+		cli, err := s3ClientFor(tgt)
+		if err != nil {
+			return BackupFile{}, false, err
+		}
+		info, err := cli.StatObject(context.Background(), tgt.Bucket, s3ObjectKey(tgt, configGlobalRel), minio.StatObjectOptions{})
+		if err != nil {
+			if isS3NotFound(err) {
+				return BackupFile{}, false, nil
+			}
+			return BackupFile{}, false, err
+		}
+		return BackupFile{TargetID: tgt.ID, Filename: configGlobalRel, Size: info.Size, Modified: info.LastModified.UTC()}, true, nil
+	}
 	p := filepath.Join(tgt.Path, configGlobalRel)
 	info, err := os.Stat(p)
 	if err != nil {
@@ -985,6 +1044,17 @@ func DeleteBackupConfig(tgt Target) error {
 			return err
 		}
 		return nil
+	}
+	if tgt.Type == TargetS3 {
+		cli, err := s3ClientFor(tgt)
+		if err != nil {
+			return err
+		}
+		err = cli.RemoveObject(context.Background(), tgt.Bucket, s3ObjectKey(tgt, configGlobalRel), minio.RemoveObjectOptions{})
+		if err != nil && isS3NotFound(err) {
+			return os.ErrNotExist
+		}
+		return err
 	}
 	err := os.Remove(filepath.Join(tgt.Path, configGlobalRel))
 	if err != nil && os.IsNotExist(err) {
@@ -1160,9 +1230,9 @@ func randHex(n int) string {
 //
 // Two extensions are accepted:
 //   - .tar.gz  → Phase I and earlier (gzip). Operators may still
-//                have old archives on disk from before Phase II.
+//     have old archives on disk from before Phase II.
 //   - .tar.zst → Phase II (zstd, the default since the producer
-//                rewrite). One per VM plus one config tar per run.
+//     rewrite). One per VM plus one config tar per run.
 //
 // A previous version of this function filtered on .tar.gz only,
 // which silently hid every Phase II archive from the Files tab
@@ -1170,8 +1240,11 @@ func randHex(n int) string {
 // per-VM tars were on disk. The "looks empty" report is what
 // surfaced this bug.
 func ListBackupsOnTarget(tgt Target) ([]BackupFile, error) {
-	if tgt.Type == TargetSFTP {
+	switch tgt.Type {
+	case TargetSFTP:
 		return sftpList(tgt)
+	case TargetS3:
+		return s3List(tgt)
 	}
 	entries, err := os.ReadDir(tgt.Path)
 	if err != nil {
@@ -1211,73 +1284,6 @@ type retentionRun struct {
 	NewestTime time.Time
 }
 
-// ApplyRetention prunes old backup runs from a target according to
-// its RetentionPolicy. It is safe by construction:
-//
-//   - Runs are removed as whole units (DeleteBackupRun), never
-//     individual files, so a partial/in-progress run is never left
-//     in a torn state.
-//   - The config/ subdirectory and its "latest" snapshot are never
-//     touched (they carry the app state, not a dated run).
-//   - Runs without a parseable suffix (legacy files, foreign files)
-//     are ignored, never deleted.
-//   - KeepLast and KeepDays are OR-ed: a run survives if either rule
-//     says to keep it. With both disabled, nothing is deleted.
-//
-// It returns the number of runs removed.
-func ApplyRetention(store *Store, tgt Target) (int, error) {
-	if !tgt.Retention.Enabled() {
-		return 0, nil
-	}
-	files, err := ListBackupsOnTarget(tgt)
-	if err != nil {
-		return 0, err
-	}
-	// Group files into runs by their suffix, tracking each run's
-	// newest file time and total size.
-	byRun := map[string]retentionRun{}
-	for _, f := range files {
-		suf := runSuffixFromFilename(f.Filename)
-		if suf == "" {
-			continue // legacy / foreign file: never managed
-		}
-		rr := byRun[suf]
-		rr.Suffix = suf
-		if f.Modified.After(rr.NewestTime) {
-			rr.NewestTime = f.Modified
-		}
-		byRun[suf] = rr
-	}
-	if len(byRun) == 0 {
-		return 0, nil
-	}
-
-	// Sort runs newest-first for deterministic KeepLast handling.
-	runs := make([]retentionRun, 0, len(byRun))
-	for _, rr := range byRun {
-		runs = append(runs, rr)
-	}
-	sort.Slice(runs, func(i, j int) bool { return runs[i].NewestTime.After(runs[j].NewestTime) })
-
-	now := time.Now().UTC()
-	removed := 0
-	for i, rr := range runs {
-		// KeepLast: keep the N newest runs.
-		keepByLast := tgt.Retention.KeepLast > 0 && i < tgt.Retention.KeepLast
-		// KeepDays: keep runs newer than N days.
-		keepByDays := tgt.Retention.KeepDays > 0 &&
-			now.Sub(rr.NewestTime) <= time.Duration(tgt.Retention.KeepDays)*24*time.Hour
-		if keepByLast || keepByDays {
-			continue
-		}
-		if _, derr := DeleteBackupRun(tgt, rr.Suffix); derr != nil {
-			return removed, derr
-		}
-		removed++
-	}
-	return removed, nil
-}
-
 // runSuffixFromFilename extracts the "<ts26>-<rand6|12>" run suffix
 // from a backup filename, or "" if the name doesn't carry one.
 func runSuffixFromFilename(name string) string {
@@ -1311,16 +1317,101 @@ type BackupFile struct {
 	Filename string    `json:"filename"`
 	Size     int64     `json:"size"`
 	Modified time.Time `json:"modified"`
-	// Sha256 is filled by VerifyBackup if called.
+	// Sha256 is the archive's checksum. Filled by VerifyBackup when
+	// called directly, or by Store.AttachVerified from the last
+	// successful verification record (V13-BCK-04).
 	Sha256 string `json:"sha256,omitempty"`
+	// LastVerified is when this archive last passed verification
+	// (persisted in verified.json; attached to list responses).
+	LastVerified time.Time `json:"last_verified,omitempty"`
+	// LastVerifyError carries the failure reason of the most recent
+	// verification attempt when it failed, so the Files tab can show
+	// "verification failed" instead of silently clearing the hash.
+	LastVerifyError string `json:"last_verify_error,omitempty"`
+}
+
+// primaryOf returns the primary archive of a run: the config tar
+// (always written last, Kind=="config"), falling back to the first
+// file. Verify-on-write verifies only this file — the per-VM tars are
+// multi-GB and re-reading every one on every run would double the I/O.
+func primaryOf(files []JobFile) string {
+	for i := len(files) - 1; i >= 0; i-- {
+		if files[i].Kind == "config" {
+			return files[i].Filename
+		}
+	}
+	if len(files) > 0 {
+		return files[0].Filename
+	}
+	return ""
+}
+
+// sha256LocalFile streams a local file through sha256 without loading
+// it into RAM (V13-BCK-04). Used to produce the expected checksum that
+// the uploaded remote copy is verified against.
+func sha256LocalFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// verifyWrittenPrimary re-reads the just-uploaded primary archive from
+// the REMOTE target (streamed, never in RAM or on local disk) and
+// compares its sha256 against the local staging copy. On any failure it
+// PURGES the corrupt remote file so a poisoned archive can never be
+// restored, records the outcome, and returns an error the caller turns
+// into a failed job. store may be nil (unit tests) — recording is
+// skipped then.
+func verifyWrittenPrimary(store *Store, tgt Target, staging, primary string) error {
+	localSHA, err := sha256LocalFile(filepath.Join(staging, primary))
+	if err != nil {
+		return fmt.Errorf("local checksum of %s: %w", primary, err)
+	}
+	b, err := VerifyBackup(tgt, primary)
+	if err != nil {
+		_ = DeleteBackupFile(tgt, primary)
+		if store != nil {
+			_ = store.RecordVerification(tgt.ID, primary, "", false, err.Error())
+		}
+		return fmt.Errorf("verify %s: %w (corrupt remote copy purged)", primary, err)
+	}
+	if b.Sha256 != localSHA {
+		// Checksum mismatch: the upload corrupted the archive or a
+		// MITM tampered with it mid-flight. Purge the poisoned copy.
+		purgeErr := DeleteBackupFile(tgt, primary)
+		if store != nil {
+			reason := "checksum mismatch (remote " + b.Sha256 + " != local " + localSHA + ")"
+			_ = store.RecordVerification(tgt.ID, primary, b.Sha256, false, reason)
+		}
+		if purgeErr != nil {
+			return fmt.Errorf("checksum mismatch for %s (remote %s != local %s): corrupt remote copy could NOT be purged: %v",
+				primary, b.Sha256, localSHA, purgeErr)
+		}
+		return fmt.Errorf("checksum mismatch for %s (remote %s != local %s): corrupt remote copy purged",
+			primary, b.Sha256, localSHA)
+	}
+	if store != nil {
+		_ = store.RecordVerification(tgt.ID, primary, localSHA, true, "")
+	}
+	return nil
 }
 
 // VerifyBackup reads the archive and computes its sha256 (cheap;
 // just a read pass). The result is returned on the BackupFile and
 // also returned to the caller for any further use.
 func VerifyBackup(tgt Target, filename string) (BackupFile, error) {
-	if tgt.Type == TargetSFTP {
+	switch tgt.Type {
+	case TargetSFTP:
 		return sftpVerify(tgt, filename)
+	case TargetS3:
+		return s3Verify(tgt, filename)
 	}
 	path := filepath.Join(tgt.Path, filename)
 	if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(tgt.Path)+string(os.PathSeparator)) {
@@ -1382,8 +1473,8 @@ type RestoreFilePlan struct {
 // Destination is the top-level restore directory; Files
 // lists the per-archive results (the subdir + the manifest).
 type RestoreResult struct {
-	Destination string                   `json:"destination"`
-	Files       []RestoreFileResult      `json:"files"`
+	Destination string              `json:"destination"`
+	Files       []RestoreFileResult `json:"files"`
 }
 
 // RestoreFileResult is one archive's restore outcome.
@@ -1424,7 +1515,7 @@ func RestoreBackup(ctx context.Context, tgt Target, filename, dataDir string) (R
 	if !ValidBackupFilename(filename) {
 		return RestoreResult{}, fmt.Errorf("invalid filename %q: expected webkvm-<host>-<UTC>[...].tar.{gz,zst}", filename)
 	}
-	return RestoreRun(ctx, tgt, /*runSuffix=*/ "", dataDir, []string{filename})
+	return RestoreRun(ctx, tgt /*runSuffix=*/, "", dataDir, []string{filename})
 }
 
 // RestoreRun extracts every archive in the named run. The
@@ -1435,7 +1526,7 @@ func RestoreBackup(ctx context.Context, tgt Target, filename, dataDir string) (R
 //
 // The output layout is:
 //
-//   dataDir/restore-<ts>/<subdir>/...   (one subdir per file)
+//	dataDir/restore-<ts>/<subdir>/...   (one subdir per file)
 //
 // where <subdir> is "config" for the app-state tar and the
 // VM's name for each per-VM tar. For legacy single-file
@@ -1454,6 +1545,16 @@ func RestoreRun(ctx context.Context, tgt Target, runSuffix, dataDir string, file
 	}
 	if tgt.Type == TargetSFTP {
 		staging, picks, err := stageSFTPFiles(tgt, runSuffix, filenames, dataDir)
+		if err != nil {
+			return RestoreResult{}, err
+		}
+		defer os.RemoveAll(staging)
+		tgt.Path = staging
+		runSuffix = ""
+		filenames = picks
+	}
+	if tgt.Type == TargetS3 {
+		staging, picks, err := stageS3Files(tgt, runSuffix, filenames, dataDir)
 		if err != nil {
 			return RestoreResult{}, err
 		}
@@ -1804,9 +1905,9 @@ func validateTarMemberName(name string) error {
 // buildExtractCmd assembles the right tar command for the
 // archive at src. The decision tree:
 //
-//   .tar.gz  → tar -xzf (built-in gzip)
-//   .tar.zst → if tar supports --zstd, use it directly;
-//              otherwise pipe through `zstd -d` into `tar -x`
+//	.tar.gz  → tar -xzf (built-in gzip)
+//	.tar.zst → if tar supports --zstd, use it directly;
+//	           otherwise pipe through `zstd -d` into `tar -x`
 //
 // We probe tar's --zstd support by trying `tar --zstd --help`
 // once and caching the result (in a process-wide variable)

@@ -189,6 +189,62 @@ func (h *Handler) checkDiskQuota(username string, addByPool map[string]int64) er
 	return enforceDiskQuota(username, q, cur, addByPool)
 }
 
+// realVolumeDiskGB returns the REAL on-disk size of a volume in GB
+// (ceiling), as reported by libvirt — the actual bytes the volume occupies
+// in the pool, not the estimated/declared size used in pre-flight checks
+// (V13-DATA-01). Allocation is preferred (qcow2 grows over time); capacity
+// is the fallback when a volume reports no allocation yet.
+func (h *Handler) realVolumeDiskGB(pool, volName string) (int64, error) {
+	if h.lv == nil {
+		return 0, fmt.Errorf("libvirt not connected")
+	}
+	sv, err := h.lv.GetStorageVolume(pool, volName)
+	if err != nil {
+		return 0, err
+	}
+	bytes := sv.Allocated
+	if bytes <= 0 {
+		bytes = sv.Capacity
+	}
+	return bytesToGB(bytes), nil
+}
+
+// recheckDiskQuota is the anti-TOCTOU quota re-check (V13-DATA-01): the
+// pre-flight handlers check quota against an *estimated* size minutes
+// before the disk is materialized; this re-checks against the REAL
+// on-disk footprint of an already-created volume. It returns an explicit
+// error when the owner would now exceed their quota.
+//
+// Thread-safety: diskUsageByPool / GetStorageVolume read live libvirt
+// snapshots and touch no shared mutable state, so concurrent re-checks
+// are race-free; callers are responsible for any destructive rollback
+// (removePoolImage / delete domain+disks) after a positive result.
+func (h *Handler) recheckDiskQuota(owner, pool, volName string) error {
+	if h.userStore == nil || owner == "" {
+		return nil
+	}
+	u, err := h.userStore.Get(owner)
+	if err != nil {
+		return fmt.Errorf("cannot verify quota for %q: %w", owner, err)
+	}
+	if u.Role == models.RoleAdmin {
+		return nil
+	}
+	q := u.Quota
+	if !q.Enabled() {
+		return nil
+	}
+	realGB, err := h.realVolumeDiskGB(pool, volName)
+	if err != nil {
+		return fmt.Errorf("cannot read real disk size of %q: %w", volName, err)
+	}
+	cur, err := h.diskUsageByPool(owner)
+	if err != nil {
+		return err
+	}
+	return enforceDiskQuota(owner, q, cur, map[string]int64{pool: realGB})
+}
+
 // runningUsageOf sums the vCPU/RAM of the owner's *active* VMs
 // (running/paused/crashed), excluding excludeID. Disk is intentionally not
 // counted here — the disk quota is global across all owned VMs regardless

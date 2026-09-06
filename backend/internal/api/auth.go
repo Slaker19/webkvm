@@ -47,6 +47,17 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	csrf, err := auth.NewCSRFValue()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "failed to generate csrf token")
+		return
+	}
+
+	// V13-SEC-01: session rides an HttpOnly cookie; the CSRF value is a
+	// second, JS-readable cookie (double-submit) + echoed in the JSON.
+	auth.SetSessionCookie(w, token, h.auth.SecureCookies(), int(h.auth.TokenTTL().Seconds()))
+	auth.SetCSRFCookie(w, csrf, h.auth.SecureCookies())
+
 	_, _, ip := audit.FromRequest(r)
 	h.audit.Log(audit.Entry{
 		User: u.Username, Role: u.Role, IP: ip, Action: "auth.login",
@@ -54,22 +65,26 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	})
 
 	jsonResp(w, http.StatusOK, models.LoginResponse{
-		Token:              token,
-		ExpiresAt:          expiresAt,
 		Username:           u.Username,
 		Role:               u.Role,
 		MustChangePassword: u.MustChangePassword,
+		ExpiresAt:          expiresAt,
+		CSRF:               csrf,
 	})
 }
 
-// Logout revokes the current bearer token. Idempotent — calling it
-// twice is harmless. The token's remaining lifetime is spent on the
-// blacklist.
+// Logout revokes the current session token (from the Authorization header
+// or the session cookie) and clears both cookies. Idempotent.
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	token := extractBearer(r)
+	if token == "" {
+		token = auth.SessionToken(r)
+	}
 	if token != "" {
 		_ = h.auth.Revoke(token)
 	}
+	auth.ClearSessionCookie(w, h.auth.SecureCookies())
+	auth.ClearCSRFCookie(w, h.auth.SecureCookies())
 	if u, role, ip := audit.FromRequest(r); u != "" {
 		h.audit.Log(audit.Entry{
 			User: u, Role: role, IP: ip, Action: "auth.logout", Resource: u,
@@ -78,10 +93,14 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
-// Refresh accepts the current (still-valid) bearer token and returns
-// a freshly-rotated one. The old token is revoked atomically.
+// Refresh accepts the current (still-valid) token — via Authorization
+// header or session cookie — and returns a freshly-rotated one. The old
+// token is revoked atomically and a new session cookie is set.
 func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	oldToken := extractBearer(r)
+	if oldToken == "" {
+		oldToken = auth.SessionToken(r)
+	}
 	if oldToken == "" {
 		jsonErr(w, http.StatusUnauthorized, "missing token")
 		return
@@ -107,12 +126,23 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = h.auth.Revoke(oldToken)
 
+	csrf := auth.CSRFValue(r)
+	if csrf == "" {
+		if v, cerr := auth.NewCSRFValue(); cerr == nil {
+			csrf = v
+		}
+	}
+	auth.SetSessionCookie(w, newToken, h.auth.SecureCookies(), int(h.auth.TokenTTL().Seconds()))
+	if csrf != "" {
+		auth.SetCSRFCookie(w, csrf, h.auth.SecureCookies())
+	}
+
 	jsonResp(w, http.StatusOK, models.LoginResponse{
-		Token:              newToken,
-		ExpiresAt:          newExp,
 		Username:           u.Username,
 		Role:               u.Role,
 		MustChangePassword: u.MustChangePassword,
+		ExpiresAt:          newExp,
+		CSRF:               csrf,
 	})
 }
 

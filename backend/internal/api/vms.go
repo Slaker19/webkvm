@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1179,6 +1180,26 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 	// Assign the importing user as the owner for quota accounting.
 	if owner, _, _ := audit.FromRequest(r); owner != "" {
 		_, _ = h.lv.UpdateVMMeta(uuid, models.VMMetaUpdate{OwnerID: &owner})
+
+		// V13-DATA-01 (anti-TOCTOU): quota was checked against the
+		// *declared* import size before streaming. Re-check against the
+		// REAL on-disk footprint of the materialized disk; on exceed,
+		// delete the just-imported VM and its disk and fail the request
+		// (no orphan, no silent over-quota import).
+		if imported, gerr := h.lv.GetDomain(uuid); gerr == nil && len(imported.Disks) > 0 {
+			vol := filepath.Base(imported.Disks[0].Source)
+			if rerr := h.recheckDiskQuota(owner, pool, vol); rerr != nil {
+				_ = h.lv.DeleteDomain(uuid)
+				if imported.Name != "" {
+					_, _, _ = h.lv.DeleteVMDiskFiles(imported.Name)
+				}
+				h.audit.Log(auditFor(r, "vm.import_quota_rollback", uuid, map[string]interface{}{
+					"name": imported.Name, "volume": vol, "error": rerr.Error(),
+				}))
+				jsonErr(w, http.StatusConflict, "Cuota excedida tras la importación del disco. Recursos limpiados por seguridad.")
+				return
+			}
+		}
 	}
 
 	h.audit.Log(auditFor(r, "vm.import", uuid, map[string]interface{}{

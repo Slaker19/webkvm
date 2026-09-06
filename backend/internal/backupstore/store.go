@@ -37,51 +37,95 @@ const (
 	TargetNFS   TargetType = "nfs"   // NFS mount, path is the local mountpoint
 	TargetSMB   TargetType = "smb"   // SMB/CIFS mount, path is the local mountpoint
 	TargetSFTP  TargetType = "sftp"  // remote SFTP upload; host/username + secrets
+	// TargetS3 is any S3-compatible object store (AWS S3, MinIO, Cloudflare
+	// R2, Backblaze B2). Bucket is required; Endpoint selects a compatible
+	// store (empty = AWS). Path is the object-key prefix ("directory").
+	TargetS3 TargetType = "s3"
 )
 
 // TargetOptions carries the connection details for remote targets
-// (currently only SFTP). Passwords/keys never live here — they are
-// stored in the Store's secrets file keyed by target ID. The API
-// request model maps onto this before calling the store.
+// (SFTP and S3). Passwords/keys never live here — they are stored in
+// the Store's secrets file keyed by target ID. The API request model
+// maps onto this before calling the store.
 type TargetOptions struct {
-	Host       string
-	Port       int
-	Username   string
-	Password   string // stored in the secrets file, never serialized
-	SSHKeyPath string // optional absolute path to an SSH private key on the host
-	ClearSecret bool  // when true with no credentials, removes the stored secret
+	Host        string
+	Port        int
+	Username    string
+	Password    string // stored in the secrets file, never serialized
+	SSHKeyPath  string // optional absolute path to an SSH private key on the host
+	ClearSecret bool   // when true, removes the stored secret (explicit clear)
+	// S3 (TargetS3).
+	Bucket    string // required for s3 targets
+	Region    string // required when Endpoint is empty (native AWS)
+	Endpoint  string // S3-compatible endpoint (MinIO/R2/B2); empty = AWS
+	AccessKey string // stored in the secrets file, never serialized
+	SecretKey string // stored in the secrets file, never serialized
+	// KnownHosts is the strict SFTP host-key allowlist (V13-BCK-05):
+	// bare "SHA256:..." fingerprints or full "ssh-ed25519 SHA256:..."
+	// lines, as pasted from ssh-keyscan or a dial error. Empty list =
+	// refuse every connection (no blind trust-on-first-use).
+	KnownHosts *[]string
+	// VerifyOnWrite (V13-BCK-04): when true, the runner re-reads the
+	// uploaded primary archive (streamed, never in RAM) and compares
+	// its sha256 against the local copy; a mismatch fails the job and
+	// purges the corrupt remote file. Pointer: nil = don't change on
+	// update, non-nil = set explicitly (false is a real value).
+	VerifyOnWrite *bool
 	// Retention sets the automatic cleanup policy. Zero value (both
 	// fields 0) means "keep everything" (manual cleanup).
 	Retention RetentionPolicy
 }
 
 // TargetSecret is the credential material for a remote target,
-// persisted separately from targets.json (0600) so the password is
-// never written into the config backup tar.
+// persisted separately from targets.json (0600) so the password/keys
+// are never written into the config backup tar. The whole struct is
+// serialized ONLY to the secrets file; Target.Secret is json:"-" so it
+// never reaches the API responses, memory dumps or request logs.
 type TargetSecret struct {
 	Password   string `json:"password,omitempty"`
 	SSHKeyPath string `json:"ssh_key_path,omitempty"`
+	// S3 credential material.
+	AccessKey string `json:"access_key,omitempty"`
+	SecretKey string `json:"secret_key,omitempty"`
 }
 
 // Target describes one backup destination.
 type Target struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Type       TargetType `json:"type"`
+	ID   string     `json:"id"`
+	Name string     `json:"name"`
+	Type TargetType `json:"type"`
 	// Path is the local directory under which backups are written.
 	// For NFS/SMB the operator is expected to have the mount set
 	// up in /etc/fstab (e.g. via the storage netfs pool); the
 	// scheduler writes to this path and lets the kernel's mount
-	// do the work. For SFTP it is the remote directory.
+	// do the work. For SFTP it is the remote directory. For S3 it is the
+	// object-key prefix (optional; empty = bucket root).
 	Path string `json:"path"`
 	// Host/Port/Username are only meaningful for TargetSFTP.
 	Host     string `json:"host,omitempty"`
 	Port     int    `json:"port,omitempty"`
 	Username string `json:"username,omitempty"`
+	// Bucket/Region/Endpoint are only meaningful for TargetS3.
+	// Region is required for native AWS (Endpoint empty); compatible
+	// stores (MinIO/R2/B2) may set Endpoint and leave Region empty.
+	Bucket   string `json:"bucket,omitempty"`
+	Region   string `json:"region,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
 	// Secret holds the credentials for remote targets. It is
 	// populated from the Store's secrets file and is never
 	// serialized to the API (json:"-").
 	Secret TargetSecret `json:"-"`
+	// KnownHosts is the strict SFTP host-key allowlist (V13-BCK-05).
+	// When empty, every SFTP connection to this target is refused and
+	// the dial error surfaces the presented fingerprint so the operator
+	// can copy it here to authorize the host explicitly. Not a secret —
+	// it travels in targets.json (and thus the config backup tar).
+	KnownHosts []string `json:"known_hosts,omitempty"`
+	// VerifyOnWrite (V13-BCK-04): per-target toggle to re-read the
+	// uploaded archive and verify its checksum after a successful
+	// upload, failing the job and purging the corrupt remote file on
+	// mismatch.
+	VerifyOnWrite bool `json:"verify_on_write,omitempty"`
 	// VMFilter selects which VMs are included in the backup.
 	//   "all"     → back up every VM on the host (default).
 	//   "include" → back up only the VMs in VMIDs.
@@ -95,7 +139,7 @@ type Target struct {
 	// Enabled lets the operator pause a target without removing
 	// it. Disabled targets still appear in the UI but neither
 	// manual backups nor scheduled runs touch them.
-	Enabled   bool      `json:"enabled"`
+	Enabled bool `json:"enabled"`
 	// Retention controls automatic cleanup of old runs after a
 	// successful backup. Both fields are optional:
 	//   - KeepLast: keep only the N most recent runs (0 = unlimited).
@@ -104,28 +148,36 @@ type Target struct {
 	// Disabled (both zero) keeps everything (manual cleanup only),
 	// which is the current default.
 	Retention RetentionPolicy `json:"retention,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
-// RetentionPolicy controls automatic cleanup of old backup runs.
+// RetentionPolicy controls automatic cleanup of old backup runs
+// (V13-BCK-03). All time bucketing is done in UTC consistently.
 type RetentionPolicy struct {
 	// KeepLast keeps the N most recent runs (0 = unlimited).
 	KeepLast int `json:"keep_last,omitempty"`
 	// KeepDays keeps runs newer than N days (0 = unlimited).
 	KeepDays int `json:"keep_days,omitempty"`
+	// KeepDaily keeps the newest N runs within each UTC day.
+	KeepDaily int `json:"keep_daily,omitempty"`
+	// KeepWeekly keeps the newest N runs within each UTC ISO week.
+	KeepWeekly int `json:"keep_weekly,omitempty"`
+	// KeepMonthly keeps the newest N runs within each UTC calendar month.
+	KeepMonthly int `json:"keep_monthly,omitempty"`
 }
 
 // Enabled reports whether any retention rule is configured.
 func (r RetentionPolicy) Enabled() bool {
-	return r.KeepLast > 0 || r.KeepDays > 0
+	return r.KeepLast > 0 || r.KeepDays > 0 ||
+		r.KeepDaily > 0 || r.KeepWeekly > 0 || r.KeepMonthly > 0
 }
 
 // Schedule fires a backup against a target on a cron expression.
 type Schedule struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
-	Cron       string    `json:"cron"`        // standard 5-field cron
+	Cron       string    `json:"cron"` // standard 5-field cron
 	TargetID   string    `json:"target_id"`
 	Enabled    bool      `json:"enabled"`
 	LastRunAt  time.Time `json:"last_run_at,omitempty"`
@@ -157,7 +209,7 @@ type Job struct {
 	// Phase II this is at least one entry (the config tar)
 	// plus one per in-scope VM. The Files field carries the
 	// per-file kind/size/vm_id detail.
-	Filenames []string `json:"filenames,omitempty"`
+	Filenames []string  `json:"filenames,omitempty"`
 	Files     []JobFile `json:"files,omitempty"`
 	Status    string    `json:"status"` // running | success | error
 	Error     string    `json:"error,omitempty"`
@@ -199,12 +251,19 @@ type Store struct {
 	schedules map[string]*Schedule
 	jobs      map[string]*Job
 	secrets   map[string]TargetSecret
+	// verified maps "<targetID>/<filename>" to the most recent
+	// sha256 verification outcome (V13-BCK-04), persisted to
+	// verified.json. Own mutex: RecordVerification is called from
+	// background verify goroutines and must not contend with the
+	// target/schedule/job mutex.
+	verifiedMu sync.RWMutex
+	verified   map[string]verifiedInfo
 }
 
 // File is the on-disk shape. The store is split into three files so
 // we don't have to rewrite the job log on every target mutation.
 type fileTargets struct {
-	Version int      `json:"version"`
+	Version int       `json:"version"`
 	Targets []*Target `json:"targets"`
 }
 type fileSchedules struct {
@@ -212,7 +271,7 @@ type fileSchedules struct {
 	Schedules []*Schedule `json:"schedules"`
 }
 type fileJobs struct {
-	Version int   `json:"version"`
+	Version int    `json:"version"`
 	Jobs    []*Job `json:"jobs"`
 }
 
@@ -229,6 +288,7 @@ func New(dataDir string) (*Store, error) {
 		schedules: map[string]*Schedule{},
 		jobs:      map[string]*Job{},
 		secrets:   map[string]TargetSecret{},
+		verified:  map[string]verifiedInfo{},
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -236,6 +296,9 @@ func New(dataDir string) (*Store, error) {
 	sweepStuckJobs(s)
 	s.ensureDefault()
 	if err := s.loadSecrets(); err != nil {
+		return nil, err
+	}
+	if err := s.loadVerified(); err != nil {
 		return nil, err
 	}
 	if err := s.saveTargets(); err != nil {
@@ -334,13 +397,13 @@ func (s *Store) ensureDefault() {
 	defaultPath := filepath.Join(s.dataDir, "default")
 	_ = os.MkdirAll(defaultPath, 0o755)
 	s.targets["default"] = &Target{
-		ID:         "default",
-		Name:       "default",
-		Type:       TargetLocal,
-		Path:       defaultPath,
-		Enabled:    true,
-		CreatedAt:  time.Now().UTC(),
-		UpdatedAt:  time.Now().UTC(),
+		ID:        "default",
+		Name:      "default",
+		Type:      TargetLocal,
+		Path:      defaultPath,
+		Enabled:   true,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
 	}
 }
 
@@ -408,7 +471,7 @@ func (s *Store) loadSecrets() error {
 		return err
 	}
 	var file struct {
-		Version int                      `json:"version"`
+		Version int                     `json:"version"`
 		Secrets map[string]TargetSecret `json:"secrets"`
 	}
 	if err := json.Unmarshal(data, &file); err != nil {
@@ -422,7 +485,7 @@ func (s *Store) loadSecrets() error {
 
 func (s *Store) saveSecrets() error {
 	return saveJSON(s.secretsPath(), struct {
-		Version int                      `json:"version"`
+		Version int                     `json:"version"`
 		Secrets map[string]TargetSecret `json:"secrets"`
 	}{Version: 1, Secrets: s.secrets})
 }
@@ -448,6 +511,113 @@ func (s *Store) getSecret(id string) (TargetSecret, bool) {
 	defer s.mu.RUnlock()
 	sec, ok := s.secrets[id]
 	return sec, ok
+}
+
+// firstNonEmpty returns a when non-empty, otherwise b. Used by
+// UpdateTarget's credential merge so a blank incoming field
+// preserves the stored secret (V13-BCK-06).
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// --- Verification records (V13-BCK-04) ---
+//
+// Every sha256 verification (on-write and on-demand) records its
+// outcome here, persisted to {dataDir}/backup/verified.json so
+// LastVerified survives restarts and shows up in the Files tab.
+
+// verifiedInfo is one archive's most recent verification outcome.
+type verifiedInfo struct {
+	At     time.Time `json:"at,omitempty"`
+	Sha256 string    `json:"sha256,omitempty"`
+	Ok     bool      `json:"ok"`
+	Error  string    `json:"error,omitempty"`
+}
+
+func (s *Store) verifiedKey(targetID, filename string) string {
+	return targetID + "/" + filename
+}
+
+func (s *Store) verifiedPath() string {
+	return filepath.Join(s.dataDir, "verified.json")
+}
+
+func (s *Store) loadVerified() error {
+	data, err := os.ReadFile(s.verifiedPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var file struct {
+		Version int `json:"version"`
+		// map serializes as {"id/filename": {at, sha256, ok, error}}
+		Verified map[string]verifiedInfo `json:"verified"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		return fmt.Errorf("parse verified.json: %w", err)
+	}
+	s.verifiedMu.Lock()
+	defer s.verifiedMu.Unlock()
+	for k, v := range file.Verified {
+		s.verified[k] = v
+	}
+	return nil
+}
+
+func (s *Store) saveVerified() error {
+	s.verifiedMu.RLock()
+	file := struct {
+		Version  int                     `json:"version"`
+		Verified map[string]verifiedInfo `json:"verified"`
+	}{Version: 1, Verified: s.verified}
+	s.verifiedMu.RUnlock()
+	return saveJSON(s.verifiedPath(), file)
+}
+
+// RecordVerification persists the outcome of a sha256 verification of
+// one archive. ok=true stores the hash and clears the error; ok=false
+// stores the failure reason so the Files tab can show it.
+func (s *Store) RecordVerification(targetID, filename, sha string, ok bool, errMsg string) error {
+	s.verifiedMu.Lock()
+	s.verified[s.verifiedKey(targetID, filename)] = verifiedInfo{
+		At:     time.Now().UTC(),
+		Sha256: sha,
+		Ok:     ok,
+		Error:  errMsg,
+	}
+	s.verifiedMu.Unlock()
+	return s.saveVerified()
+}
+
+// AttachVerified copies each archive's most recent verification
+// outcome onto its BackupFile so the Files API response carries
+// last_verified / sha256 / last_verify_error without a second lookup
+// round-trip per file.
+func (s *Store) AttachVerified(files []BackupFile) []BackupFile {
+	if s == nil || len(files) == 0 {
+		return files
+	}
+	s.verifiedMu.RLock()
+	defer s.verifiedMu.RUnlock()
+	out := make([]BackupFile, len(files))
+	for i, f := range files {
+		out[i] = f
+		if info, ok := s.verified[s.verifiedKey(f.TargetID, f.Filename)]; ok {
+			out[i].LastVerified = info.At
+			if info.Ok {
+				out[i].Sha256 = info.Sha256
+			} else {
+				out[i].Sha256 = ""
+				out[i].LastVerifyError = info.Error
+			}
+		}
+	}
+	return out
 }
 
 // --- Targets ---
@@ -505,10 +675,13 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 	if name == "" {
 		return Target{}, errors.New("name is required")
 	}
-	if path == "" {
+	if path == "" && ttype != TargetS3 {
+		// S3 treats Path as an optional object-key prefix; every other
+		// type requires a real location.
 		return Target{}, errors.New("path is required")
 	}
-	if ttype == TargetSFTP {
+	switch ttype {
+	case TargetSFTP:
 		// The path for an SFTP target is a remote directory, not a
 		// local one — skip the local deny-list/creation checks.
 		if opts.Host == "" {
@@ -520,17 +693,31 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 		if opts.Password == "" && opts.SSHKeyPath == "" {
 			return Target{}, errors.New("a password or ssh key path is required for sftp targets")
 		}
-	} else {
+	case TargetS3:
+		// V13-BCK-01: strict S3 validation. Bucket is mandatory. Native
+		// AWS (no custom Endpoint) needs a Region; a compatible endpoint
+		// (MinIO/R2/B2) does not. Credentials are mandatory — a target
+		// without them can never upload.
+		if opts.Bucket == "" {
+			return Target{}, errors.New("bucket is required for s3 targets")
+		}
+		if opts.Endpoint == "" && opts.Region == "" {
+			return Target{}, errors.New("region is required for s3 targets without a custom endpoint")
+		}
+		if opts.AccessKey == "" || opts.SecretKey == "" {
+			return Target{}, errors.New("access key and secret key are required for s3 targets")
+		}
+	case TargetLocal, TargetNFS, TargetSMB:
 		if err := ValidateTargetPath(path, s.dataDir); err != nil {
 			return Target{}, err
 		}
-		switch ttype {
-		case TargetLocal, TargetNFS, TargetSMB:
-		case "":
-			ttype = TargetLocal
-		default:
-			return Target{}, fmt.Errorf("unsupported target type %q", ttype)
+	case "":
+		ttype = TargetLocal
+		if err := ValidateTargetPath(path, s.dataDir); err != nil {
+			return Target{}, err
 		}
+	default:
+		return Target{}, fmt.Errorf("unsupported target type %q", ttype)
 	}
 	filter, err := normalizeVMFilter(vmFilter)
 	if err != nil {
@@ -562,12 +749,22 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 		Host:      opts.Host,
 		Port:      port,
 		Username:  opts.Username,
+		Bucket:    opts.Bucket,
+		Region:    opts.Region,
+		Endpoint:  opts.Endpoint,
 		Retention: opts.Retention,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
+	if opts.KnownHosts != nil {
+		t.KnownHosts = append([]string(nil), (*opts.KnownHosts)...)
+	}
+	if opts.VerifyOnWrite != nil {
+		t.VerifyOnWrite = *opts.VerifyOnWrite
+	}
 	s.targets[id] = t
-	if ttype == TargetSFTP {
+	switch ttype {
+	case TargetSFTP:
 		if opts.Password != "" || opts.SSHKeyPath != "" {
 			s.secrets[id] = TargetSecret{Password: opts.Password, SSHKeyPath: opts.SSHKeyPath}
 			if err := s.saveSecrets(); err != nil {
@@ -575,7 +772,13 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 				return Target{}, err
 			}
 		}
-	} else {
+	case TargetS3:
+		s.secrets[id] = TargetSecret{AccessKey: opts.AccessKey, SecretKey: opts.SecretKey}
+		if err := s.saveSecrets(); err != nil {
+			delete(s.targets, id)
+			return Target{}, err
+		}
+	default:
 		if err := os.MkdirAll(path, 0o755); err != nil { // lgtm[go/path-injection] - path validated via ValidateTargetPath above
 			delete(s.targets, id)
 			return Target{}, fmt.Errorf("create path: %w", err)
@@ -604,8 +807,8 @@ func normalizeVMFilter(f string) (string, error) {
 // from "set to the zero value" (*x). This is the A4 fix for
 // bug #7 — the previous code mixed two conventions:
 //
-//   * empty string / nil pointer  → "don't change"
-//   * non-empty / non-nil         → "set to this"
+//   - empty string / nil pointer  → "don't change"
+//   - non-empty / non-nil         → "set to this"
 //
 // A future "edit target" UI building on the same pattern would
 // have to choose between "send a partial update" and "send
@@ -640,7 +843,9 @@ func (s *Store) UpdateTarget(
 		t.Name = strings.TrimSpace(*name)
 	}
 	if path != nil {
-		if t.Type == TargetSFTP {
+		if t.Type == TargetSFTP || t.Type == TargetS3 {
+			// Remote targets: the path is a remote dir / object prefix,
+			// never a local path to validate or create.
 			t.Path = *path
 		} else {
 			if err := ValidateTargetPath(*path, s.dataDir); err != nil {
@@ -662,19 +867,56 @@ func (s *Store) UpdateTarget(
 		if opts.Username != "" {
 			t.Username = opts.Username
 		}
-		// Credential updates: non-empty sets the value, empty string
-		// explicitly clears it. A nil-ptr on the request side is
-		// "don't touch" and is resolved by the caller to a *string.
-		if opts.Password != "" || opts.SSHKeyPath != "" {
-			s.secrets[id] = TargetSecret{Password: opts.Password, SSHKeyPath: opts.SSHKeyPath}
-			if err := s.saveSecrets(); err != nil {
-				return Target{}, err
+		// S3 connection fields (V13-BCK-01).
+		if opts.Bucket != "" {
+			t.Bucket = opts.Bucket
+		}
+		if opts.Region != "" {
+			t.Region = opts.Region
+		}
+		if opts.Endpoint != "" {
+			t.Endpoint = opts.Endpoint
+		}
+		// V13-BCK-06 (secret preservation): credential updates now
+		// MERGE with the stored secret instead of replacing it. A
+		// blank/masked incoming field (the API layer resolves masks to
+		// the existing value, or leaves the field empty) PRESERVES the
+		// existing secret; only a non-empty field overwrites. Clearing
+		// is an explicit ClearSecret decision, never implied by an
+		// empty string. This is what lets the Edit form send an
+		// unchanged (masked) password without nuking the stored one.
+		existing := s.secrets[id]
+		var secret TargetSecret
+		switch t.Type {
+		case TargetSFTP:
+			secret = TargetSecret{
+				Password:   firstNonEmpty(opts.Password, existing.Password),
+				SSHKeyPath: firstNonEmpty(opts.SSHKeyPath, existing.SSHKeyPath),
 			}
-		} else if opts.ClearSecret {
+		case TargetS3:
+			secret = TargetSecret{
+				AccessKey: firstNonEmpty(opts.AccessKey, existing.AccessKey),
+				SecretKey: firstNonEmpty(opts.SecretKey, existing.SecretKey),
+			}
+		}
+		if opts.ClearSecret {
 			delete(s.secrets, id)
 			if err := s.saveSecrets(); err != nil {
 				return Target{}, err
 			}
+		} else if secret != (TargetSecret{}) {
+			s.secrets[id] = secret
+			if err := s.saveSecrets(); err != nil {
+				return Target{}, err
+			}
+		}
+		// V13-BCK-05: strict SFTP host-key allowlist.
+		if opts.KnownHosts != nil {
+			t.KnownHosts = append([]string(nil), (*opts.KnownHosts)...)
+		}
+		// V13-BCK-04: per-target verify-on-write toggle.
+		if opts.VerifyOnWrite != nil {
+			t.VerifyOnWrite = *opts.VerifyOnWrite
 		}
 		t.Retention = opts.Retention
 	}
@@ -733,8 +975,11 @@ func DeleteBackupFile(tgt Target, filename string) error {
 	if !ValidBackupFilename(filename) {
 		return fmt.Errorf("invalid filename %q: expected webkvm-<host>-<UTC>.tar.gz", filename)
 	}
-	if tgt.Type == TargetSFTP {
+	switch tgt.Type {
+	case TargetSFTP:
 		return sftpDelete(tgt, filename)
+	case TargetS3:
+		return s3Delete(tgt, filename)
 	}
 	path := filepath.Join(tgt.Path, filename)
 	// Resolve symlinks and confirm we still live under tgt.Path.
@@ -770,8 +1015,11 @@ func DeleteBackupRun(tgt Target, runSuffix string) (int, error) {
 	if !isRunSuffix(runSuffix) {
 		return 0, fmt.Errorf("invalid run suffix %q", runSuffix)
 	}
-	if tgt.Type == TargetSFTP {
+	switch tgt.Type {
+	case TargetSFTP:
 		return sftpDeleteRun(tgt, runSuffix)
+	case TargetS3:
+		return s3DeleteRun(tgt, runSuffix)
 	}
 	entries, err := os.ReadDir(tgt.Path)
 	if err != nil {
@@ -799,19 +1047,19 @@ func DeleteBackupRun(tgt Target, runSuffix string) (int, error) {
 // Three formats are accepted so files written by previous versions
 // of the binary remain deletable from the Files tab:
 //
-//   1. Legacy: webkvm-<host>-<UTC>.tar.gz where UTC is 16 chars
-//      (YYYYMMDDTHHMMSSZ). Produced by writeBackup before the
-//      A3 commit.
-//   2. Phase I: webkvm-<host>-<UTC-nano>-<randHex>.tar.gz where
-//      UTC-nano is 26 chars (YYYYMMDDTHHMMSS.NNNNNNNNNZ) and
-//      randHex is 6 or 12 lowercase hex chars (the runner
-//      calls randHex(n) and hex-encodes, so n=3 → 6 chars,
-//      n=6 → 12 chars; both have shipped over time).
-//   3. Current (Phase II): webkvm-<host>-<UTC-nano>-<randHex>-
-//      <name>.tar.zst where <name> is the VM name (or "config"
-//      for the app-state tar). The producer output is zstd-
-//      compressed; the runner produces one per in-scope VM plus
-//      one config tar per backup run.
+//  1. Legacy: webkvm-<host>-<UTC>.tar.gz where UTC is 16 chars
+//     (YYYYMMDDTHHMMSSZ). Produced by writeBackup before the
+//     A3 commit.
+//  2. Phase I: webkvm-<host>-<UTC-nano>-<randHex>.tar.gz where
+//     UTC-nano is 26 chars (YYYYMMDDTHHMMSS.NNNNNNNNNZ) and
+//     randHex is 6 or 12 lowercase hex chars (the runner
+//     calls randHex(n) and hex-encodes, so n=3 → 6 chars,
+//     n=6 → 12 chars; both have shipped over time).
+//  3. Current (Phase II): webkvm-<host>-<UTC-nano>-<randHex>-
+//     <name>.tar.zst where <name> is the VM name (or "config"
+//     for the app-state tar). The producer output is zstd-
+//     compressed; the runner produces one per in-scope VM plus
+//     one config tar per backup run.
 //
 // The validator is regex-based so the <name> in Phase II can
 // contain dashes (libvirt allows "ubuntu-22-04"). All three
@@ -831,9 +1079,10 @@ func ValidBackupFilename(name string) bool {
 // patterns are stable across releases.
 //
 // Phase II: webkvm-<host>-<ts26>-<randHex>-<name>.tar.zst
-//   <name> matches [A-Za-z0-9._-]+ so a hand-crafted ".."
-//   or path-traversal in the runner-supplied VM id is
-//   rejected by the validator.
+//
+//	<name> matches [A-Za-z0-9._-]+ so a hand-crafted ".."
+//	or path-traversal in the runner-supplied VM id is
+//	rejected by the validator.
 //
 // randHex is 6 or 12 hex chars. The original 6-char
 // design was the v2 plan; an early A3 commit accidentally

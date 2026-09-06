@@ -475,12 +475,15 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
+// LoginResponse (V13-SEC-01) no longer carries the session JWT: it is set
+// as an HttpOnly cookie, so it never reaches JavaScript. The CSRF value is
+// returned so the SPA can echo it back as X-CSRF-Token on mutations.
 type LoginResponse struct {
-	Token              string `json:"token"`
-	ExpiresAt          int64  `json:"expires_at"`
 	Username           string `json:"username"`
 	Role               string `json:"role"`
 	MustChangePassword bool   `json:"must_change_password"`
+	ExpiresAt          int64  `json:"expires_at"`
+	CSRF               string `json:"csrf,omitempty"`
 }
 
 type ErrorResponse struct {

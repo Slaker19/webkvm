@@ -21,7 +21,9 @@
     loading = true;
     try {
       const res = await api.login(username, password);
-      auth.setToken(res.token, res.username, res.role, res.must_change_password);
+      // V13-SEC-01: the session cookie is set by the server; only the
+      // non-secret identity + CSRF value reach JavaScript.
+      auth.setSession(res.username, res.role, res.must_change_password, res.csrf);
       if (res.must_change_password) {
         navigate('/account');
       } else {

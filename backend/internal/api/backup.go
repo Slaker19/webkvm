@@ -32,7 +32,19 @@ type backupTargetCreateRequest struct {
 	Username   string                      `json:"username"`
 	Password   string                      `json:"password"`
 	SSHKeyPath string                      `json:"ssh_key_path"`
-	Retention  backupstore.RetentionPolicy `json:"retention"`
+	// S3 (TargetS3, V13-BCK-06).
+	Bucket    string `json:"bucket"`
+	Region    string `json:"region"`
+	Endpoint  string `json:"endpoint"`
+	AccessKey string `json:"access_key"`
+	SecretKey string `json:"secret_key"`
+	// KnownHosts is the SFTP host-key allowlist (V13-BCK-05).
+	KnownHosts []string `json:"known_hosts"`
+	// VerifyOnWrite (V13-BCK-04): verify the uploaded archive after a
+	// successful upload; the job fails and the corrupt copy is purged
+	// on a checksum mismatch.
+	VerifyOnWrite bool                       `json:"verify_on_write"`
+	Retention     backupstore.RetentionPolicy `json:"retention"`
 }
 
 func (h *Handler) ListBackupTargets(w http.ResponseWriter, r *http.Request) {
@@ -56,12 +68,19 @@ func (h *Handler) CreateBackupTarget(w http.ResponseWriter, r *http.Request) {
 	t, err := h.backupStore.CreateTargetOpts(req.Name, req.Path,
 		backupstore.TargetType(req.Type), req.VMFilter, req.VMIDs,
 		backupstore.TargetOptions{
-			Host:       req.Host,
-			Port:       req.Port,
-			Username:   req.Username,
-			Password:   req.Password,
-			SSHKeyPath: req.SSHKeyPath,
-			Retention:  req.Retention,
+			Host:        req.Host,
+			Port:        req.Port,
+			Username:    req.Username,
+			Password:    req.Password,
+			SSHKeyPath:  req.SSHKeyPath,
+			Bucket:      req.Bucket,
+			Region:      req.Region,
+			Endpoint:    req.Endpoint,
+			AccessKey:   req.AccessKey,
+			SecretKey:   req.SecretKey,
+			KnownHosts:  &req.KnownHosts,
+			VerifyOnWrite: &req.VerifyOnWrite,
+			Retention:   req.Retention,
 		})
 	if err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
@@ -84,19 +103,34 @@ func (h *Handler) UpdateBackupTarget(w http.ResponseWriter, r *http.Request) {
 	// change" on Name/Path/Type, which made it impossible to set
 	// Enabled=false explicitly — the API would silently treat it as
 	// "leave alone". With pointers, false is a real value.
+	//
+	// V13-BCK-06 secret handling: credentials (password / ssh key /
+	// access key / secret key) are never sent back to the frontend, so
+	// an Edit form cannot know the stored value. A credential sent as
+	// an empty string or a mask ("••••", "****") PRESERVES the stored
+	// secret; only a non-empty, unmasked value overwrites it. Clearing
+	// a credential is an explicit ClearSecret=true decision.
 	var req struct {
-		Name       *string                      `json:"name"`
-		Path       *string                      `json:"path"`
-		Type       *string                      `json:"type"`
-		VMFilter   *string                      `json:"vm_filter"`
-		VMIDs      *[]string                    `json:"vm_ids"`
-		Enabled    *bool                        `json:"enabled"`
-		Host       *string                      `json:"host"`
-		Port       *int                         `json:"port"`
-		Username   *string                      `json:"username"`
-		Password   *string                      `json:"password"`
-		SSHKeyPath *string                      `json:"ssh_key_path"`
-		Retention  *backupstore.RetentionPolicy `json:"retention"`
+		Name         *string                      `json:"name"`
+		Path         *string                      `json:"path"`
+		Type         *string                      `json:"type"`
+		VMFilter     *string                      `json:"vm_filter"`
+		VMIDs        *[]string                    `json:"vm_ids"`
+		Enabled      *bool                        `json:"enabled"`
+		Host         *string                      `json:"host"`
+		Port         *int                         `json:"port"`
+		Username     *string                      `json:"username"`
+		Password     *string                      `json:"password"`
+		SSHKeyPath   *string                      `json:"ssh_key_path"`
+		Bucket       *string                      `json:"bucket"`
+		Region       *string                      `json:"region"`
+		Endpoint     *string                      `json:"endpoint"`
+		AccessKey    *string                      `json:"access_key"`
+		SecretKey    *string                      `json:"secret_key"`
+		KnownHosts   *[]string                    `json:"known_hosts"`
+		VerifyOnWrite *bool                       `json:"verify_on_write"`
+		ClearSecret  *bool                        `json:"clear_secret"`
+		Retention    *backupstore.RetentionPolicy `json:"retention"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -107,9 +141,20 @@ func (h *Handler) UpdateBackupTarget(w http.ResponseWriter, r *http.Request) {
 		tt := backupstore.TargetType(*req.Type)
 		ttype = &tt
 	}
+	// Load the existing secret + retention so a partial update (only a
+	// name change, no credentials in the body) keeps them intact.
+	existing := backupstore.TargetSecret{}
+	var existingRetention backupstore.RetentionPolicy
+	if cur, ok := h.backupStore.GetTarget(id); ok {
+		existing = cur.Secret
+		existingRetention = cur.Retention
+	}
+	clearSecret := req.ClearSecret != nil && *req.ClearSecret
 	var opts *backupstore.TargetOptions
-	if req.Host != nil || req.Port != nil || req.Username != nil || req.Password != nil || req.SSHKeyPath != nil || req.Retention != nil {
-		o := backupstore.TargetOptions{}
+	if req.Host != nil || req.Port != nil || req.Username != nil || req.Password != nil || req.SSHKeyPath != nil ||
+		req.Bucket != nil || req.Region != nil || req.Endpoint != nil || req.AccessKey != nil || req.SecretKey != nil ||
+		req.KnownHosts != nil || req.VerifyOnWrite != nil || req.Retention != nil || clearSecret {
+		o := backupstore.TargetOptions{ClearSecret: clearSecret}
 		if req.Host != nil {
 			o.Host = *req.Host
 		}
@@ -119,17 +164,30 @@ func (h *Handler) UpdateBackupTarget(w http.ResponseWriter, r *http.Request) {
 		if req.Username != nil {
 			o.Username = *req.Username
 		}
-		if req.Password != nil {
-			o.Password = *req.Password
+		// Credential resolution: blank or masked → keep stored value.
+		o.Password = resolvedSecret(req.Password, existing.Password)
+		o.SSHKeyPath = resolvedSecret(req.SSHKeyPath, existing.SSHKeyPath)
+		o.AccessKey = resolvedSecret(req.AccessKey, existing.AccessKey)
+		o.SecretKey = resolvedSecret(req.SecretKey, existing.SecretKey)
+		if req.Bucket != nil {
+			o.Bucket = *req.Bucket
 		}
-		if req.SSHKeyPath != nil {
-			o.SSHKeyPath = *req.SSHKeyPath
+		if req.Region != nil {
+			o.Region = *req.Region
 		}
-		if o.Password == "" && o.SSHKeyPath == "" && req.Password != nil {
-			o.ClearSecret = true
+		if req.Endpoint != nil {
+			o.Endpoint = *req.Endpoint
+		}
+		if req.KnownHosts != nil {
+			o.KnownHosts = req.KnownHosts
+		}
+		if req.VerifyOnWrite != nil {
+			o.VerifyOnWrite = req.VerifyOnWrite
 		}
 		if req.Retention != nil {
 			o.Retention = *req.Retention
+		} else {
+			o.Retention = existingRetention // partial update keeps retention
 		}
 		opts = &o
 	}
@@ -143,6 +201,35 @@ func (h *Handler) UpdateBackupTarget(w http.ResponseWriter, r *http.Request) {
 		h.audit.Log(auditFor(r, "backup.target.update", id, nil))
 	}
 	jsonResp(w, http.StatusOK, t)
+}
+
+// resolvedSecret applies V13-BCK-06 secret preservation to a single
+// credential field. A nil pointer (field omitted) or a blank/masked
+// value ("", "••••", "****", …) keeps the stored value; any other
+// value is a real replacement. Masks are never stored.
+func resolvedSecret(v *string, existing string) string {
+	if v == nil {
+		return existing
+	}
+	s := strings.TrimSpace(*v)
+	if s == "" {
+		return existing
+	}
+	if isSecretMask(s) {
+		return existing
+	}
+	return s
+}
+
+// isSecretMask reports whether s looks like a masked credential
+// placeholder rather than a real value.
+func isSecretMask(s string) bool {
+	for _, r := range s {
+		if r != '•' && r != '*' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 func (h *Handler) DeleteBackupTarget(w http.ResponseWriter, r *http.Request) {
@@ -277,6 +364,10 @@ func (h *Handler) ListBackupsOnTarget(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// V13-BCK-04: attach the persisted last-verification outcome
+	// (last_verified + sha256 / last_verify_error) to every file so
+	// the Files tab renders verification state without a second call.
+	files = h.backupStore.AttachVerified(files)
 	// Include the stable "latest configuration" snapshot, if any,
 	// so the UI can show it separately from per-VM archives.
 	config, hasConfig, err := backupstore.LatestConfigInfo(t)
@@ -284,6 +375,9 @@ func (h *Handler) ListBackupsOnTarget(w http.ResponseWriter, r *http.Request) {
 		// Non-fatal: the backups list is the important part.
 		config = backupstore.BackupFile{}
 		hasConfig = false
+	} else if hasConfig {
+		attached := h.backupStore.AttachVerified([]backupstore.BackupFile{config})
+		config = attached[0]
 	}
 	resp := map[string]any{"backups": files}
 	if hasConfig {
@@ -351,7 +445,13 @@ func backupErrorStatus(err error) (int, string) {
 	}
 }
 
-// VerifyBackup computes sha256 of a backup file.
+// VerifyBackup kicks off an ASYNC sha256 verification of a backup
+// file and returns 202 immediately (V13-BCK-04). Re-reading a
+// multi-GB archive must never block the API request goroutine, so the
+// hash is computed in a background goroutine and the outcome is
+// persisted to the store's verified.json — it surfaces on the next
+// files listing as last_verified / sha256 / last_verify_error, which
+// the frontend polls to close the loop.
 func (h *Handler) VerifyBackup(w http.ResponseWriter, r *http.Request) {
 	if h.backupStore == nil {
 		jsonErr(w, http.StatusServiceUnavailable, "backup store not initialized")
@@ -363,17 +463,30 @@ func (h *Handler) VerifyBackup(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "filename query param required")
 		return
 	}
+	// Light traversal guard (the config snapshot lives under a
+	// "config/" prefix, so the strict archive-name validator does not
+	// apply here).
+	if strings.Contains(filename, "..") || strings.HasPrefix(filename, "/") {
+		jsonErr(w, http.StatusBadRequest, "invalid filename")
+		return
+	}
 	t, ok := h.backupStore.GetTarget(id)
 	if !ok {
 		jsonErr(w, http.StatusNotFound, "target not found")
 		return
 	}
-	b, err := backupstore.VerifyBackup(t, filename)
-	if err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	jsonResp(w, http.StatusOK, b)
+	verifyTgt := t
+	verifyFilename := filename
+	record := h.backupStore.RecordVerification
+	go func() {
+		b, err := backupstore.VerifyBackup(verifyTgt, verifyFilename)
+		if err != nil {
+			_ = record(verifyTgt.ID, verifyFilename, "", false, err.Error())
+			return
+		}
+		_ = record(verifyTgt.ID, verifyFilename, b.Sha256, true, "")
+	}()
+	jsonResp(w, http.StatusAccepted, map[string]any{"status": "verifying", "filename": filename})
 }
 
 // RestoreBackup extracts a backup archive into a fresh directory.
@@ -777,6 +890,19 @@ func (h *Handler) TestBackupTarget(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		msg, err := backupstore.TestSFTP(req.Host, req.Port, req.Username, req.Password, req.SSHKeyPath, req.Path)
+		if err != nil {
+			jsonResp(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		jsonResp(w, http.StatusOK, map[string]any{"ok": true, "message": msg})
+		return
+	}
+	if ttype == backupstore.TargetS3 {
+		if req.Bucket == "" {
+			jsonErr(w, http.StatusBadRequest, "bucket is required")
+			return
+		}
+		msg, err := backupstore.TestS3(req.Endpoint, req.Region, req.Bucket, req.AccessKey, req.SecretKey, req.Path)
 		if err != nil {
 			jsonResp(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
 			return

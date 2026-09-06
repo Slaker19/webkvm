@@ -143,6 +143,9 @@
   let appCIPasswords = $state({}); // applianceId -> cloud-init password
   let showAppPass = $state({}); // applianceId -> password visibility
   let appNets = $state({}); // applianceId -> network name
+  // V13-DATA-02: per-appliance eligible-pool selection + the loaded list.
+  let appPools = $state({}); // applianceId -> pool name
+  let deployPools = $state([]);
   let netOptions = $state([]); // [{name, type}]
   let showDeployConfirm = $state(false);
   let deployApp = $state(null); // appliance elegido para instalar
@@ -961,6 +964,25 @@ apt-get update -y
     deployApp = app;
     if (!appNames[app.id]) appNames[app.id] = suggestName(app);
     if (!appNets[app.id]) appNets[app.id] = 'default';
+    // V13-DATA-02: load the caller's eligible storage pools (the backend
+    // already scopes them by AllowedPools) and preselect the first one
+    // so the deploy is one click away.
+    if (!appPools[app.id]) {
+      api
+        .listPools()
+        .then((all) => {
+          const diskPools = (all || []).filter((p) => p.purpose !== 'iso');
+          if (diskPools.length > 0) {
+            if (!appPools[app.id] || !diskPools.some((p) => p.name === appPools[app.id])) {
+              appPools[app.id] = diskPools[0].name;
+            }
+          }
+          deployPools = diskPools;
+        })
+        .catch(() => {
+          /* listPools failure: fall back to the server default pool */
+        });
+    }
     showDeployConfirm = true;
   }
 
@@ -997,6 +1019,8 @@ apt-get update -y
         };
       }
       body.network = (appNets[app.id] || 'default').trim();
+      // V13-DATA-02: send the chosen pool (empty = server default).
+      body.pool = (appPools[app.id] || '').trim();
       const r = await api.deployAppliance(app.id, body);
       showDeployConfirm = false;
       deployApp = null;
@@ -2431,6 +2455,22 @@ set -e
             {/if}
             {#each netOptions as n (n.name)}
               <option value={n.name}>{n.name}{n.type ? ' (' + n.type + ')' : ''}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="space-y-1.5">
+          <Label for="deploy-pool">{t('vms.deployPool')}</Label>
+          <select
+            id="deploy-pool"
+            bind:value={appPools[deployApp.id]}
+            class="input w-full"
+            disabled={deployPools.length === 0}
+          >
+            {#if deployPools.length === 0}
+              <option value="">{t('vms.deployPoolDefault')}</option>
+            {/if}
+            {#each deployPools as p (p.name)}
+              <option value={p.name}>{p.name}</option>
             {/each}
           </select>
         </div>

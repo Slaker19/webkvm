@@ -204,6 +204,7 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name      string                   `json:"name"`
 		Network   string                   `json:"network"`
+		Pool      string                   `json:"pool"`
 		CloudInit *models.CloudInitRequest `json:"cloud_init,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -219,11 +220,45 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// V13-DATA-02: the deploy may target any eligible storage pool (the
+	// frontend offers a selector). Empty keeps the historical default.
+	poolName := strings.TrimSpace(req.Pool)
+	if poolName == "" {
+		poolName = config.DiskPoolName
+	}
+
+	// V13-DATA-02 strict RBAC: the requested pool must be in the caller's
+	// AllowedPools. Admins are always exempt. Evaluated BEFORE any job or
+	// I/O so a forbidden pool is an immediate 403.
+	owner, role, _ := audit.FromRequest(r)
+	if role != models.RoleAdmin {
+		if u, uerr := h.userStore.Get(owner); uerr == nil {
+			if err := assertPoolAllowed(u, poolName); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
+		}
+	}
+
+	// V13-DATA-02 pre-flight: the target pool must exist and be ACTIVE in
+	// libvirt before we enqueue anything — a missing/inactive pool is a
+	// clean 400, never a job that dies minutes later and dirties the job
+	// store with a zombie.
+	if exists, active, perr := h.poolExistsActive(poolName); perr != nil {
+		jsonErr(w, http.StatusServiceUnavailable, "cannot verify storage pool: "+perr.Error())
+		return
+	} else if !exists {
+		jsonErr(w, http.StatusBadRequest, fmt.Sprintf("storage pool %q does not exist", poolName))
+		return
+	} else if !active {
+		jsonErr(w, http.StatusBadRequest, fmt.Sprintf("storage pool %q is not active", poolName))
+		return
+	}
+
 	// V12-DATA-01: fail fast BEFORE any job/I/O if the target already
 	// exists. The job re-checks under the name lock (TOCTOU window), but
 	// this gives the operator an immediate 409 instead of a job that dies
 	// after the fact. Fail-closed: if libvirt cannot answer, refuse.
-	poolName := config.DiskPoolName
 	exists, verr := h.verifyDeployTargetFree(poolName, vmName)
 	if verr != nil {
 		jsonErr(w, http.StatusServiceUnavailable, verr.Error())
@@ -234,20 +269,13 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Quota: the deploy creates one VM for the owner.
-	owner, role, _ := audit.FromRequest(r)
+	// Quota: the deploy creates one VM for the owner on poolName.
 	if role != models.RoleAdmin {
-		if u, uerr := h.userStore.Get(owner); uerr == nil {
-			if err := assertPoolAllowed(u, config.DiskPoolName); err != nil {
-				jsonErr(w, http.StatusForbidden, err.Error())
-				return
-			}
-		}
 		if err := h.checkQuota(owner, 1, int64(app.VCPUs), app.RAMMB, app.DiskGB); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}
-		if err := h.checkDiskQuota(owner, map[string]int64{h.defaultPool(): app.DiskGB}); err != nil {
+		if err := h.checkDiskQuota(owner, map[string]int64{poolName: app.DiskGB}); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -295,10 +323,11 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 		h.audit.Log(auditFor(r, "vm.appliance_deploy", id, map[string]any{
 			"appliance": app.ID,
 			"name":      vmName,
+			"pool":      poolName,
 			"size":      app.SizeBytes,
 		}))
 	}
-	go h.deployApplianceJob(jobID, app, vmName, req.Network, req.CloudInit, owner)
+	go h.deployApplianceJob(jobID, app, vmName, poolName, req.Network, req.CloudInit, owner)
 
 	jsonResp(w, http.StatusAccepted, map[string]string{"job_id": jobID, "status": "started"})
 }
@@ -312,6 +341,22 @@ func (h *Handler) networkExists(name string) (bool, error) {
 		return false, err
 	}
 	return networkInList(name, nets), nil
+}
+
+// poolExistsActive reports whether a libvirt storage pool with this name
+// exists and is running (active). Error is non-nil only when libvirt
+// itself failed to answer (V13-DATA-02 pre-flight).
+func (h *Handler) poolExistsActive(name string) (exists, active bool, err error) {
+	pools, lerr := h.lv.ListStoragePools()
+	if lerr != nil {
+		return false, false, lerr
+	}
+	for _, p := range pools {
+		if p.Name == name {
+			return true, p.State == "active", nil
+		}
+	}
+	return false, false, nil
 }
 
 // networkInList is the pure membership check used by networkExists,
@@ -383,14 +428,13 @@ func (h *Handler) verifyDeployTargetFree(poolName, vmName string) (exists bool, 
 // deployApplianceJob runs the download → decompress → validate → create
 // pipeline in the background, updating the shared job store so the UI
 // can render a live progress bar.
-func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmName, network string, cloudInit *models.CloudInitRequest, owner string) {
+func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmName, poolName, network string, cloudInit *models.CloudInitRequest, owner string) {
 	// V12-DATA-01: serialize same-name deployments. The second job waits
 	// here, then its pre-flight sees the first one's artifacts and stops
 	// before touching any bytes on the pool.
 	unlock := h.acquireDeployLock(vmName)
 	defer unlock()
 
-	poolName := config.DiskPoolName
 	poolPath, err := h.lv.GetPoolPath(poolName)
 	if err != nil {
 		updateJob(jobID, 0, "error", "resolve pool: "+err.Error())
@@ -602,6 +646,25 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 	}
 	if !assertStillOurs("after volume registration") {
 		return
+	}
+
+	// V13-DATA-01 (anti-TOCTOU): the handler checked quota against the
+	// appliance's *estimated* size minutes ago. Re-check against the REAL
+	// on-disk size of the placed volume (after download + decompress +
+	// grow) before the VM is defined. If the real footprint pushes the
+	// owner over quota, abort the provisioning and destroy the volume
+	// immediately — no orphan, no silent over-quota VM.
+	if owner != "" {
+		if rerr := h.recheckDiskQuota(owner, poolName, poolFileName); rerr != nil {
+			removePoolImage("quota re-check failed after disk materialization")
+			updateJob(jobID, 99, "error", "Cuota excedida tras la materialización del disco. Recursos limpiados por seguridad.")
+			if h.audit != nil {
+				h.audit.Log(audit.Entry{Time: time.Now().UTC().Format(time.RFC3339), User: owner,
+					Action: "appliance.deploy_quota_rollback", Resource: poolFileName,
+					Detail: map[string]any{"pool": poolName, "job": jobID, "error": rerr.Error()}})
+			}
+			return
+		}
 	}
 
 	// 5) Create the VM from the existing disk with recommended resources.

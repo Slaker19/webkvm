@@ -4,22 +4,14 @@
  * Connects to the backend's /api/events endpoint via EventSource and
  * dispatches incoming events to registered listeners.
  *
- * Auth: EventSource cannot set custom headers, so a raw JWT can't
- * travel in an Authorization header here. It also must NOT travel as
- * a `?token=` query parameter — a long-lived bearer token in a URL
- * ends up durably logged (reverse-proxy access logs, this app's own
- * request logger, browser history). Instead, each connection attempt
- * first exchanges the JWT for a short-lived, single-use ticket via
- * POST /api/events/ticket (the same mechanism the VM console/serial
- * WebSocket endpoints use), then opens the EventSource with
- * `?ticket=...`.
+ * Auth (V13-SEC-01): the session rides an HttpOnly cookie, so a
+ * same-origin EventSource authenticates automatically — no ticket
+ * exchange, no token in a URL. (The backend still supports single-use
+ * ?ticket= for non-browser clients; the SPA no longer needs it.)
  *
- * Reconnect policy: exponential backoff starting at 1s, doubling up
- * to 30s, reset on successful open. A `reconnecting` state is
- * exposed so the UI can show a "reconnecting…" pill. Since a ticket
- * is single-use and expires in 30s, every (re)connect mints a fresh
- * one rather than relying on the browser's native EventSource
- * auto-retry (which would replay the same, by-then-burned, URL).
+ * Reconnect policy: exponential backoff starting at 1s, doubling up to
+ * 30s, reset on successful open. A `reconnecting` state is exposed so
+ * the UI can show a "reconnecting…" pill.
  *
  * Usage:
  *   import { events } from '$lib/stores/events.svelte.js';
@@ -31,7 +23,7 @@
  *   });
  */
 
-import { auth, api } from './auth.svelte.js';
+import { auth } from './auth.svelte.js';
 import { browser } from '$lib/utils/browser.js';
 
 const MIN_RECONNECT_MS = 1000;
@@ -51,47 +43,17 @@ class EventsStore {
     this._metricsListeners = new Set();
     this._hostMetricsListeners = new Set();
     this._reconnectTimer = null;
-    this._lastToken = null;
-    this._opening = false;
   }
 
   connect() {
     if (!browser) return;
-    if (!auth.token) return;
-    if ((this._es || this._opening) && this._lastToken === auth.token) return;
-
-    this._disconnect();
-    this._lastToken = auth.token;
+    if (!auth.isLoggedIn) return;
+    if (this._es || this._reconnectTimer) return;
     this._open();
   }
 
-  async _open() {
-    if (this._opening) return;
-    this._opening = true;
-    const tokenAtRequest = auth.token;
-    let ticket = null;
-    try {
-      const res = await api.getEventsTicket();
-      ticket = res?.ticket || null;
-    } catch {
-      ticket = null;
-    }
-    this._opening = false;
-
-    // The session may have changed (e.g. logout, token refresh) while
-    // the ticket request was in flight; only proceed if it's still
-    // current.
-    if (this._lastToken !== tokenAtRequest || this._lastToken !== auth.token) {
-      return;
-    }
-    if (!ticket) {
-      this.lastError = 'failed to obtain events ticket';
-      this._scheduleReconnect();
-      return;
-    }
-
-    const url = `/api/events?ticket=${encodeURIComponent(ticket)}`;
-    const es = new EventSource(url);
+  _open() {
+    const es = new EventSource('/api/events');
     this._es = es;
 
     es.addEventListener('open', () => {
@@ -123,11 +85,12 @@ class EventsStore {
 
     es.addEventListener('error', () => {
       this.connected = false;
-      // If the token has changed (e.g. logout) the next connect
-      // will pick it up; otherwise schedule a backoff.
-      if (this._lastToken === auth.token) {
-        this._scheduleReconnect();
+      // If the session is gone, stop reconnecting entirely.
+      if (!auth.isLoggedIn) {
+        this._disconnect();
+        return;
       }
+      this._scheduleReconnect();
     });
   }
 
@@ -162,9 +125,7 @@ class EventsStore {
     );
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
-      if (auth.token && this._lastToken === auth.token) {
-        this._open();
-      }
+      if (auth.isLoggedIn) this._open();
     }, delay);
   }
 
@@ -183,7 +144,6 @@ class EventsStore {
 
   disconnect() {
     this._disconnect();
-    this._lastToken = null;
     this.reconnectAttempts = 0;
   }
 
@@ -193,31 +153,52 @@ class EventsStore {
       this._reconnectTimer = null;
     }
     this.reconnectAttempts = 0;
-    if (auth.token) this._open();
+    if (auth.isLoggedIn) this._open();
   }
 
   onVmState(fn) {
     this._vmStateListeners.add(fn);
     this.connect();
-    return () => this._vmStateListeners.delete(fn);
+    return () => {
+      this._vmStateListeners.delete(fn);
+      this._maybeDisconnect();
+    };
   }
 
   onVmRemoved(fn) {
     this._removedListeners.add(fn);
     this.connect();
-    return () => this._removedListeners.delete(fn);
+    return () => {
+      this._removedListeners.delete(fn);
+      this._maybeDisconnect();
+    };
   }
 
   onVmMetrics(fn) {
     this._metricsListeners.add(fn);
     this.connect();
-    return () => this._metricsListeners.delete(fn);
+    return () => {
+      this._metricsListeners.delete(fn);
+      this._maybeDisconnect();
+    };
   }
 
   onHostMetrics(fn) {
     this._hostMetricsListeners.add(fn);
     this.connect();
-    return () => this._hostMetricsListeners.delete(fn);
+    return () => {
+      this._hostMetricsListeners.delete(fn);
+      this._maybeDisconnect();
+    };
+  }
+
+  _maybeDisconnect() {
+    const total =
+      this._vmStateListeners.size +
+      this._removedListeners.size +
+      this._metricsListeners.size +
+      this._hostMetricsListeners.size;
+    if (total === 0) this.disconnect();
   }
 }
 

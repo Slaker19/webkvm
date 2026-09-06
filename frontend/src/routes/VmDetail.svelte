@@ -1204,13 +1204,13 @@
     showExport = true;
   }
 
-  // Download a .rdp / .vv console file with the Bearer token in the
-  // Authorization header (never in the URL), then save it as a blob.
+  // Download a .rdp / .vv console file with the session cookie
+  // (credentials: include — never a token in the URL), then save it as a blob.
   async function downloadConsoleFile(kind) {
     const url = kind === 'rdp' ? api.getRDPUrl(vmId) : api.getSPICEUrl(vmId);
     try {
       const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${auth.token}` },
+        credentials: 'include',
       });
       if (!res.ok)
         throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);

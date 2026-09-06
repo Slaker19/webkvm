@@ -380,11 +380,11 @@ func TestFilterInTreeDisks(t *testing.T) {
 // TestSanitizeVMName covers the path-traversal defence.
 func TestSanitizeVMName(t *testing.T) {
 	cases := map[string]string{
-		"vm-1":                 "vm-1",
-		"ubuntu-22-04":         "ubuntu-22-04",
-		"../../etc/passwd":     "._.._.._etc_passwd", // all separators turned into "_"
-		"foo bar":              "foo_bar",
-		"a/b\\c":               "a_b_c",
+		"vm-1":             "vm-1",
+		"ubuntu-22-04":     "ubuntu-22-04",
+		"../../etc/passwd": "._.._.._etc_passwd", // all separators turned into "_"
+		"foo bar":          "foo_bar",
+		"a/b\\c":           "a_b_c",
 	}
 	for in, want := range cases {
 		got := sanitizeVMName(in)
@@ -813,12 +813,12 @@ func TestAllocateOutputPathRejectsBadDir(t *testing.T) {
 // from the Files tab so old archives don't become orphans.
 func TestValidBackupFilenameAcceptsAllFormats(t *testing.T) {
 	for _, ok := range []string{
-		"webkvm-host-20260625T120000Z.tar.gz",                          // legacy gzip
-		"webkvm-host-20260625T120000.000000000Z-aabbcc.tar.gz",        // Phase I gzip
-		"webkvm-host-with-dashes-20260625T120000Z.tar.gz",              // legacy + dashes
-		"webkvm-host-with-dashes-20260625T120000.000000000Z-deadbe.tar.gz", // Phase I + dashes
-		"webkvm-host-20260625T120000.000000000Z-aabbcc-config.tar.zst",  // Phase II config
-		"webkvm-host-20260625T120000.000000000Z-aabbcc-vm-1.tar.zst",    // Phase II per-VM
+		"webkvm-host-20260625T120000Z.tar.gz",                                // legacy gzip
+		"webkvm-host-20260625T120000.000000000Z-aabbcc.tar.gz",               // Phase I gzip
+		"webkvm-host-with-dashes-20260625T120000Z.tar.gz",                    // legacy + dashes
+		"webkvm-host-with-dashes-20260625T120000.000000000Z-deadbe.tar.gz",   // Phase I + dashes
+		"webkvm-host-20260625T120000.000000000Z-aabbcc-config.tar.zst",       // Phase II config
+		"webkvm-host-20260625T120000.000000000Z-aabbcc-vm-1.tar.zst",         // Phase II per-VM
 		"webkvm-host-20260625T120000.000000000Z-aabbcc-ubuntu-22.04.tar.zst", // Phase II with dashes
 		// randHex(6) → 12 hex chars; this is the actual
 		// format the runner has been emitting on disk since
@@ -836,15 +836,15 @@ func TestValidBackupFilenameAcceptsAllFormats(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{
-		"webkvm-host-20260625T12000Z.tar.gz",       // too short
-		"webkvm-host-20260625T120000X.tar.gz",      // bad suffix
-		"webkvm-host-2026-06-25T12-00-00Z.tar.gz",  // wrong shape
-		"webkvm-host-20260625T120000.000000000Z.tar.gz", // no random suffix
-		"webkvm-host-20260625T120000.000000000Z-AABBCC.tar.gz", // uppercase
-		"webkvm-host-20260625T120000.000000000Z-aabbcdX.tar.gz", // non-hex
-		"webkvm-host-20260625T120000.000000000Z-aabbcc-vm-1.tar.gz", // wrong extension
+		"webkvm-host-20260625T12000Z.tar.gz",                           // too short
+		"webkvm-host-20260625T120000X.tar.gz",                          // bad suffix
+		"webkvm-host-2026-06-25T12-00-00Z.tar.gz",                      // wrong shape
+		"webkvm-host-20260625T120000.000000000Z.tar.gz",                // no random suffix
+		"webkvm-host-20260625T120000.000000000Z-AABBCC.tar.gz",         // uppercase
+		"webkvm-host-20260625T120000.000000000Z-aabbcdX.tar.gz",        // non-hex
+		"webkvm-host-20260625T120000.000000000Z-aabbcc-vm-1.tar.gz",    // wrong extension
 		"webkvm-host-20260625T120000.000000000Z-aabbcc-../etc.tar.zst", // path traversal
-		"webkvm-host-20260625T120000.000000000Z-aabbcc-.tar.zst",        // empty name
+		"webkvm-host-20260625T120000.000000000Z-aabbcc-.tar.zst",       // empty name
 		"../etc/passwd",
 		"foo.tar.gz",
 	} {
@@ -924,8 +924,8 @@ func TestRestoreRunMultiFile(t *testing.T) {
 	suffix := "deadbe"
 	files := map[string]string{
 		"webkvm-host-" + ts + "-" + suffix + "-config.tar.zst": "manifest",
-		"webkvm-host-" + ts + "-" + suffix + "-vm-1.tar.zst":     "domain.xml",
-		"webkvm-host-" + ts + "-" + suffix + "-vm-2.tar.zst":     "domain.xml",
+		"webkvm-host-" + ts + "-" + suffix + "-vm-1.tar.zst":   "domain.xml",
+		"webkvm-host-" + ts + "-" + suffix + "-vm-2.tar.zst":   "domain.xml",
 	}
 	for name, content := range files {
 		// Build a real zstd tar with one entry.
@@ -972,7 +972,7 @@ func TestRestoreRunRejectsInvalidSuffix(t *testing.T) {
 	for _, bad := range []string{
 		"garbage",
 		"../etc",
-		"20260625T120000Z-aabbcc",        // 16-char ts, not 26
+		"20260625T120000Z-aabbcc",           // 16-char ts, not 26
 		"20260625T120000.000000000Z-AABBCC", // uppercase rand
 	} {
 		_, err := RestoreRun(context.Background(), tgt, bad, t.TempDir(), nil)
@@ -1107,7 +1107,7 @@ func TestListBackupsOnTargetPhaseIIZstExtension(t *testing.T) {
 		{"webkvm-host-20260626T150000.000000000Z-abcdef-ubuntu-1.tar.zst", 5_141_406_464},
 		{"webkvm-host-20260626T150000.000000000Z-abcdef-config.tar.zst", 4_554},
 		{"webkvm-host-20260626T150000.000000000Z-abcdef.tmp", 999}, // not a backup
-		{"README.md", 42},                                         // not a backup
+		{"README.md", 42}, // not a backup
 	}
 	for _, p := range plant {
 		f, err := os.Create(filepath.Join(dir, p.name))
