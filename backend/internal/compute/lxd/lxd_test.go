@@ -95,15 +95,14 @@ func TestParseIntConfig(t *testing.T) {
 func TestLXDBackendFailSafe(t *testing.T) {
 	b := &LXDBackend{} // no client needed for stubs
 	ops := []func() error{
-		func() error { return b.StartDomain("x") },
 		func() error { _, err := b.CreateDomain(models.CreateVMRequest{}); return err },
 		func() error {
 			_, err := b.ExportDomain(context.Background(), "x", compute.ExportBackupOptions{}, nil)
 			return err
 		},
-		func() error { _, err := b.OpenSerialConsole("x"); return err },
 		func() error { _, err := b.ListSnapshots("x"); return err },
 		func() error { _, err := b.ListStoragePools(); return err },
+		func() error { return b.AttachDisk("x", models.AttachDiskRequest{}) },
 	}
 	for i, op := range ops {
 		if err := op(); !errors.Is(err, compute.ErrNotImplemented) {

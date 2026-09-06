@@ -15,16 +15,22 @@ package lxd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	lxd "github.com/canonical/lxd/client"
 	"github.com/canonical/lxd/shared/api"
+	"github.com/gorilla/websocket"
 
 	"webkvm/internal/backupstore"
+	"webkvm/internal/cloudinit"
 	"webkvm/internal/compute"
 	"webkvm/internal/models"
 )
@@ -115,16 +121,35 @@ func (b *LXDBackend) CreateDomain(req models.CreateVMRequest) (models.VM, error)
 func (b *LXDBackend) UpdateDomain(id string, req models.UpdateVMRequest) (models.VM, error) {
 	return models.VM{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) DeleteDomain(id string) error { return compute.ErrNotImplemented }
+func (b *LXDBackend) DeleteDomain(id string) error {
+	// Force: deleting a running container would otherwise be rejected and
+	// the handler expects delete to always succeed (matching KVM).
+	op, err := b.client.DeleteInstance(id, true)
+	if err != nil {
+		return mapLXErr(err)
+	}
+	return waitOperation(op)
+}
 func (b *LXDBackend) CloneDomain(id string, req models.CloneVMRequest) (models.VM, error) {
 	return models.VM{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) StartDomain(id string) error    { return compute.ErrNotImplemented }
-func (b *LXDBackend) ShutdownDomain(id string) error { return compute.ErrNotImplemented }
-func (b *LXDBackend) ForceOffDomain(id string) error { return compute.ErrNotImplemented }
-func (b *LXDBackend) RebootDomain(id string) error   { return compute.ErrNotImplemented }
-func (b *LXDBackend) SuspendDomain(id string) error  { return compute.ErrNotImplemented }
-func (b *LXDBackend) ResumeDomain(id string) error   { return compute.ErrNotImplemented }
+func (b *LXDBackend) StartDomain(id string) error {
+	return b.setState(id, "start", 30, false)
+}
+func (b *LXDBackend) ShutdownDomain(id string) error {
+	// Graceful stop: LXD sends the guest a shutdown signal and waits up to
+	// the timeout before giving up (Force=false).
+	return b.setState(id, "stop", 60, false)
+}
+func (b *LXDBackend) ForceOffDomain(id string) error {
+	// Kill: immediate forced stop (no graceful shutdown grace period).
+	return b.setState(id, "stop", 0, true)
+}
+func (b *LXDBackend) RebootDomain(id string) error {
+	return b.setState(id, "restart", 60, false)
+}
+func (b *LXDBackend) SuspendDomain(id string) error { return b.setState(id, "freeze", 30, false) }
+func (b *LXDBackend) ResumeDomain(id string) error  { return b.setState(id, "unfreeze", 30, false) }
 func (b *LXDBackend) SetDomainAutostart(id string, enabled bool) error {
 	return compute.ErrNotImplemented
 }
@@ -134,6 +159,51 @@ func (b *LXDBackend) GetDomainAutostart(id string) (bool, error) {
 func (b *LXDBackend) SetBootDevice(id string, device string) error { return compute.ErrNotImplemented }
 func (b *LXDBackend) GetBootDevice(id string) (string, error)      { return "", compute.ErrNotImplemented }
 func (b *LXDBackend) ValidateDomainDisks(id string) error          { return compute.ErrNotImplemented }
+
+// setState drives the LXD instance state machine (start/stop/restart/
+// freeze/unfreeze) and waits for the operation to complete.
+func (b *LXDBackend) setState(id, action string, timeout int, force bool) error {
+	op, err := b.client.UpdateInstanceState(id, api.InstanceStatePut{
+		Action:  action,
+		Timeout: timeout,
+		Force:   force,
+	}, "")
+	if err != nil {
+		return mapLXErr(err)
+	}
+	return waitOperation(op)
+}
+
+// waitOperation polls an LXD operation until it reaches a terminal state.
+// Deliberately avoids Operation.Wait(), which subscribes to the /1.0/events
+// websocket — polling Refresh()/Get() is equally correct against a real
+// daemon and keeps the adapter testable against a minimal server.
+func waitOperation(op lxd.Operation) error {
+	const timeout = 90 * time.Second
+	deadline := time.Now().Add(timeout)
+	for {
+		cur := op.Get()
+		switch cur.Status {
+		case "Success":
+			if cur.Err != "" {
+				return errors.New(cur.Err)
+			}
+			return nil
+		case "Failure", "Cancelled":
+			if cur.Err != "" {
+				return errors.New(cur.Err)
+			}
+			return errors.New("LXD operation failed")
+		}
+		if time.Now().After(deadline) {
+			return errors.New("LXD operation timed out")
+		}
+		if err := op.Refresh(); err != nil {
+			return err
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
 
 // --- Disks / devices / USB ---
 
@@ -256,8 +326,113 @@ func (b *LXDBackend) CheckVLANSupport(networkName string) (models.VlanSupport, e
 
 // --- Console / cloud-init / metadata ---
 
+// lxdConsoleStream adapts an LXD interactive exec (PTY over websockets)
+// to the neutral ConsoleStream the serial proxy already uses. Bytes flow
+// straight from/to the container PTY through the client's internal
+// websocket bridge — the frontend terminal never notices the hypervisor.
+type lxdConsoleStream struct {
+	op     lxd.Operation
+	stdin  *io.PipeWriter
+	stdout *io.PipeReader
+	done   chan bool
+	ctrlMu sync.Mutex
+	ctrl   *websocket.Conn // window-resize/signal channel
+	closed atomic.Bool
+}
+
+func (s *lxdConsoleStream) Recv(buf []byte) (int, error) { return s.stdout.Read(buf) }
+func (s *lxdConsoleStream) Send(b []byte) (int, error) {
+	// The KVM serial proxy also forwards resize JSON; only LXD execs are
+	// real PTYs, so translate resize frames here without the proxy knowing.
+	var rs struct {
+		Cols int `json:"cols"`
+		Rows int `json:"rows"`
+	}
+	if json.Unmarshal(b, &rs) == nil && rs.Cols > 0 && rs.Rows > 0 {
+		_ = s.resize(rs.Cols, rs.Rows)
+		return len(b), nil
+	}
+	return s.stdin.Write(b)
+}
+func (s *lxdConsoleStream) resize(cols, rows int) error {
+	ctrl := s.controlConn()
+	if ctrl == nil {
+		return nil
+	}
+	payload, _ := json.Marshal(map[string]any{"command": "window-resize", "width": cols, "height": rows})
+	return ctrl.WriteMessage(websocket.TextMessage, payload)
+}
+func (s *lxdConsoleStream) controlConn() *websocket.Conn {
+	s.ctrlMu.Lock()
+	defer s.ctrlMu.Unlock()
+	return s.ctrl
+}
+func (s *lxdConsoleStream) setControl(conn *websocket.Conn) {
+	s.ctrlMu.Lock()
+	s.ctrl = conn
+	s.ctrlMu.Unlock()
+}
+func (s *lxdConsoleStream) Finish() error {
+	// Signal SIGHUP on the control channel so the PTY shell exits.
+	if c := s.controlConn(); c != nil {
+		payload, _ := json.Marshal(map[string]any{"command": "signal", "signal": 1})
+		_ = c.WriteMessage(websocket.TextMessage, payload)
+	}
+	_ = s.stdin.Close()
+	return nil
+}
+func (s *lxdConsoleStream) Free() {
+	s.closed.Store(true)
+	_ = s.stdin.Close()
+	_ = s.stdout.Close()
+	// Wait for the exec bridge to finish (bounded).
+	select {
+	case <-s.done:
+	case <-time.After(3 * time.Second):
+	}
+}
+
+// OpenSerialConsole opens an interactive shell (bash) inside the LXD
+// instance and returns a ConsoleStream bridged to it. A stopped or
+// missing instance returns compute.ErrDomainNotRunning so the serial
+// proxy retries until the container is running.
 func (b *LXDBackend) OpenSerialConsole(id string) (compute.ConsoleStream, error) {
-	return nil, compute.ErrNotImplemented
+	// Pre-check the instance is running: exec on a stopped container
+	// would fail asynchronously with no websockets to attach to.
+	state, _, err := b.client.GetInstanceState(id)
+	if err != nil {
+		return nil, mapLXErr(err)
+	}
+	if state.Status != "Running" {
+		return nil, compute.ErrDomainNotRunning
+	}
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	done := make(chan bool)
+	stream := &lxdConsoleStream{stdin: stdinW, stdout: stdoutR, done: done}
+
+	exec := api.InstanceExecPost{
+		Command:     []string{"bash"},
+		Interactive: true,
+		WaitForWS:   true,
+		Environment: map[string]string{"TERM": "xterm-256color"},
+		Width:       120,
+		Height:      30,
+	}
+	op, err := b.client.ExecInstance(id, exec, &lxd.InstanceExecArgs{
+		Stdin:    stdinR,
+		Stdout:   stdoutW,
+		Control:  stream.setControl,
+		DataDone: done,
+	})
+	if err != nil {
+		stdinW.Close()
+		stdoutR.Close()
+		return nil, mapLXErr(err)
+	}
+	stream.op = op
+	return stream, nil
 }
 func (b *LXDBackend) SetUserPassword(id, user, password string) error {
 	return compute.ErrNotImplemented
@@ -407,3 +582,40 @@ func isNotFound(err error) bool {
 
 // httpNotFound mirrors net/http.StatusNotFound to avoid importing net/http.
 const httpNotFound = 404
+
+// mapLXErr translates LXD daemon errors to the neutral compute sentinels
+// where a meaningful mapping exists; anything else passes through.
+func mapLXErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "not running") ||
+		strings.Contains(strings.ToLower(err.Error()), "instance is not running") {
+		return compute.ErrDomainNotRunning
+	}
+	if isNotFound(err) {
+		return err
+	}
+	return err
+}
+
+// lxdCloudInitConfig builds the native LXD instance config keys from a
+// cloud-init request (v1.4 Fase 2). Unlike KVM (NoCloud seed ISO), LXD
+// accepts cloud-init directly as instance config: user.user-data carries
+// the #cloud-config document and user.network-config the network YAML.
+// networkBridge is the LXD managed bridge to attach by default (empty =
+// no network-config block).
+func lxdCloudInitConfig(cfg cloudinit.Config, networkBridge string) (map[string]string, bool) {
+	out := map[string]string{}
+	if cfg.User == "" && cfg.ProvisionScript == "" && cfg.Hostname == "" {
+		return nil, false // nothing to provision
+	}
+	userData := cloudinit.BuildUserData(cfg)
+	if userData != "" {
+		out["user.user-data"] = userData
+	}
+	if networkBridge != "" {
+		out["user.network-config"] = "network:\n  version: 2\n  ethernets:\n    eth0:\n      dhcp4: true\n"
+	}
+	return out, true
+}

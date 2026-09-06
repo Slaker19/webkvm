@@ -1,5 +1,45 @@
 # FIXES — Correcciones aplicadas (2026-09-05)
 
+## v1.4 — Fase 2: Ciclo de Vida LXD (Start/Stop/ForceOff/Reboot/Delete + Consola) (2026-09-06)
+
+- **Control de estado puro** (`lxd.go`): `StartDomain`/`ShutdownDomain`/
+  `ForceOffDomain`/`RebootDomain`/`SuspendDomain`/`ResumeDomain` vía
+  `UpdateInstanceState` (`start`/`stop`/`restart`/`freeze`/`unfreeze`; Shutdown =
+  graceful `stop` timeout 60, ForceOff = `stop` `force:true` kill, Reboot =
+  `restart`); `DeleteDomain` vía `DeleteInstance(name, true)`. `waitOperation`
+  pollea `Operation.Get()/Refresh()` hasta estado terminal (evita la
+  dependencia del websocket `/1.0/events` — igual de correcto en producción y
+  testeable). Errores mapeados con `mapLXErr` (→ `ErrDomainNotRunning` cuando
+  la instancia no está corriendo).
+- **Consola interactiva (el reto)**: `OpenSerialConsole` abre un **exec
+  interactivo `bash`** (`ExecInstance` con PTY) y lo adapta a `compute.ConsoleStream`
+  (`lxdConsoleStream`): `Recv/Send` puentean a través de los pipes del bridge
+  websocket del cliente oficial; `Send` intercepta frames JSON `{cols,rows}` y
+  los traduce a `window-resize` en el canal de control; `Finish` envía SIGHUP y
+  cierra stdin. **El SerialProxy existente y Xterm.js no notan el cambio de
+  hipervisor**. Exec sobre instancia parada → `ErrDomainNotRunning` (el proxy
+  reintenta).
+- **Cloud-init (preparación)**: `cloudinit.BuildUserData` exportado; `lxdCloudInitConfig`
+  mapea un `cloudinit.Config` a las keys nativas **`user.user-data`** +
+  **`user.network-config`** (sin ISO NoCloud) — listo para el `CreateInstance`
+  de Fase 2-avanzada.
+- **Tests** (`-race`): `lifecycle_test.go` — fake daemon que registra los
+  state-calls y verifica las flags (start:graceful, stop:graceful, stop:force,
+  restart:graceful) + delete; exec en instancia Stopped → `ErrDomainNotRunning`;
+  `lxdCloudInitConfig` (user-data con `#cloud-config` + network-config dhcp).
+- **Gate real en la VM (v1.3.1-fase2, LXD snap real v6.9)**:
+  - Contenedor **ubuntu:24.04 `web` REAL** (RUNNING, IP 10.115.252.135).
+  - **Lifecycle vía nuestra API**: shutdown→shutoff ✓, start→running ✓,
+    reboot→running ✓, forceoff→shutoff ✓, start ✓.
+  - **Consola**: cliente websocket Go → login+ticket → `GET /api/vms/web/serial`
+    → exec `bash` en el contenedor: prompt `root@web:~#`, `echo SHELL_EXEC_$(hostname)`
+    → **`SHELL_EXEC_web`** (hostname expandido en el contenedor). **Shell
+    interactiva real a través de nuestro backend**.
+  - Al quitar el drop-in → KVM-only restaurado, smoke de Fase 0 idéntico.
+- **Gates**: `golangci-lint` 0 issues · build/vet OK · `go test -race ./...`
+  → 20 paquetes ok (solo los 2 `backupstore` root preexistentes) · frontend
+  build + i18n OK.
+
 ## v1.4 — Fase 1: El Conector LXD (2026-09-06)
 
 - **`internal/compute/lxd/lxd.go` (nuevo)** — `LXDBackend` implementa los 87

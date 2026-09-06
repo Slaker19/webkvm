@@ -147,6 +147,13 @@ func BuildNoCloudISO(isoPath string, cfg Config) (string, error) {
 	return isoPath, nil
 }
 
+// BuildUserData renders the #cloud-config user-data document for a
+// config. Exported so the LXD backend can reuse it for the native
+// cloud-init path (user.user-data) instead of a NoCloud ISO (v1.4 Fase 2).
+func BuildUserData(cfg Config) string {
+	return buildUserData(cfg)
+}
+
 // buildUserData renders the #cloud-config user-data document. It creates
 // the provisioned user, installs and starts the QEMU guest agent, and —
 // when a ProvisionScript is supplied — writes it to disk (base64-encoded
