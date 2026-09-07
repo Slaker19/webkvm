@@ -13,20 +13,20 @@
   import { toast } from '$lib/components/ui/toast';
   import { t } from '../lib/i18n.svelte.js';
   import { stateDotClass } from '$lib/utils/vmState.js';
-import {
-  computeTypeBadgeClass,
-  computeTypeLabel,
-  isContainer,
-  provisionChip,
-} from '$lib/utils/computeType.js';
-import { networkLabel } from '$lib/utils/networkLabel.js';
+  import {
+    computeTypeBadgeClass,
+    computeTypeLabel,
+    isContainer,
+    provisionChip,
+  } from '$lib/utils/computeType.js';
+  import { networkLabel } from '$lib/utils/networkLabel.js';
 
-// Friendly label for a network option {name, bridge} (v1.4 Fase 4.1):
-// "Red Interna (vmbr0)" instead of a raw bridge/name.
-function netDisplay(n) {
-  if (!n) return '';
-  return networkLabel({ name: n.name, bridge: n.bridge });
-}
+  // Friendly label for a network option {name, bridge} (v1.4 Fase 4.1):
+  // "Red Interna (vmbr0)" instead of a raw bridge/name.
+  function netDisplay(n) {
+    if (!n) return '';
+    return networkLabel({ name: n.name, bridge: n.bridge });
+  }
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
@@ -1350,11 +1350,7 @@ apt-get update -y
 
   <!-- v1.4 Fase 4: instance-type filter (PLAN-LXD 5.1), always visible -->
   <div class="flex items-center gap-1.5 flex-wrap mb-4">
-    {#each [
-      { v: 'all', l: t('vms.allTypes'), c: '' },
-      { v: 'vm', l: t('vms.typeVms'), c: '' },
-      { v: 'container', l: t('vms.typeContainers'), c: 'text-[#d97706]' },
-    ] as f}
+    {#each [{ v: 'all', l: t('vms.allTypes'), c: '' }, { v: 'vm', l: t('vms.typeVms'), c: '' }, { v: 'container', l: t('vms.typeContainers'), c: 'text-[#d97706]' }] as f}
       <button
         onclick={() => (typeFilter = typeFilter === f.v ? 'all' : f.v)}
         class="text-xs px-2.5 py-1 rounded-full border transition-colors {typeFilter === f.v
@@ -1369,7 +1365,11 @@ apt-get update -y
           {/if}
           {f.l}
           <span class="text-[10px] opacity-60"
-            >({f.v === 'all' ? vms.length : f.v === 'container' ? vms.filter((v) => isContainer(v)).length : vms.filter((v) => v.type === 'vm').length})</span
+            >({f.v === 'all'
+              ? vms.length
+              : f.v === 'container'
+                ? vms.filter((v) => isContainer(v)).length
+                : vms.filter((v) => v.type === 'vm').length})</span
           >
         </span>
       </button>
@@ -1512,7 +1512,11 @@ apt-get update -y
             <!-- v1.4 Fase 4: identity badge (PLAN-LXD 5.2) — top-right,
                  shifts left of the select checkbox when in select mode -->
             <div
-              class="absolute top-2 {selectMode ? 'right-9' : 'right-2'} inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wider font-medium {computeTypeBadgeClass(vm.type)}"
+              class="absolute top-2 {selectMode
+                ? 'right-9'
+                : 'right-2'} inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wider font-medium {computeTypeBadgeClass(
+                vm.type
+              )}"
               title={isContainer(vm) ? 'LXC container' : 'KVM virtual machine'}
             >
               {#if isContainer(vm)}
@@ -2149,9 +2153,7 @@ apt-get update -y
                               <option value="default">default</option>
                             {/if}
                             {#each netOptions as n (n.name)}
-                              <option value={n.name}
-                                >{netDisplay(n)}</option
-                              >
+                              <option value={n.name}>{netDisplay(n)}</option>
                             {/each}
                           </select>
                         </div>

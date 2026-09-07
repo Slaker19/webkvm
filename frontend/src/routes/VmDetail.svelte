@@ -13,8 +13,8 @@
   import { api, auth } from '$lib/stores/auth.svelte.js';
   import { t } from '../lib/i18n.svelte.js';
   import { stateDotClass } from '$lib/utils/vmState.js';
-import { isContainer } from '$lib/utils/computeType.js';
-import { networkLabel, networkLabelFor } from '$lib/utils/networkLabel.js';
+  import { isContainer } from '$lib/utils/computeType.js';
+  import { networkLabel, networkLabelFor } from '$lib/utils/networkLabel.js';
   import { formatRate } from '$lib/utils/format.js';
   import { events } from '$lib/stores/events.svelte.js';
   import { navigate, getRoute } from '$lib/router.svelte.js';
@@ -1577,52 +1577,51 @@ import { networkLabel, networkLabelFor } from '$lib/utils/networkLabel.js';
                 </div>
               {/if}
               {#if !isContainerVm}
-              <div class="flex gap-2">
-                <span class="text-muted-foreground shrink-0">{t('vmDetail.chipset')}</span><span
-                  >{vm.chipset}</span
-                >
-              </div>
-              <div class="flex gap-2">
-                <span class="text-muted-foreground shrink-0">{t('vmDetail.secureBoot')}</span><span
-                  >{vm.secure_boot ? t('common.yes') : t('common.no')}</span
-                >
-              </div>
-              <div class="flex gap-2">
-                <span class="text-muted-foreground shrink-0">{t('vmDetail.tpm')}</span><span
-                  >{vm.tpm_enabled ? t('common.yes') : t('common.no')}</span
-                >
-              </div>
-              <div class="flex gap-2">
-                <span class="text-muted-foreground shrink-0">{t('vmDetail.bios')}</span><span
-                  class="capitalize">{vm.firmware || '?'}</span
-                >
-              </div>
-              <div class="flex gap-2">
-                <span class="text-muted-foreground shrink-0">{t('vmDetail.cpuMode')}</span><span
-                  >{vm.cpu_mode || 'host-passthrough'}</span
-                >
-              </div>
-              <div class="flex gap-2">
-                <span class="text-muted-foreground shrink-0">{t('vmDetail.video')}</span><span
-                  >{vm.video_model || 'virtio'}</span
-                >
-              </div>
-              <div class="flex items-center gap-2">
-                <span class="text-muted-foreground shrink-0">{t('vmDetail.boot')}</span>
-                <select
-                  bind:value={bootDevice}
-                  onchange={() =>
-                    api
-                      .setBootDevice(vmId, bootDevice)
-                      .then(() => load())
-                      .catch((e) => toast.error(e.message))}
-                  class="input !py-1 !text-xs w-auto"
-                >
-                  <option value="hd">{t('vmDetail.hardDisk')}</option>
-                  <option value="cdrom">{t('vmDetail.cdrom')}</option>
-                  <option value="network">{t('vmDetail.network')}</option>
-                </select>
-              </div>
+                <div class="flex gap-2">
+                  <span class="text-muted-foreground shrink-0">{t('vmDetail.chipset')}</span><span
+                    >{vm.chipset}</span
+                  >
+                </div>
+                <div class="flex gap-2">
+                  <span class="text-muted-foreground shrink-0">{t('vmDetail.secureBoot')}</span
+                  ><span>{vm.secure_boot ? t('common.yes') : t('common.no')}</span>
+                </div>
+                <div class="flex gap-2">
+                  <span class="text-muted-foreground shrink-0">{t('vmDetail.tpm')}</span><span
+                    >{vm.tpm_enabled ? t('common.yes') : t('common.no')}</span
+                  >
+                </div>
+                <div class="flex gap-2">
+                  <span class="text-muted-foreground shrink-0">{t('vmDetail.bios')}</span><span
+                    class="capitalize">{vm.firmware || '?'}</span
+                  >
+                </div>
+                <div class="flex gap-2">
+                  <span class="text-muted-foreground shrink-0">{t('vmDetail.cpuMode')}</span><span
+                    >{vm.cpu_mode || 'host-passthrough'}</span
+                  >
+                </div>
+                <div class="flex gap-2">
+                  <span class="text-muted-foreground shrink-0">{t('vmDetail.video')}</span><span
+                    >{vm.video_model || 'virtio'}</span
+                  >
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="text-muted-foreground shrink-0">{t('vmDetail.boot')}</span>
+                  <select
+                    bind:value={bootDevice}
+                    onchange={() =>
+                      api
+                        .setBootDevice(vmId, bootDevice)
+                        .then(() => load())
+                        .catch((e) => toast.error(e.message))}
+                    class="input !py-1 !text-xs w-auto"
+                  >
+                    <option value="hd">{t('vmDetail.hardDisk')}</option>
+                    <option value="cdrom">{t('vmDetail.cdrom')}</option>
+                    <option value="network">{t('vmDetail.network')}</option>
+                  </select>
+                </div>
               {/if}
             </div>
           </BlockCard>
@@ -1733,21 +1732,21 @@ import { networkLabel, networkLabelFor } from '$lib/utils/networkLabel.js';
         {#snippet sec_disks()}
           <BlockCard bid="disks" title={t('vmDetail.disks')}>
             {#if !isContainerVm}
-            <div class="flex items-center justify-between mb-3">
-              <Button
-                size="xs"
-                variant="outline"
-                onclick={() => {
-                  aDiskDevice = 'disk';
-                  aDiskBus = 'virtio';
-                  aDiskSize = 10;
-                  aDiskPool = pools.find((p) => p.purpose !== 'iso')?.name || 'webkvm-disks';
-                  aDiskExistingVol = '';
-                  aDiskVolumes = [];
-                  showAddDisk = true;
-                }}>+ Add Disk</Button
-              >
-            </div>
+              <div class="flex items-center justify-between mb-3">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onclick={() => {
+                    aDiskDevice = 'disk';
+                    aDiskBus = 'virtio';
+                    aDiskSize = 10;
+                    aDiskPool = pools.find((p) => p.purpose !== 'iso')?.name || 'webkvm-disks';
+                    aDiskExistingVol = '';
+                    aDiskVolumes = [];
+                    showAddDisk = true;
+                  }}>+ Add Disk</Button
+                >
+              </div>
             {/if}
             {#if !vm.disks || vm.disks.length === 0}
               <p class="text-sm text-muted-foreground">{t('vmDetail.noDisks')}</p>
@@ -1795,25 +1794,25 @@ import { networkLabel, networkLabelFor } from '$lib/utils/networkLabel.js';
                         >
                       {/if}
                       {#if !isContainerVm}
-                      <button
-                        onclick={() => {
-                          changeBusTarget = disk.target;
-                          changeBusCurrent = disk.bus || '';
-                          changeBusNew = disk.bus || 'virtio';
-                          showChangeBus = true;
-                        }}
-                        class="text-xs text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-muted"
-                        >{t('vmDetail.changeBus')}</button
-                      >
-                      <button
-                        onclick={() => {
-                          if (!requireShutoff(t('vmDetail.removing'))) return;
-                          removeDisk(disk.target);
-                        }}
-                        title={t('vmDetail.requireShutoffTitle')}
-                        class="text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10"
-                        >{t('vmDetail.remove')}</button
-                      >
+                        <button
+                          onclick={() => {
+                            changeBusTarget = disk.target;
+                            changeBusCurrent = disk.bus || '';
+                            changeBusNew = disk.bus || 'virtio';
+                            showChangeBus = true;
+                          }}
+                          class="text-xs text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-muted"
+                          >{t('vmDetail.changeBus')}</button
+                        >
+                        <button
+                          onclick={() => {
+                            if (!requireShutoff(t('vmDetail.removing'))) return;
+                            removeDisk(disk.target);
+                          }}
+                          title={t('vmDetail.requireShutoffTitle')}
+                          class="text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10"
+                          >{t('vmDetail.remove')}</button
+                        >
                       {/if}
                     </div>
                   </div>
@@ -2428,18 +2427,18 @@ import { networkLabel, networkLabelFor } from '$lib/utils/networkLabel.js';
               {t('vmDetail.deleteVM')}
             </Button>
             {#if !isContainerVm}
-            <Button
-              variant="outline"
-              onclick={() => {
-                cName = vm.name + '-clone';
-                cPool = pools.find((p) => p.purpose !== 'iso')?.name || 'webkvm-disks';
-                showClone = true;
-              }}
-              class="w-full"
-            >
-              <CopyPlus class="w-4 h-4 mr-1.5" />
-              {t('vmDetail.cloneVM')}
-            </Button>
+              <Button
+                variant="outline"
+                onclick={() => {
+                  cName = vm.name + '-clone';
+                  cPool = pools.find((p) => p.purpose !== 'iso')?.name || 'webkvm-disks';
+                  showClone = true;
+                }}
+                class="w-full"
+              >
+                <CopyPlus class="w-4 h-4 mr-1.5" />
+                {t('vmDetail.cloneVM')}
+              </Button>
             {/if}
             <Button variant="outline" onclick={openEdit} class="w-full">
               <Pencil class="w-4 h-4 mr-1.5" />

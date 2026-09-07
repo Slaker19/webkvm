@@ -815,12 +815,14 @@ func TestAllocateOutputPathNoCollision(t *testing.T) {
 }
 
 // TestAllocateOutputPathRejectsBadDir verifies the helper
-// surfaces permission errors. We point it at /proc which
-// is read-only.
+// surfaces permission errors. /proc is a read-only procfs mount
+// that stays unwritable even for root, unlike /proc/1/root (a
+// symlink to / that root can actually write into — which used to
+// create stray zero-byte files at the filesystem root).
 func TestAllocateOutputPathRejectsBadDir(t *testing.T) {
 	r := &Runner{logger: discardLogger()}
 	ts := time.Now().UTC().Format("20060102T150405.000000000Z")
-	_, _, err := r.allocateOutputPath("/proc/1/root", "host", ts, randHex(6), "config.tar.zst")
+	_, _, err := r.allocateOutputPath("/proc", "host", ts, randHex(6), "config.tar.zst")
 	if err == nil {
 		t.Fatal("expected error for read-only target dir")
 	}

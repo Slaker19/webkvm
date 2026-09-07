@@ -13,8 +13,8 @@
   import Icon from '$lib/components/Icon.svelte';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import { t } from '../lib/i18n.svelte.js';
-import { LXD_IMAGE_PRESETS, CUSTOM_IMAGE, labelForImage } from '$lib/utils/lxdImages.js';
-import { networkLabel } from '$lib/utils/networkLabel.js';
+  import { LXD_IMAGE_PRESETS, CUSTOM_IMAGE, labelForImage } from '$lib/utils/lxdImages.js';
+  import { networkLabel } from '$lib/utils/networkLabel.js';
 
   let name = $state('');
   let showCiPass = $state(false);
@@ -27,7 +27,9 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
   // containerImage is derived: a preset ref, or the manual custom ref.
   let imageChoice = $state('ubuntu:24.04');
   let customImage = $state('');
-  const containerImage = $derived(imageChoice === CUSTOM_IMAGE.ref ? customImage.trim() : imageChoice);
+  const containerImage = $derived(
+    imageChoice === CUSTOM_IMAGE.ref ? customImage.trim() : imageChoice
+  );
   let vcpus = $state(2);
   let ramMB = $state(2048);
   let storagePool = $state('');
@@ -152,8 +154,8 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
         : !ciUser.trim()
           ? 'Username is required for cloud-init provisioning'
           : /^(root|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|proxy|www-data|backup|list|irc|_apt|nobody|systemd-network|systemd-timesync|dhcpcd|messagebus|syslog|systemd-resolve|uuidd|tss|sshd|pollinate|tcpdump|landscape|fwupd-refresh|polkitd|sudo|adm|admin)$/i.test(
-              ciUser
-            )
+                ciUser
+              )
             ? 'That name is a system group and would fail to provision; choose a different user name'
             : !ciPassword
               ? 'Password is required for cloud-init provisioning'
@@ -164,7 +166,13 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
                   : ''
   );
   const isValid = $derived(
-    !nameError && !vcpusError && !ramError && !diskSizeError && !imageError && !ciError && !cpuTopologyError
+    !nameError &&
+      !vcpusError &&
+      !ramError &&
+      !diskSizeError &&
+      !imageError &&
+      !ciError &&
+      !cpuTopologyError
   );
 
   // Capacity bars against the current user's quota (null/0 = unlimited,
@@ -506,7 +514,11 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
           </div>
           <!-- v1.4 Fase 4: instance-kind selector. KVM keeps the full
                form; LXC collapses to image + resources + cloud-init. -->
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4" role="radiogroup" aria-label={t('vmCreate.instanceType')}>
+          <div
+            class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4"
+            role="radiogroup"
+            aria-label={t('vmCreate.instanceType')}
+          >
             <button
               type="button"
               role="radio"
@@ -516,10 +528,14 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
                 ? 'border-accent bg-accent/10'
                 : 'border-border hover:border-border-hover bg-background'}"
             >
-              <span class="block text-sm font-medium {!isContainer ? 'text-accent' : 'text-foreground'}">
+              <span
+                class="block text-sm font-medium {!isContainer ? 'text-accent' : 'text-foreground'}"
+              >
                 {t('vmCreate.typeKvm')}
               </span>
-              <span class="block text-[11px] text-muted-foreground mt-0.5">{t('vmCreate.typeKvmHint')}</span>
+              <span class="block text-[11px] text-muted-foreground mt-0.5"
+                >{t('vmCreate.typeKvmHint')}</span
+              >
             </button>
             <button
               type="button"
@@ -530,10 +546,16 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
                 ? 'border-[#d97706] bg-[#d97706]/10'
                 : 'border-border hover:border-border-hover bg-background'}"
             >
-              <span class="block text-sm font-medium {isContainer ? 'text-[#d97706]' : 'text-foreground'}">
+              <span
+                class="block text-sm font-medium {isContainer
+                  ? 'text-[#d97706]'
+                  : 'text-foreground'}"
+              >
                 {t('vmCreate.typeLxc')}
               </span>
-              <span class="block text-[11px] text-muted-foreground mt-0.5">{t('vmCreate.typeLxcHint')}</span>
+              <span class="block text-[11px] text-muted-foreground mt-0.5"
+                >{t('vmCreate.typeLxcHint')}</span
+              >
             </button>
           </div>
           <SettingRow
@@ -591,96 +613,96 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
               </select>
             </SettingRow>
           {:else}
-          <SettingRow label={t('vmCreate.operatingSystem')} helper={t('vmCreate.osHelper')}>
-            <div class="grid grid-cols-[8rem_minmax(0,1fr)] gap-3 w-full">
-              <select bind:value={osType} class="input">
-                <option value="linux">Linux</option>
-                <option value="windows">Windows</option>
-              </select>
-              <select bind:value={osVersion} class="input">
-                {#each osVersions as v}
-                  <option value={v.value}>{v.label}</option>
+            <SettingRow label={t('vmCreate.operatingSystem')} helper={t('vmCreate.osHelper')}>
+              <div class="grid grid-cols-[8rem_minmax(0,1fr)] gap-3 w-full">
+                <select bind:value={osType} class="input">
+                  <option value="linux">Linux</option>
+                  <option value="windows">Windows</option>
+                </select>
+                <select bind:value={osVersion} class="input">
+                  {#each osVersions as v}
+                    <option value={v.value}>{v.label}</option>
+                  {/each}
+                </select>
+              </div>
+            </SettingRow>
+            <SettingRow label={t('vmCreate.isoOptional')} helper={t('vmCreate.isoHelper')}>
+              <select bind:value={iso} class="input max-w-xs">
+                <option value="">{t('vmCreate.noneInstallLater')}</option>
+                {#each isos as isoFile}
+                  <option value={isoFile.path}>{isoFile.name}</option>
                 {/each}
               </select>
-            </div>
-          </SettingRow>
-          <SettingRow label={t('vmCreate.isoOptional')} helper={t('vmCreate.isoHelper')}>
-            <select bind:value={iso} class="input max-w-xs">
-              <option value="">{t('vmCreate.noneInstallLater')}</option>
-              {#each isos as isoFile}
-                <option value={isoFile.path}>{isoFile.name}</option>
-              {/each}
-            </select>
-          </SettingRow>
+            </SettingRow>
           {/if}
         </div>
 
         <!-- System (KVM-only: chipsets, firmware, TPM) -->
         {#if !isContainer}
           <div id="step-system" class="border border-border rounded-lg bg-card p-5 scroll-mt-4">
-          <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-            {t('vmCreate.system')}
-          </div>
-          <SettingRow label={t('vmCreate.chipset')} helper={t('vmCreate.chipsetHelper')}>
-            <select
-              bind:value={chipset}
-              onchange={() => {
-                if (chipset === 'i440fx') {
-                  firmware = 'seabios';
-                  secureBoot = false;
-                  tpmEnabled = false;
-                }
-              }}
-              class="input w-40"
-            >
-              <option value="q35">{t('vmCreate.q35Modern')}</option>
-              <option value="i440fx">{t('vmCreate.i440fxLegacy')}</option>
-            </select>
-          </SettingRow>
-          <SettingRow label={t('vmDetail.firmwareLabel')} helper={t('vmCreate.biosHelper')}>
-            <select
-              bind:value={firmware}
-              disabled={chipset === 'i440fx'}
-              class="input w-40 {chipset === 'i440fx' ? 'opacity-50' : ''}"
-            >
-              <option value="seabios">{t('vmCreate.seabios')}</option>
-              <option value="uefi">{t('vmCreate.uefi')}</option>
-            </select>
-          </SettingRow>
-          {#if chipset === 'q35' && firmware === 'uefi'}
-            <SettingRow label={t('vmCreate.secureBoot')} helper={t('vmCreate.secureBootHelper')}>
-              <button
-                type="button"
-                onclick={() => (secureBoot = !secureBoot)}
-                class="relative w-9 h-5 rounded-full transition-colors {secureBoot
-                  ? 'bg-accent'
-                  : 'bg-muted'}"
-                aria-label={t('vmCreate.toggleSecureBoot')}
+            <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+              {t('vmCreate.system')}
+            </div>
+            <SettingRow label={t('vmCreate.chipset')} helper={t('vmCreate.chipsetHelper')}>
+              <select
+                bind:value={chipset}
+                onchange={() => {
+                  if (chipset === 'i440fx') {
+                    firmware = 'seabios';
+                    secureBoot = false;
+                    tpmEnabled = false;
+                  }
+                }}
+                class="input w-40"
               >
-                <span
-                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {secureBoot
-                    ? 'translate-x-4'
-                    : ''}"
-                ></span>
-              </button>
+                <option value="q35">{t('vmCreate.q35Modern')}</option>
+                <option value="i440fx">{t('vmCreate.i440fxLegacy')}</option>
+              </select>
             </SettingRow>
-            <SettingRow label={t('vmCreate.tpm')} helper={t('vmCreate.tpmHelper')}>
-              <button
-                type="button"
-                onclick={() => (tpmEnabled = !tpmEnabled)}
-                class="relative w-9 h-5 rounded-full transition-colors {tpmEnabled
-                  ? 'bg-accent'
-                  : 'bg-muted'}"
-                aria-label={t('vmCreate.toggleTpm')}
+            <SettingRow label={t('vmDetail.firmwareLabel')} helper={t('vmCreate.biosHelper')}>
+              <select
+                bind:value={firmware}
+                disabled={chipset === 'i440fx'}
+                class="input w-40 {chipset === 'i440fx' ? 'opacity-50' : ''}"
               >
-                <span
-                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {tpmEnabled
-                    ? 'translate-x-4'
-                    : ''}"
-                ></span>
-              </button>
+                <option value="seabios">{t('vmCreate.seabios')}</option>
+                <option value="uefi">{t('vmCreate.uefi')}</option>
+              </select>
             </SettingRow>
-          {/if}
+            {#if chipset === 'q35' && firmware === 'uefi'}
+              <SettingRow label={t('vmCreate.secureBoot')} helper={t('vmCreate.secureBootHelper')}>
+                <button
+                  type="button"
+                  onclick={() => (secureBoot = !secureBoot)}
+                  class="relative w-9 h-5 rounded-full transition-colors {secureBoot
+                    ? 'bg-accent'
+                    : 'bg-muted'}"
+                  aria-label={t('vmCreate.toggleSecureBoot')}
+                >
+                  <span
+                    class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {secureBoot
+                      ? 'translate-x-4'
+                      : ''}"
+                  ></span>
+                </button>
+              </SettingRow>
+              <SettingRow label={t('vmCreate.tpm')} helper={t('vmCreate.tpmHelper')}>
+                <button
+                  type="button"
+                  onclick={() => (tpmEnabled = !tpmEnabled)}
+                  class="relative w-9 h-5 rounded-full transition-colors {tpmEnabled
+                    ? 'bg-accent'
+                    : 'bg-muted'}"
+                  aria-label={t('vmCreate.toggleTpm')}
+                >
+                  <span
+                    class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {tpmEnabled
+                      ? 'translate-x-4'
+                      : ''}"
+                  ></span>
+                </button>
+              </SettingRow>
+            {/if}
           </div>
         {/if}
 
@@ -755,141 +777,141 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
               />
             </SettingRow>
           {:else}
-          <SettingRow
-            label={t('vmCreate.useExistingDisk')}
-            helper={t('vmCreate.useExistingDiskHelper')}
-          >
-            <button
-              type="button"
-              onclick={() => (useExistingDisk = !useExistingDisk)}
-              class="relative w-9 h-5 rounded-full transition-colors {useExistingDisk
-                ? 'bg-accent'
-                : 'bg-muted'}"
-              aria-label={t('vmCreate.toggleExistingDisk')}
-            >
-              <span
-                class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {useExistingDisk
-                  ? 'translate-x-4'
-                  : ''}"
-              ></span>
-            </button>
-          </SettingRow>
-          {#if useExistingDisk}
-            <SettingRow label={t('vmCreate.diskPool')} helper={t('vmCreate.diskPoolHelper')}>
-              <select
-                bind:value={existingDiskPool}
-                onchange={() => loadExistingVolumes(existingDiskPool)}
-                class="input max-w-xs"
-              >
-                {#each vmPools as p (p.name)}
-                  <option value={p.name}>{p.name}</option>
-                {/each}
-              </select>
-            </SettingRow>
             <SettingRow
-              label={t('vmCreate.existingVolume')}
-              helper={t('vmCreate.existingVolumeHelper')}
+              label={t('vmCreate.useExistingDisk')}
+              helper={t('vmCreate.useExistingDiskHelper')}
             >
-              <select
-                bind:value={existingDiskName}
-                class="input max-w-xs"
-                disabled={loadingVolumes || existingVolumes.length === 0}
+              <button
+                type="button"
+                onclick={() => (useExistingDisk = !useExistingDisk)}
+                class="relative w-9 h-5 rounded-full transition-colors {useExistingDisk
+                  ? 'bg-accent'
+                  : 'bg-muted'}"
+                aria-label={t('vmCreate.toggleExistingDisk')}
               >
-                {#if loadingVolumes}
-                  <option value="">{t('vmCreate.loadingVolumes')}</option>
-                {:else if existingVolumes.length === 0}
-                  <option value="">{t('vmCreate.noVolumes')}</option>
-                {:else}
-                  {#each existingVolumes as v}
-                    <option value={v.name}
-                      >{v.name} ({(v.capacity / 1024 / 1024 / 1024).toFixed(1)} GB)</option
-                    >
+                <span
+                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {useExistingDisk
+                    ? 'translate-x-4'
+                    : ''}"
+                ></span>
+              </button>
+            </SettingRow>
+            {#if useExistingDisk}
+              <SettingRow label={t('vmCreate.diskPool')} helper={t('vmCreate.diskPoolHelper')}>
+                <select
+                  bind:value={existingDiskPool}
+                  onchange={() => loadExistingVolumes(existingDiskPool)}
+                  class="input max-w-xs"
+                >
+                  {#each vmPools as p (p.name)}
+                    <option value={p.name}>{p.name}</option>
                   {/each}
-                {/if}
-              </select>
-            </SettingRow>
-          {:else}
-            <SettingRow label={t('common.pool')} helper={t('vmCreate.storagePoolHelper')}>
-              <select bind:value={storagePool} class="input max-w-xs">
-                {#each vmPools as p (p.name)}
-                  <option value={p.name}>{p.name}</option>
-                {/each}
-              </select>
-            </SettingRow>
-            <SettingRow
-              label={t('vmCreate.diskSizeGb')}
-              helper={t('vmCreate.diskSizeHelper')}
-              error={touched.diskSize ? diskSizeError : ''}
-            >
-              <Input
-                type="number"
-                bind:value={diskSize}
-                min="1"
-                max="1024"
-                class="w-24 tnum"
-                onblur={() => (touched.diskSize = true)}
-              />
-            </SettingRow>
-            <SettingRow label={t('vmCreate.diskFormat')} helper={t('vmCreate.diskFormatHelper')}>
-              <select bind:value={diskFormat} class="input max-w-xs">
-                {#each diskFormatOptions as o}
+                </select>
+              </SettingRow>
+              <SettingRow
+                label={t('vmCreate.existingVolume')}
+                helper={t('vmCreate.existingVolumeHelper')}
+              >
+                <select
+                  bind:value={existingDiskName}
+                  class="input max-w-xs"
+                  disabled={loadingVolumes || existingVolumes.length === 0}
+                >
+                  {#if loadingVolumes}
+                    <option value="">{t('vmCreate.loadingVolumes')}</option>
+                  {:else if existingVolumes.length === 0}
+                    <option value="">{t('vmCreate.noVolumes')}</option>
+                  {:else}
+                    {#each existingVolumes as v}
+                      <option value={v.name}
+                        >{v.name} ({(v.capacity / 1024 / 1024 / 1024).toFixed(1)} GB)</option
+                      >
+                    {/each}
+                  {/if}
+                </select>
+              </SettingRow>
+            {:else}
+              <SettingRow label={t('common.pool')} helper={t('vmCreate.storagePoolHelper')}>
+                <select bind:value={storagePool} class="input max-w-xs">
+                  {#each vmPools as p (p.name)}
+                    <option value={p.name}>{p.name}</option>
+                  {/each}
+                </select>
+              </SettingRow>
+              <SettingRow
+                label={t('vmCreate.diskSizeGb')}
+                helper={t('vmCreate.diskSizeHelper')}
+                error={touched.diskSize ? diskSizeError : ''}
+              >
+                <Input
+                  type="number"
+                  bind:value={diskSize}
+                  min="1"
+                  max="1024"
+                  class="w-24 tnum"
+                  onblur={() => (touched.diskSize = true)}
+                />
+              </SettingRow>
+              <SettingRow label={t('vmCreate.diskFormat')} helper={t('vmCreate.diskFormatHelper')}>
+                <select bind:value={diskFormat} class="input max-w-xs">
+                  {#each diskFormatOptions as o}
+                    <option value={o.value}>{o.label}</option>
+                  {/each}
+                </select>
+              </SettingRow>
+            {/if}
+            <SettingRow label={t('vmDetail.busLabel')} helper={t('vmCreate.diskBusHelper')}>
+              <select bind:value={diskBus} class="input max-w-xs">
+                {#each diskBusOptions as o}
                   <option value={o.value}>{o.label}</option>
                 {/each}
               </select>
             </SettingRow>
-          {/if}
-          <SettingRow label={t('vmDetail.busLabel')} helper={t('vmCreate.diskBusHelper')}>
-            <select bind:value={diskBus} class="input max-w-xs">
-              {#each diskBusOptions as o}
-                <option value={o.value}>{o.label}</option>
-              {/each}
-            </select>
-          </SettingRow>
-          <SettingRow label={t('vmCreate.diskCacheIO')} helper={t('vmCreate.diskCacheIOHelper')}>
-            <button
-              type="button"
-              onclick={() => (diskCacheIO = !diskCacheIO)}
-              class="relative w-9 h-5 rounded-full transition-colors {diskCacheIO
-                ? 'bg-accent'
-                : 'bg-muted'}"
-              aria-label={t('vmCreate.diskCacheIO')}
-            >
-              <span
-                class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {diskCacheIO
-                  ? 'translate-x-4'
-                  : ''}"
-              ></span>
-            </button>
-          </SettingRow>
-          <SettingRow label={t('vmCreate.diskDiscard')} helper={t('vmCreate.diskDiscardHelper')}>
-            <button
-              type="button"
-              onclick={() => (diskDiscard = !diskDiscard)}
-              class="relative w-9 h-5 rounded-full transition-colors {diskDiscard
-                ? 'bg-accent'
-                : 'bg-muted'}"
-              aria-label={t('vmCreate.diskDiscard')}
-            >
-              <span
-                class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {diskDiscard
-                  ? 'translate-x-4'
-                  : ''}"
-              ></span>
-            </button>
-          </SettingRow>
-          {#if osType === 'windows'}
-            <SettingRow
-              label={t('vmCreate.virtioDriversIso')}
-              helper={t('vmCreate.virtioDriversHelper')}
-            >
-              <select bind:value={virtioISO} class="input max-w-xs">
-                <option value="">{t('common.none')}</option>
-                {#each isos as isoFile}
-                  <option value={isoFile.path}>{isoFile.name}</option>
-                {/each}
-              </select>
+            <SettingRow label={t('vmCreate.diskCacheIO')} helper={t('vmCreate.diskCacheIOHelper')}>
+              <button
+                type="button"
+                onclick={() => (diskCacheIO = !diskCacheIO)}
+                class="relative w-9 h-5 rounded-full transition-colors {diskCacheIO
+                  ? 'bg-accent'
+                  : 'bg-muted'}"
+                aria-label={t('vmCreate.diskCacheIO')}
+              >
+                <span
+                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {diskCacheIO
+                    ? 'translate-x-4'
+                    : ''}"
+                ></span>
+              </button>
             </SettingRow>
-          {/if}
+            <SettingRow label={t('vmCreate.diskDiscard')} helper={t('vmCreate.diskDiscardHelper')}>
+              <button
+                type="button"
+                onclick={() => (diskDiscard = !diskDiscard)}
+                class="relative w-9 h-5 rounded-full transition-colors {diskDiscard
+                  ? 'bg-accent'
+                  : 'bg-muted'}"
+                aria-label={t('vmCreate.diskDiscard')}
+              >
+                <span
+                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {diskDiscard
+                    ? 'translate-x-4'
+                    : ''}"
+                ></span>
+              </button>
+            </SettingRow>
+            {#if osType === 'windows'}
+              <SettingRow
+                label={t('vmCreate.virtioDriversIso')}
+                helper={t('vmCreate.virtioDriversHelper')}
+              >
+                <select bind:value={virtioISO} class="input max-w-xs">
+                  <option value="">{t('common.none')}</option>
+                  {#each isos as isoFile}
+                    <option value={isoFile.path}>{isoFile.name}</option>
+                  {/each}
+                </select>
+              </SettingRow>
+            {/if}
           {/if}
         </div>
 
@@ -901,104 +923,109 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
           {#if isContainer}
             <p class="text-sm text-muted-foreground mb-4">{t('vmCreate.lxcNote')}</p>
           {:else}
-          <SettingRow label={t('vmDetail.cpuModeLabel')} helper={t('vmCreate.cpuModeHelper')}>
-            <select bind:value={cpuMode} class="input max-w-xs">
-              {#each cpuModes as m}
-                <option value={m.value}>{m.label}</option>
-              {/each}
-            </select>
-          </SettingRow>
-          {#if cpuMode === 'custom'}
-            <SettingRow label={t('vmCreate.cpuModel')} helper={t('vmCreate.cpuModelHelper')}>
-              <select bind:value={cpuModelChoice} class="input max-w-xs">
-                {#each cpuModelPresets as m}
-                  <option value={m}>{m}</option>
+            <SettingRow label={t('vmDetail.cpuModeLabel')} helper={t('vmCreate.cpuModeHelper')}>
+              <select bind:value={cpuMode} class="input max-w-xs">
+                {#each cpuModes as m}
+                  <option value={m.value}>{m.label}</option>
                 {/each}
-                <option value="other">{t('vmCreate.cpuModelOther')}</option>
               </select>
             </SettingRow>
-            {#if cpuModelChoice === 'other'}
-              <SettingRow
-                label={t('vmCreate.cpuModelManual')}
-                helper={t('vmCreate.cpuModelHelper')}
+            {#if cpuMode === 'custom'}
+              <SettingRow label={t('vmCreate.cpuModel')} helper={t('vmCreate.cpuModelHelper')}>
+                <select bind:value={cpuModelChoice} class="input max-w-xs">
+                  {#each cpuModelPresets as m}
+                    <option value={m}>{m}</option>
+                  {/each}
+                  <option value="other">{t('vmCreate.cpuModelOther')}</option>
+                </select>
+              </SettingRow>
+              {#if cpuModelChoice === 'other'}
+                <SettingRow
+                  label={t('vmCreate.cpuModelManual')}
+                  helper={t('vmCreate.cpuModelHelper')}
+                >
+                  <Input bind:value={cpuModel} type="text" placeholder="EPYC" class="max-w-xs" />
+                </SettingRow>
+              {/if}
+            {/if}
+            <SettingRow label={t('vmCreate.cpuTopology')} helper={t('vmCreate.cpuTopologyHelper')}>
+              <button
+                type="button"
+                onclick={() => (cpuTopologyEnabled = !cpuTopologyEnabled)}
+                class="relative w-9 h-5 rounded-full transition-colors {cpuTopologyEnabled
+                  ? 'bg-accent'
+                  : 'bg-muted'}"
+                aria-label={t('vmCreate.cpuTopology')}
               >
-                <Input bind:value={cpuModel} type="text" placeholder="EPYC" class="max-w-xs" />
+                <span
+                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {cpuTopologyEnabled
+                    ? 'translate-x-4'
+                    : ''}"
+                ></span>
+              </button>
+            </SettingRow>
+            {#if cpuTopologyEnabled}
+              <SettingRow label={t('vmCreate.cpuTopologyFields')} error={cpuTopologyError}>
+                <div class="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    bind:value={cpuSockets}
+                    min="1"
+                    class="w-20 tnum"
+                    aria-label={t('vmCreate.cpuSockets')}
+                  />
+                  <span class="text-xs text-muted-foreground">{t('vmCreate.cpuSockets')}</span>
+                  <Input
+                    type="number"
+                    bind:value={cpuCores}
+                    min="1"
+                    class="w-20 tnum"
+                    aria-label={t('vmCreate.cpuCores')}
+                  />
+                  <span class="text-xs text-muted-foreground">{t('vmCreate.cpuCores')}</span>
+                  <Input
+                    type="number"
+                    bind:value={cpuThreads}
+                    min="1"
+                    class="w-20 tnum"
+                    aria-label={t('vmCreate.cpuThreads')}
+                  />
+                  <span class="text-xs text-muted-foreground">{t('vmCreate.cpuThreads')}</span>
+                </div>
               </SettingRow>
             {/if}
-          {/if}
-          <SettingRow label={t('vmCreate.cpuTopology')} helper={t('vmCreate.cpuTopologyHelper')}>
-            <button
-              type="button"
-              onclick={() => (cpuTopologyEnabled = !cpuTopologyEnabled)}
-              class="relative w-9 h-5 rounded-full transition-colors {cpuTopologyEnabled
-                ? 'bg-accent'
-                : 'bg-muted'}"
-              aria-label={t('vmCreate.cpuTopology')}
+            <SettingRow
+              label={t('vmDetail.videoModelLabel')}
+              helper={t('vmCreate.videoModelHelper')}
             >
-              <span
-                class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {cpuTopologyEnabled
-                  ? 'translate-x-4'
-                  : ''}"
-              ></span>
-            </button>
-          </SettingRow>
-          {#if cpuTopologyEnabled}
-            <SettingRow label={t('vmCreate.cpuTopologyFields')} error={cpuTopologyError}>
-              <div class="flex items-center gap-2">
-                <Input
-                  type="number"
-                  bind:value={cpuSockets}
-                  min="1"
-                  class="w-20 tnum"
-                  aria-label={t('vmCreate.cpuSockets')}
-                />
-                <span class="text-xs text-muted-foreground">{t('vmCreate.cpuSockets')}</span>
-                <Input
-                  type="number"
-                  bind:value={cpuCores}
-                  min="1"
-                  class="w-20 tnum"
-                  aria-label={t('vmCreate.cpuCores')}
-                />
-                <span class="text-xs text-muted-foreground">{t('vmCreate.cpuCores')}</span>
-                <Input
-                  type="number"
-                  bind:value={cpuThreads}
-                  min="1"
-                  class="w-20 tnum"
-                  aria-label={t('vmCreate.cpuThreads')}
-                />
-                <span class="text-xs text-muted-foreground">{t('vmCreate.cpuThreads')}</span>
-              </div>
+              <select bind:value={videoModel} class="input max-w-xs">
+                {#each videoModels as m}
+                  <option value={m.value}>{m.label}</option>
+                {/each}
+              </select>
             </SettingRow>
-          {/if}
-          <SettingRow label={t('vmDetail.videoModelLabel')} helper={t('vmCreate.videoModelHelper')}>
-            <select bind:value={videoModel} class="input max-w-xs">
-              {#each videoModels as m}
-                <option value={m.value}>{m.label}</option>
-              {/each}
-            </select>
-          </SettingRow>
-          <SettingRow label={t('vmDetail.networkLabel')} helper={t('vmCreate.networkHelper')}>
-            <select bind:value={network} class="input max-w-xs">
-              {#each networks as net}
-                <option value={net.name}>{net.name} ({net.forward || 'isolated'})</option>
-              {/each}
-            </select>
-          </SettingRow>
-          <SettingRow label={t('vmDetail.adapter')} helper={t('vmCreate.adapterHelper')}>
-            <select bind:value={networkModel} class="input max-w-xs">
-              {#each networkModels as m}
-                <option value={m.value}>{m.label}</option>
-              {/each}
-            </select>
-          </SettingRow>
+            <SettingRow label={t('vmDetail.networkLabel')} helper={t('vmCreate.networkHelper')}>
+              <select bind:value={network} class="input max-w-xs">
+                {#each networks as net}
+                  <option value={net.name}>{net.name} ({net.forward || 'isolated'})</option>
+                {/each}
+              </select>
+            </SettingRow>
+            <SettingRow label={t('vmDetail.adapter')} helper={t('vmCreate.adapterHelper')}>
+              <select bind:value={networkModel} class="input max-w-xs">
+                {#each networkModels as m}
+                  <option value={m.value}>{m.label}</option>
+                {/each}
+              </select>
+            </SettingRow>
           {/if}
 
           <!-- Cloud-init / LXC credentials (optional provisioning) -->
           <SettingRow
             label={isContainer ? t('vmCreate.lxcCredentialsLabel') : t('vmCreate.cloudInitLabel')}
-            helper={isContainer ? t('vmCreate.lxcCredentialsHelper') : t('vmCreate.cloudInitHelper')}
+            helper={isContainer
+              ? t('vmCreate.lxcCredentialsHelper')
+              : t('vmCreate.cloudInitHelper')}
           >
             <div class="w-full max-w-md space-y-3">
               <label class="flex items-center gap-2 text-sm cursor-pointer select-none">
@@ -1111,9 +1138,9 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
           </div>
           <div class="flex items-center justify-between gap-2">
             <dt class="text-muted-foreground">{t('vmCreate.operatingSystem')}</dt>
-            <dd class="font-medium truncate max-w-[140px]"
-              >{isContainer ? labelForImage(containerImage) || '—' : summaryOs}</dd
-            >
+            <dd class="font-medium truncate max-w-[140px]">
+              {isContainer ? labelForImage(containerImage) || '—' : summaryOs}
+            </dd>
           </div>
           <div class="flex items-center justify-between gap-2">
             <dt class="text-muted-foreground">{t('common.vcpu')}</dt>
@@ -1124,8 +1151,12 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
             <dd class="font-medium tnum">{ramMB} MB</dd>
           </div>
           <div class="flex items-center justify-between gap-2">
-            <dt class="text-muted-foreground">{isContainer ? t('vmCreate.lxcRootDisk') : t('vmCreate.diskSizeGb')}</dt>
-            <dd class="font-medium truncate max-w-[140px]">{isContainer ? `${diskSize} GB` : summaryDisk}</dd>
+            <dt class="text-muted-foreground">
+              {isContainer ? t('vmCreate.lxcRootDisk') : t('vmCreate.diskSizeGb')}
+            </dt>
+            <dd class="font-medium truncate max-w-[140px]">
+              {isContainer ? `${diskSize} GB` : summaryDisk}
+            </dd>
           </div>
           <div class="flex items-center justify-between gap-2">
             <dt class="text-muted-foreground">{t('vmDetail.networkLabel')}</dt>
@@ -1134,7 +1165,9 @@ import { networkLabel } from '$lib/utils/networkLabel.js';
           {#if ciEnabled}
             <div class="flex items-center justify-between gap-2">
               <dt class="text-muted-foreground">{t('vmCreate.cloudInitLabel')}</dt>
-              <dd class="font-medium truncate max-w-[140px]">{ciUser || (isContainer ? 'root' : '—')}</dd>
+              <dd class="font-medium truncate max-w-[140px]">
+                {ciUser || (isContainer ? 'root' : '—')}
+              </dd>
             </div>
           {/if}
         </dl>

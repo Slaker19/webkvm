@@ -72,8 +72,12 @@ func ValidateTargetPath(p, appDataDir string) error {
 	if isUnder(resolved, appDataDir) {
 		return nil
 	}
+	// Check BOTH the raw path and the symlink-resolved path against the
+	// deny list. The lexical (raw) check is what makes a path like
+	// /proc/1/root (a symlink that resolves to /) still denied — the
+	// operator's intent was /proc, regardless of where the symlink lands.
 	for _, d := range deniedTargetPaths {
-		if resolved == d || isUnder(resolved, d) {
+		if resolved == d || isUnder(resolved, d) || cleaned == d || isUnder(cleaned, d) {
 			return fmt.Errorf("%w: path %q is under denied root %q", ErrTargetPathUnwritable, p, d)
 		}
 	}

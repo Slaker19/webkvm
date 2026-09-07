@@ -4,6 +4,26 @@ Todos los cambios notables de este proyecto se documentan en este
 fichero, siguiendo [Keep a Changelog](https://keepachangelog.com/es/1.1.0/)
 y [Semantic Versioning](https://semver.org/lang/es/).
 
+## [2.1.2] — CI verde y limpieza (2026-09-07)
+
+### Fixed
+
+- **CI green**: `go test -race ./...` pasa al 100% — corregidos los 2 fallos
+  preexistentes de `backupstore` que rompían el pipeline:
+  - `ValidateTargetPath` ahora comprueba la **ruta cruda Y la resuelta** contra
+    el deny-list — `/proc/1/root` (symlink que resuelve a `/`) ya no escapa del
+    chequeo.
+  - `TestAllocateOutputPathRejectsBadDir` apunta a `/proc` (procfs de solo
+    lectura incluso para root); antes usaba `/proc/1/root`, que como root se
+    convertía en `/` y **creaba archivos basura de 0 bytes en la raíz del
+    filesystem** (se han limpiado ~130).
+- **Frontend**: `prettier --check` pasa (formateados los ficheros nuevos de
+  las Fases 4/4.1); `check-i18n.sh` OK (1352 claves en cada idioma);
+  `package-lock.json` resincronizado con `package.json` (versión 2.1.2) para
+  que Dependabot no detecte drift.
+- Dependabot (`gomod`/`npm`/`github-actions`) ya queda configurado con el CI
+  verde.
+
 ## [2.1.1] — Fix instalador LXD (2026-09-07)
 
 ### Fixed
