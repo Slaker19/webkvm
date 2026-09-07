@@ -135,8 +135,17 @@ func TestIncusBackendResizeRejectsOtherTarget(t *testing.T) {
 }
 
 func TestIncusBackendAttachNetworkIface(t *testing.T) {
+	real := findAnyPhysicalBridge()
+	if real == "" {
+		t.Skip("no Linux bridge on the host; attach resolution requires one")
+	}
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, _ := NewIncusBackend(sock)
+	b, _ := NewIncusBackend(sock, WithNetworkResolver(func(name string) (string, error) {
+		if name == "default" || name == "lan" {
+			return real, nil
+		}
+		return "", compute.ErrNotImplemented
+	}))
 	if err := b.AttachNetworkIface("ct1", models.AttachNetRequest{Network: "default"}); err != nil {
 		t.Fatal(err)
 	}
@@ -147,16 +156,20 @@ func TestIncusBackendAttachNetworkIface(t *testing.T) {
 	if len(vm.Networks) != 2 {
 		t.Fatalf("expected 2 ifaces after attach, got %d", len(vm.Networks))
 	}
-	if vm.Networks[1].Network != "lxdbr0" {
-		t.Errorf("eth1 parent = %q, want lxdbr0 (no resolver -> default)", vm.Networks[1].Network)
+	if vm.Networks[1].Network != real {
+		t.Errorf("eth1 parent = %q, want %q (resolved bridge)", vm.Networks[1].Network, real)
 	}
 }
 
 func TestIncusBackendAttachUsesResolvedBridge(t *testing.T) {
+	real := findAnyPhysicalBridge()
+	if real == "" {
+		t.Skip("no Linux bridge on the host")
+	}
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
 	b, err := NewIncusBackend(sock, WithNetworkResolver(func(name string) (string, error) {
 		if name == "lan" {
-			return "vmbr0", nil
+			return real, nil
 		}
 		return "", compute.ErrNotImplemented
 	}))
@@ -167,8 +180,8 @@ func TestIncusBackendAttachUsesResolvedBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 	vm, _ := b.GetDomain("ct1")
-	if vm.Networks[1].Network != "vmbr0" {
-		t.Errorf("eth1 parent = %q, want vmbr0 (resolved bridge)", vm.Networks[1].Network)
+	if vm.Networks[1].Network != real {
+		t.Errorf("eth1 parent = %q, want %q (resolved bridge)", vm.Networks[1].Network, real)
 	}
 }
 
@@ -185,18 +198,21 @@ func TestIncusBackendDetachNetworkIface(t *testing.T) {
 }
 
 func TestIncusBackendUpdateNetworkIface(t *testing.T) {
+	real := findAnyPhysicalBridge()
+	if real == "" {
+		t.Skip("no Linux bridge on the host; update resolution requires one")
+	}
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, _ := NewIncusBackend(sock)
+	b, _ := NewIncusBackend(sock, WithNetworkResolver(func(name string) (string, error) {
+		return real, nil
+	}))
 	net := "lan"
 	if err := b.UpdateNetworkIface("ct1", "00:16:3e:aa:bb:cc", models.UpdateNetIfaceRequest{Network: &net}); err != nil {
 		t.Fatal(err)
 	}
 	vm, _ := b.GetDomain("ct1")
-	if len(vm.Networks) != 1 || vm.Networks[0].Network != "virbr0" {
-		// resolver absent -> default network maps to lxdbr0 fallback
-		if vm.Networks[0].Network != "lxdbr0" {
-			t.Errorf("eth0 parent after update = %q, want lxdbr0 fallback", vm.Networks[0].Network)
-		}
+	if len(vm.Networks) != 1 || vm.Networks[0].Network != real {
+		t.Errorf("eth0 parent after update = %q, want %q (resolved bridge)", vm.Networks[0].Network, real)
 	}
 }
 

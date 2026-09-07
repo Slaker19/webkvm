@@ -53,3 +53,16 @@ func TestListLinuxBridges(t *testing.T) {
 		}
 	}
 }
+
+func TestMainBridge(t *testing.T) {
+	// On a host with the Proxmox convention, vmbr0 wins over br0.
+	// The actual value depends on the host; just assert the function
+	// returns either "" (no bridges) or a name that IS a Linux bridge.
+	b := mainBridge()
+	if b == "" {
+		return // host has no Linux bridges — acceptable on CI
+	}
+	if !isLinuxBridge(b) {
+		t.Errorf("mainBridge() = %q is not a Linux bridge", b)
+	}
+}

@@ -2,15 +2,15 @@
 # Wire up networking on a fresh webkvm install.
 #
 # Modes:
-#   --nat          : create libvirt default NAT network only.
+#   --bridge       : (DEFAULT) shared L2 Linux bridge — Proxmox-style. Reuses
+#                    an existing host bridge (vmbr0/br0) when present, otherwise
+#                    creates a macvlan slave + br0 so VMs/containers reach the
+#                    LAN directly. The physical interface is never touched if it
+#                    can be avoided. Never creates an isolated NAT network.
+#   --nat          : OPT-IN isolation: create libvirt default NAT network only.
 #                    If BRIDGE_STATIC_IP is set, writes it to the physical
 #                    interface; otherwise leaves the host's network untouched.
-#   --bridge       : create a macvlan virtual slave on the physical interface,
-#                    attach it to a Linux bridge br0, and create libvirt bridge
-#                    network br0-bridge. VMs on br0-bridge are visible on the
-#                    LAN. The physical interface is NEVER touched — its IP stays
-#                    intact. Works on both WiFi and ethernet.
-#   --both         : do both NAT and Bridge (DEFAULT when no flags given)
+#   --both         : both shared-L2 bridge and NAT (explicit opt-in).
 #   --direct-bridge: use the OLD bridge mode that enslaves the physical
 #                    interface directly (ethernet only, drops IP during setup).
 #
@@ -50,7 +50,7 @@
 set -euo pipefail
 
 # --- Mode parsing ----------------------------------------------------------
-MODE="${NET_MODE:-both}"
+MODE="${NET_MODE:-bridge}"
 DIRECT_BRIDGE=false
 BRIDGE_DHCP=true   # default: bridge gets IP via DHCP
 while [[ $# -gt 0 ]]; do
@@ -944,6 +944,263 @@ verify_post_state_macvlan() {
     fi
 }
 
+# --- Physical bridge (vmbr0) — REQUIRED shared L2 -------------------------
+# WebKVM requires a PHYSICAL Linux bridge (vmbr0/br0) attached to the host's
+# physical NIC so KVM and Incus share the real LAN (Layer-2, IPs from the
+# router via DHCP — Proxmox-style). NAT / virtual bridges are never used.
+default_route_iface() {
+    ip route show default 2>/dev/null | awk '{print $5; exit}'
+}
+
+# warn_dhcp_reservation prints the DHCP-reservation caveat: moving a DHCP
+# IP onto a bridge promotes the lease, but the router still treats the IP
+# as part of its pool and could hand it to another device on renewal.
+warn_dhcp_reservation() {
+    local br="$1" iface="$2" mac
+    mac="$(cat "/sys/class/net/${iface}/address" 2>/dev/null)"
+    [ -z "${mac}" ] && mac="<MAC of ${iface}>"
+    cat <<EOF
+
+  ⚠  DHCP RESERVATION REQUIRED: ${iface} (MAC ${mac}) is on DHCP. Moving its
+     IP onto bridge ${br} promotes that lease, but your router still treats
+     the IP as part of the DHCP pool. Add a DHCP reservation for ${mac} in
+     the router (or exclude the IP from the range) BEFORE the lease renews,
+     otherwise the router could hand the same IP to another device and break
+     the bridge.
+EOF
+}
+
+# apply_bridge_nmcli creates a bridge over a physical NIC via NetworkManager.
+apply_bridge_nmcli() {
+    local br="$1" iface="$2"
+    echo "  + creating bridge ${br} on ${iface} via nmcli (IP moves to the bridge)"
+    nmcli con add type bridge con-name "${br}" ifname "${br}" >/dev/null 2>&1 || return 1
+    nmcli con add type ethernet con-name "${br}-${iface}" ifname "${iface}" master "${br}" >/dev/null 2>&1 || return 1
+    if [ -n "${BRIDGE_STATIC_IP:-}" ]; then
+        nmcli con modify "${br}" ipv4.method manual ipv4.addresses "${BRIDGE_STATIC_IP}" \
+            ipv4.gateway "${BRIDGE_STATIC_GW:-}" ipv4.dns "${BRIDGE_STATIC_DNS:-}" >/dev/null 2>&1 || true
+    else
+        nmcli con modify "${br}" ipv4.method auto ipv6.method auto >/dev/null 2>&1 || true
+    fi
+    nmcli con up "${br}-${iface}" >/dev/null 2>&1 || true
+    nmcli con up "${br}" >/dev/null 2>&1 || true
+    [ -d "/sys/class/net/${br}/bridge" ]
+}
+
+# apply_bridge_netplan writes a netplan config and applies it (DHCP default,
+# static when BRIDGE_STATIC_IP is set).
+apply_bridge_netplan() {
+    local br="$1" iface="$2" yaml="/etc/netplan/zz-webkvm-${br}.yaml"
+    if [ -n "${BRIDGE_STATIC_IP:-}" ]; then
+        sudo tee "${yaml}" >/dev/null <<EOF
+network:
+  version: 2
+  ethernets:
+    ${iface}:
+      dhcp4: false
+      dhcp6: false
+  bridges:
+    ${br}:
+      interfaces: [${iface}]
+      addresses: [${BRIDGE_STATIC_IP}]
+      routes:
+        - to: default
+          via: ${BRIDGE_STATIC_GW}
+      nameservers:
+        addresses: [$(echo "${BRIDGE_STATIC_DNS}" | tr ',' ' ')]
+EOF
+    else
+        sudo tee "${yaml}" >/dev/null <<EOF
+network:
+  version: 2
+  ethernets:
+    ${iface}:
+      dhcp4: false
+      dhcp6: false
+  bridges:
+    ${br}:
+      interfaces: [${iface}]
+      dhcp4: true
+      dhcp6: true
+EOF
+    fi
+    sudo netplan apply
+    [ -d "/sys/class/net/${br}/bridge" ]
+}
+
+print_netplan_instructions() {
+    local br="$1" iface="$2"
+    cat <<EOF
+
+  ══════════════════════════════════════════════════════════════════════
+  WebKVM requires a PHYSICAL Linux bridge (${br}) so KVM and Incus share
+  your real LAN (Layer-2, IPs from your router via DHCP).
+
+  Automatic creation was NOT applied (it would move the IP and could drop
+  your SSH session). Create the bridge with Netplan:
+
+    sudo tee /etc/netplan/zz-webkvm-${br}.yaml >/dev/null <<'YAML'
+network:
+  version: 2
+  ethernets:
+    ${iface}:
+      dhcp4: false
+      dhcp6: false
+  bridges:
+    ${br}:
+      interfaces: [${iface}]
+      dhcp4: true
+      dhcp6: true
+YAML
+    sudo netplan apply
+    ip -br addr show ${br}
+
+  (Alternatively, with NetworkManager:)
+    nmcli con add type bridge con-name ${br} ifname ${br}
+    nmcli con add type ethernet con-name ${br}-${iface} ifname ${iface} master ${br}
+    nmcli con modify ${br} ipv4.method auto
+    nmcli con up ${br}-${iface} && nmcli con up ${br}
+  ══════════════════════════════════════════════════════════════════════
+EOF
+}
+
+# ensure_physical_bridge reuses an existing physical bridge, or creates
+# vmbr0 (nmcli → netplan), or prints exact instructions and fails. Never
+# falls back to NAT/macvlan.
+ensure_physical_bridge() {
+    local br="${BR_NAME:-vmbr0}"
+
+    # 1. Reuse an existing physical bridge (vmbr0, br0, or BR_NAME).
+    local cand existing=""
+    for cand in vmbr0 br0 "${br}"; do
+        if [ -d "/sys/class/net/${cand}/bridge" ]; then
+            existing="${cand}"
+            break
+        fi
+    done
+    if [ -n "${existing}" ]; then
+        echo "  = physical bridge '${existing}' already present"
+        BR_NAME="${existing}"
+        return 0
+    fi
+
+    # 2. Detect the physical interface (default route, then any NIC).
+    local iface="${BRIDGE_SLAVE:-}"
+    [ -z "${iface}" ] && iface="$(default_route_iface)"
+    [ -z "${iface}" ] && iface="$(pick_physical_iface 2>/dev/null || true)"
+    if [ -z "${iface}" ]; then
+        echo "  ! cannot detect a physical interface to bind ${br} to" >&2
+        return 1
+    fi
+
+    # Moving a DHCP IP onto the bridge promotes the lease; warn so the
+    # admin adds a router reservation before the renewal breaks the bridge.
+    if ip -4 addr show dev "${iface}" scope global 2>/dev/null | grep -q "dynamic"; then
+        warn_dhcp_reservation "${br}" "${iface}"
+    fi
+
+    # 3. NetworkManager + nmcli (preferred when available).
+    if command -v nmcli >/dev/null 2>&1 && systemctl is-active --quiet NetworkManager 2>/dev/null; then
+        if [ "${BRIDGE_APPLY:-0}" = "1" ] && apply_bridge_nmcli "${br}" "${iface}"; then
+            return 0
+        fi
+        echo "  = NetworkManager present but BRIDGE_APPLY!=1 — printing instructions instead of risking the SSH session"
+    fi
+
+    # 4. Netplan (modern Ubuntu/Debian) — apply only when explicitly asked.
+    if [ -d /etc/netplan ] && command -v netplan >/dev/null 2>&1; then
+        if [ "${BRIDGE_APPLY:-0}" = "1" ] && apply_bridge_netplan "${br}" "${iface}"; then
+            return 0
+        fi
+        echo "  = Netplan present but BRIDGE_APPLY!=1 — printing instructions"
+    fi
+
+    # 5. Instructions (safe default: never risk dropping SSH automatically).
+    print_netplan_instructions "${br}" "${iface}"
+    return 1
+}
+
+# --- bridge hardening (sysctl + firewall FORWARD) ---------------------------
+# Shared-L2 bridges need IP forwarding so VMs/containers can route when the
+# host must forward, and must NOT be re-filtered by the host firewall when
+# br_netfilter is loaded (otherwise DHCP/ARP on the bridge get dropped and
+# the containers look isolated). Applied on every distro; idempotent.
+apply_bridge_sysctl() {
+    local f="/etc/sysctl.d/60-webkvm-bridge.conf"
+    if [ -f "${f}" ] && ! grep -qF "$MANAGED_MARKER" "${f}"; then
+        echo "  ! ${f} exists without our marker, leaving alone"
+        return 0
+    fi
+    local tmp
+    tmp="$(mktemp)"
+    {
+        echo "# $MANAGED_MARKER"
+        echo "# WebKVM shared-L2 bridge: IP forwarding on, and if br_netfilter"
+        echo "# is loaded the bridge L2 traffic must NOT be filtered by the host"
+        echo "# firewall (netfilter), or container DHCP/ARP on the bridge breaks."
+        echo "net.ipv4.ip_forward = 1"
+        echo "net.ipv6.conf.all.forwarding = 1"
+        if [ -d /proc/sys/net/bridge ]; then
+            echo "net.bridge.bridge-nf-call-iptables = 0"
+            echo "net.bridge.bridge-nf-call-ip6tables = 0"
+        fi
+    } > "$tmp"
+    sudo install -m 0644 "$tmp" "${f}"
+    rm -f "$tmp"
+    sudo sysctl -p "${f}" >/dev/null 2>&1 || true
+    if [ -d /proc/sys/net/bridge ]; then
+        sudo sysctl -w net.bridge.bridge-nf-call-iptables=0 net.bridge.bridge-nf-call-ip6tables=0 >/dev/null 2>&1 || true
+    fi
+    echo "  + sysctl: ip_forward=1 + bridge L2 not filtered by host firewall (${f})"
+}
+
+# allow_bridge_forward opens the host FORWARD chain for bridge traffic on the
+# distro's firewall. With br_netfilter loaded, bridged DHCP/ARP would traverse
+# FORWARD and get dropped by restrictive defaults (firewalld/UFW drop it).
+# Harmless no-op when no firewall is active (the common case).
+allow_bridge_forward() {
+    local br="$1"
+
+    # firewalld: move the bridge into the trusted zone (accepts everything,
+    # including FORWARD) — avoids per-rule whack-a-mole.
+    if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        if ! firewall-cmd --list-interfaces --zone=trusted 2>/dev/null | grep -qx "${br}"; then
+            sudo firewall-cmd --permanent --zone=trusted --add-interface="${br}" >/dev/null 2>&1 || true
+            sudo firewall-cmd --reload >/dev/null 2>&1 || true
+        fi
+        echo "  + firewalld: ${br} in trusted zone (bridge L2/DHCP allowed)"
+        return 0
+    fi
+
+    # ufw: insert FORWARD accept into before.rules' filter section (first
+    # COMMIT), because ufw's default forward policy drops everything.
+    if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+        local f="/etc/ufw/before.rules"
+        if ! sudo grep -qF "webkvm bridge ${br}" "${f}" 2>/dev/null; then
+            sudo awk -v br="${br}" '
+                /^COMMIT$/ && !done {
+                    print "# webkvm bridge " br " FORWARD allow"
+                    print "-A ufw-before-forward -i " br " -o " br " -j ACCEPT"
+                    done = 1
+                }
+                { print }
+            ' "${f}" > "${f}.tmp" && sudo mv "${f}.tmp" "${f}"
+        fi
+        echo "  + ufw: FORWARD ACCEPT for ${br} added to before.rules"
+        return 0
+    fi
+
+    # raw iptables/nftables: FORWARD accept between bridge ports.
+    if command -v iptables >/dev/null 2>&1; then
+        sudo iptables -C FORWARD -i "${br}" -o "${br}" -j ACCEPT 2>/dev/null \
+            || sudo iptables -I FORWARD -i "${br}" -o "${br}" -j ACCEPT 2>/dev/null || true
+        echo "  + iptables: FORWARD ACCEPT -i ${br} -o ${br}"
+        return 0
+    fi
+
+    echo "  = no active firewall detected; nothing to open for ${br}"
+}
+
 # --- main -------------------------------------------------------------------
 echo "=== webkvm network setup (mode: ${MODE}) ==="
 
@@ -1064,79 +1321,28 @@ if [ -n "${IFACE}" ]; then
 fi
 
 # 5. Apply configuration based on mode
-BR_NAME="br0"
+BR_NAME="${BRIDGE_NAME:-vmbr0}"
 
 if [[ "${MODE}" == "bridge" || "${MODE}" == "both" ]]; then
-    if [ -n "${IFACE}" ]; then
-        if [ "$DIRECT_BRIDGE" = "true" ]; then
-            # === DIRECT bridge mode (old behaviour: enslave physical iface) ===
-            if [ -n "${EXISTING_BRIDGE:-}" ]; then
-                echo "[4/5] reusing existing Linux bridge ${BR_NAME} + libvirt network br0-bridge"
-                ensure_bridge_network "${BR_NAME}"
-                verify_post_state_bridge "${BR_NAME}" "${IFACE}"
-            else
-                echo "[4/5] configuring Linux bridge ${BR_NAME} + libvirt network br0-bridge (direct)"
-                ensure_networkd_config_bridge "${BR_NAME}" "${IFACE}"
-                ensure_linux_bridge "${BR_NAME}" "${IFACE}"
-                ensure_bridge_network "${BR_NAME}"
-                verify_post_state_bridge "${BR_NAME}" "${IFACE}"
-            fi
-
-            cat <<EOF
-
-  ${bold:-}configs written.${reset:-} Before restarting systemd-networkd, verify:
-    - /etc/systemd/network/${BR_NAME}.network has Address=${BRIDGE_STATIC_IP}
-    - /etc/systemd/network/${IFACE}.network has Bridge=${BR_NAME} and DHCP=no
-    - you have physical/console access (restart WILL drop IP briefly)
-
-  When ready, from console:
-    sudo systemctl restart systemd-networkd
-    ip -br addr | grep ${BR_NAME}
-    ping -c 1 ${BRIDGE_STATIC_GW}
-
-  If the host doesn't come back, restore the backup:
-    sudo cp /etc/systemd/network/${BR_NAME}.network.bak /etc/systemd/network/${BR_NAME}.network
-    sudo cp /etc/systemd/network/${IFACE}.network.bak /etc/systemd/network/${IFACE}.network
-    sudo systemctl restart systemd-networkd
-EOF
-        else
-            # === MACVLAN bridge mode (default) ===
-            echo "[4/5] configuring macvlan bridge ${BR_NAME} + libvirt network br0-bridge"
-            ensure_networkd_config_macvlan "${BR_NAME}" "${IFACE}"
-            ensure_sysctl_arp_flux
-            ensure_macvlan_bridge "${BR_NAME}" "${IFACE}"
-            ensure_bridge_network "${BR_NAME}"
-            verify_post_state_macvlan "${BR_NAME}" "${IFACE}"
-
-            # Get the actual bridge IP for the summary
-            actual_bridge_ip="$(ip -4 -o addr show dev "${BR_NAME}" scope global 2>/dev/null | awk '{print $4}' | head -1)"
-            if [ -n "${actual_bridge_ip}" ]; then
-                ip_info="${actual_bridge_ip}"
-            elif [ "$BRIDGE_DHCP" = "false" ] && [ -n "${BRIDGE_STATIC_IP:-}" ]; then
-                ip_info="${BRIDGE_STATIC_IP} (pending)"
-            else
-                ip_info="acquiring via DHCP"
-            fi
-
-            cat <<EOF
-
-  ${bold:-}configs written.${reset:-} To apply systemd-networkd configs persistently
-  (they will survive reboot), restart systemd-networkd:
-
-    sudo systemctl restart systemd-networkd
-
-  The bridge is already running with IP (${ip_info}). If the physical
-  interface gets a new DHCP lease, the macvlan+bridge will be recreated
-  automatically by systemd-networkd.
-
-  Current state:
-    ip -br addr | grep -E '(${BR_NAME}|${IFACE}|mv-${BR_NAME})'
-EOF
-        fi
+    # WebKVM requires a PHYSICAL Linux bridge (vmbr0/br0) so KVM and Incus
+    # share the real LAN (shared Layer-2, Proxmox-style). Reuse an existing
+    # one or create it (nmcli → netplan); NEVER fall back to NAT/macvlan.
+    if ! ensure_physical_bridge; then
+        echo "  FATAL: no physical bridge available — WebKVM requires shared Layer-2." >&2
+        echo "        See the instructions above; isolated NAT/macvlan are not used." >&2
+        exit 1
+    fi
+    apply_bridge_sysctl
+    allow_bridge_forward "${BR_NAME}"
+    echo "[4/5] wiring libvirt network to physical bridge ${BR_NAME}"
+    ensure_bridge_network "${BR_NAME}"
+    if [ -n "${IFACE:-}" ]; then
+        verify_post_state_bridge "${BR_NAME}" "${IFACE}"
     fi
 fi
 
 if [[ "${MODE}" == "nat" || "${MODE}" == "both" ]]; then
+    apply_bridge_sysctl
     if [ -n "${IFACE}" ]; then
         # Apply static IP to the physical interface only in:
         #   - direct-bridge mode (old behaviour: enslave & move IP)

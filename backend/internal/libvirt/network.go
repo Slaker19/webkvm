@@ -52,12 +52,30 @@ func (c *Connector) ListNetworks() ([]models.Network, error) {
 		return nil, err
 	}
 
+	// Unified L2 network model (Proxmox-style): the host's traditional
+	// Linux bridges (vmbr0, br0, …) are first-class network resources
+	// shared by KVM and Incus. VMs attach with <interface type='bridge'>,
+	// containers with nictype=bridged parent=<bridge>. libvirt virtual
+	// networks (NAT virbr0, bridge/direct forwards) follow.
+	result := make([]models.Network, 0, 8)
+	for _, b := range listLinuxBridges() {
+		result = append(result, models.Network{
+			Name:      b,
+			Forward:   "bridge",
+			Bridge:    b,
+			Active:    true,
+			Autostart: true,
+			// Host bridges (vmbr0, br0, …) are not libvirt resources:
+			// the UI greys out delete and the API refuses it.
+			Protected: true,
+		})
+	}
+
 	nets, err := c.conn.ListAllNetworks(libvirt.CONNECT_LIST_NETWORKS_ACTIVE | libvirt.CONNECT_LIST_NETWORKS_INACTIVE)
 	if err != nil {
 		return nil, fmt.Errorf("list networks: %w", err)
 	}
 
-	result := make([]models.Network, 0, len(nets))
 	for i := range nets {
 		n, err := networkToModel(&nets[i])
 		nets[i].Free()
@@ -78,14 +96,31 @@ func (c *Connector) CreateNetwork(req models.CreateNetworkRequest) (models.Netwo
 		return models.Network{}, err
 	}
 
+	// A host Linux bridge (vmbr0, br0, …) is already a shared L2 resource
+	// surfaced by ListNetworks; creating a libvirt network over it would
+	// shadow it and break the unified model. Refuse.
+	if isLinuxBridge(req.Name) {
+		return models.Network{}, fmt.Errorf("network %q is a host Linux bridge (already shared by KVM and Incus); no libvirt network is needed", req.Name)
+	}
+
 	// For forward=bridge, libvirt expects the named interface to
-	// already be a Linux bridge on the host.
-	if req.Forward == "bridge" {
-		bridgeName := req.Bridge
-		if bridgeName == "" {
-			bridgeName = bridgeNameFor(req.Name)
+	// already be a Linux bridge on the host. The default forward mode is
+	// now "bridge" (Proxmox-style shared L2): when no bridge is supplied
+	// we auto-detect the host's main Linux bridge (vmbr0/br0).
+	forward := req.Forward
+	if forward == "" {
+		forward = "bridge"
+	}
+	bridge := req.Bridge
+	if bridge == "" {
+		if forward == "bridge" {
+			bridge = mainBridge()
+		} else {
+			bridge = bridgeNameFor(req.Name)
 		}
-		if !isLinuxBridge(bridgeName) {
+	}
+	if forward == "bridge" {
+		if !isLinuxBridge(bridge) {
 			available := listLinuxBridges()
 			hint := ""
 			if len(available) == 0 {
@@ -93,7 +128,7 @@ func (c *Connector) CreateNetwork(req models.CreateNetworkRequest) (models.Netwo
 			} else {
 				hint = " (available: " + strings.Join(available, ", ") + ")"
 			}
-			return models.Network{}, fmt.Errorf("'%s' is not a Linux bridge on the host%s. Create a bridge first (e.g. via the Networks page or POST /api/host/bridges) and try again", bridgeName, hint)
+			return models.Network{}, fmt.Errorf("'%s' is not a Linux bridge on the host%s. Create a bridge first (e.g. via the Networks page or POST /api/host/bridges) and try again", bridge, hint)
 		}
 	}
 
@@ -111,15 +146,6 @@ func (c *Connector) CreateNetwork(req models.CreateNetworkRequest) (models.Netwo
 			}
 			return models.Network{}, fmt.Errorf("'%s' is not a physical network interface on the host%s", req.Interface, hint)
 		}
-	}
-
-	forward := req.Forward
-	if forward == "" {
-		forward = "nat"
-	}
-	bridge := req.Bridge
-	if bridge == "" {
-		bridge = bridgeNameFor(req.Name)
 	}
 
 	var forwardXML string
@@ -233,6 +259,11 @@ func IsManagedNetwork(name string) bool {
 func (c *Connector) DeleteNetwork(id string) error {
 	if IsManagedNetwork(id) {
 		return fmt.Errorf("network %q is managed by webkvm and cannot be deleted via the API; remove the underlying Linux bridge manually (or re-run setup-bridge.sh) if you really want it gone", id)
+	}
+	// A traditional Linux bridge on the host (vmbr0, br0, …) is a shared
+	// L2 resource, not a libvirt network — never let the API remove it.
+	if isLinuxBridge(id) {
+		return fmt.Errorf("network %q is a host Linux bridge (shared L2); manage it at the OS level (e.g. 'ip link delete %s') instead", id, id)
 	}
 	net, err := c.lookupNetwork(id)
 	if err != nil {
@@ -462,6 +493,12 @@ func networkToModel(net *libvirt.Network) (models.Network, error) {
 	var forward string
 	xmlDesc, _ := net.GetXMLDesc(0)
 	forward = extractNetworkForward(xmlDesc)
+	// virNetworkGetBridgeName returns empty for forward='bridge' networks
+	// (the bridge is host-managed and only declared in the XML) — fall
+	// back to parsing it so the unified L2 resolver can attach containers.
+	if bridgeName == "" {
+		bridgeName = extractNetworkBridge(xmlDesc)
+	}
 
 	cidr, gateway := extractNetworkCIDR(xmlDesc)
 	dhcpStart, dhcpEnd := extractNetworkDHCP(xmlDesc)
@@ -543,6 +580,36 @@ func extractNetworkDNSBlock(xml string) string {
 		return ""
 	}
 	return xml[s:s+e+len("</dns>")] + "\n  "
+}
+
+// extractNetworkBridge returns the Linux bridge name declared in a
+// libvirt network XML (the <bridge name='…'/> element). virNetworkGetBridgeName
+// only reports the bridge for networks libvirt itself manages (NAT virbr0);
+// for forward='bridge' networks the bridge lives in the XML and must be
+// parsed here, otherwise the unified L2 resolver can't find it.
+func extractNetworkBridge(xml string) string {
+	idx := strings.Index(xml, "<bridge")
+	if idx < 0 {
+		return ""
+	}
+	rest := xml[idx:]
+	end := strings.IndexByte(rest, '>')
+	if end < 0 {
+		return ""
+	}
+	tag := rest[:end+1]
+	for _, q := range []string{`name='`, `name="`} {
+		if m := strings.Index(tag, q); m >= 0 {
+			m += len(q)
+			// q[len(q)-1] is the closing quote that matches q's opening
+			// quote (either ' or ").
+			e := strings.IndexByte(tag[m:], q[len(q)-1])
+			if e > 0 {
+				return tag[m : m+e]
+			}
+		}
+	}
+	return ""
 }
 
 func extractNetworkForward(xml string) string {

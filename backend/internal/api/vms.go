@@ -146,6 +146,20 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Advanced options validation (Fase 5).
+	switch req.BootOrder {
+	case "", "disk", "cdrom", "network":
+	default:
+		jsonErr(w, http.StatusBadRequest, "boot_order must be one of: disk, cdrom, network")
+		return
+	}
+	for _, p := range req.Profiles {
+		if p == "" {
+			jsonErr(w, http.StatusBadRequest, "incus profile names must not be empty")
+			return
+		}
+	}
+
 	vm, err := h.compute.CreateDomain(req)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -230,6 +244,21 @@ func (h *Handler) UpdateVM(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+		}
+	}
+
+	if req.BootOrder != nil {
+		switch *req.BootOrder {
+		case "", "disk", "cdrom", "network":
+		default:
+			jsonErr(w, http.StatusBadRequest, "boot_order must be one of: disk, cdrom, network")
+			return
+		}
+	}
+	for _, p := range req.Profiles {
+		if p == "" {
+			jsonErr(w, http.StatusBadRequest, "incus profile names must not be empty")
+			return
 		}
 	}
 
@@ -743,6 +772,20 @@ func (h *Handler) GetAutostart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResp(w, http.StatusOK, map[string]bool{"autostart": enabled})
+}
+
+// ListIncusProfiles returns the profile names available on the Incus
+// backend for the container creation form (empty list on KVM-only hosts).
+func (h *Handler) ListIncusProfiles(w http.ResponseWriter, r *http.Request) {
+	profiles, err := h.compute.ListIncusProfiles()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if profiles == nil {
+		profiles = []string{}
+	}
+	jsonResp(w, http.StatusOK, map[string][]string{"profiles": profiles})
 }
 
 // SetAutostart toggles the libvirtd autostart flag for a VM.

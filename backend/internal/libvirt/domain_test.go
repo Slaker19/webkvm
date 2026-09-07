@@ -163,3 +163,94 @@ func TestStripCdromDevices(t *testing.T) {
 
 // silence unused-import warning when the test that uses os is removed.
 var _ = os.Stat
+
+func TestBootDeviceAttr(t *testing.T) {
+	cases := []struct {
+		order string
+		want  string
+	}{
+		{"", "<boot dev='hd'/>"},
+		{"disk", "<boot dev='hd'/>"},
+		{"cdrom", "<boot dev='cdrom'/>"},
+		{"network", "<boot dev='network'/>"},
+		{"garbage", "<boot dev='hd'/>"},
+	}
+	for _, c := range cases {
+		if got := bootDeviceAttr(c.order); got != c.want {
+			t.Errorf("bootDeviceAttr(%q) = %q, want %q", c.order, got, c.want)
+		}
+	}
+}
+
+func TestBootOrderFromXML(t *testing.T) {
+	cases := []struct {
+		xml  string
+		want string
+	}{
+		{"<os><type arch='x86_64'>hvm</type><boot dev='hd'/></os>", "disk"},
+		{"<os><boot dev='cdrom'/></os>", "cdrom"},
+		{"<os><boot dev='network'/></os>", "network"},
+		{"<os><type arch='x86_64'>hvm</type></os>", "disk"},
+	}
+	for _, c := range cases {
+		if got := bootOrderFromXML(c.xml); got != c.want {
+			t.Errorf("bootOrderFromXML(%q) = %q, want %q", c.xml, got, c.want)
+		}
+	}
+}
+
+func TestBootDeviceToAPI(t *testing.T) {
+	cases := map[string]string{
+		"hd":      "disk",
+		"cdrom":   "cdrom",
+		"network": "network",
+		"floppy":  "disk",
+		"":        "disk",
+	}
+	for dev, want := range cases {
+		if got := bootDeviceToAPI(dev); got != want {
+			t.Errorf("bootDeviceToAPI(%q) = %q, want %q", dev, got, want)
+		}
+	}
+}
+
+func TestInterfaceXML(t *testing.T) {
+	origBridge := linuxBridgeCheck
+	origMain := mainBridgeCheck
+	t.Cleanup(func() {
+		linuxBridgeCheck = origBridge
+		mainBridgeCheck = origMain
+	})
+
+	// Non-bridge network name -> libvirt virtual network interface.
+	linuxBridgeCheck = func(string) bool { return false }
+	mainBridgeCheck = func() string { return "" }
+	out := interfaceXML("default", "virtio")
+	if !strings.Contains(out, "<interface type='network'>") ||
+		!strings.Contains(out, "<source network='default'/>") ||
+		!strings.Contains(out, "<model type='virtio'/>") {
+		t.Errorf("network interface XML wrong:\n%s", out)
+	}
+	// Empty name with no host bridge falls back to the NAT default network.
+	out = interfaceXML("", "virtio")
+	if !strings.Contains(out, "<source network='default'/>") {
+		t.Errorf("empty network should fall back to 'default':\n%s", out)
+	}
+	// Empty name WITH a main host bridge defaults to a direct bridge
+	// attachment (Proxmox-style shared L2).
+	linuxBridgeCheck = func(string) bool { return true }
+	mainBridgeCheck = func() string { return "vmbr0" }
+	out = interfaceXML("", "virtio")
+	if !strings.Contains(out, "<interface type='bridge'>") ||
+		!strings.Contains(out, "<source bridge='vmbr0'/>") {
+		t.Errorf("empty network with main bridge should attach to vmbr0:\n%s", out)
+	}
+
+	// Host Linux bridge -> direct bridge attachment (Proxmox-style L2).
+	out = interfaceXML("vmbr0", "virtio")
+	if !strings.Contains(out, "<interface type='bridge'>") ||
+		!strings.Contains(out, "<source bridge='vmbr0'/>") ||
+		!strings.Contains(out, "<model type='virtio'/>") {
+		t.Errorf("bridge interface XML wrong:\n%s", out)
+	}
+}

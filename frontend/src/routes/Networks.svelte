@@ -24,7 +24,9 @@
   let editingNet = $state(null);
   let name = $state('');
   let cidr = $state('192.168.100.0/24');
-  let forward = $state('nat');
+  // Shared L2 (Proxmox-style) is the default: new networks are created as
+  // Linux-bridge networks, not isolated NAT.
+  let forward = $state('bridge');
   let hostDevice = $state('');
   // forward=direct (macvtap): physical interface to bind straight to,
   // e.g. "eth0" — like the auto-created "webkvm-bridge" network, but
@@ -106,7 +108,7 @@
   function resetForm() {
     name = '';
     cidr = '192.168.100.0/24';
-    forward = 'nat';
+    forward = 'bridge';
     hostDevice = '';
     directInterface = '';
     dhcp = true;

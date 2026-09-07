@@ -321,11 +321,12 @@ prompt_settings() {
   if [[ "${HTTPS}" == "yes" ]]; then
     confirm TLS_DOMAIN "Certificate domain (optional — e.g. webkvm.example.com; empty = IP/hostname only, SAN covers LAN IP too)" ""
   fi
-  # Piped installs (curl | sudo bash) run non-interactive: default to NAT,
-  # NEVER touch the machine's LAN config without asking.
-  local net_default="nat"
-  [[ "${NONINTERACTIVE}" == 1 ]] || net_default="both"
-  prompt_select NETWORK_MODE "How should VMs reach the network?" "nat|NAT (Internet via host)" "bridge|Bridge to the real LAN (macvlan br0)" "both|Both" "${net_default}"
+  # Physical shared-L2 bridge (vmbr0/br0 attached to the physical NIC) is the
+  # ONLY default: KVM and Incus share the real LAN and get IPs from the router
+  # via DHCP (Proxmox-style). NAT is never a fallback; it is only an explicit
+  # opt-in via NETWORK_MODE=nat for isolated deployments.
+  local net_default="bridge"
+  prompt_select NETWORK_MODE "How should instances reach the network?" "bridge|Physical bridge vmbr0 (shared L2 — required, recommended)" "nat|NAT (explicit opt-in, isolated)" "both|Both (explicit opt-in)" "${net_default}"
   if [[ "${NETWORK_MODE}" == "both" || "${NETWORK_MODE}" == "bridge" ]]; then
     if [[ -z "${BRIDGE_DHCP}" && -z "${BRIDGE_STATIC_IP}" && "${NONINTERACTIVE}" == 0 ]]; then
       local ans
@@ -652,7 +653,11 @@ if [[ -x "${SETUP_NETWORK}" && -n "${NETWORK_MODE}" && "${NETWORK_MODE}" != "non
       export BRIDGE_DHCP=true
     fi
   fi
-  bash "${SETUP_NETWORK}" "${args[@]}" || log "network setup reported an error (see above); the service is already running"
+  bash "${SETUP_NETWORK}" "${args[@]}" || {
+    red "WebKVM requires a PHYSICAL Linux bridge (vmbr0/br0) attached to your physical NIC — shared Layer-2, IPs from your router via DHCP (Proxmox-style)."
+    red "Follow the instructions printed above, then re-run the installer. NAT is not used."
+    exit 1
+  }
 fi
 
 # ── Firewall: open the web UI port when a firewall is active ──────────

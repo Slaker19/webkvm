@@ -31,6 +31,11 @@ var (
 	// hypervisor does not support (Fase 1: most LXD methods). Handlers
 	// map it to HTTP 501 Not Implemented.
 	ErrNotImplemented = errors.New("this operation is not supported by the current hypervisor backend")
+	// ErrNoPhysicalBridge is the fatal error surfaced when the host has no
+	// physical Linux bridge (vmbr0/br0 attached to a physical NIC). WebKVM
+	// requires shared Layer-2 (Proxmox-style): KVM and Incus must land on
+	// the real LAN, never on an intermediate NAT/virtual bridge.
+	ErrNoPhysicalBridge = errors.New("no physical bridge found on host; please configure a Linux bridge (vmbr0 or br0) attached to your physical NIC")
 )
 
 // ExportBackupOptions controls a backup export stream.
@@ -136,6 +141,9 @@ type Backend interface {
 	SetBootDevice(id string, device string) error
 	GetBootDevice(id string) (string, error)
 	ValidateDomainDisks(id string) error
+	// ListIncusProfiles returns the profile names available on the Incus
+	// backend (empty for KVM-only hosts).
+	ListIncusProfiles() ([]string, error)
 
 	// --- Disks / devices / USB ---
 	AttachDisk(id string, req models.AttachDiskRequest) error

@@ -212,6 +212,7 @@ export const api = {
   // --- VMs ---
   listVMs: () => request('/vms'),
   getVM: (id) => request(`/vms/${id}`),
+  listIncusProfiles: () => request('/vms/incus-profiles'),
   createVM: (data) => request('/vms', { method: 'POST', body: JSON.stringify(data) }),
   updateVM: (id, data) => request(`/vms/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteVM: (id, withDisks = false) =>

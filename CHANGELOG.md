@@ -4,6 +4,68 @@ Todos los cambios notables de este proyecto se documentan en este
 fichero, siguiendo [Keep a Changelog](https://keepachangelog.com/es/1.1.0/)
 y [Semantic Versioning](https://semver.org/lang/es/).
 
+## [2.3.0] — Fase 5: opciones avanzadas y redes L2 unificadas (2026-09-07)
+
+### Added
+
+- **Fase 5 — Opciones avanzadas de instancias**: modelo, API, drivers y UI
+  ampliados con control tipo Proxmox.
+  - **KVM**: `boot_order` (disk/cdrom/network) en creación y edición
+    (`<boot dev='…'/>`), `autostart` en creación, opción VGA "Serial-only".
+  - **Incus (LXC)**: `security.privileged` (unprivileged por defecto),
+    `security.nesting` y **perfiles** aplicados en creación/edición. Cambiar
+    `security.privileged` en caliente aborta pidiendo apagar el contenedor.
+  - **Endpoint** `GET /api/vms/incus-profiles` (selector de perfiles).
+- **Redes L2 compartidas (filosofía Proxmox)**:
+  - `ListNetworks` expone los **Linux bridges del host** (`vmbr0`, `br0`…)
+    como recurso unificado; KVM ataca con `<interface type='bridge'>` y los
+    contenedores Incus con `nictype=bridged parent=<bridge>` (misma LAN).
+  - **Bridge como default absoluto**: `CreateNetwork` crea redes `bridge`
+    por defecto (auto-detecta `vmbr0`/`br0`); la red por defecto del primer
+    arranque es `forward='bridge'` al puente principal (ya no NAT aislado);
+    el selector del modal de redes preselecciona "Bridge".
+  - Fix: `virNetworkGetBridgeName` no reporta el bridge de redes
+    `forward='bridge'` — se extrae del XML (`extractNetworkBridge`), lo que
+    arregla la creación de contenedores sobre `webkvm-bridge`.
+  - Los bridges del host están protegidos (no se borran/recargan vía API).
+- **Capa 2 física OBLIGATORIA** (filosofía Proxmox): KVM e Incus requieren un
+  Linux bridge físico (`vmbr0`/`br0` unido a la NIC física) y obtienen IPs del
+  router por DHCP. Se elimina **todo fallback a NAT/virtual** (`virbr0`/
+  `lxdbr0`): si no hay bridge físico, la creación de instancias/redes falla
+  con el error `ErrNoPhysicalBridge` ("no physical bridge found on host…
+  configure vmbr0 attached to your physical NIC").
+- **Instalador (`setup-network.sh`)**: detecta la interfaz física de la ruta
+  por defecto e intenta crear el bridge `vmbr0` (nmcli → netplan
+  Ubuntu/Debian); si automatizarlo arriesga la conexión SSH, imprime las
+  instrucciones exactas (Netplan/NetworkManager) y aborta — jamás NAT. El
+  fallo de red del instalador es FATAL (no continúa sin bridge físico). Si la
+  interfaz está en DHCP, advierte sobre la **reserva DHCP** (mover la IP al
+  bridge promociona la concesión, pero el router sigue viéndola en el pool);
+  la vía recomendada para el host es una **IP estática por debajo del rango
+  DHCP** (p. ej. `192.168.1.30` con pool desde `.50`), mientras las instancias
+  obtienen su IP del router por DHCP a través del bridge.
+- **Instalador (`install.sh` + `setup-network.sh`)**: el modo por defecto pasa a
+  ser **`bridge` (L2 compartido)** en lugar de NAT. La instalación reutiliza un
+  bridge físico existente (`vmbr0`/`br0`) y ya **no crea la red NAT aislada**
+  por defecto (NAT sigue disponible solo como opt-in explícito con
+  `NETWORK_MODE=nat`). `update.sh` y el instalador Docker no tocan redes: la
+  inicialización bridge la hace el backend en el primer arranque.
+- **Backend Incus: los contenedores muestran su IP real en la UI** — antes
+  `instanceToVM` nunca rellenaba `vm.IP`, así que los contenedores aparecían
+  "aislados" (sin IP) en la interfaz aunque tuvieran IP de la LAN por DHCP a
+  través del bridge. Ahora `GetDomain` y `ListDomains` consultan
+  `GetInstanceState` y exponen la IPv4 de `eth0` (con fallback a cualquier
+  interfaz no-loopback). Coste N+1 en listado, aceptable para homelab.
+- **Blindaje multi-distro del bridge (`setup-network.sh`)**: inyecta y aplica
+  `net.ipv4.ip_forward=1` (+ IPv6) y, si `br_netfilter` está cargado, fuerza
+  `net.bridge.bridge-nf-call-iptables=0`/`ip6tables=0` para que el tráfico L2
+  del bridge no sea re-filtrado por el firewall del host. Además abre la
+  cadena **FORWARD** para el bridge según distro: firewalld (zona `trusted`),
+  UFW (`before.rules` → `ufw-before-forward ACCEPT`) e iptables/nftables
+  (`FORWARD -i vmbr0 -o vmbr0 -j ACCEPT`). Preventivo para distros con
+  políticas FORWARD restrictivas (el tráfico bridged no atraviesa FORWARD
+  salvo que `br_netfilter` esté cargado).
+
 ## [2.2.1] — Instalador: fallback de release y resiliencia de red (2026-09-07)
 
 ### Fixed

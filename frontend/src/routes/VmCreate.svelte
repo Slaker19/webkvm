@@ -75,6 +75,15 @@
   let tpmEnabled = $state(false);
   let networkModel = $state('virtio');
 
+  // v1.4 Fase 5: advanced options (boot order, Incus security/profiles,
+  // autostart). Unprivileged containers are the safe default.
+  let bootOrder = $state('disk');
+  let privileged = $state(false);
+  let nesting = $state(false);
+  let profiles = $state(['default']);
+  let startAtBoot = $state(true);
+  let incusProfiles = $state([]);
+
   // Disk options
   let diskSize = $state(30);
   let diskBus = $state('virtio');
@@ -326,6 +335,14 @@
       pools = p;
       networks = n;
       isos = i;
+      // Fase 5: available Incus profiles for the container form (empty on
+      // KVM-only hosts — the section just shows "default").
+      try {
+        const pr = await api.listIncusProfiles();
+        if (pr?.profiles?.length) incusProfiles = pr.profiles;
+      } catch {
+        incusProfiles = [];
+      }
       try {
         const me = await api.me();
         myAllowedPools = me?.allowed_pools || [];
@@ -392,6 +409,10 @@
             ram_mb: ramMB,
             disk_gb: diskSize,
             network,
+            privileged,
+            nesting,
+            profiles,
+            autostart: startAtBoot,
           }
         : {
             name,
@@ -416,6 +437,8 @@
             virtio_iso: virtioISO || undefined,
             disk_cache_io: diskCacheIO,
             disk_discard: diskDiscard,
+            boot_order: bootOrder,
+            autostart: startAtBoot,
           };
       if (!isContainer && cpuTopologyEnabled) {
         payload.cpu_sockets = cpuSockets;
@@ -1000,14 +1023,16 @@
             >
               <select bind:value={videoModel} class="input max-w-xs">
                 {#each videoModels as m}
-                  <option value={m.value}>{m.label}</option>
+                  <option value={m.value}
+                    >{m.value === 'none' ? t('vmCreate.serialOnly') : m.label}</option
+                  >
                 {/each}
               </select>
             </SettingRow>
             <SettingRow label={t('vmDetail.networkLabel')} helper={t('vmCreate.networkHelper')}>
               <select bind:value={network} class="input max-w-xs">
                 {#each networks as net}
-                  <option value={net.name}>{net.name} ({net.forward || 'isolated'})</option>
+                  <option value={net.name}>{networkLabel(net)}</option>
                 {/each}
               </select>
             </SettingRow>
@@ -1019,6 +1044,91 @@
               </select>
             </SettingRow>
           {/if}
+
+          <!-- Fase 5: advanced options (collapsible) -->
+          <div class="mt-4 border border-border rounded-lg bg-muted/30 p-4">
+            <details>
+              <summary class="cursor-pointer text-sm font-semibold text-foreground select-none">
+                {t('vmCreate.advancedOptions')}
+              </summary>
+              <div class="mt-3 space-y-4">
+                {#if isContainer}
+                  <SettingRow
+                    label={t('vmCreate.privileged')}
+                    helper={t('vmCreate.privilegedHelper')}
+                  >
+                    <button
+                      type="button"
+                      onclick={() => (privileged = !privileged)}
+                      class="relative w-9 h-5 rounded-full transition-colors {privileged
+                        ? 'bg-accent'
+                        : 'bg-muted'}"
+                      aria-label={t('vmCreate.privileged')}
+                    >
+                      <span
+                        class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {privileged
+                          ? 'translate-x-4'
+                          : ''}"
+                      ></span>
+                    </button>
+                  </SettingRow>
+                  <SettingRow label={t('vmCreate.nesting')} helper={t('vmCreate.nestingHelper')}>
+                    <button
+                      type="button"
+                      onclick={() => (nesting = !nesting)}
+                      class="relative w-9 h-5 rounded-full transition-colors {nesting
+                        ? 'bg-accent'
+                        : 'bg-muted'}"
+                      aria-label={t('vmCreate.nesting')}
+                    >
+                      <span
+                        class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {nesting
+                          ? 'translate-x-4'
+                          : ''}"
+                      ></span>
+                    </button>
+                  </SettingRow>
+                  <SettingRow label={t('vmCreate.profiles')} helper={t('vmCreate.profilesHelper')}>
+                    <select bind:value={profiles} multiple class="input max-w-xs h-24">
+                      {#each incusProfiles as p}
+                        <option value={p}>{p}</option>
+                      {/each}
+                    </select>
+                  </SettingRow>
+                {:else}
+                  <SettingRow
+                    label={t('vmCreate.bootOrder')}
+                    helper={t('vmCreate.bootOrderHelper')}
+                  >
+                    <select bind:value={bootOrder} class="input max-w-xs">
+                      <option value="disk">{t('vmCreate.bootDisk')}</option>
+                      <option value="cdrom">{t('vmCreate.bootCdrom')}</option>
+                      <option value="network">{t('vmCreate.bootNetwork')}</option>
+                    </select>
+                  </SettingRow>
+                {/if}
+                <SettingRow
+                  label={t('vmCreate.startAtBoot')}
+                  helper={t('vmCreate.startAtBootHelper')}
+                >
+                  <button
+                    type="button"
+                    onclick={() => (startAtBoot = !startAtBoot)}
+                    class="relative w-9 h-5 rounded-full transition-colors {startAtBoot
+                      ? 'bg-accent'
+                      : 'bg-muted'}"
+                    aria-label={t('vmCreate.startAtBoot')}
+                  >
+                    <span
+                      class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {startAtBoot
+                        ? 'translate-x-4'
+                        : ''}"
+                    ></span>
+                  </button>
+                </SettingRow>
+              </div>
+            </details>
+          </div>
 
           <!-- Cloud-init / LXC credentials (optional provisioning) -->
           <SettingRow

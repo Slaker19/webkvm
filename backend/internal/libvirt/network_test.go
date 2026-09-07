@@ -243,3 +243,25 @@ func TestIsPhysicalInterfaceRejectsTraversal(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractNetworkBridge(t *testing.T) {
+	cases := []struct {
+		xml  string
+		want string
+	}{
+		// forward='bridge' network: bridge declared in the XML (the bug
+		// virNetworkGetBridgeName can't see).
+		{"<network><name>webkvm-bridge</name><forward mode='bridge'/><bridge name='br0'/></network>", "br0"},
+		// NAT network: libvirt-managed bridge with extra attributes.
+		{"<network><bridge name='virbr0' stp='on' delay='0'/></network>", "virbr0"},
+		// Double-quoted attributes.
+		{"<network><bridge name=\"br1\" stp=\"off\"/></network>", "br1"},
+		// No bridge element.
+		{"<network><name>x</name></network>", ""},
+	}
+	for _, c := range cases {
+		if got := extractNetworkBridge(c.xml); got != c.want {
+			t.Errorf("extractNetworkBridge(%q) = %q, want %q", c.xml, got, c.want)
+		}
+	}
+}

@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"runtime"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"sync"
 
 	"libvirt.org/go/libvirt"
@@ -201,17 +200,29 @@ func (c *Connector) setDefaultPoolPurposes() {
 
 func (c *Connector) ensureDefaultNetwork() {
 	net, err := c.conn.LookupNetworkByName("default")
-	if err != nil {
-		xmlStr := `<network>
+	if err == nil {
+		defer net.Free()
+		active, _ := net.IsActive()
+		if !active {
+			if err := net.Create(); err != nil {
+				slog.Warn("default_network_start_failed", "err", err)
+				return
+			}
+			slog.Info("default_network_started")
+		}
+		return
+	}
+
+	// Proxmox-style shared L2: the default network is a BRIDGE pointing at
+	// the host's main physical Linux bridge (vmbr0/br0) — never an
+	// isolated NAT. If the host has no physical bridge, skip and surface
+	// the requirement instead of creating a NAT fallback.
+	if bridge := mainBridge(); bridge != "" {
+		xmlStr := fmt.Sprintf(`<network>
   <name>default</name>
-  <forward mode='nat'/>
-  <bridge name='virbr0' stp='on' delay='0'/>
-  <ip address='192.168.122.1' netmask='255.255.255.0'>
-    <dhcp>
-      <range start='192.168.122.2' end='192.168.122.254'/>
-    </dhcp>
-  </ip>
-</network>`
+  <forward mode='bridge'/>
+  <bridge name='%s'/>
+</network>`, xmlEscape(bridge))
 		n, err := c.conn.NetworkDefineXML(xmlStr)
 		if err != nil {
 			slog.Warn("default_network_define_failed", "err", err)
@@ -225,19 +236,14 @@ func (c *Connector) ensureDefaultNetwork() {
 			slog.Warn("default_network_start_failed", "err", err)
 			return
 		}
-		slog.Info("default_network_created")
+		slog.Info("default_network_created_as_bridge", "bridge", bridge)
 		return
 	}
-	defer net.Free()
 
-	active, _ := net.IsActive()
-	if !active {
-		if err := net.Create(); err != nil {
-			slog.Warn("default_network_start_failed", "err", err)
-			return
-		}
-		slog.Info("default_network_started")
-	}
+	// No physical bridge on the host: DO NOT fall back to NAT. WebKVM
+	// requires shared Layer-2 — configure vmbr0 (or br0) attached to the
+	// physical NIC (setup-network.sh can create it) and restart.
+	slog.Warn("default_network_skipped_no_physical_bridge", "hint", "configure vmbr0 attached to your physical NIC (see setup-network.sh)")
 }
 
 func (c *Connector) ensureAppPool(name, path string) {
@@ -329,17 +335,18 @@ func (c *Connector) ensureDefaultBridgeNetwork() {
 		net.Free()
 		return
 	}
-	iface, err := defaultRouteInterface()
-	if err != nil {
-		slog.Warn("skip_webkvm_bridge_network", "reason", "no_default_route", "err", err)
+	bridge := mainBridge()
+	if bridge == "" {
+		slog.Warn("skip_webkvm_bridge_network", "reason", "no_linux_bridge_on_host")
 		return
 	}
+	// Shared L2: forward to the host's main Linux bridge (vmbr0/br0) —
+	// the container/KVM NICs land on the same physical LAN, Proxmox-style.
 	xmlStr := fmt.Sprintf(`<network>
   <name>%s</name>
-  <forward mode='bridge'>
-    <interface dev='%s'/>
-  </forward>
-</network>`, xmlEscape(name), xmlEscape(iface))
+  <forward mode='bridge'/>
+  <bridge name='%s'/>
+</network>`, xmlEscape(name), xmlEscape(bridge))
 	n, err := c.conn.NetworkDefineXML(xmlStr)
 	if err != nil {
 		slog.Warn("webkvm_bridge_define_failed", "err", err)
@@ -353,22 +360,7 @@ func (c *Connector) ensureDefaultBridgeNetwork() {
 		slog.Warn("webkvm_bridge_start_failed", "err", err)
 		return
 	}
-	slog.Info("webkvm_bridge_network_created", "iface", iface, "name", name)
-}
-
-func defaultRouteInterface() (string, error) {
-	data, err := os.ReadFile("/proc/net/route")
-	if err != nil {
-		return "", fmt.Errorf("read /proc/net/route: %w", err)
-	}
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines[1:] {
-		f := strings.Fields(line)
-		if len(f) >= 2 && f[1] == "00000000" {
-			return f[0], nil
-		}
-	}
-	return "", fmt.Errorf("no default route found in /proc/net/route")
+	slog.Info("webkvm_bridge_network_created", "bridge", bridge, "name", name)
 }
 
 // ensureConnected reports whether the connection is usable, reconnecting

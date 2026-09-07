@@ -182,6 +182,7 @@ func NewRouter(
 		// wildcard route, so it can't be shadowed by a VM literally
 		// named "snapshots".
 		r.Get("/snapshots", h.ListAllSnapshots)
+		r.Get("/incus-profiles", h.ListIncusProfiles)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAtLeast("operator"))
 			r.Post("/", h.CreateVM)

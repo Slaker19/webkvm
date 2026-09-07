@@ -40,6 +40,10 @@ type VM struct {
 	Firmware   string      `json:"firmware,omitempty"`
 	CPUMode    string      `json:"cpu_mode,omitempty"`
 	VideoModel string      `json:"video_model,omitempty"`
+	BootOrder  string      `json:"boot_order,omitempty"`
+	Privileged bool        `json:"privileged"`
+	Nesting    bool        `json:"nesting"`
+	Profiles   []string    `json:"profiles,omitempty"`
 	IP         string      `json:"ip,omitempty"`
 	Alias      string      `json:"alias,omitempty"`
 	Cover      string      `json:"cover,omitempty"`
@@ -99,6 +103,22 @@ type CreateVMRequest struct {
 	CPUSockets *int `json:"cpu_sockets,omitempty"`
 	CPUCores   *int `json:"cpu_cores,omitempty"`
 	CPUThreads *int `json:"cpu_threads,omitempty"`
+	// BootOrder is the primary boot device for KVM domains:
+	// "disk", "cdrom" or "network". Empty keeps the default (disk).
+	BootOrder string `json:"boot_order,omitempty"`
+	// Autostart starts the instance when the host daemon boots
+	// (KVM: libvirtd autostart flag; Incus: boot.autostart).
+	// nil keeps the backend default (true).
+	Autostart *bool `json:"autostart,omitempty"`
+	// Privileged toggles security.privileged on Incus containers
+	// (false = unprivileged, the safe default).
+	Privileged *bool `json:"privileged,omitempty"`
+	// Nesting enables security.nesting (run Docker/other containers
+	// inside the container).
+	Nesting *bool `json:"nesting,omitempty"`
+	// Profiles are the Incus profiles applied to a container.
+	// Empty uses the "default" profile.
+	Profiles []string `json:"profiles,omitempty"`
 	// CloudInit optionally provisions the VM with a NoCloud seed
 	// (user + SSH key + hostname) on first boot.
 	CloudInit *CloudInitRequest `json:"cloud_init,omitempty"`
@@ -119,6 +139,11 @@ type UpdateVMRequest struct {
 	SecureBoot   *bool   `json:"secure_boot,omitempty"`
 	TPMEnabled   *bool   `json:"tpm_enabled,omitempty"`
 	Firmware     *string `json:"firmware,omitempty"`
+	BootOrder    *string `json:"boot_order,omitempty"`
+	Autostart    *bool   `json:"autostart,omitempty"`
+	Privileged   *bool   `json:"privileged,omitempty"`
+	Nesting      *bool   `json:"nesting,omitempty"`
+	Profiles     []string `json:"profiles,omitempty"`
 }
 
 type DiskInfo struct {

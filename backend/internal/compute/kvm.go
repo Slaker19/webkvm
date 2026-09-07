@@ -84,6 +84,10 @@ func (b *KVMBackend) GetBootDevice(id string) (string, error) { return b.lv.GetB
 func (b *KVMBackend) ValidateDomainDisks(id string) error {
 	return b.lv.ValidateDomainDisks(id)
 }
+func (b *KVMBackend) ListIncusProfiles() ([]string, error) {
+	// KVM has no Incus profiles.
+	return []string{}, nil
+}
 
 // --- Disks / devices / USB ---
 

@@ -213,3 +213,255 @@ func TestNewIncusBackendMissingSocket(t *testing.T) {
 // The official client import must not leak into the neutral interface:
 // compute.Backend is implemented by *IncusBackend (compile-time check).
 var _ compute.Backend = (*IncusBackend)(nil)
+
+func TestValidateProfiles(t *testing.T) {
+	if err := validateProfiles([]string{"default"}); err != nil {
+		t.Errorf("default profile should be valid: %v", err)
+	}
+	if err := validateProfiles([]string{"default", "gpu"}); err != nil {
+		t.Errorf("multi profile should be valid: %v", err)
+	}
+	for _, bad := range []string{"", " has space", "tab\t", "new\nline"} {
+		if err := validateProfiles([]string{bad}); err == nil {
+			t.Errorf("profile %q should be rejected", bad)
+		}
+	}
+}
+
+func TestInstanceToVM_Advanced(t *testing.T) {
+	inst := &api.Instance{
+		Name:   "web",
+		Status: "Running",
+		Type:   "container",
+		InstancePut: api.InstancePut{
+			Config: map[string]string{
+				"security.privileged": "true",
+				"security.nesting":    "true",
+				"boot.autostart":      "false",
+			},
+			Profiles: []string{"default", "gpu"},
+		},
+	}
+	vm := instanceToVM(inst)
+	if !vm.Privileged {
+		t.Error("expected Privileged=true from security.privileged=true")
+	}
+	if !vm.Nesting {
+		t.Error("expected Nesting=true from security.nesting=true")
+	}
+	if vm.Autostart {
+		t.Error("expected Autostart=false from boot.autostart=false")
+	}
+	if len(vm.Profiles) != 2 || vm.Profiles[0] != "default" || vm.Profiles[1] != "gpu" {
+		t.Errorf("Profiles = %v, want [default gpu]", vm.Profiles)
+	}
+}
+
+// fakeInstanceServer serves a single container instance over a unix socket
+// for UpdateDomain tests (GET /1.0 + GET /1.0/instances/<name>).
+func fakeInstanceServer(t *testing.T, inst api.Instance) string {
+	t.Helper()
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "unix.socket")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/1.0", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"type":"sync","status":"Success","status_code":200,"metadata":{"api_extensions":["instances"],"api_status":"stable","api_version":"1.0","auth":"trusted","public":false,"environment":{"server_version":"6.0.0-fake","certificate":""}}}`)
+	})
+	mux.HandleFunc("/1.0/instances/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		meta, _ := json.Marshal(inst)
+		fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":%s}`, meta)
+	})
+	go http.Serve(l, mux)
+	t.Cleanup(func() { l.Close(); _ = os.Remove(sock) })
+	return sock
+}
+
+func TestUpdateDomain_PrivilegedHotChangeLocked(t *testing.T) {
+	inst := api.Instance{
+		Name:       "web",
+		Status:     "Running",
+		StatusCode: api.Running,
+		Type:       "container",
+		InstancePut: api.InstancePut{
+			Config:   map[string]string{"security.privileged": "false"},
+			Profiles: []string{"default"},
+		},
+	}
+	b, err := NewIncusBackend(fakeInstanceServer(t, inst))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	priv := true
+	_, err = b.UpdateDomain("web", models.UpdateVMRequest{Privileged: &priv})
+	if err == nil {
+		t.Fatal("expected an error when toggling security.privileged on a running container")
+	}
+	if !strings.Contains(err.Error(), "stop it first") {
+		t.Errorf("error should ask to stop the container, got: %v", err)
+	}
+}
+
+// fakeInstanceStateServer serves a container plus its live state (with a LAN
+// IPv4 on eth0) so GetDomain/ListDomains can surface the IP, fixing the
+// "containers look isolated" UI issue.
+func fakeInstanceStateServer(t *testing.T, inst api.Instance, ip string) string {
+	t.Helper()
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "unix.socket")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/1.0", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"type":"sync","status":"Success","status_code":200,"metadata":{"api_extensions":["instances"],"api_status":"stable","api_version":"1.0","auth":"trusted","public":false,"environment":{"server_version":"6.0.0-fake","certificate":""}}}`)
+	})
+	mux.HandleFunc("/1.0/instances", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		meta, _ := json.Marshal([]api.Instance{inst})
+		fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":%s}`, meta)
+	})
+	mux.HandleFunc("/1.0/instances/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/state") {
+			state := fmt.Sprintf(`{"type":"sync","status":"Success","status_code":200,"metadata":{"status":"Running","pid":1234,"network":{"eth0":{"addresses":[{"family":"inet","address":%q,"netmask":"24","scope":"global"}],"hwaddr":"00:16:3e:aa:bb:cc","mtu":1500,"state":"up","type":"broadcast"},"lo":{"addresses":[{"family":"inet","address":"127.0.0.1","netmask":"8","scope":"local"}],"mtu":65536,"state":"up","type":"loopback"}}}}`, ip)
+			fmt.Fprint(w, state)
+			return
+		}
+		meta, _ := json.Marshal(inst)
+		fmt.Fprintf(w, `{"type":"sync","status":"Success","status_code":200,"metadata":%s}`, meta)
+	})
+	go http.Serve(l, mux)
+	t.Cleanup(func() { l.Close(); _ = os.Remove(sock) })
+	return sock
+}
+
+func TestIncusBackendSurfacesContainerIP(t *testing.T) {
+	inst := api.Instance{
+		Name:       "wk-lan",
+		Status:     "Running",
+		StatusCode: api.Running,
+		Type:       "container",
+		InstancePut: api.InstancePut{
+			Config:   map[string]string{"limits.cpu": "2"},
+			Profiles: []string{"default"},
+		},
+	}
+	b, err := NewIncusBackend(fakeInstanceStateServer(t, inst, "192.168.1.121"))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	vm, err := b.GetDomain("wk-lan")
+	if err != nil {
+		t.Fatalf("GetDomain: %v", err)
+	}
+	if vm.IP != "192.168.1.121" {
+		t.Errorf("GetDomain IP = %q, want 192.168.1.121 (container must show its LAN IP, not look isolated)", vm.IP)
+	}
+
+	vms, err := b.ListDomains()
+	if err != nil {
+		t.Fatalf("ListDomains: %v", err)
+	}
+	if len(vms) != 1 || vms[0].IP != "192.168.1.121" {
+		t.Errorf("ListDomains IP = %+v, want the container LAN IP surfaced", vms)
+	}
+}
+
+func TestInstanceIPFallbackAnyInterface(t *testing.T) {
+	if got := instanceIP(nil); got != "" {
+		t.Errorf("nil state: got %q, want empty", got)
+	}
+	st := &api.InstanceState{
+		Network: map[string]api.InstanceStateNetwork{
+			"eth0": {Addresses: []api.InstanceStateNetworkAddress{
+				{Family: "inet6", Address: "fd66::1"},
+			}},
+			"eth1": {Addresses: []api.InstanceStateNetworkAddress{
+				{Family: "inet", Address: "10.0.0.7"},
+			}},
+		},
+	}
+	if got := instanceIP(st); got != "10.0.0.7" {
+		t.Errorf("eth0 without IPv4 should fall back to eth1: got %q", got)
+	}
+}
+
+func TestBridgeForNetwork(t *testing.T) {
+	b := &IncusBackend{}
+
+	// Empty network: uses the host's PHYSICAL bridge when present, else
+	// fails with the fatal no-physical-bridge error (never virbr0/lxdbr0).
+	if real := findAnyPhysicalBridge(); real != "" {
+		if br, err := b.bridgeForNetwork(""); err != nil || br != real {
+			t.Errorf("empty network: bridge=%q err=%v (want %q)", br, err, real)
+		}
+	} else if _, err := b.bridgeForNetwork(""); !errors.Is(err, compute.ErrNoPhysicalBridge) {
+		t.Errorf("empty network without a physical bridge: err=%v, want ErrNoPhysicalBridge", err)
+	}
+
+	// Without a resolver, a logical network must NOT be silently guessed.
+	if _, err := b.bridgeForNetwork("webkvm-bridge"); err == nil {
+		t.Error("expected an error for a logical network when no resolver is wired")
+	}
+
+	// A resolver returning a VIRTUAL bridge (virbr0) — or the logical name
+	// — must be rejected: only physical bridges are valid NIC parents.
+	b.networkResolver = func(name string) (string, error) { return "virbr0", nil }
+	if _, err := b.bridgeForNetwork("webkvm-bridge"); err == nil {
+		t.Error("expected an error when the resolver returns a virtual bridge (virbr0)")
+	}
+
+	// Resolver error: propagates as ErrNoPhysicalBridge — NO fallback to
+	// NAT/virtual bridges.
+	b.networkResolver = func(name string) (string, error) { return "", fmt.Errorf("no such network") }
+	if _, err := b.bridgeForNetwork("mynet"); !errors.Is(err, compute.ErrNoPhysicalBridge) {
+		t.Errorf("resolver error should surface ErrNoPhysicalBridge, got: %v", err)
+	}
+
+	// A resolver returning a REAL physical host bridge is used as the
+	// parent (logical → physical translation).
+	if real := findAnyPhysicalBridge(); real != "" {
+		b.networkResolver = func(name string) (string, error) { return real, nil }
+		if br, err := b.bridgeForNetwork("webkvm-bridge"); err != nil || br != real {
+			t.Errorf("resolved bridge: bridge=%q err=%v (want %q)", br, err, real)
+		}
+	}
+
+	// A name that IS a physical Linux bridge on the host is used directly.
+	if isPhysicalBridge("vmbr0") {
+		if br, err := b.bridgeForNetwork("vmbr0"); err != nil || br != "vmbr0" {
+			t.Errorf("direct bridge: bridge=%q err=%v", br, err)
+		}
+	}
+	if isPhysicalBridge("virbr0") {
+		t.Error("virbr0 must not be treated as a physical (shared) bridge")
+	}
+	if isPhysicalBridge("definitely-not-a-bridge") {
+		t.Error("isPhysicalBridge should be false for a non-bridge name")
+	}
+}
+
+// findAnyPhysicalBridge returns the name of the first PHYSICAL Linux bridge
+// present on the host (vmbr0/br0 — excluding virbr*/lxdbr*/docker*/br-*),
+// or "" if there is none (skips the resolved-bridge assertions).
+func findAnyPhysicalBridge() string {
+	entries, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if isPhysicalBridge(e.Name()) {
+			return e.Name()
+		}
+	}
+	return ""
+}
