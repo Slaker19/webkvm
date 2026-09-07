@@ -310,8 +310,13 @@ func TestParseImageRef(t *testing.T) {
 }
 
 // TestIncusBackendCreateDomain is the Fase 3 creation gate: image-based
-// creation with cloud-init injected as native config keys.
+// creation with cloud-init injected as native config keys. WebKVM requires
+// a PHYSICAL bridge (vmbr0/br0), so the test needs one on the host.
 func TestIncusBackendCreateDomain(t *testing.T) {
+	real := findAnyPhysicalBridge()
+	if real == "" {
+		t.Skip("no physical Linux bridge on the host; container creation requires shared L2")
+	}
 	sock, fake := newFakeLXD3(t, nil, nil)
 	b, err := NewIncusBackend(sock)
 	if err != nil {
@@ -359,12 +364,18 @@ func TestIncusBackendCreateDomain(t *testing.T) {
 	if nc := post.Config["user.network-config"]; nc == "" || !strings.Contains(nc, "dhcp4") {
 		t.Errorf("user.network-config not injected: %q", nc)
 	}
-	// Devices: root disk with the requested size + managed-bridge NIC.
+	// Devices: root disk with the requested size + shared-L2 NIC. With no
+	// explicit network, the container lands on the host's shared bridge
+	// (vmbr0/br0) when one exists, else the backend's own lxdbr0.
 	if root := post.Devices["root"]; root["size"] != "10GB" {
 		t.Errorf("root device = %+v", post.Devices["root"])
 	}
-	if eth0 := post.Devices["eth0"]; eth0["parent"] != "lxdbr0" || eth0["nictype"] != "bridged" {
-		t.Errorf("eth0 device = %+v", post.Devices["eth0"])
+	wantParent := "lxdbr0"
+	if mb := incusMainBridge(); mb != "" {
+		wantParent = mb
+	}
+	if eth0 := post.Devices["eth0"]; eth0["parent"] != wantParent || eth0["nictype"] != "bridged" {
+		t.Errorf("eth0 device = %+v (want parent %q)", post.Devices["eth0"], wantParent)
 	}
 	if vm.ID != "web" || vm.Name != "web" || vm.Hypervisor != "incus" {
 		t.Errorf("mapped vm = %+v", vm)

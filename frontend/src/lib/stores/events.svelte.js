@@ -161,7 +161,6 @@ class EventsStore {
     this.connect();
     return () => {
       this._vmStateListeners.delete(fn);
-      this._maybeDisconnect();
     };
   }
 
@@ -170,7 +169,6 @@ class EventsStore {
     this.connect();
     return () => {
       this._removedListeners.delete(fn);
-      this._maybeDisconnect();
     };
   }
 
@@ -179,7 +177,6 @@ class EventsStore {
     this.connect();
     return () => {
       this._metricsListeners.delete(fn);
-      this._maybeDisconnect();
     };
   }
 
@@ -188,17 +185,7 @@ class EventsStore {
     this.connect();
     return () => {
       this._hostMetricsListeners.delete(fn);
-      this._maybeDisconnect();
     };
-  }
-
-  _maybeDisconnect() {
-    const total =
-      this._vmStateListeners.size +
-      this._removedListeners.size +
-      this._metricsListeners.size +
-      this._hostMetricsListeners.size;
-    if (total === 0) this.disconnect();
   }
 }
 

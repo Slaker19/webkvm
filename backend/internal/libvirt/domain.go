@@ -38,6 +38,41 @@ func init() {
 	ovmfCode, ovmfCodeSecboot, ovmfVarsTemplate = resolveOVMFFiles()
 }
 
+// bootDeviceAttr maps the API boot order ("disk"|"cdrom"|"network") to the
+// libvirt <boot dev='…'/> value. Empty/invalid keeps the disk default.
+func bootDeviceAttr(order string) string {
+	switch order {
+	case "cdrom":
+		return "<boot dev='cdrom'/>"
+	case "network":
+		return "<boot dev='network'/>"
+	default:
+		return "<boot dev='hd'/>"
+	}
+}
+
+// bootDeviceToAPI maps a libvirt <boot dev='…'/> value back to the API
+// boot order exposed to clients.
+func bootDeviceToAPI(dev string) string {
+	switch dev {
+	case "cdrom":
+		return "cdrom"
+	case "network":
+		return "network"
+	default:
+		return "disk"
+	}
+}
+
+// bootOrderFromXML extracts the <boot dev='…'/> value from a domain XML
+// descriptor (absent element → "disk").
+func bootOrderFromXML(xmlDesc string) string {
+	if m := regexp.MustCompile(`<boot dev='([^']*)'/>`).FindStringSubmatch(xmlDesc); len(m) > 1 {
+		return bootDeviceToAPI(m[1])
+	}
+	return "disk"
+}
+
 func resolveOVMFFiles() (code, codeSecboot, varsTpl string) {
 	candidates := []struct {
 		code, codeSecboot, varsTpl string
@@ -301,6 +336,13 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 		networkModel = "virtio"
 	}
 
+	// WebKVM requires shared Layer-2 (Proxmox-style): a VM with no network
+	// selected must land on a physical Linux bridge (vmbr0/br0). If the
+	// host has none, fail loudly instead of falling back to a NAT network.
+	if req.Network == "" && mainBridge() == "" {
+		return models.VM{}, errNoPhysicalBridge
+	}
+
 	isoXML := ""
 	if req.ISO != "" {
 		if strings.HasSuffix(strings.ToLower(req.ISO), ".img") {
@@ -360,6 +402,8 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 	var featuresXML string
 	var devicesExtra string
 
+	boot := bootDeviceAttr(req.BootOrder)
+
 	if firmware == "uefi" && chipset == "q35" {
 		nvramPath := nvramDir + "/" + req.Name + "_VARS.fd"
 		var loaderStr string
@@ -375,8 +419,8 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
     <type arch='x86_64' machine='q35'>hvm</type>
     %s
     <nvram template='%s'>%s</nvram>
-    <boot dev='hd'/>
-  </os>`, loaderStr, ovmfVarsTemplate, nvramPath)
+    %s
+  </os>`, loaderStr, ovmfVarsTemplate, nvramPath, boot)
 		featuresXML = fmt.Sprintf(`<features>
     <acpi/>
     <apic/>%s
@@ -384,8 +428,8 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 	} else {
 		osXML = fmt.Sprintf(`<os>
     <type arch='x86_64' machine='%s'>hvm</type>
-    <boot dev='hd'/>
-  </os>`, xmlEscape(machine))
+    %s
+  </os>`, xmlEscape(machine), boot)
 		featuresXML = `<features>
     <acpi/>
     <apic/>
@@ -452,10 +496,7 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
     </disk>
     %s
     %s
-    <interface type='network'>
-      <source network='%s'/>
-      <model type='%s'/>
-    </interface>
+    %s
     <serial type='pty'>
       <target port='0'/>
     </serial>
@@ -471,13 +512,21 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
     %s
     %s
   </devices>
-</domain>`, xmlEscape(req.Name), uuidStr, title, req.RAMMB, req.VCPUs, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, xmlEscape(diskFullPath), xmlEscape(targetDev), xmlEscape(diskBus), isoXML, virtioISOXML, xmlEscape(defaultNetwork(req.Network)), xmlEscape(networkModel), videoXML, devicesExtra)
+</domain>`, xmlEscape(req.Name), uuidStr, title, req.RAMMB, req.VCPUs, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, xmlEscape(diskFullPath), xmlEscape(targetDev), xmlEscape(diskBus), isoXML, virtioISOXML, interfaceXML(req.Network, networkModel), videoXML, devicesExtra)
 
 	dom, err := c.conn.DomainDefineXML(xmlConfig)
 	if err != nil {
 		return models.VM{}, fmt.Errorf("define domain: %w", err)
 	}
 	defer dom.Free()
+
+	// Fase 5: apply the create-time autostart flag (libvirtd autostart).
+	if req.Autostart != nil {
+		if err := dom.SetAutostart(*req.Autostart); err != nil {
+			dom.Undefine()
+			return models.VM{}, fmt.Errorf("set autostart: %w", err)
+		}
+	}
 
 	if !usingExistingDisk && req.DiskGB > 0 {
 		if err := c.createDiskInPool(poolName, diskName, req.DiskGB*1024, diskFormat); err != nil {
@@ -830,9 +879,23 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 		re := regexp.MustCompile(`<video>[^<]*<model type='[^']+'`)
 		xmlDesc = re.ReplaceAllString(xmlDesc, "<video>\n      <model type='"+xmlEscape(*req.VideoModel)+"'")
 	}
+	if req.BootOrder != nil {
+		switch *req.BootOrder {
+		case "disk", "cdrom", "network", "":
+		default:
+			return models.VM{}, fmt.Errorf("boot_order must be one of: disk, cdrom, network")
+		}
+		xmlDesc = regexp.MustCompile(`<boot dev='[^']*'/>`).ReplaceAllString(xmlDesc, bootDeviceAttr(*req.BootOrder))
+	}
 	if req.Network != nil {
-		re := regexp.MustCompile(`network='[^']+'`)
-		xmlDesc = re.ReplaceAllString(xmlDesc, "network='"+xmlEscape(*req.Network)+"'")
+		// Rewrite the interface <source> element: a host Linux bridge
+		// becomes <source bridge='…'/>, anything else stays a libvirt
+		// <source network='…'/>.
+		newSrc := fmt.Sprintf("<source network='%s'/>", xmlEscape(*req.Network))
+		if isLinuxBridge(*req.Network) {
+			newSrc = fmt.Sprintf("<source bridge='%s'/>", xmlEscape(*req.Network))
+		}
+		xmlDesc = regexp.MustCompile(`<source (network|bridge)='[^']*'/>`).ReplaceAllString(xmlDesc, newSrc)
 	}
 	if req.NetworkModel != nil {
 		re := regexp.MustCompile(`(<interface\b[^>]*>[\s\S]*?<model\s+type=')[^']+(')`)
@@ -1035,6 +1098,7 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 		Firmware:   firmware,
 		CPUMode:    cpuMode,
 		VideoModel: videoModel,
+		BootOrder:  bootOrderFromXML(xmlDesc),
 	}
 
 	diskGB := extractDiskSize(xmlDesc)
@@ -1136,6 +1200,40 @@ func defaultNetwork(net string) string {
 		return "default"
 	}
 	return net
+}
+
+// linuxBridgeCheck reports whether a network name is a traditional Linux
+// bridge on the host. Extracted so tests can exercise the bridge branch of
+// interfaceXML without requiring a real bridge device.
+var linuxBridgeCheck = isLinuxBridge
+
+// mainBridgeCheck returns the host's primary Linux bridge (vmbr0/br0).
+// Extracted so tests can exercise interfaceXML's empty-network default.
+var mainBridgeCheck = mainBridge
+
+// interfaceXML renders the guest <interface> element. When the selected
+// network is a traditional Linux bridge on the host (Proxmox-style shared
+// L2), the guest attaches DIRECTLY to it with <interface type='bridge'>.
+// Otherwise it falls back to a libvirt virtual network (<interface
+// type='network'>, e.g. the NAT "default"/virbr0).
+func interfaceXML(net, model string) string {
+	// Proxmox-style shared L2: when no network is selected, prefer the
+	// host's main Linux bridge (vmbr0/br0) over the legacy NAT default.
+	if net == "" {
+		if mainBridgeCheck() != "" {
+			net = mainBridgeCheck()
+		}
+	}
+	if linuxBridgeCheck(net) {
+		return fmt.Sprintf(`<interface type='bridge'>
+      <source bridge='%s'/>
+      <model type='%s'/>
+    </interface>`, xmlEscape(net), xmlEscape(model))
+	}
+	return fmt.Sprintf(`<interface type='network'>
+      <source network='%s'/>
+      <model type='%s'/>
+    </interface>`, xmlEscape(defaultNetwork(net)), xmlEscape(model))
 }
 
 type GraphicsInfo struct {
@@ -2062,10 +2160,7 @@ func (c *Connector) AttachNetworkIface(id string, req models.AttachNetRequest) e
 		model = "virtio"
 	}
 
-	ifaceXML := fmt.Sprintf(`<interface type='network'>
-  <source network='%s'/>
-  <model type='%s'/>
-</interface>`, xmlEscape(req.Network), xmlEscape(model))
+	ifaceXML := interfaceXML(req.Network, model)
 
 	flags := libvirt.DOMAIN_DEVICE_MODIFY_CURRENT | libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
 	domState, _, err := dom.GetState()
@@ -2145,14 +2240,17 @@ func (c *Connector) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIf
 			ReplaceAllString(updated, "<mac address='"+xmlEscape(*req.MAC)+"'/>")
 	}
 
-	// Patch <source network='...'/> if requested.
+	// Patch the <source> element (libvirt network or host Linux bridge).
 	if req.Network != nil && *req.Network != "" {
-		if regexp.MustCompile(`<source\s+network='[^']*'\s*/>`).MatchString(updated) {
-			updated = regexp.MustCompile(`<source\s+network='[^']*'\s*/>`).
-				ReplaceAllString(updated, "<source network='"+xmlEscape(*req.Network)+"'/>")
+		newSrc := fmt.Sprintf("<source network='%s'/>", xmlEscape(*req.Network))
+		if isLinuxBridge(*req.Network) {
+			newSrc = fmt.Sprintf("<source bridge='%s'/>", xmlEscape(*req.Network))
+		}
+		srcRe := regexp.MustCompile(`<source\s+(network|bridge)='[^']*'\s*/>`)
+		if srcRe.MatchString(updated) {
+			updated = srcRe.ReplaceAllString(updated, newSrc)
 		} else {
-			// Possibly a bridge type: <source bridge='...'/> stays as-is.
-			// We don't support converting between network/bridge types here.
+			return fmt.Errorf("no source element found on the interface")
 		}
 	}
 

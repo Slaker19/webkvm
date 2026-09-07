@@ -1,6 +1,7 @@
 package libvirt
 
 import (
+	"errors"
 	"os"
 	"sort"
 	"strings"
@@ -19,6 +20,33 @@ func isLinuxBridge(name string) bool {
 	return err == nil
 }
 
+// virtualBridgePrefixes are the prefixes of bridges WebKVM treats as
+// virtual/NAT plumbing rather than PHYSICAL shared bridges: libvirt NAT
+// bridges (virbr0), container-daemon bridges (lxdbr0/lxcbr0) and Docker
+// bridges (docker0/br-*). A physical bridge (vmbr0/br0) is required so
+// KVM and Incus share the host's real LAN (Proxmox-style).
+var virtualBridgePrefixes = []string{"virbr", "lxdbr", "lxcbr", "docker", "br-"}
+
+// errNoPhysicalBridge is the fatal error when the host has no physical
+// Linux bridge. Mirrors compute.ErrNoPhysicalBridge (libvirt cannot import
+// compute without a cycle).
+var errNoPhysicalBridge = errors.New("no physical bridge found on host; please configure a Linux bridge (vmbr0 or br0) attached to your physical NIC")
+
+// isPhysicalBridge reports whether name is a Linux bridge AND is not one
+// of the virtual/NAT bridges above — i.e. a real, shared L2 bridge a
+// user wires to a physical NIC (vmbr0, br0, …).
+func isPhysicalBridge(name string) bool {
+	if !isLinuxBridge(name) {
+		return false
+	}
+	for _, p := range virtualBridgePrefixes {
+		if strings.HasPrefix(name, p) {
+			return false
+		}
+	}
+	return true
+}
+
 // IsManagedBridge reports whether the given Linux bridge name is the
 // one webkvm.s setup-bridge.sh auto-creates. The API refuses to delete
 // it (and the UI greys out the delete button) so a stray click can't
@@ -32,6 +60,24 @@ func isLinuxBridge(name string) bool {
 // place to update.
 func IsManagedBridge(name string) bool {
 	return name == "br0"
+}
+
+// mainBridge returns the host's primary Linux bridge: "vmbr0" (Proxmox
+// convention), then "br0", then the first Linux bridge found. Empty when
+// the host has no Linux bridges. This is the bridge WebKVM wires default
+// networks to so VMs and containers share the same physical L2 (Proxmox
+// philosophy) instead of isolated NAT.
+func mainBridge() string {
+	for _, preferred := range []string{"vmbr0", "br0"} {
+		if isLinuxBridge(preferred) {
+			return preferred
+		}
+	}
+	all := listLinuxBridges()
+	if len(all) > 0 {
+		return all[0]
+	}
+	return ""
 }
 
 // listLinuxBridges returns the names of every Linux bridge present

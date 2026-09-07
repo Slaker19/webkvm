@@ -190,6 +190,12 @@
   let eFirmware = $state('uefi');
   let eOSType = $state('');
   let eOSVersion = $state('');
+  // Fase 5: advanced edit state.
+  let eBootOrder = $state('disk');
+  let ePrivileged = $state(false);
+  let eNesting = $state(false);
+  let eProfiles = $state(['default']);
+  let incusProfiles = $state([]);
   let editSaving = $state(false);
 
   const networkModels = [
@@ -661,6 +667,18 @@
     }
     eOSType = vm.os_type || '';
     eOSVersion = vm.os_version || '';
+    eBootOrder = vm.boot_order || 'disk';
+    ePrivileged = vm.privileged;
+    eNesting = vm.nesting;
+    eProfiles = vm.profiles?.length ? vm.profiles : ['default'];
+    if (isContainerVm && !incusProfiles.length) {
+      api
+        .listIncusProfiles()
+        .then((pr) => {
+          if (pr?.profiles?.length) incusProfiles = pr.profiles;
+        })
+        .catch(() => {});
+    }
     showEdit = true;
   }
 
@@ -684,6 +702,11 @@
       if (effSecureBoot !== vm.secure_boot) data.secure_boot = effSecureBoot;
       if (effTPM !== vm.tpm_enabled) data.tpm_enabled = effTPM;
       if (eFirmware !== (vm.firmware || 'uefi')) data.firmware = eFirmware;
+      if (eBootOrder !== (vm.boot_order || 'disk')) data.boot_order = eBootOrder;
+      if (ePrivileged !== vm.privileged) data.privileged = ePrivileged;
+      if (eNesting !== vm.nesting) data.nesting = eNesting;
+      const curProfiles = JSON.stringify(vm.profiles || ['default']);
+      if (JSON.stringify(eProfiles || []) !== curProfiles) data.profiles = eProfiles;
       await api.updateVM(vmId, data);
       showEdit = false;
       toast.success(t('vmDetail.settingsUpdated'));
@@ -2699,7 +2722,7 @@
           <option value="cirrus">cirrus</option>
           <option value="vmvga">vmvga</option>
           <option value="bochs">bochs</option>
-          <option value="none">none</option>
+          <option value="none">{t('vmCreate.serialOnly')}</option>
         </select>
       </div>
       <div class="grid grid-cols-2 gap-3">
@@ -2767,6 +2790,39 @@
             />
             {t('vmDetail.tpm2')}
           </label>
+        </div>
+      {/if}
+      {#if !isContainerVm}
+        <div>
+          <label for="edit-boot" class="block text-sm font-medium mb-1.5"
+            >{t('vmCreate.bootOrder')}</label
+          >
+          <select id="edit-boot" bind:value={eBootOrder} class="input">
+            <option value="disk">{t('vmCreate.bootDisk')}</option>
+            <option value="cdrom">{t('vmCreate.bootCdrom')}</option>
+            <option value="network">{t('vmCreate.bootNetwork')}</option>
+          </select>
+        </div>
+      {:else}
+        <div class="space-y-3 rounded border border-border p-3 bg-muted/30">
+          <label class="flex items-center justify-between gap-2 text-sm cursor-pointer select-none">
+            <span>{t('vmCreate.privileged')}</span>
+            <input type="checkbox" bind:checked={ePrivileged} class="rounded border-border" />
+          </label>
+          <label class="flex items-center justify-between gap-2 text-sm cursor-pointer select-none">
+            <span>{t('vmCreate.nesting')}</span>
+            <input type="checkbox" bind:checked={eNesting} class="rounded border-border" />
+          </label>
+          <div>
+            <label for="edit-profiles" class="block text-sm font-medium mb-1.5"
+              >{t('vmCreate.profiles')}</label
+            >
+            <select id="edit-profiles" bind:value={eProfiles} multiple class="input h-24">
+              {#each incusProfiles as p}
+                <option value={p}>{p}</option>
+              {/each}
+            </select>
+          </div>
         </div>
       {/if}
       <div class="grid grid-cols-2 gap-3">

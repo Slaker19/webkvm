@@ -115,19 +115,90 @@ func NewIncusBackend(socketPath string, opts ...IncusBackendOption) (*IncusBacke
 func (b *IncusBackend) bridgeForNetwork(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return "lxdbr0", nil
+		// No network selected: land on the host's PHYSICAL shared bridge
+		// (vmbr0/br0). If there is none, fail loudly — WebKVM requires
+		// real Layer-2, never an intermediate NAT/virtual bridge.
+		if mb := incusMainBridge(); mb != "" {
+			return mb, nil
+		}
+		return "", compute.ErrNoPhysicalBridge
 	}
+	// 3. A direct PHYSICAL Linux bridge on the host (vmbr0/br0): use it
+	//    as-is — the SAME bridge KVM attaches to (shared L2).
+	if isPhysicalBridge(name) {
+		return name, nil
+	}
+	// 1. Mandatory logical→physical translation. NEVER pass the logical
+	//    name ("webkvm-bridge", "default", …) to Incus as `parent`: the
+	//    container NIC must land on the network's REAL underlying bridge
+	//    (vmbr0/br0). If no resolver is wired, fail loudly.
 	if b.networkResolver == nil {
-		return "lxdbr0", nil
+		return "", fmt.Errorf("cannot resolve network %q for the container: no network resolver configured (the Incus backend must be wired to the libvirt connector)", name)
 	}
 	bridge, err := b.networkResolver(name)
 	if err != nil {
-		return "", fmt.Errorf("cannot resolve network %q for the container: %w", name, err)
+		// No fallback to NAT/virtual bridges: the host must provide a
+		// physical bridge. Surface the requirement clearly.
+		return "", fmt.Errorf("%w (network %q: %v)", compute.ErrNoPhysicalBridge, name, err)
 	}
-	if strings.TrimSpace(bridge) == "" {
-		return "", fmt.Errorf("network %q has no Linux bridge to attach the container to", name)
+	bridge = strings.TrimSpace(bridge)
+	if bridge == "" {
+		return "", fmt.Errorf("%w (network %q has no bridge)", compute.ErrNoPhysicalBridge, name)
+	}
+	// 2. Guard: the resolved bridge must be a PHYSICAL Linux bridge on the
+	//    host. This rejects virbr0/lxdbr0 and stops a logical/virtual
+	//    network name from being passed as the container NIC parent.
+	if !isPhysicalBridge(bridge) {
+		return "", fmt.Errorf("network %q resolves to %q, which is not a physical Linux bridge on the host — refusing to pass a non-shared bridge as the container NIC parent", name, bridge)
 	}
 	return bridge, nil
+}
+
+// incusMainBridge returns the host's primary PHYSICAL Linux bridge for
+// containers (vmbr0, br0, then the first physical bridge found). Virtual
+// bridges (virbr0/lxdbr0/docker) are NEVER candidates — containers must
+// share the real LAN. Empty when the host has no physical bridge.
+func incusMainBridge() string {
+	for _, preferred := range []string{"vmbr0", "br0"} {
+		if isPhysicalBridge(preferred) {
+			return preferred
+		}
+	}
+	entries, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if isPhysicalBridge(e.Name()) {
+			return e.Name()
+		}
+	}
+	return ""
+}
+
+// isPhysicalBridge reports whether name is a Linux bridge on the host that
+// is NOT a virtual/NAT bridge (virbr*, lxdbr*, lxcbr*, docker*, br-*) — a
+// real, shared L2 bridge wired to a physical NIC (vmbr0/br0, …).
+func isPhysicalBridge(name string) bool {
+	if !isLinuxBridge(name) {
+		return false
+	}
+	for _, p := range []string{"virbr", "lxdbr", "lxcbr", "docker", "br-"} {
+		if strings.HasPrefix(name, p) {
+			return false
+		}
+	}
+	return true
+}
+
+// isLinuxBridge reports whether name is a real Linux bridge on the host.
+// Containers attach to these with nictype=bridged parent=<bridge>.
+func isLinuxBridge(name string) bool {
+	if name == "" || strings.ContainsAny(name, "/ \t\n\r") {
+		return false
+	}
+	_, err := os.Stat("/sys/class/net/" + name + "/bridge")
+	return err == nil
 }
 
 // ServerInfo returns the LXD daemon version for the status page.
@@ -261,6 +332,22 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 	if req.RAMMB > 0 {
 		config["limits.memory"] = formatMemoryMB(req.RAMMB)
 	}
+	if req.Autostart != nil {
+		config["boot.autostart"] = strconv.FormatBool(*req.Autostart)
+	}
+	if req.Privileged != nil {
+		config["security.privileged"] = strconv.FormatBool(*req.Privileged)
+	}
+	if req.Nesting != nil {
+		config["security.nesting"] = strconv.FormatBool(*req.Nesting)
+	}
+	profiles := req.Profiles
+	if len(profiles) == 0 {
+		profiles = []string{"default"}
+	}
+	if err := validateProfiles(profiles); err != nil {
+		return models.VM{}, err
+	}
 	devices := map[string]map[string]string{}
 	if req.DiskGB > 0 {
 		devices["root"] = map[string]string{
@@ -307,6 +394,7 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 		InstancePut: api.InstancePut{
 			Config:  config,
 			Devices: devices,
+			Profiles: profiles,
 		},
 	}
 	op, err := b.client.CreateInstance(post)
@@ -330,6 +418,7 @@ func (b *IncusBackend) UpdateDomain(id string, req models.UpdateVMRequest) (mode
 		"Chipset": req.Chipset != nil, "SecureBoot": req.SecureBoot != nil,
 		"TPMEnabled": req.TPMEnabled != nil, "Firmware": req.Firmware != nil,
 		"NetworkModel": req.NetworkModel != nil, "Network": req.Network != nil,
+		"BootOrder": req.BootOrder != nil,
 	} {
 		if v {
 			return models.VM{}, fmt.Errorf("field %s is not applicable to a container: %w", name, compute.ErrNotImplemented)
@@ -371,6 +460,49 @@ func (b *IncusBackend) UpdateDomain(id string, req models.UpdateVMRequest) (mode
 			Config:      cfg,
 			Devices:     inst.Devices,
 			Profiles:    inst.Profiles,
+			Description: inst.Description,
+		}, etag)
+		if err != nil {
+			return models.VM{}, err
+		}
+		if err := waitOperation(op); err != nil {
+			return models.VM{}, err
+		}
+	}
+	// Advanced container options (privileged, nesting, autostart,
+	// profiles) also require a full read-modify-write config update.
+	if req.Privileged != nil || req.Nesting != nil || req.Autostart != nil || req.Profiles != nil {
+		inst, etag, err := b.client.GetInstance(id)
+		if err != nil {
+			return models.VM{}, err
+		}
+		cfg := inst.Config
+		if req.Privileged != nil {
+			// security.privileged cannot be toggled while the
+			// container is running (Incus/LXD restriction): abort with
+			// an explicit error asking to stop the container first.
+			if inst.StatusCode == api.Running {
+				return models.VM{}, fmt.Errorf("cannot change security.privileged while the container is running — stop it first")
+			}
+			cfg["security.privileged"] = strconv.FormatBool(*req.Privileged)
+		}
+		if req.Nesting != nil {
+			cfg["security.nesting"] = strconv.FormatBool(*req.Nesting)
+		}
+		if req.Autostart != nil {
+			cfg["boot.autostart"] = strconv.FormatBool(*req.Autostart)
+		}
+		profiles := inst.Profiles
+		if req.Profiles != nil {
+			if err := validateProfiles(req.Profiles); err != nil {
+				return models.VM{}, err
+			}
+			profiles = req.Profiles
+		}
+		op, err := b.client.UpdateInstance(id, api.InstancePut{
+			Config:      cfg,
+			Devices:     inst.Devices,
+			Profiles:    profiles,
 			Description: inst.Description,
 		}, etag)
 		if err != nil {
@@ -1104,6 +1236,26 @@ func (b *IncusBackend) Capabilities() compute.Capabilities {
 
 // instanceToVM maps an LXD instance to the neutral domain model. Pure
 // and unit-tested (the fake-server integration test feeds real payloads).
+// validateProfiles rejects empty or malformed Incus profile names before
+// they reach the daemon.
+func validateProfiles(profiles []string) error {
+	for _, p := range profiles {
+		if p == "" {
+			return fmt.Errorf("incus profile names must not be empty")
+		}
+		if strings.TrimSpace(p) != p || strings.ContainsAny(p, "\n\r\t ") {
+			return fmt.Errorf("incus profile %q contains invalid characters", p)
+		}
+	}
+	return nil
+}
+
+// ListIncusProfiles returns the profile names available on the Incus
+// backend (empty for KVM-only hosts, where the API returns []).
+func (b *IncusBackend) ListIncusProfiles() ([]string, error) {
+	return b.client.GetProfileNames()
+}
+
 func instanceToVM(i *api.Instance) models.VM {
 	vm := models.VM{
 		ID:         i.Name,
@@ -1114,6 +1266,11 @@ func instanceToVM(i *api.Instance) models.VM {
 		VCPUs:      parseIntConfig(i.Config["limits.cpu"]),
 		RAMMB:      parseMemoryMB(i.Config["limits.memory"]),
 		Autostart:  i.Config["boot.autostart"] == "true",
+		// security.privileged defaults to false (unprivileged) when the
+		// key is absent — mirror that so the UI toggle reflects reality.
+		Privileged: i.Config["security.privileged"] == "true",
+		Nesting:    i.Config["security.nesting"] == "true",
+		Profiles:   append([]string(nil), i.Profiles...),
 	}
 	if i.Type == string(api.InstanceTypeVM) {
 		vm.Type = "vm"
