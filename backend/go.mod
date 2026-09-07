@@ -19,7 +19,7 @@ require (
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.55.0
 	golang.org/x/time v0.15.0
-	libvirt.org/go/libvirt v1.12006.0
+	libvirt.org/go/libvirt v1.12007.0
 )
 
 require (
