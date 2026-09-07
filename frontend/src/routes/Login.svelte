@@ -49,10 +49,8 @@
       class="border border-border rounded-xl p-8 bg-card shadow-lg shadow-black/20 transition-[border-color,box-shadow] duration-200 hover:border-border-hover"
     >
       <div class="text-center mb-8">
-        <div
-          class="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-accent-hover flex items-center justify-center mx-auto mb-4 shadow-sm"
-        >
-          <Icon name="computer" size={24} class="text-accent-foreground" />
+        <div class="w-12 h-12 rounded-xl overflow-hidden mx-auto mb-4 shadow-sm">
+          <img src="/favicon.png" alt="WebKVM" class="w-full h-full object-cover" />
         </div>
         <h1 class="text-xl font-semibold tracking-tight">{SITE_NAME}</h1>
         <p class="text-muted-foreground text-sm mt-1">{t('brand.tagline')}</p>

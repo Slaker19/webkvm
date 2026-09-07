@@ -162,10 +162,8 @@
 >
   <div class="p-4 border-b border-border">
     <div class="flex items-center gap-3">
-      <div
-        class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-accent-hover flex items-center justify-center shrink-0 shadow-sm"
-      >
-        <Icon name="computer" size={16} class="text-accent-foreground" />
+      <div class="w-8 h-8 rounded-lg shrink-0 shadow-sm overflow-hidden">
+        <img src="/favicon.png" alt="WebKVM" class="w-full h-full object-cover" />
       </div>
       {#if showLabels}
         <div class="min-w-0">
