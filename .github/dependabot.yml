@@ -17,6 +17,18 @@ updates:
     labels:
       - "dependencies"
       - "frontend"
+    ignore:
+      # eslint 10 + its plugin need a coordinated migration (core + @eslint/js
+      # + typescript-eslint must land together) — a lone @eslint/js bump breaks
+      # the flat config. Keep eslint on the 9.x line until the migration is done.
+      - dependency-name: "eslint"
+        versions: [">=10"]
+      - dependency-name: "@eslint/js"
+        versions: [">=10"]
+      # prettier-plugin-svelte 4 reformats the whole repo (breaking format
+      # drift). Keep 3.x until a repo-wide reformat is planned.
+      - dependency-name: "prettier-plugin-svelte"
+        versions: [">=4"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
