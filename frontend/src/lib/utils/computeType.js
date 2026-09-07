@@ -1,8 +1,10 @@
 /**
  * Shared instance-type helpers (PLAN-LXD 5.2 / 5.3). Single source of
- * truth for the KVM/LXC identity badge on the VM card and the
+ * truth for the KVM/Incus identity badge on the VM card and the
  * provisioning footer chip — mirrors the vmState.js pattern and is kept
  * pure so it can be unit-tested with Vitest (node env, no jsdom).
+ * v2.2.0: the container backend is Incus (LXD fork); the card badge shows
+ * "Incus" while full labels elsewhere read "Incus / LXC".
  */
 
 const BADGE_CLASS = {
@@ -12,27 +14,27 @@ const BADGE_CLASS = {
 
 const TYPE_LABEL = {
   vm: 'KVM',
-  container: 'LXC',
+  container: 'Incus',
 };
 
-/** Tailwind classes for the type badge (neutral accent for KVM, amber for LXC). */
+/** Tailwind classes for the type badge (neutral accent for KVM, amber for Incus/LXC). */
 export function computeTypeBadgeClass(type) {
   return BADGE_CLASS[type] || BADGE_CLASS.vm;
 }
 
-/** Short badge label: "KVM" or "LXC". */
+/** Short badge label: "KVM" or "Incus". */
 export function computeTypeLabel(type) {
   return TYPE_LABEL[type] || TYPE_LABEL.vm;
 }
 
 /**
- * True when a VM object is an LXD container. A container is identified
- * by its type ("container") or its hypervisor ("lxd"); the hypervisor
- * check also covers LXD virtual machines down the road.
+ * True when a VM object is a container (Incus or legacy LXD). A container
+ * is identified by its type ("container") or its hypervisor ("incus"); the
+ * hypervisor check also covers Incus virtual machines down the road.
  */
 export function isContainer(vm) {
   if (!vm) return false;
-  return vm.type === 'container' || vm.hypervisor === 'lxd';
+  return vm.type === 'container' || vm.hypervisor === 'incus';
 }
 
 /**

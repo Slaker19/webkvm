@@ -1566,7 +1566,7 @@
                     ? 'border-[#b45309]/30 bg-[#b45309]/10 text-[#d97706]'
                     : 'border-accent/30 bg-accent/10 text-accent'}"
                 >
-                  {isContainerVm ? 'LXC' : 'KVM'}
+                  {isContainerVm ? 'Incus' : 'KVM'}
                 </span>
               </div>
               {#if vm.os_type}
@@ -1830,7 +1830,7 @@
                 variant="outline"
                 onclick={() => {
                   aNetNetwork = networks[0]?.name || 'default';
-                  aNetModel = isContainerVm ? 'lxd' : 'virtio';
+                  aNetModel = isContainerVm ? 'incus' : 'virtio';
                   showAddNet = true;
                 }}>+ {t('vmDetail.addInterface')}</Button
               >

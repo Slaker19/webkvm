@@ -4,6 +4,30 @@ Todos los cambios notables de este proyecto se documentan en este
 fichero, siguiendo [Keep a Changelog](https://keepachangelog.com/es/1.1.0/)
 y [Semantic Versioning](https://semver.org/lang/es/).
 
+## [2.2.0] — Migración estratégica a Incus (2026-09-07)
+
+### Changed
+
+- **Backend de contenedores de LXD → Incus** (fork comunitario oficial).
+  El SDK Go de Incus (`github.com/lxc/incus/v6`) mantiene la API REST de LXD,
+  por lo que el mismo binario gestiona **Incus y los LXD ya existentes** sin
+  romper entornos.
+- **Paquete interno** `internal/compute/lxd/` → `internal/compute/incus/`
+  (`IncusBackend`), log `lxd_connected` → `incus_connected`, `Hypervisor`
+  `"lxd"` → `"incus"`.
+- **Variables de entorno renombradas**: `WEBKVM_LXD_ENABLED` →
+  `WEBKVM_INCUS_ENABLED`, `LXD_SOCKET` → `INCUS_SOCKET`,
+  `WEBKVM_INSTALL_LXD` → `WEBKVM_INSTALL_INCUS`.
+- **Socket**: auto-detección Incus primero (`/var/lib/incus/unix.socket`,
+  `/run/incus/*`) con fallback a las rutas LXD (snap/apt).
+- **Instalador** `install_incus()`: paquete nativo **`incus`** en
+  apt/pacman/dnf (fallback `lxd`), **cero snap**, aviso no-fatal si no hay
+  paquete.
+- **Frontend**: util `incusImages.js` (`INCUS_IMAGE_PRESETS`), badge de tarjeta
+  `Incus`, etiquetas "Incus / LXC" en el selector/credenciales (i18n 3 idiomas).
+- **Docs**: README, INSTALLATION, USAGE, DOCKER, `.env.example` → Incus
+  (socket, grupo `incus-admin`, `apt/pacman/dnf install incus`).
+
 ## [2.1.2] — CI verde y limpieza (2026-09-07)
 
 ### Fixed

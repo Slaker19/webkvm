@@ -1,16 +1,16 @@
-// Package lxd is the LXD container backend (v1.4).
-//
-// LXDBackend implements the compute.Backend seam against the LXD daemon
-// via the official Canonical Go client (github.com/canonical/lxd/client).
-// Connection targets the local unix socket — the snap path
-// /var/snap/lxd/common/lxd/unix.socket by default.
+// Package incus is the container backend (v2.2.0) — migrated from LXD
+// to Incus (the community fork, github.com/lxc/incus). The Incus Go
+// client keeps the LXD REST API, so it manages BOTH Incus and legacy
+// LXD daemons over the local unix socket. Socket auto-detection probes
+// Incus paths first (/var/lib/incus/unix.socket, /run/incus/*) and falls
+// back to the LXD snap/apt paths for existing installs.
 //
 // Implementation is GRADUAL and fail-safe:
 //   - Fase 1: read path (ListVMs) so containers appear alongside VMs.
 //   - Fase 2: lifecycle (start/stop/forceoff/reboot/freeze) + interactive
 //     serial console (exec bash over websockets) + cloud-init mapping.
 //   - Fase 3: creation from image remotes (zero ISOs, cloud-init injected
-//     as user.user-data/user.network-config), tags/metadata in LXD custom
+//     as user.user-data/user.network-config), tags/metadata in custom
 //     config keys (user.webkvm.tags / user.webkvm.desc) so the v1.3 RBAC
 //     and backup-by-tag policies keep working, and streaming backups via
 //     the native /1.0/instances/<name>/export endpoint (io.Copy, no
@@ -18,7 +18,7 @@
 //
 // Unimplemented operations return compute.ErrNotImplemented, which the
 // handlers surface as HTTP 501 Not Implemented.
-package lxd
+package incus
 
 import (
 	"context"
@@ -37,8 +37,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	lxd "github.com/canonical/lxd/client"
-	"github.com/canonical/lxd/shared/api"
+	incus "github.com/lxc/incus/v6/client"
+	"github.com/lxc/incus/v6/shared/api"
 	"github.com/gorilla/websocket"
 	"github.com/klauspost/compress/zstd"
 
@@ -49,19 +49,27 @@ import (
 	"webkvm/internal/models"
 )
 
-// DefaultSocketPath is the default LXD daemon unix socket (snap install
-// path, with the apt path as fallback).
+// DefaultSocketPath returns the container daemon unix socket, probing
+// the Incus paths first (v2.2.0) and falling back to legacy LXD paths
+// (snap, then apt) so existing LXD installs keep working unchanged.
 func DefaultSocketPath() string {
-	snap := "/var/snap/lxd/common/lxd/unix.socket"
-	if st, err := os.Stat(snap); err == nil && !st.IsDir() {
-		return snap
+	for _, p := range []string{
+		"/var/lib/incus/unix.socket",
+		"/run/incus/unix.socket",
+		"/run/incus/incus.socket",
+		"/var/snap/lxd/common/lxd/unix.socket",
+		"/var/lib/lxd/unix.socket",
+	} {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
 	}
-	return "/var/lib/lxd/unix.socket"
+	return "/var/lib/incus/unix.socket"
 }
 
-// LXDBackend is the compute.Backend adapter for the LXD daemon.
-type LXDBackend struct {
-	client lxd.InstanceServer
+// IncusBackend is the compute.Backend adapter for the LXD daemon.
+type IncusBackend struct {
+	client incus.InstanceServer
 	// socketPath is the unix socket the client dials. Kept so the
 	// backup export can stream /1.0/instances/<name>/export over its
 	// own unix-socket HTTP request (the official client only decodes
@@ -73,28 +81,28 @@ type LXDBackend struct {
 	networkResolver func(networkName string) (bridge string, err error)
 }
 
-// LXDBackendOption customizes the backend at construction time.
-type LXDBackendOption func(*LXDBackend)
+// IncusBackendOption customizes the backend at construction time.
+type IncusBackendOption func(*IncusBackend)
 
 // WithNetworkResolver wires the libvirt network-name -> Linux bridge
 // resolver so containers can join the same networks as KVM VMs.
-func WithNetworkResolver(resolver func(networkName string) (bridge string, err error)) LXDBackendOption {
-	return func(b *LXDBackend) { b.networkResolver = resolver }
+func WithNetworkResolver(resolver func(networkName string) (bridge string, err error)) IncusBackendOption {
+	return func(b *IncusBackend) { b.networkResolver = resolver }
 }
 
-// NewLXDBackend connects to the LXD daemon over a unix socket. An empty
+// NewIncusBackend connects to the LXD daemon over a unix socket. An empty
 // path uses DefaultSocketPath(). Returns an error (including
 // compute.ErrNotImplemented if LXD is unreachable) when the daemon
 // cannot be reached, so the caller can degrade to KVM-only.
-func NewLXDBackend(socketPath string, opts ...LXDBackendOption) (*LXDBackend, error) {
+func NewIncusBackend(socketPath string, opts ...IncusBackendOption) (*IncusBackend, error) {
 	if socketPath == "" {
 		socketPath = DefaultSocketPath()
 	}
-	client, err := lxd.ConnectLXDUnix(socketPath, &lxd.ConnectionArgs{})
+	client, err := incus.ConnectIncusUnix(socketPath, &incus.ConnectionArgs{})
 	if err != nil {
 		return nil, err
 	}
-	b := &LXDBackend{client: client, socketPath: socketPath}
+	b := &IncusBackend{client: client, socketPath: socketPath}
 	for _, o := range opts {
 		o(b)
 	}
@@ -104,7 +112,7 @@ func NewLXDBackend(socketPath string, opts ...LXDBackendOption) (*LXDBackend, er
 // bridgeForNetwork resolves a libvirt network name to the Linux bridge
 // the container NIC should attach to. An empty name keeps the managed
 // default bridge (lxdbr0); a name with no resolver falls back to it too.
-func (b *LXDBackend) bridgeForNetwork(name string) (string, error) {
+func (b *IncusBackend) bridgeForNetwork(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "lxdbr0", nil
@@ -123,7 +131,7 @@ func (b *LXDBackend) bridgeForNetwork(name string) (string, error) {
 }
 
 // ServerInfo returns the LXD daemon version for the status page.
-func (b *LXDBackend) ServerInfo() (string, error) {
+func (b *IncusBackend) ServerInfo() (string, error) {
 	s, _, err := b.client.GetServer()
 	if err != nil {
 		return "", err
@@ -132,13 +140,13 @@ func (b *LXDBackend) ServerInfo() (string, error) {
 }
 
 // Close closes the underlying client connections.
-func (b *LXDBackend) Close() {
+func (b *IncusBackend) Close() {
 	b.client.Disconnect()
 }
 
 // NewMetricsCollector builds the per-container metrics collector
 // (v1.4 Fase 4.1) bound to this backend's daemon connection.
-func (b *LXDBackend) NewMetricsCollector(hub *events.Hub) *MetricsCollector {
+func (b *IncusBackend) NewMetricsCollector(hub *events.Hub) *MetricsCollector {
 	return NewMetricsCollector(clientAdapter{client: b.client}, hub)
 }
 
@@ -147,8 +155,8 @@ func (b *LXDBackend) NewMetricsCollector(hub *events.Hub) *MetricsCollector {
 // ListVMs lists every LXD instance (containers + VMs) and maps them to
 // the neutral domain model. This is the Fase 1 MVP: it makes containers
 // appear in the unified VM list.
-func (b *LXDBackend) ListDomains() ([]models.VM, error) {
-	instances, err := b.client.GetInstances(lxd.GetInstancesArgs{InstanceType: api.InstanceTypeAny})
+func (b *IncusBackend) ListDomains() ([]models.VM, error) {
+	instances, err := b.client.GetInstances(api.InstanceTypeAny)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +167,7 @@ func (b *LXDBackend) ListDomains() ([]models.VM, error) {
 	return out, nil
 }
 
-func (b *LXDBackend) GetDomain(id string) (models.VM, error) {
+func (b *IncusBackend) GetDomain(id string) (models.VM, error) {
 	inst, _, err := b.client.GetInstance(id)
 	if err != nil {
 		return models.VM{}, err
@@ -167,7 +175,7 @@ func (b *LXDBackend) GetDomain(id string) (models.VM, error) {
 	return instanceToVM(inst), nil
 }
 
-func (b *LXDBackend) DomainExists(name string) (bool, error) {
+func (b *IncusBackend) DomainExists(name string) (bool, error) {
 	_, _, err := b.client.GetInstance(name)
 	if err != nil {
 		if isNotFound(err) {
@@ -178,44 +186,50 @@ func (b *LXDBackend) DomainExists(name string) (bool, error) {
 	return true, nil
 }
 
-func (b *LXDBackend) DeleteDomain(id string) error {
-	// Force: deleting a running container would otherwise be rejected and
-	// the handler expects delete to always succeed (matching KVM).
-	op, err := b.client.DeleteInstance(id, true)
+func (b *IncusBackend) DeleteDomain(id string) error {
+	// A running container cannot be deleted; stop it first (the delete
+	// handler expects delete to always succeed, matching KVM). The Incus
+	// v6 client's DeleteInstance takes no force flag.
+	if inst, _, err := b.client.GetInstance(id); err == nil && inst.Status == "Running" {
+		if err := b.ForceOffDomain(id); err != nil {
+			return err
+		}
+	}
+	op, err := b.client.DeleteInstance(id)
 	if err != nil {
 		return mapLXErr(err)
 	}
 	return waitOperation(op)
 }
-func (b *LXDBackend) CloneDomain(id string, req models.CloneVMRequest) (models.VM, error) {
+func (b *IncusBackend) CloneDomain(id string, req models.CloneVMRequest) (models.VM, error) {
 	return models.VM{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) StartDomain(id string) error {
+func (b *IncusBackend) StartDomain(id string) error {
 	return b.setState(id, "start", 30, false)
 }
-func (b *LXDBackend) ShutdownDomain(id string) error {
+func (b *IncusBackend) ShutdownDomain(id string) error {
 	// Graceful stop: LXD sends the guest a shutdown signal and waits up to
 	// the timeout before giving up (Force=false).
 	return b.setState(id, "stop", 60, false)
 }
-func (b *LXDBackend) ForceOffDomain(id string) error {
+func (b *IncusBackend) ForceOffDomain(id string) error {
 	// Kill: immediate forced stop (no graceful shutdown grace period).
 	return b.setState(id, "stop", 0, true)
 }
-func (b *LXDBackend) RebootDomain(id string) error {
+func (b *IncusBackend) RebootDomain(id string) error {
 	return b.setState(id, "restart", 60, false)
 }
-func (b *LXDBackend) SuspendDomain(id string) error { return b.setState(id, "freeze", 30, false) }
-func (b *LXDBackend) ResumeDomain(id string) error  { return b.setState(id, "unfreeze", 30, false) }
-func (b *LXDBackend) SetDomainAutostart(id string, enabled bool) error {
+func (b *IncusBackend) SuspendDomain(id string) error { return b.setState(id, "freeze", 30, false) }
+func (b *IncusBackend) ResumeDomain(id string) error  { return b.setState(id, "unfreeze", 30, false) }
+func (b *IncusBackend) SetDomainAutostart(id string, enabled bool) error {
 	return compute.ErrNotImplemented
 }
-func (b *LXDBackend) GetDomainAutostart(id string) (bool, error) {
+func (b *IncusBackend) GetDomainAutostart(id string) (bool, error) {
 	return false, compute.ErrNotImplemented
 }
-func (b *LXDBackend) SetBootDevice(id string, device string) error { return compute.ErrNotImplemented }
-func (b *LXDBackend) GetBootDevice(id string) (string, error)      { return "", compute.ErrNotImplemented }
-func (b *LXDBackend) ValidateDomainDisks(id string) error          { return compute.ErrNotImplemented }
+func (b *IncusBackend) SetBootDevice(id string, device string) error { return compute.ErrNotImplemented }
+func (b *IncusBackend) GetBootDevice(id string) (string, error)      { return "", compute.ErrNotImplemented }
+func (b *IncusBackend) ValidateDomainDisks(id string) error          { return compute.ErrNotImplemented }
 
 // CreateDomain creates a container from an official LXD image remote
 // (v1.4 Fase 3) — zero ISOs, templates only. The image reference is
@@ -223,7 +237,7 @@ func (b *LXDBackend) ValidateDomainDisks(id string) error          { return comp
 // <server-url>:<alias>). Cloud-init is injected straight into the native
 // user.user-data / user.network-config config keys the Fase 2 mapper
 // already produces.
-func (b *LXDBackend) CreateDomain(req models.CreateVMRequest) (models.VM, error) {
+func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, error) {
 	if strings.TrimSpace(req.Image) == "" {
 		return models.VM{}, errors.New("an LXD image reference is required to create a container (e.g. ubuntu:24.04)")
 	}
@@ -309,7 +323,7 @@ func (b *LXDBackend) CreateDomain(req models.CreateVMRequest) (models.VM, error)
 // (rename), CPU/RAM limits. KVM-only fields (video, firmware, chipset,
 // secure boot, TPM, network model) are not applicable to containers and
 // return compute.ErrNotImplemented instead of silently ignoring them.
-func (b *LXDBackend) UpdateDomain(id string, req models.UpdateVMRequest) (models.VM, error) {
+func (b *IncusBackend) UpdateDomain(id string, req models.UpdateVMRequest) (models.VM, error) {
 	for name, v := range map[string]bool{
 		"CPUMode": req.CPUMode != nil, "VideoModel": req.VideoModel != nil,
 		"OSType": req.OSType != nil, "OSVersion": req.OSVersion != nil,
@@ -371,7 +385,7 @@ func (b *LXDBackend) UpdateDomain(id string, req models.UpdateVMRequest) (models
 
 // setState drives the LXD instance state machine (start/stop/restart/
 // freeze/unfreeze) and waits for the operation to complete.
-func (b *LXDBackend) setState(id, action string, timeout int, force bool) error {
+func (b *IncusBackend) setState(id, action string, timeout int, force bool) error {
 	op, err := b.client.UpdateInstanceState(id, api.InstanceStatePut{
 		Action:  action,
 		Timeout: timeout,
@@ -387,7 +401,7 @@ func (b *LXDBackend) setState(id, action string, timeout int, force bool) error 
 // Deliberately avoids Operation.Wait(), which subscribes to the /1.0/events
 // websocket — polling Refresh()/Get() is equally correct against a real
 // daemon and keeps the adapter testable against a minimal server.
-func waitOperation(op lxd.Operation) error {
+func waitOperation(op incus.Operation) error {
 	const timeout = 90 * time.Second
 	deadline := time.Now().Add(timeout)
 	for {
@@ -416,17 +430,17 @@ func waitOperation(op lxd.Operation) error {
 
 // --- Disks / devices / USB ---
 
-func (b *LXDBackend) AttachDisk(id string, req models.AttachDiskRequest) error {
+func (b *IncusBackend) AttachDisk(id string, req models.AttachDiskRequest) error {
 	return compute.ErrNotImplemented
 }
-func (b *LXDBackend) DetachDisk(id, target string) error { return compute.ErrNotImplemented }
-func (b *LXDBackend) ChangeDiskBus(id, target, newBus string) error {
+func (b *IncusBackend) DetachDisk(id, target string) error { return compute.ErrNotImplemented }
+func (b *IncusBackend) ChangeDiskBus(id, target, newBus string) error {
 	return compute.ErrNotImplemented
 }
-func (b *LXDBackend) UpdateDiskSource(id, target, source string) error {
+func (b *IncusBackend) UpdateDiskSource(id, target, source string) error {
 	return compute.ErrNotImplemented
 }
-func (b *LXDBackend) ResizeDomainDisk(ctx context.Context, id, target string, newSizeGB int64) (int64, error) {
+func (b *IncusBackend) ResizeDomainDisk(ctx context.Context, id, target string, newSizeGB int64) (int64, error) {
 	// Containers have a single root device; only that can be resized
 	// (lxc config device set <name> root size=X), applied live via a
 	// read-modify-write instance update.
@@ -461,7 +475,7 @@ func (b *LXDBackend) ResizeDomainDisk(ctx context.Context, id, target string, ne
 	return newSizeGB, nil
 }
 
-func (b *LXDBackend) AttachNetworkIface(id string, req models.AttachNetRequest) error {
+func (b *IncusBackend) AttachNetworkIface(id string, req models.AttachNetRequest) error {
 	bridge, err := b.bridgeForNetwork(req.Network)
 	if err != nil {
 		return err
@@ -489,7 +503,7 @@ func (b *LXDBackend) AttachNetworkIface(id string, req models.AttachNetRequest) 
 	return waitOperation(op)
 }
 
-func (b *LXDBackend) DetachNetworkIface(id, mac string) error {
+func (b *IncusBackend) DetachNetworkIface(id, mac string) error {
 	inst, etag, err := b.client.GetInstance(id)
 	if err != nil {
 		return err
@@ -511,7 +525,7 @@ func (b *LXDBackend) DetachNetworkIface(id, mac string) error {
 	return waitOperation(op)
 }
 
-func (b *LXDBackend) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIfaceRequest) error {
+func (b *IncusBackend) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIfaceRequest) error {
 	if req.VLANTag != nil && *req.VLANTag != 0 {
 		return fmt.Errorf("VLAN tags are not applicable to a container NIC: %w", compute.ErrNotImplemented)
 	}
@@ -572,100 +586,100 @@ func nicDeviceByMAC(inst *api.Instance, mac string) string {
 	}
 	return ""
 }
-func (b *LXDBackend) AttachUSBDevice(id, vendorID, productID string) error {
+func (b *IncusBackend) AttachUSBDevice(id, vendorID, productID string) error {
 	return compute.ErrNotImplemented
 }
-func (b *LXDBackend) DetachUSBDevice(id, vendorID, productID string) error {
+func (b *IncusBackend) DetachUSBDevice(id, vendorID, productID string) error {
 	return compute.ErrNotImplemented
 }
-func (b *LXDBackend) ListHostUSBDevices() ([]models.USBDevice, error) {
+func (b *IncusBackend) ListHostUSBDevices() ([]models.USBDevice, error) {
 	return nil, compute.ErrNotImplemented
 }
 
 // --- Snapshots ---
 
-func (b *LXDBackend) ListSnapshots(domainID string) ([]models.Snapshot, error) {
+func (b *IncusBackend) ListSnapshots(domainID string) ([]models.Snapshot, error) {
 	return nil, compute.ErrNotImplemented
 }
-func (b *LXDBackend) CreateSnapshot(domainID string, req models.CreateSnapshotRequest) (models.Snapshot, error) {
+func (b *IncusBackend) CreateSnapshot(domainID string, req models.CreateSnapshotRequest) (models.Snapshot, error) {
 	return models.Snapshot{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) DeleteSnapshot(domainID, snapID string) (int64, error) {
+func (b *IncusBackend) DeleteSnapshot(domainID, snapID string) (int64, error) {
 	return 0, compute.ErrNotImplemented
 }
-func (b *LXDBackend) RevertSnapshot(domainID, snapID string) error { return compute.ErrNotImplemented }
-func (b *LXDBackend) ExportSnapshots(domainID string) ([]backupstore.SnapshotBackup, error) {
+func (b *IncusBackend) RevertSnapshot(domainID, snapID string) error { return compute.ErrNotImplemented }
+func (b *IncusBackend) ExportSnapshots(domainID string) ([]backupstore.SnapshotBackup, error) {
 	return nil, compute.ErrNotImplemented
 }
 
 // --- Storage / pools / volumes / ISO ---
 
-func (b *LXDBackend) ListStoragePools() ([]models.StoragePool, error) {
+func (b *IncusBackend) ListStoragePools() ([]models.StoragePool, error) {
 	return nil, compute.ErrNotImplemented
 }
-func (b *LXDBackend) CreateStoragePool(ctx context.Context, req models.CreatePoolRequest) (models.StoragePool, error) {
+func (b *IncusBackend) CreateStoragePool(ctx context.Context, req models.CreatePoolRequest) (models.StoragePool, error) {
 	return models.StoragePool{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) UpdateStoragePool(ctx context.Context, name string, req models.UpdatePoolRequest) (models.StoragePool, error) {
+func (b *IncusBackend) UpdateStoragePool(ctx context.Context, name string, req models.UpdatePoolRequest) (models.StoragePool, error) {
 	return models.StoragePool{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) DeletePool(name string) error            { return compute.ErrNotImplemented }
-func (b *LXDBackend) RefreshPool(name string) error           { return compute.ErrNotImplemented }
-func (b *LXDBackend) GetPoolPath(name string) (string, error) { return "", compute.ErrNotImplemented }
-func (b *LXDBackend) DiskPoolName() string                    { return "" }
-func (b *LXDBackend) ISOPoolName() string                     { return "" }
-func (b *LXDBackend) ListStorageVolumes(poolName string) ([]models.StorageVolume, error) {
+func (b *IncusBackend) DeletePool(name string) error            { return compute.ErrNotImplemented }
+func (b *IncusBackend) RefreshPool(name string) error           { return compute.ErrNotImplemented }
+func (b *IncusBackend) GetPoolPath(name string) (string, error) { return "", compute.ErrNotImplemented }
+func (b *IncusBackend) DiskPoolName() string                    { return "" }
+func (b *IncusBackend) ISOPoolName() string                     { return "" }
+func (b *IncusBackend) ListStorageVolumes(poolName string) ([]models.StorageVolume, error) {
 	return nil, compute.ErrNotImplemented
 }
-func (b *LXDBackend) GetStorageVolume(poolName, volName string) (models.StorageVolume, error) {
+func (b *IncusBackend) GetStorageVolume(poolName, volName string) (models.StorageVolume, error) {
 	return models.StorageVolume{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) CreateStorageVolume(req models.CreateVolumeRequest) (models.StorageVolume, error) {
+func (b *IncusBackend) CreateStorageVolume(req models.CreateVolumeRequest) (models.StorageVolume, error) {
 	return models.StorageVolume{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) ResizeStorageVolume(poolName, volName string, newSizeGB int64) error {
+func (b *IncusBackend) ResizeStorageVolume(poolName, volName string, newSizeGB int64) error {
 	return compute.ErrNotImplemented
 }
-func (b *LXDBackend) DeleteStorageVolume(poolName, volName string) error {
+func (b *IncusBackend) DeleteStorageVolume(poolName, volName string) error {
 	return compute.ErrNotImplemented
 }
-func (b *LXDBackend) VolumeExists(poolName, volName string) (bool, error) {
+func (b *IncusBackend) VolumeExists(poolName, volName string) (bool, error) {
 	return false, compute.ErrNotImplemented
 }
-func (b *LXDBackend) FindVolumeAttachments(poolName, volName string) ([]models.VolumeAttachment, error) {
+func (b *IncusBackend) FindVolumeAttachments(poolName, volName string) ([]models.VolumeAttachment, error) {
 	return nil, compute.ErrNotImplemented
 }
-func (b *LXDBackend) GetISOs(poolName string) ([]models.ISOScanResult, error) {
+func (b *IncusBackend) GetISOs(poolName string) ([]models.ISOScanResult, error) {
 	return nil, compute.ErrNotImplemented
 }
-func (b *LXDBackend) RenameISO(oldName, newName, poolName string) error {
+func (b *IncusBackend) RenameISO(oldName, newName, poolName string) error {
 	return compute.ErrNotImplemented
 }
-func (b *LXDBackend) DeleteISO(name, poolName string) error { return compute.ErrNotImplemented }
-func (b *LXDBackend) DeleteVMDiskFiles(vmName string) (deleted []string, skipped []string, err error) {
+func (b *IncusBackend) DeleteISO(name, poolName string) error { return compute.ErrNotImplemented }
+func (b *IncusBackend) DeleteVMDiskFiles(vmName string) (deleted []string, skipped []string, err error) {
 	return nil, nil, compute.ErrNotImplemented
 }
-func (b *LXDBackend) RefreshCIFSSecretIfNeeded(ctx context.Context, poolName string) (*compute.SecretRef, error) {
+func (b *IncusBackend) RefreshCIFSSecretIfNeeded(ctx context.Context, poolName string) (*compute.SecretRef, error) {
 	return nil, compute.ErrNotImplemented
 }
 
 // --- Networking ---
 
-func (b *LXDBackend) ListNetworks() ([]models.Network, error) { return nil, compute.ErrNotImplemented }
-func (b *LXDBackend) CreateNetwork(req models.CreateNetworkRequest) (models.Network, error) {
+func (b *IncusBackend) ListNetworks() ([]models.Network, error) { return nil, compute.ErrNotImplemented }
+func (b *IncusBackend) CreateNetwork(req models.CreateNetworkRequest) (models.Network, error) {
 	return models.Network{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) UpdateNetwork(name string, req models.UpdateNetworkRequest) (models.Network, error) {
+func (b *IncusBackend) UpdateNetwork(name string, req models.UpdateNetworkRequest) (models.Network, error) {
 	return models.Network{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) DeleteNetwork(id string) error { return compute.ErrNotImplemented }
-func (b *LXDBackend) StartNetwork(name string) (models.Network, error) {
+func (b *IncusBackend) DeleteNetwork(id string) error { return compute.ErrNotImplemented }
+func (b *IncusBackend) StartNetwork(name string) (models.Network, error) {
 	return models.Network{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) StopNetwork(name string) (models.Network, error) {
+func (b *IncusBackend) StopNetwork(name string) (models.Network, error) {
 	return models.Network{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) CheckVLANSupport(networkName string) (models.VlanSupport, error) {
+func (b *IncusBackend) CheckVLANSupport(networkName string) (models.VlanSupport, error) {
 	return models.VlanSupport{}, compute.ErrNotImplemented
 }
 
@@ -676,7 +690,7 @@ func (b *LXDBackend) CheckVLANSupport(networkName string) (models.VlanSupport, e
 // straight from/to the container PTY through the client's internal
 // websocket bridge — the frontend terminal never notices the hypervisor.
 type lxdConsoleStream struct {
-	op     lxd.Operation
+	op     incus.Operation
 	stdin  *io.PipeWriter
 	stdout *io.PipeReader
 	done   chan bool
@@ -741,7 +755,7 @@ func (s *lxdConsoleStream) Free() {
 // instance and returns a ConsoleStream bridged to it. A stopped or
 // missing instance returns compute.ErrDomainNotRunning so the serial
 // proxy retries until the container is running.
-func (b *LXDBackend) OpenSerialConsole(id string) (compute.ConsoleStream, error) {
+func (b *IncusBackend) OpenSerialConsole(id string) (compute.ConsoleStream, error) {
 	// Pre-check the instance is running: exec on a stopped container
 	// would fail asynchronously with no websockets to attach to.
 	state, _, err := b.client.GetInstanceState(id)
@@ -765,7 +779,7 @@ func (b *LXDBackend) OpenSerialConsole(id string) (compute.ConsoleStream, error)
 		Width:       120,
 		Height:      30,
 	}
-	op, err := b.client.ExecInstance(id, exec, &lxd.InstanceExecArgs{
+	op, err := b.client.ExecInstance(id, exec, &incus.InstanceExecArgs{
 		Stdin:    stdinR,
 		Stdout:   stdoutW,
 		Control:  stream.setControl,
@@ -779,7 +793,7 @@ func (b *LXDBackend) OpenSerialConsole(id string) (compute.ConsoleStream, error)
 	stream.op = op
 	return stream, nil
 }
-func (b *LXDBackend) SetUserPassword(id, user, password string) error {
+func (b *IncusBackend) SetUserPassword(id, user, password string) error {
 	return compute.ErrNotImplemented
 }
 
@@ -805,7 +819,7 @@ type lxdWebKVMMeta struct {
 	UpdatedAt int64    `json:"updated_at,omitempty"`
 }
 
-func (b *LXDBackend) GetVMMeta(uuid string) (models.VMMeta, error) {
+func (b *IncusBackend) GetVMMeta(uuid string) (models.VMMeta, error) {
 	inst, _, err := b.client.GetInstance(uuid)
 	if err != nil {
 		return models.VMMeta{}, err
@@ -856,11 +870,11 @@ func applyMetaToConfig(config map[string]string, meta models.VMMeta) {
 	config[metaDescKey] = string(raw)
 }
 
-func (b *LXDBackend) SetVMMeta(uuid string, meta models.VMMeta) error {
+func (b *IncusBackend) SetVMMeta(uuid string, meta models.VMMeta) error {
 	return b.setMetaConfig(uuid, func(cfg map[string]string) { applyMetaToConfig(cfg, meta) })
 }
 
-func (b *LXDBackend) UpdateVMMeta(uuid string, upd models.VMMetaUpdate) (models.VMMeta, error) {
+func (b *IncusBackend) UpdateVMMeta(uuid string, upd models.VMMetaUpdate) (models.VMMeta, error) {
 	inst, etag, err := b.client.GetInstance(uuid)
 	if err != nil {
 		return models.VMMeta{}, err
@@ -912,7 +926,7 @@ func (b *LXDBackend) UpdateVMMeta(uuid string, upd models.VMMetaUpdate) (models.
 // to a copy of the instance config and pushes the result via
 // UpdateInstance, preserving devices/profiles/description. An ETag from
 // a previous read avoids clobbering a concurrent edit.
-func (b *LXDBackend) setMetaConfig(uuid string, fn func(map[string]string), etag ...string) error {
+func (b *IncusBackend) setMetaConfig(uuid string, fn func(map[string]string), etag ...string) error {
 	inst, curETag, err := b.client.GetInstance(uuid)
 	if err != nil {
 		return err
@@ -937,17 +951,17 @@ func (b *LXDBackend) setMetaConfig(uuid string, fn func(map[string]string), etag
 	return waitOperation(op)
 }
 
-func (b *LXDBackend) GetVNCInfo(id string) (compute.GraphicsInfo, error) {
+func (b *IncusBackend) GetVNCInfo(id string) (compute.GraphicsInfo, error) {
 	return compute.GraphicsInfo{}, compute.ErrNotImplemented
 }
-func (b *LXDBackend) GetDomainIP(id string) string { return "" }
-func (b *LXDBackend) GetDomainXML(id string) (string, error) {
+func (b *IncusBackend) GetDomainIP(id string) string { return "" }
+func (b *IncusBackend) GetDomainXML(id string) (string, error) {
 	return "", compute.ErrNotImplemented
 }
-func (b *LXDBackend) GuestGetClipboard(id string) (string, error) {
+func (b *IncusBackend) GuestGetClipboard(id string) (string, error) {
 	return "", compute.ErrNotImplemented
 }
-func (b *LXDBackend) GuestSetClipboard(id, text string) error { return compute.ErrNotImplemented }
+func (b *IncusBackend) GuestSetClipboard(id, text string) error { return compute.ErrNotImplemented }
 
 // --- Backup / export / OVA / import ---
 
@@ -966,7 +980,7 @@ func (b *LXDBackend) GuestSetClipboard(id, text string) error { return compute.E
 // When the caller asked for zstd, the stream is re-encoded with a
 // streaming zstd compressor (bounded window, still no full buffering)
 // so the declared Content-Type stays truthful.
-func (b *LXDBackend) ExportDomain(ctx context.Context, id string, opts compute.ExportBackupOptions, w io.Writer) (backupstore.ProducerResult, error) {
+func (b *IncusBackend) ExportDomain(ctx context.Context, id string, opts compute.ExportBackupOptions, w io.Writer) (backupstore.ProducerResult, error) {
 	backupName := fmt.Sprintf("webkvm-export-%d", time.Now().UnixNano())
 	op, err := b.client.CreateInstanceBackup(id, api.InstanceBackupsPost{Name: backupName})
 	if err != nil {
@@ -1018,7 +1032,7 @@ func (b *LXDBackend) ExportDomain(ctx context.Context, id string, opts compute.E
 // arbitrary io.Writer needs a minimal unix-socket HTTP round-trip (same
 // socket + X-LXD-authenticated handshake as the client, which is how the
 // local daemon authorizes the root peer).
-func (b *LXDBackend) exportStream(ctx context.Context, id, backupName string) (io.ReadCloser, error) {
+func (b *IncusBackend) exportStream(ctx context.Context, id, backupName string) (io.ReadCloser, error) {
 	if b.socketPath == "" {
 		return nil, errors.New("lxd socket path unknown; cannot stream instance export")
 	}
@@ -1049,14 +1063,14 @@ func (b *LXDBackend) exportStream(ctx context.Context, id, backupName string) (i
 	return resp.Body, nil
 }
 
-func (b *LXDBackend) ExportDomainOVA(ctx context.Context, id string, opts compute.OVAOptions, w io.Writer) error {
+func (b *IncusBackend) ExportDomainOVA(ctx context.Context, id string, opts compute.OVAOptions, w io.Writer) error {
 	return compute.ErrNotImplemented
 }
 
 // EstimateExportSize returns the configured root disk size as a
 // pre-export progress estimate. The true archive size is not knowable
 // without exporting, so this is the documented upper bound; 0 = unknown.
-func (b *LXDBackend) EstimateExportSize(ctx context.Context, id string, compress bool) (int64, error) {
+func (b *IncusBackend) EstimateExportSize(ctx context.Context, id string, compress bool) (int64, error) {
 	inst, _, err := b.client.GetInstance(id)
 	if err != nil {
 		return 0, err
@@ -1068,19 +1082,19 @@ func (b *LXDBackend) EstimateExportSize(ctx context.Context, id string, compress
 	}
 	return 0, nil
 }
-func (b *LXDBackend) EstimateOVASize(ctx context.Context, id string, target compute.OVATarget) (int64, error) {
+func (b *IncusBackend) EstimateOVASize(ctx context.Context, id string, target compute.OVATarget) (int64, error) {
 	return 0, compute.ErrNotImplemented
 }
-func (b *LXDBackend) ImportDomain(tarPath, newName, poolName string, opts compute.ImportOpts) (string, string, []string, error) {
+func (b *IncusBackend) ImportDomain(tarPath, newName, poolName string, opts compute.ImportOpts) (string, string, []string, error) {
 	return "", "", nil, compute.ErrNotImplemented
 }
-func (b *LXDBackend) ImportOVA(ovaPath, newName, poolName string) (string, string, error) {
+func (b *IncusBackend) ImportOVA(ovaPath, newName, poolName string) (string, string, error) {
 	return "", "", compute.ErrNotImplemented
 }
 
 // Capabilities reports what LXD supports (Fase 3: listing, lifecycle,
 // serial console, create/update, metadata and streaming backups).
-func (b *LXDBackend) Capabilities() compute.Capabilities {
+func (b *IncusBackend) Capabilities() compute.Capabilities {
 	return compute.Capabilities{
 		SupportsSerialConsole: true,
 	}
@@ -1095,7 +1109,7 @@ func instanceToVM(i *api.Instance) models.VM {
 		ID:         i.Name,
 		Name:       i.Name,
 		Type:       "container",
-		Hypervisor: "lxd",
+		Hypervisor: "incus",
 		State:      lxdState(i.Status),
 		VCPUs:      parseIntConfig(i.Config["limits.cpu"]),
 		RAMMB:      parseMemoryMB(i.Config["limits.memory"]),
@@ -1118,7 +1132,7 @@ func instanceToVM(i *api.Instance) models.VM {
 		case "disk":
 			if name == "root" {
 				d := models.DiskInfo{
-					Device: "disk", Bus: "lxd", Target: "root", Name: "root",
+					Device: "disk", Bus: "incus", Target: "root", Name: "root",
 					Pool: dev["pool"], Type: "block",
 				}
 				if sz := parseDiskGB(dev["size"]); sz > 0 {
@@ -1132,8 +1146,8 @@ func instanceToVM(i *api.Instance) models.VM {
 			vm.Networks = append(vm.Networks, models.NetIface{
 				MAC:     i.Config["volatile."+name+".hwaddr"],
 				Network: parent,
-				Model:   "lxd",
-				Type:    "lxd",
+				Model:   "incus",
+				Type:    "incus",
 				Source:  parent,
 			})
 		}

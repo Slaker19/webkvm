@@ -1,4 +1,4 @@
-package lxd
+package incus
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/canonical/lxd/shared/api"
+	"github.com/lxc/incus/v6/shared/api"
 
 	"webkvm/internal/cloudinit"
 	"webkvm/internal/compute"
@@ -81,12 +81,12 @@ func bool2str(b bool) string {
 	return "graceful"
 }
 
-// TestLXDBackendLifecycle: Start/Shutdown/ForceOff/Reboot/Delete map to
+// TestIncusBackendLifecycle: Start/Shutdown/ForceOff/Reboot/Delete map to
 // the LXD state API with the right action + force flags and wait for the
 // operation.
-func TestLXDBackendLifecycle(t *testing.T) {
+func TestIncusBackendLifecycle(t *testing.T) {
 	f := newLifecycleFake(t)
-	b, err := NewLXDBackend(f.path)
+	b, err := NewIncusBackend(f.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,9 +119,9 @@ func TestLXDBackendLifecycle(t *testing.T) {
 	}
 }
 
-// TestLXDBackendExecOnStopped: exec on a stopped instance returns
+// TestIncusBackendExecOnStopped: exec on a stopped instance returns
 // compute.ErrDomainNotRunning so the serial proxy retries.
-func TestLXDBackendExecOnStopped(t *testing.T) {
+func TestIncusBackendExecOnStopped(t *testing.T) {
 	// Reuse a fake that reports the instance as Stopped (no /instances/{n}
 	// handler with Running state). The lifecycle fake returns 404 for
 	// instance GETs, which mapLXErr turns into a not-found error — but the
@@ -144,7 +144,7 @@ func TestLXDBackendExecOnStopped(t *testing.T) {
 	go http.Serve(l, mux)
 	t.Cleanup(func() { l.Close() })
 
-	b, err := NewLXDBackend(sock)
+	b, err := NewIncusBackend(sock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,4 +199,4 @@ func indexOf(s, sub string) int {
 
 // Sanity: the new lifecycle methods still satisfy the seam.
 var _ = context.Background
-var _ compute.Backend = (*LXDBackend)(nil)
+var _ compute.Backend = (*IncusBackend)(nil)

@@ -20,7 +20,7 @@ import (
 	"webkvm/internal/config"
 	"webkvm/internal/configstore"
 	"webkvm/internal/compute"
-	"webkvm/internal/compute/lxd"
+	"webkvm/internal/compute/incus"
 	"webkvm/internal/events"
 	"webkvm/internal/firewall"
 	"webkvm/internal/libvirt"
@@ -40,10 +40,10 @@ var (
 	BuildTime = "unknown"
 )
 
-// mustLXDVersion returns the LXD daemon version ("" on error) for the
-// startup log. Errors are non-fatal — connectivity was already proven
-// by NewLXDBackend.
-func mustLXDVersion(b *lxd.LXDBackend) string {
+// mustContainerVersion returns the container daemon version ("" on error)
+// for the startup log. Errors are non-fatal — connectivity was already
+// proven by NewIncusBackend.
+func mustContainerVersion(b *incus.IncusBackend) string {
 	v, err := b.ServerInfo()
 	if err != nil {
 		return ""
@@ -421,7 +421,7 @@ func main() {
 		// (io.Copy from /1.0/instances/<name>/export — no
 		// double buffering). KVM VMs never take this path.
 		func(ctx context.Context, vm models.VM, w io.Writer) (int64, error) {
-			if vm.Hypervisor != "lxd" {
+			if vm.Hypervisor != "incus" {
 				return 0, fmt.Errorf("instance %q is not an LXD container", vm.ID)
 			}
 			res, xerr := computeBackend.ExportDomain(ctx, vm.ID, compute.ExportBackupOptions{Compress: "gzip"}, w)
@@ -582,26 +582,26 @@ func main() {
 	// v1.4 Fase 4.1: the backend also resolves libvirt network names to
 	// their Linux bridge (containers join the same networks as VMs) and
 	// exposes a per-container metrics collector sharing the KVM sink.
-	var lxdMetrics *lxd.MetricsCollector
-	if cfg.LXDEnabled {
-		lxdSocket := cfg.LXDSocket
-		if lxdBackend, lerr := lxd.NewLXDBackend(lxdSocket, lxd.WithNetworkResolver(networkBridgeResolver(lv))); lerr != nil {
-			logger.Warn("lxd_disabled", "err", lerr, "socket", lxdSocket)
+	var incusMetrics *incus.MetricsCollector
+	if cfg.IncusEnabled {
+		incusSocket := cfg.IncusSocket
+		if incusBackend, lerr := incus.NewIncusBackend(incusSocket, incus.WithNetworkResolver(networkBridgeResolver(lv))); lerr != nil {
+			logger.Warn("incus_disabled", "err", lerr, "socket", incusSocket)
 		} else {
-			computeBackend = compute.NewCombined(computeBackend, lxdBackend)
-			logger.Info("lxd_connected", "socket", lxdSocket, "server_version", mustLXDVersion(lxdBackend))
+			computeBackend = compute.NewCombined(computeBackend, incusBackend)
+			logger.Info("incus_connected", "socket", incusSocket, "server_version", mustContainerVersion(incusBackend))
 			// Container metrics feed the same history store + alert
 			// engine as KVM, so charts and alerts just work for LXC.
-			lxdMetrics = lxdBackend.NewMetricsCollector(hub)
-			go lxdMetrics.Run(eventCtx)
-			lxdMetrics.SetSink(func(vmID string, at time.Time, m models.VMMetrics) {
+			incusMetrics = incusBackend.NewMetricsCollector(hub)
+			go incusMetrics.Run(eventCtx)
+			incusMetrics.SetSink(func(vmID string, at time.Time, m models.VMMetrics) {
 				metricHist.Record(vmID, at, m)
 				alerter.Evaluate(vmID, at, m)
 			})
 		}
 	}
 
-	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter, lxdMetrics)
+	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter, incusMetrics)
 
 	srv := &http.Server{
 		Addr:    net.JoinHostPort(cfg.BindAddr, fmt.Sprintf("%d", cfg.Port)),

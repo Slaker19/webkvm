@@ -40,13 +40,14 @@ BRIDGE_DHCP="${BRIDGE_DHCP:-}"
 BRIDGE_STATIC_IP="${BRIDGE_STATIC_IP:-}"
 BRIDGE_STATIC_GW="${BRIDGE_STATIC_GW:-}"
 BRIDGE_STATIC_DNS="${BRIDGE_STATIC_DNS:-}"
-# v2.1.0: WEBKVM_INSTALL_LXD=1 installs + enables the LXD daemon so the
-# container module works out of the box. Snap is ONLY offered on the
-# Ubuntu/Debian family; Arch/Fedora use the native package (with a
-# non-fatal warning when unavailable). WEBKVM_LXD_ENABLED=1 alone just
-# wires the opt-in env var into the unit (LXD must already be present).
-WEBKVM_INSTALL_LXD="${WEBKVM_INSTALL_LXD:-0}"
-WEBKVM_LXD_ENABLED="${WEBKVM_LXD_ENABLED:-0}"
+# v2.2.0: WEBKVM_INSTALL_INCUS=1 installs + enables the Incus daemon so the
+# container module works out of the box. Uses the native `incus` package
+# on every package manager (apt/pacman/dnf) — snap is never used. If the
+# package is missing it warns and continues KVM-only (non-fatal).
+# WEBKVM_INCUS_ENABLED=1 alone just wires the opt-in env var into the unit
+# (Incus must already be present).
+WEBKVM_INSTALL_INCUS="${WEBKVM_INSTALL_INCUS:-0}"
+WEBKVM_INCUS_ENABLED="${WEBKVM_INCUS_ENABLED:-0}"
 
 SERVICE="${WEBKVM_SERVICE:-webkvm.service}"
 SERVICE_PATH="/etc/systemd/system/${SERVICE}"
@@ -251,53 +252,29 @@ setup_package_map() {
   esac
 }
 
-# ── LXD (containers, v2.1.0) ───────────────────────────────────────────
-# install_lxd installs the LXD daemon when WEBKVM_INSTALL_LXD=1.
-#   - Snap is ONLY used on genuine Ubuntu (Debian, Mint, Zorin and other
-#     apt-family distros do NOT ship snap, so they get the native package).
-#   - Arch/Fedora family (pacman/dnf): native package ONLY — snap is NEVER
-#     forced/installed there. If the package is missing the installer warns
-#     and continues KVM-only (never aborts).
-install_lxd() {
-  [[ "${WEBKVM_INSTALL_LXD}" == "1" ]] || return 0
-  log "installing LXD (containers) — WEBKVM_INSTALL_LXD=1"
-  # Distro identity (sourced in preflight) drives the snap decision.
-  [[ -f /etc/os-release ]] && . /etc/os-release
-  local is_ubuntu=0
-  [[ "${ID:-}" == "ubuntu" || "${ID_LIKE:-}" == *"ubuntu"* ]] && is_ubuntu=1
-  case "${PKG}" in
-    apt)
-      if [[ "${is_ubuntu}" == "1" ]] && command -v snap >/dev/null 2>&1; then
-        snap install lxd 2>&1 | tail -1
-        log "LXD instalado vía snap (Ubuntu); ejecuta 'sudo lxd init' para configurarlo"
-      else
-        # Debian, Mint, Zorin, etc.: native package (snap is not available
-        # there). Non-fatal on failure.
-        if pkg_available lxd; then
-          pkg_install lxd || true
-          systemctl enable --now lxd >/dev/null 2>&1 || true
-          log "LXD instalado vía paquete nativo (${PKG})"
-        else
-          log "ADVERTENCIA: no hay paquete 'lxd' en ${PKG}. Instala LXD o Incus manualmente según la wiki de tu distribución; WebKVM continúa en modo KVM-only."
-        fi
-      fi
-      ;;
-    pacman|dnf)
-      # Native package only. Snap must never be installed on Arch/Fedora
-      # or their derivatives (CentOS/Alma/Rocky). Non-fatal on failure.
-      if pkg_available lxd; then
-        pkg_install lxd || true
-        systemctl enable --now lxd >/dev/null 2>&1 || true
-        log "LXD instalado vía paquete nativo (${PKG})"
-      else
-        log "ADVERTENCIA: no hay paquete 'lxd' en ${PKG}. Instala LXD o Incus manualmente según la wiki de tu distribución; WebKVM continúa en modo KVM-only."
-      fi
-      ;;
-    *)
-      log "ADVERTENCIA: familia ${PKG} no soportada para instalación automática de LXD; instálalo manualmente."
-      ;;
-  esac
-  # Always degrade gracefully: LXD is an opt-in feature, never a blocker.
+# ── Incus (containers, v2.2.0) ─────────────────────────────────────────
+# install_incus installs the Incus daemon when WEBKVM_INSTALL_INCUS=1.
+# It uses the NATIVE `incus` package on every package manager (apt /
+# pacman / dnf) — snap is never used. If `incus` is unavailable it falls
+# back to the legacy native `lxd` package; if neither exists it prints a
+# warning and continues KVM-only (never aborts, never touches snap).
+install_incus() {
+  [[ "${WEBKVM_INSTALL_INCUS}" == "1" ]] || return 0
+  log "installing Incus (containers) — WEBKVM_INSTALL_INCUS=1"
+  local pkg="incus"
+  local svc="incus"
+  if ! pkg_available "${pkg}"; then
+    if pkg_available lxd; then
+      pkg="lxd"; svc="lxd"
+      log "paquete 'incus' no disponible; usando 'lxd' legacy"
+    else
+      log "ADVERTENCIA: no hay paquete 'incus' (ni 'lxd') en ${PKG}. Instala Incus o LXD manualmente según la wiki de tu distribución; WebKVM continúa en modo KVM-only."
+      return 0
+    fi
+  fi
+  pkg_install "${pkg}" || true
+  systemctl enable --now "${svc}" >/dev/null 2>&1 || true
+  log "Incus/LXD instalado vía paquete nativo (${pkg}, ${PKG}) — ejecuta 'incus admin init' / 'lxd init' para configurarlo"
 }
 
 # ── Interactive settings ───────────────────────────────────────────────
@@ -390,10 +367,10 @@ if [[ "${DRY_RUN}" == 1 ]]; then
   log "runtime packages that would be installed:"
   local_pkg=""
   for local_pkg in "${RUNTIME_PACKAGES[@]}"; do log "  · ${local_pkg}"; done
-  if [[ "${WEBKVM_INSTALL_LXD}" == "1" ]]; then
-    log "LXD (contenedores)  : instalación automática (WEBKVM_INSTALL_LXD=1) + WEBKVM_LXD_ENABLED=1"
-  elif [[ "${WEBKVM_LXD_ENABLED}" == "1" ]]; then
-    log "LXD (contenedores)  : opt-in activado (WEBKVM_LXD_ENABLED=1); asume LXD ya instalado"
+  if [[ "${WEBKVM_INSTALL_INCUS}" == "1" ]]; then
+    log "Incus (contenedores)  : instalación automática (WEBKVM_INSTALL_INCUS=1) + WEBKVM_INCUS_ENABLED=1"
+  elif [[ "${WEBKVM_INCUS_ENABLED}" == "1" ]]; then
+    log "Incus (contenedores)  : opt-in activado (WEBKVM_INCUS_ENABLED=1); asume LXD ya instalado"
   fi
   log "binario destino     : ${BIN}"
   log "servicio            : ${SERVICE} (enable --now)"
@@ -435,7 +412,7 @@ pkg_update
 pkg_install "${RUNTIME_PACKAGES[@]}" || die "runtime dependencies could not be installed"
 
 # v2.1.0: optional LXD daemon for the container module (opt-in).
-install_lxd
+install_incus
 
 # --no-pager: 'systemctl cat' can die with SIGPIPE (rc=141) in
 # non-TTY contexts, falsely reading as "unit not found".
@@ -530,8 +507,8 @@ fi
 ADMIN_PW_LINE=""
 [[ -n "${WEBKVM_ADMIN_PASSWORD:-}" ]] && ADMIN_PW_LINE="Environment=WEBKVM_ADMIN_PASSWORD=${WEBKVM_ADMIN_PASSWORD}"
 # v2.1.0: opt-in the container module in the systemd unit.
-LXD_ENV_LINE=""
-[[ "${WEBKVM_INSTALL_LXD}" == "1" || "${WEBKVM_LXD_ENABLED}" == "1" ]] && LXD_ENV_LINE="Environment=WEBKVM_LXD_ENABLED=1"
+INCUS_ENV_LINE=""
+[[ "${WEBKVM_INSTALL_INCUS}" == "1" || "${WEBKVM_INCUS_ENABLED}" == "1" ]] && INCUS_ENV_LINE="Environment=WEBKVM_INCUS_ENABLED=1"
 
 install -D -m 0644 /dev/stdin "${SERVICE_PATH}" <<EOF
 [Unit]
@@ -550,7 +527,7 @@ Environment=PORT=${DEFAULT_PORT}
 Environment=TMPDIR=/var/tmp
 Environment=WEBKVM_LOG_FILE=${DATA_DIR}/logs/backend.log
 ${ADMIN_PW_LINE}
-${LXD_ENV_LINE}
+${INCUS_ENV_LINE}
 WorkingDirectory=${DATA_DIR}
 ExecStart=${BIN}
 Restart=on-failure

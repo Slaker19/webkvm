@@ -21,19 +21,19 @@ describe('computeTypeBadgeClass', () => {
 });
 
 describe('computeTypeLabel', () => {
-  it('returns KVM / LXC labels', () => {
+  it('returns KVM / Incus labels', () => {
     expect(computeTypeLabel('vm')).toBe('KVM');
-    expect(computeTypeLabel('container')).toBe('LXC');
+    expect(computeTypeLabel('container')).toBe('Incus');
   });
 });
 
 describe('isContainer', () => {
   it('detects a container by type', () => {
-    expect(isContainer({ type: 'container', hypervisor: 'lxd' })).toBe(true);
+    expect(isContainer({ type: 'container', hypervisor: 'incus' })).toBe(true);
   });
 
   it('detects a container by hypervisor', () => {
-    expect(isContainer({ type: 'vm', hypervisor: 'lxd' })).toBe(true);
+    expect(isContainer({ type: 'vm', hypervisor: 'incus' })).toBe(true);
   });
 
   it('returns false for KVM VMs', () => {

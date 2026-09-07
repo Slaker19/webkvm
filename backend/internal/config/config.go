@@ -67,15 +67,14 @@ type Config struct {
 	// it serves plain HTTP behind a reverse proxy on localhost.
 	SecureCookies bool
 
-	// LXDEnabled (v1.4 Fase 1) toggles the optional LXD container
-	// backend. LXD is disabled by default: when off (or the daemon
-	// socket is unreachable) the backend degrades to KVM-only with
-	// zero regression.
-	LXDEnabled bool
-	// LXDSocket is the unix socket of the LXD daemon. Defaults to
-	// /var/snap/lxd/common/lxd/unix.socket (the snap install path),
-	// falling back to /var/lib/lxd/unix.socket (apt install path).
-	LXDSocket string
+	// IncusEnabled (v2.2.0, formerly LXDEnabled) toggles the optional
+	// Incus container backend. Incus is disabled by default: when off (or
+	// the daemon socket is unreachable) the backend degrades to KVM-only
+	// with zero regression.
+	IncusEnabled bool
+	// IncusSocket is the unix socket of the Incus (or legacy LXD)
+	// daemon. Empty = auto-detect (Incus paths first, then LXD snap/apt).
+	IncusSocket string
 }
 
 // Load assembles the config from environment variables. For the JWT
@@ -133,8 +132,8 @@ func Load() (*Config, error) {
 		CORSOrigin:   envStrFrom("CORS_ORIGIN", "*", dotenv),
 		LogFile:      envStrFrom("WEBKVM_LOG_FILE", "", dotenv),
 		SecureCookies: envBoolFrom("WEBKVM_COOKIE_SECURE", true, dotenv),
-		LXDEnabled:   envBoolFrom("WEBKVM_LXD_ENABLED", false, dotenv),
-		LXDSocket:    envStrFrom("LXD_SOCKET", "", dotenv),
+		IncusEnabled: envBoolFrom("WEBKVM_INCUS_ENABLED", false, dotenv),
+		IncusSocket:  envStrFrom("INCUS_SOCKET", "", dotenv),
 	}, nil
 }
 

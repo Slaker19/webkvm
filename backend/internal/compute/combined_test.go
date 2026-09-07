@@ -34,7 +34,7 @@ var _ Backend = (*fakeBackend)(nil)
 // (LXD) list appear together — containers alongside VMs.
 func TestCombinedMergesLists(t *testing.T) {
 	kvm := &fakeBackend{vms: []models.VM{{ID: "vm-1", Name: "vm-1", Hypervisor: "kvm"}}}
-	lxd := &fakeBackend{vms: []models.VM{{ID: "web", Name: "web", Hypervisor: "lxd"}}}
+	lxd := &fakeBackend{vms: []models.VM{{ID: "web", Name: "web", Hypervisor: "incus"}}}
 	c := NewCombined(kvm, lxd)
 	vms, err := c.ListDomains()
 	if err != nil {
@@ -43,7 +43,7 @@ func TestCombinedMergesLists(t *testing.T) {
 	if len(vms) != 2 {
 		t.Fatalf("merged list = %d, want 2", len(vms))
 	}
-	if vms[0].Hypervisor != "kvm" || vms[1].Hypervisor != "lxd" {
+	if vms[0].Hypervisor != "kvm" || vms[1].Hypervisor != "incus" {
 		t.Fatalf("merge order wrong: %+v", vms)
 	}
 }

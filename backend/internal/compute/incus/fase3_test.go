@@ -1,4 +1,4 @@
-package lxd
+package incus
 
 import (
 	"bytes"
@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/canonical/lxd/shared/api"
+	"github.com/lxc/incus/v6/shared/api"
 
 	"webkvm/internal/compute"
 	"webkvm/internal/models"
@@ -104,8 +104,10 @@ func (f *fakeLXD3) handleInstances(w http.ResponseWriter, r *http.Request) {
 			Name:   post.Name,
 			Type:   string(post.Type),
 			Status: "Stopped",
-			Config: cloneMap(post.Config),
-			Devices: post.Devices,
+			InstancePut: api.InstancePut{
+				Config:  cloneMap(post.Config),
+				Devices: post.Devices,
+			},
 		}
 		f.instances[post.Name] = inst
 		f.etag[post.Name] = `"etag-` + post.Name + `"`
@@ -307,11 +309,11 @@ func TestParseImageRef(t *testing.T) {
 	}
 }
 
-// TestLXDBackendCreateDomain is the Fase 3 creation gate: image-based
+// TestIncusBackendCreateDomain is the Fase 3 creation gate: image-based
 // creation with cloud-init injected as native config keys.
-func TestLXDBackendCreateDomain(t *testing.T) {
+func TestIncusBackendCreateDomain(t *testing.T) {
 	sock, fake := newFakeLXD3(t, nil, nil)
-	b, err := NewLXDBackend(sock)
+	b, err := NewIncusBackend(sock)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -364,29 +366,29 @@ func TestLXDBackendCreateDomain(t *testing.T) {
 	if eth0 := post.Devices["eth0"]; eth0["parent"] != "lxdbr0" || eth0["nictype"] != "bridged" {
 		t.Errorf("eth0 device = %+v", post.Devices["eth0"])
 	}
-	if vm.ID != "web" || vm.Name != "web" || vm.Hypervisor != "lxd" {
+	if vm.ID != "web" || vm.Name != "web" || vm.Hypervisor != "incus" {
 		t.Errorf("mapped vm = %+v", vm)
 	}
 }
 
-// TestLXDBackendCreateDomainNoImage: creating a container without an
+// TestIncusBackendCreateDomainNoImage: creating a container without an
 // image is a clean validation error, not a 501.
-func TestLXDBackendCreateDomainNoImage(t *testing.T) {
-	b := &LXDBackend{}
+func TestIncusBackendCreateDomainNoImage(t *testing.T) {
+	b := &IncusBackend{}
 	_, err := b.CreateDomain(models.CreateVMRequest{Name: "x"})
 	if err == nil || strings.Contains(err.Error(), "image reference") == false {
 		t.Fatalf("expected image-required error, got %v", err)
 	}
 }
 
-// TestLXDBackendUpdateDomain covers rename + CPU/RAM limits and the
+// TestIncusBackendUpdateDomain covers rename + CPU/RAM limits and the
 // rejection of KVM-only fields.
-func TestLXDBackendUpdateDomain(t *testing.T) {
+func TestIncusBackendUpdateDomain(t *testing.T) {
 	sock, fake := newFakeLXD3(t, map[string]*api.Instance{
 		"web": {Name: "web", Type: string(api.InstanceTypeContainer), Status: "Stopped",
-			Config: map[string]string{"limits.cpu": "1", "limits.memory": "512MiB"}},
+			InstancePut: api.InstancePut{Config: map[string]string{"limits.cpu": "1", "limits.memory": "512MiB"}}},
 	}, nil)
-	b, err := NewLXDBackend(sock)
+	b, err := NewIncusBackend(sock)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -423,13 +425,14 @@ func TestLXDBackendUpdateDomain(t *testing.T) {
 	}
 }
 
-// TestLXDBackendVMMeta round-trips tags and the rest of the metadata
+// TestIncusBackendVMMeta round-trips tags and the rest of the metadata
 // through the user.webkvm.tags / user.webkvm.desc config keys.
-func TestLXDBackendVMMeta(t *testing.T) {
+func TestIncusBackendVMMeta(t *testing.T) {
 	sock, fake := newFakeLXD3(t, map[string]*api.Instance{
-		"web": {Name: "web", Type: string(api.InstanceTypeContainer), Status: "Stopped", Config: map[string]string{}},
+		"web": {Name: "web", Type: string(api.InstanceTypeContainer), Status: "Stopped",
+			InstancePut: api.InstancePut{Config: map[string]string{}}},
 	}, nil)
-	b, err := NewLXDBackend(sock)
+	b, err := NewIncusBackend(sock)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -492,19 +495,22 @@ func TestLXDBackendVMMeta(t *testing.T) {
 	}
 }
 
-// TestLXDBackendExportDomain is the streaming gate: the container's
+// TestIncusBackendExportDomain is the streaming gate: the container's
 // native LXD export is copied byte-for-byte into w with a single GET —
 // no double buffering, no temp download.
-func TestLXDBackendExportDomain(t *testing.T) {
+func TestIncusBackendExportDomain(t *testing.T) {
 	// Real gzip bytes (garbage is fine: we only assert the stream).
 	export := []byte("\x1f\x8b\x08\x00fake-container-export-stream-bytes-0123456789")
 	sock, fake := newFakeLXD3(t, map[string]*api.Instance{
 		"web": {Name: "web", Type: string(api.InstanceTypeContainer), Status: "Running",
-			Config: map[string]string{}, Devices: map[string]map[string]string{
-				"root": {"type": "disk", "path": "/", "size": "10GB"},
+			InstancePut: api.InstancePut{
+				Config:  map[string]string{},
+				Devices: map[string]map[string]string{
+					"root": {"type": "disk", "path": "/", "size": "10GB"},
+				},
 			}},
 	}, export)
-	b, err := NewLXDBackend(sock)
+	b, err := NewIncusBackend(sock)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -551,11 +557,11 @@ func TestLXDBackendExportDomain(t *testing.T) {
 	}
 }
 
-// TestLXDBackendExportDomainMissingInstance: exporting a non-existent
+// TestIncusBackendExportDomainMissingInstance: exporting a non-existent
 // container fails cleanly (the daemon 404s).
-func TestLXDBackendExportDomainMissingInstance(t *testing.T) {
+func TestIncusBackendExportDomainMissingInstance(t *testing.T) {
 	sock, _ := newFakeLXD3(t, nil, nil)
-	b, err := NewLXDBackend(sock)
+	b, err := NewIncusBackend(sock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,10 +576,10 @@ func TestLXDBackendExportDomainMissingInstance(t *testing.T) {
 func TestInstanceToVMTagsAndAlias(t *testing.T) {
 	inst := &api.Instance{
 		Name: "web", Status: "Running", Type: string(api.InstanceTypeContainer),
-		Config: map[string]string{
+		InstancePut: api.InstancePut{Config: map[string]string{
 			metaTagsKey: "prod,web",
 			metaDescKey: `{"alias":"prod-web","owner_id":"alvin"}`,
-		},
+		}},
 	}
 	vm := instanceToVM(inst)
 	if len(vm.Tags) != 2 || vm.Tags[0] != "prod" || vm.Tags[1] != "web" {

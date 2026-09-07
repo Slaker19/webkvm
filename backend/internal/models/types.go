@@ -17,7 +17,7 @@ type VM struct {
 	// "container" (LXC). Added in v1.4 Fase 1 so the UI can render
 	// containers alongside VMs (unified model).
 	Type string `json:"type"`
-	// Hypervisor is the backend that owns this instance: "kvm" or "lxd".
+	// Hypervisor is the backend that owns this instance: "kvm" or "incus".
 	Hypervisor string `json:"hypervisor"`
 	State      VMState `json:"state"`
 	VCPUs      int     `json:"vcpus"`

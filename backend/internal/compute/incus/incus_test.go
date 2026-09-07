@@ -1,4 +1,4 @@
-package lxd
+package incus
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/canonical/lxd/shared/api"
+	"github.com/lxc/incus/v6/shared/api"
 
 	"webkvm/internal/compute"
 	"webkvm/internal/models"
@@ -24,17 +24,19 @@ func TestInstanceToVM(t *testing.T) {
 		Name:   "web",
 		Status: "Running",
 		Type:   string(api.InstanceTypeContainer),
-		Config: map[string]string{
-			"limits.cpu":     "2",
-			"limits.memory":  "1GiB",
-			"boot.autostart": "true",
+		InstancePut: api.InstancePut{
+			Config: map[string]string{
+				"limits.cpu":     "2",
+				"limits.memory":  "1GiB",
+				"boot.autostart": "true",
+			},
 		},
 	}
 	vm := instanceToVM(inst)
 	if vm.ID != "web" || vm.Name != "web" {
 		t.Errorf("id/name = %q/%q", vm.ID, vm.Name)
 	}
-	if vm.Type != "container" || vm.Hypervisor != "lxd" {
+	if vm.Type != "container" || vm.Hypervisor != "incus" {
 		t.Errorf("type/hypervisor = %q/%q", vm.Type, vm.Hypervisor)
 	}
 	if vm.State != models.VMStateRunning {
@@ -61,7 +63,9 @@ func TestInstanceToVM_ProvisionMethod(t *testing.T) {
 		Name:   "web2",
 		Status: "Running",
 		Type:   "container",
-		Config: map[string]string{"user.user-data": "#cloud-config\n"},
+		InstancePut: api.InstancePut{
+			Config: map[string]string{"user.user-data": "#cloud-config\n"},
+		},
 	})
 	if provisioned.ProvisionMethod != "cloud-init" {
 		t.Errorf("provision_method = %q, want cloud-init", provisioned.ProvisionMethod)
@@ -111,10 +115,10 @@ func TestParseIntConfig(t *testing.T) {
 	}
 }
 
-// TestLXDBackendFailSafe: every not-yet-implemented operation returns
+// TestIncusBackendFailSafe: every not-yet-implemented operation returns
 // the ErrNotImplemented sentinel (which the handlers surface as 501).
-func TestLXDBackendFailSafe(t *testing.T) {
-	b := &LXDBackend{} // no client needed for stubs
+func TestIncusBackendFailSafe(t *testing.T) {
+	b := &IncusBackend{} // no client needed for stubs
 	ops := []func() error{
 		func() error { _, err := b.ListSnapshots("x"); return err },
 		func() error { _, err := b.ListStoragePools(); return err },
@@ -136,7 +140,7 @@ func TestLXDBackendFailSafe(t *testing.T) {
 }
 
 // fakeLXDServer is a minimal LXD daemon over a unix socket: enough for
-// ConnectLXDUnix (GET /1.0) and GetInstances (GET /1.0/instances).
+// ConnectIncusUnix (GET /1.0) and GetInstances (GET /1.0/instances).
 func fakeLXDServer(t *testing.T, instances []api.Instance) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -160,19 +164,19 @@ func fakeLXDServer(t *testing.T, instances []api.Instance) string {
 	return sock
 }
 
-// TestLXDBackendConnectAndList is the Fase 1 gate: connect to the LXD
+// TestIncusBackendConnectAndList is the Fase 1 gate: connect to the LXD
 // daemon over a unix socket (simulated) and list instances mapped to the
 // neutral model — the exact path the backend follows in production.
-func TestLXDBackendConnectAndList(t *testing.T) {
+func TestIncusBackendConnectAndList(t *testing.T) {
 	instances := []api.Instance{
 		{Name: "web", Status: "Running", Type: "container",
-			Config: map[string]string{"limits.cpu": "2", "limits.memory": "1GiB"}},
+			InstancePut: api.InstancePut{Config: map[string]string{"limits.cpu": "2", "limits.memory": "1GiB"}}},
 		{Name: "db", Status: "Stopped", Type: "container",
-			Config: map[string]string{"limits.memory": "512MiB"}},
+			InstancePut: api.InstancePut{Config: map[string]string{"limits.memory": "512MiB"}}},
 	}
 	sock := fakeLXDServer(t, instances)
 
-	b, err := NewLXDBackend(sock)
+	b, err := NewIncusBackend(sock)
 	if err != nil {
 		t.Fatalf("connect to LXD socket: %v", err)
 	}
@@ -189,15 +193,15 @@ func TestLXDBackendConnectAndList(t *testing.T) {
 	if vms[0].Name != "web" || vms[0].State != models.VMStateRunning || vms[0].RAMMB != 1024 {
 		t.Errorf("web mapping wrong: %+v", vms[0])
 	}
-	if vms[1].Name != "db" || vms[1].State != models.VMStateShutoff || vms[1].Hypervisor != "lxd" {
+	if vms[1].Name != "db" || vms[1].State != models.VMStateShutoff || vms[1].Hypervisor != "incus" {
 		t.Errorf("db mapping wrong: %+v", vms[1])
 	}
 }
 
-// TestNewLXDBackendMissingSocket: a missing socket returns an error so
+// TestNewIncusBackendMissingSocket: a missing socket returns an error so
 // the caller can degrade to KVM-only (fail-safe, no crash).
-func TestNewLXDBackendMissingSocket(t *testing.T) {
-	_, err := NewLXDBackend(filepath.Join(t.TempDir(), "no-such.socket"))
+func TestNewIncusBackendMissingSocket(t *testing.T) {
+	_, err := NewIncusBackend(filepath.Join(t.TempDir(), "no-such.socket"))
 	if err == nil {
 		t.Fatal("expected connection error for a missing socket")
 	}
@@ -207,5 +211,5 @@ func TestNewLXDBackendMissingSocket(t *testing.T) {
 }
 
 // The official client import must not leak into the neutral interface:
-// compute.Backend is implemented by *LXDBackend (compile-time check).
-var _ compute.Backend = (*LXDBackend)(nil)
+// compute.Backend is implemented by *IncusBackend (compile-time check).
+var _ compute.Backend = (*IncusBackend)(nil)

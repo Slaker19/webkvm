@@ -607,7 +607,7 @@ func (r *Runner) writeBackup(tgt Target, destDir string, onProgress ...func(int,
 		// archive IS the native LXD export (tar.gz), streamed straight
 		// from the daemon. KVM VMs keep the historical tar.zst.
 		ext := ".tar.zst"
-		if vm.Hypervisor == "lxd" {
+		if vm.Hypervisor == "incus" {
 			ext = ".tar.gz"
 		}
 		filename, outPath, err := r.allocateOutputPath(destDir, host, tsNano, suffix, name+ext)
@@ -629,7 +629,7 @@ func (r *Runner) writeBackup(tgt Target, destDir string, onProgress ...func(int,
 			progress(base, "compress_vm", vmVars)
 		}
 
-		if vm.Hypervisor == "lxd" {
+		if vm.Hypervisor == "incus" {
 			// Container: stream the LXD export directly into the
 			// artifact. MaxFileSizeMB is not applied here — the export
 			// is a single opaque tar.gz produced by the daemon (there

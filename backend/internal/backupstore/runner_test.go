@@ -1462,7 +1462,7 @@ func TestWriteBackupContainerStreamsLXDExport(t *testing.T) {
 	r := &Runner{
 		dataDir: dir,
 		vms: stubVMSource([]models.VM{{
-			ID: "web", Type: "container", Hypervisor: "lxd", DiskGB: 10,
+			ID: "web", Type: "container", Hypervisor: "incus", DiskGB: 10,
 		}}),
 		config: func() BackupConfig { return BackupConfig{MaxFileSizeMB: 100, VerifyOnWrite: false} },
 		exportSource: func(_ context.Context, vm models.VM, w io.Writer) (int64, error) {
@@ -1525,7 +1525,7 @@ func TestWriteBackupContainerWithoutExportSource(t *testing.T) {
 	r := &Runner{
 		dataDir: dir,
 		vms: stubVMSource([]models.VM{{
-			ID: "db", Type: "container", Hypervisor: "lxd",
+			ID: "db", Type: "container", Hypervisor: "incus",
 		}}),
 		config: func() BackupConfig { return BackupConfig{MaxFileSizeMB: 100} },
 		logger: discardLogger(),

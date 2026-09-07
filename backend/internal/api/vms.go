@@ -167,7 +167,7 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		// LXD containers already received their cloud-init natively at
 		// creation (user.user-data / user.network-config config keys) —
 		// the NoCloud ISO path is KVM-only and would 501 on a container.
-		if vm.Hypervisor != "lxd" {
+		if vm.Hypervisor != "incus" {
 			if err := h.applyCloudInit(vm.ID, vm.Name, req.CloudInit); err != nil {
 				jsonResp(w, http.StatusCreated, map[string]any{
 					"id":      vm.ID,
@@ -849,7 +849,7 @@ func (h *Handler) ExportVM(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if vm.State == models.VMStateRunning && vm.Hypervisor != "lxd" {
+	if vm.State == models.VMStateRunning && vm.Hypervisor != "incus" {
 		jsonErr(w, http.StatusConflict, "VM must be shut off before exporting")
 		return
 	}
@@ -862,7 +862,7 @@ func (h *Handler) ExportVM(w http.ResponseWriter, r *http.Request) {
 	// of a clean 500 with an actionable error. LXD containers have no
 	// local disk files to pre-flight (their export is streamed natively
 	// by the daemon, even while running).
-	if vm.Hypervisor != "lxd" {
+	if vm.Hypervisor != "incus" {
 		if err := h.compute.ValidateDomainDisks(id); err != nil {
 			jsonErr(w, http.StatusInternalServerError, err.Error())
 			return

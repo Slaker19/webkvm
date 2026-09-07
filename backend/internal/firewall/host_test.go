@@ -25,6 +25,17 @@ func testHostManager(t *testing.T, dir string, rules HostFirewall) (*Manager, *H
 	return m, hs
 }
 
+// skipIfNotRoot skips the Safe Apply tests that apply the ruleset to
+// the kernel with nft: nftables requires CAP_NET_ADMIN, which the
+// non-root GitHub Actions runners do not have (the apply would fail
+// with "Operation not permitted"). The pure validation/rollback logic
+// is still exercised by the tests that never reach nft.
+func skipIfNotRoot(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root / CAP_NET_ADMIN to apply nftables")
+	}
+}
+
 // V13-C-01 anti-lockout: a drop rule on a protected management port
 // (SSH, the UI port, the VNC range) is REJECTED.
 func TestValidateHostFirewall_RejectsDropOnProtectedPorts(t *testing.T) {
@@ -118,6 +129,7 @@ func TestBuildRuleset_HostRulesAloneNonEmpty(t *testing.T) {
 // apply; ConfirmHostApply persists the rules and clears the pending
 // state.
 func TestSafeApply_ConfirmPersists(t *testing.T) {
+	skipIfNotRoot(t)
 	dir := t.TempDir()
 	m, hs := testHostManager(t, dir, HostFirewall{}) // empty baseline
 	next := HostFirewall{Input: []HostInputRule{{ID: "r", Proto: "tcp", Port: 8085, Action: "drop"}}}
@@ -168,6 +180,7 @@ func TestSafeApply_AntiLockoutRefusedBeforeApply(t *testing.T) {
 // Safe Apply ROLLBACK: the timer fires and restores the previous
 // ruleset when Confirm is not called within the window.
 func TestSafeApply_TimeoutRollsBack(t *testing.T) {
+	skipIfNotRoot(t)
 	dir := t.TempDir()
 	baseline := HostFirewall{Input: []HostInputRule{{ID: "r0", Proto: "tcp", Port: 8085, Action: "drop"}}}
 	m, hs := testHostManager(t, dir, baseline)
@@ -207,6 +220,7 @@ func TestSafeApply_TimeoutRollsBack(t *testing.T) {
 // Confirm/Rollback with no pending apply returns ErrNoPendingApply /
 // false.
 func TestSafeApply_NoPendingConfirmRollback(t *testing.T) {
+	skipIfNotRoot(t)
 	dir := t.TempDir()
 	m, _ := testHostManager(t, dir, HostFirewall{})
 	if err := m.ConfirmHostApply(); err != ErrNoPendingApply {
@@ -219,6 +233,7 @@ func TestSafeApply_NoPendingConfirmRollback(t *testing.T) {
 
 // Two staged applies in flight are refused.
 func TestSafeApply_SingleFlight(t *testing.T) {
+	skipIfNotRoot(t)
 	dir := t.TempDir()
 	m, _ := testHostManager(t, dir, HostFirewall{})
 	one := HostFirewall{Input: []HostInputRule{{ID: "r", Proto: "tcp", Port: 8085, Action: "drop"}}}

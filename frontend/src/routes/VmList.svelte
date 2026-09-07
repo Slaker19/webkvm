@@ -1517,7 +1517,7 @@ apt-get update -y
                 : 'right-2'} inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wider font-medium {computeTypeBadgeClass(
                 vm.type
               )}"
-              title={isContainer(vm) ? 'LXC container' : 'KVM virtual machine'}
+              title={isContainer(vm) ? 'Incus container' : 'KVM virtual machine'}
             >
               {#if isContainer(vm)}
                 <Container class="w-3 h-3" />

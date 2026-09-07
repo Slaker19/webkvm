@@ -1,4 +1,4 @@
-package lxd
+package incus
 
 import (
 	"context"
@@ -8,8 +8,8 @@ import (
 	"webkvm/internal/events"
 	"webkvm/internal/models"
 
-	lxd "github.com/canonical/lxd/client"
-	"github.com/canonical/lxd/shared/api"
+	incus "github.com/lxc/incus/v6/client"
+	"github.com/lxc/incus/v6/shared/api"
 )
 
 // ringBuffer is a fixed-size circular buffer of MetricsSample. When full,
@@ -97,18 +97,20 @@ func (s *metricsState) snapshot() models.VMMetrics {
 	}
 }
 
-// instanceStateFetcher abstracts the LXD client calls the collector
+// instanceStateFetcher abstracts the Incus client calls the collector
 // makes so unit tests can inject a fake without a live daemon.
 type instanceStateFetcher interface {
 	ListInstances() ([]api.Instance, error)
 	State(name string) (*api.InstanceState, error)
 }
 
-// clientAdapter adapts lxd.InstanceServer to instanceStateFetcher.
-type clientAdapter struct{ client lxd.InstanceServer }
+// clientAdapter adapts the Incus client to instanceStateFetcher to instanceStateFetcher.
+type clientAdapter struct{ client incus.InstanceServer }
 
 func (a clientAdapter) ListInstances() ([]api.Instance, error) {
-	return a.client.GetInstances(lxd.GetInstancesArgs{InstanceType: api.InstanceTypeAny})
+	// Incus v6 client: GetInstances takes the instance type filter
+	// (api.InstanceTypeAny = containers + virtual machines).
+	return a.client.GetInstances(api.InstanceTypeAny)
 }
 
 func (a clientAdapter) State(name string) (*api.InstanceState, error) {
@@ -116,7 +118,7 @@ func (a clientAdapter) State(name string) (*api.InstanceState, error) {
 	return s, err
 }
 
-// MetricsCollector samples CPU/RAM/Net for running LXD containers
+// MetricsCollector samples CPU/RAM/Net for running containers
 // (v1.4 Fase 4.1) so the UI shows the same sparklines/charts as KVM. It
 // broadcasts on the event hub and feeds the shared history/alert sink.
 type MetricsCollector struct {

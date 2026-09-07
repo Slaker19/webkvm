@@ -10,7 +10,7 @@ import (
 	"webkvm/internal/auth"
 	"webkvm/internal/backupstore"
 	"webkvm/internal/compute"
-	"webkvm/internal/compute/lxd"
+	"webkvm/internal/compute/incus"
 	"webkvm/internal/config"
 	"webkvm/internal/configstore"
 	"webkvm/internal/events"
@@ -52,7 +52,7 @@ func NewRouter(
 	vmScheduler *vmsched.Scheduler,
 	metricHist *metrics.TimeSeriesStore,
 	alerter *metrics.AlertEngine,
-	lxdMetrics *lxd.MetricsCollector,
+	incusMetrics *incus.MetricsCollector,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -117,7 +117,7 @@ func NewRouter(
 		vmScheduler:  vmScheduler,
 		metricHist:   metricHist,
 		alerter:      alerter,
-		lxdMetrics:   lxdMetrics,
+		incusMetrics:   incusMetrics,
 		StartedAt:    time.Now(),
 	}
 

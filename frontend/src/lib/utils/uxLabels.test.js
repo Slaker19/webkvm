@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { LXD_IMAGE_PRESETS, CUSTOM_IMAGE, labelForImage } from './lxdImages.js';
+import { INCUS_IMAGE_PRESETS, CUSTOM_IMAGE, labelForImage } from './incusImages.js';
 import { networkLabel, networkLabelFor } from './networkLabel.js';
 
-describe('lxdImages', () => {
+describe('incusImages', () => {
   it('exposes a custom option', () => {
     expect(CUSTOM_IMAGE.ref).toBe('');
   });
@@ -18,7 +18,7 @@ describe('lxdImages', () => {
   });
 
   it('every preset ref is a valid <remote>:<alias> pair', () => {
-    for (const p of LXD_IMAGE_PRESETS) {
+    for (const p of INCUS_IMAGE_PRESETS) {
       expect(p.ref).toMatch(/^[a-z0-9.\-/]+:[^:]+$/);
     }
   });

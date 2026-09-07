@@ -13,7 +13,7 @@
   import Icon from '$lib/components/Icon.svelte';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import { t } from '../lib/i18n.svelte.js';
-  import { LXD_IMAGE_PRESETS, CUSTOM_IMAGE, labelForImage } from '$lib/utils/lxdImages.js';
+  import { INCUS_IMAGE_PRESETS, CUSTOM_IMAGE, labelForImage } from '$lib/utils/incusImages.js';
   import { networkLabel } from '$lib/utils/networkLabel.js';
 
   let name = $state('');
@@ -588,7 +588,7 @@
                   aria-invalid={touched.image && imageError ? 'true' : undefined}
                   onchange={() => (touched.image = true)}
                 >
-                  {#each LXD_IMAGE_PRESETS as p}
+                  {#each INCUS_IMAGE_PRESETS as p}
                     <option value={p.ref}>{p.label}</option>
                   {/each}
                   <option value={CUSTOM_IMAGE.ref}>{t('vmCreate.customImage')}</option>

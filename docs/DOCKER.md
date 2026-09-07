@@ -8,16 +8,16 @@ one unavoidable exception (self-update, see below).
 
 ## How it works
 
-The container does **not** bundle libvirtd, QEMU or LXD. It connects to the
-libvirtd (and, for **LXC containers** in v2.1.0, the LXD daemon) **already
+The container does **not** bundle libvirtd, QEMU or Incus. It connects to the
+libvirtd (and, for **LXC containers** in v2.2.0, the Incus/LXD daemon) **already
 running on the host**, the same way the native binary does — VMs and containers
 are managed by the host's daemons, not inside the container. That means:
 
 - **Prerequisite:** the host must already have libvirt/QEMU installed and
   running. If it doesn't yet, run `install.sh` once (or just
   `make install-deps`) to set that up — Docker mode does not install
-  libvirt/QEMU for you. For containers, mount the host's LXD socket (see the
-  bind-mounts table below) and enable the module with `WEBKVM_LXD_ENABLED=1`.
+  libvirt/QEMU for you. For containers, mount the host's Incus socket (see the
+  bind-mounts table below) and enable the module with `WEBKVM_INCUS_ENABLED=1`.
 - The container only needs the *client-side* tools the webkvm binary shells
   out to (`qemu-img`, `virsh`, `ip`, `nft`, `xorriso`, `openssl`, `tar`, …),
   never `/dev/kvm` or a QEMU/libvirt server.
@@ -148,7 +148,7 @@ restart webkvm`, `docker rm -f webkvm`.
 | `/run/systemd` | `/run/systemd` | Lets the container's `systemctl` CLI act on the host's real systemd (used for `journalctl`/service restart). |
 | `/var/log/journal` (ro) | `/var/log/journal` | So `journalctl` can read the host's actual service logs. |
 | `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/pam.d` (ro) | same paths | The **Host Terminal** feature authenticates real host user accounts via PAM. Only the *data* files are shared — the container uses its **own** `/bin/login` binary (same Debian base image), not the host's, to avoid a glibc/library-version mismatch between the two filesystems. PAM's `pam_unix` module only reads these data files, so authentication still checks real host passwords. |
-| `/var/snap/lxd/common/lxd/unix.socket` *(containers)* | `/var/snap/lxd/common/lxd/unix.socket` | *(v2.1.0)* The host's **LXD socket** so the container module (`WEBKVM_LXD_ENABLED=1`) reaches the host's LXD daemon — identical to how the native binary talks to it. For apt-installed LXD mount `/var/lib/lxd/unix.socket` instead. The container process must be able to read the socket (it runs as root in the container, matching the host's trust model). |
+| `/var/lib/incus/unix.socket` *(containers)* | `/var/lib/incus/unix.socket` | *(v2.2.0)* The host's **Incus socket** so the container module (`WEBKVM_INCUS_ENABLED=1`) reaches the host's Incus daemon — identical to how the native binary talks to it. For a legacy LXD daemon mount its socket (`/var/snap/lxd/common/lxd/unix.socket` snap or `/var/lib/lxd/unix.socket` apt) instead. The container process must be able to read the socket (it runs as root in the container, matching the host's trust model). |
 
 Sharing the host's auth files and systemd socket, plus `--privileged`, gives
 the container **root-equivalent trust over the host** — this is not a new

@@ -1,4 +1,4 @@
-package lxd
+package incus
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/canonical/lxd/shared/api"
+	"github.com/lxc/incus/v6/shared/api"
 
 	"webkvm/internal/compute"
 	"webkvm/internal/models"
@@ -36,16 +36,18 @@ func TestInstanceToVM_DisksAndNetworks(t *testing.T) {
 		Name:   "ct1",
 		Status: "Running",
 		Type:   "container",
-		Config: map[string]string{
-			"limits.cpu":            "2",
-			"volatile.eth0.hwaddr":  "00:16:3e:aa:bb:cc",
-			"volatile.eth1.hwaddr":  "00:16:3e:dd:ee:ff",
-			"user.user-data":        "#cloud-config\n",
-		},
-		Devices: map[string]map[string]string{
-			"root": {"type": "disk", "path": "/", "pool": "default", "size": "10GB"},
-			"eth0": {"type": "nic", "nictype": "bridged", "parent": "virbr0", "name": "eth0"},
-			"eth1": {"type": "nic", "nictype": "bridged", "parent": "lxdbr0", "name": "eth1"},
+		InstancePut: api.InstancePut{
+			Config: map[string]string{
+				"limits.cpu":           "2",
+				"volatile.eth0.hwaddr": "00:16:3e:aa:bb:cc",
+				"volatile.eth1.hwaddr": "00:16:3e:dd:ee:ff",
+				"user.user-data":       "#cloud-config\n",
+			},
+			Devices: map[string]map[string]string{
+				"root": {"type": "disk", "path": "/", "pool": "default", "size": "10GB"},
+				"eth0": {"type": "nic", "nictype": "bridged", "parent": "virbr0", "name": "eth0"},
+				"eth1": {"type": "nic", "nictype": "bridged", "parent": "lxdbr0", "name": "eth1"},
+			},
 		},
 	}
 	vm := instanceToVM(inst)
@@ -89,20 +91,22 @@ func initialContainer() *api.Instance {
 		Name:   "ct1",
 		Status: "Stopped",
 		Type:   "container",
-		Config: map[string]string{
-			"limits.cpu":           "2",
-			"volatile.eth0.hwaddr": "00:16:3e:aa:bb:cc",
-		},
-		Devices: map[string]map[string]string{
-			"root": {"type": "disk", "path": "/", "pool": "default", "size": "10GB"},
-			"eth0": {"type": "nic", "nictype": "bridged", "parent": "virbr0", "name": "eth0"},
+		InstancePut: api.InstancePut{
+			Config: map[string]string{
+				"limits.cpu":           "2",
+				"volatile.eth0.hwaddr": "00:16:3e:aa:bb:cc",
+			},
+			Devices: map[string]map[string]string{
+				"root": {"type": "disk", "path": "/", "pool": "default", "size": "10GB"},
+				"eth0": {"type": "nic", "nictype": "bridged", "parent": "virbr0", "name": "eth0"},
+			},
 		},
 	}
 }
 
-func TestLXDBackendResizeRootDisk(t *testing.T) {
+func TestIncusBackendResizeRootDisk(t *testing.T) {
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, err := NewLXDBackend(sock)
+	b, err := NewIncusBackend(sock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,17 +126,17 @@ func TestLXDBackendResizeRootDisk(t *testing.T) {
 	}
 }
 
-func TestLXDBackendResizeRejectsOtherTarget(t *testing.T) {
+func TestIncusBackendResizeRejectsOtherTarget(t *testing.T) {
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, _ := NewLXDBackend(sock)
+	b, _ := NewIncusBackend(sock)
 	if _, err := b.ResizeDomainDisk(context.Background(), "ct1", "vda", 14); !isErrNotImplemented(err) {
 		t.Errorf("expected ErrNotImplemented, got %v", err)
 	}
 }
 
-func TestLXDBackendAttachNetworkIface(t *testing.T) {
+func TestIncusBackendAttachNetworkIface(t *testing.T) {
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, _ := NewLXDBackend(sock)
+	b, _ := NewIncusBackend(sock)
 	if err := b.AttachNetworkIface("ct1", models.AttachNetRequest{Network: "default"}); err != nil {
 		t.Fatal(err)
 	}
@@ -148,9 +152,9 @@ func TestLXDBackendAttachNetworkIface(t *testing.T) {
 	}
 }
 
-func TestLXDBackendAttachUsesResolvedBridge(t *testing.T) {
+func TestIncusBackendAttachUsesResolvedBridge(t *testing.T) {
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, err := NewLXDBackend(sock, WithNetworkResolver(func(name string) (string, error) {
+	b, err := NewIncusBackend(sock, WithNetworkResolver(func(name string) (string, error) {
 		if name == "lan" {
 			return "vmbr0", nil
 		}
@@ -168,9 +172,9 @@ func TestLXDBackendAttachUsesResolvedBridge(t *testing.T) {
 	}
 }
 
-func TestLXDBackendDetachNetworkIface(t *testing.T) {
+func TestIncusBackendDetachNetworkIface(t *testing.T) {
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, _ := NewLXDBackend(sock)
+	b, _ := NewIncusBackend(sock)
 	if err := b.DetachNetworkIface("ct1", "00:16:3e:aa:bb:cc"); err != nil {
 		t.Fatal(err)
 	}
@@ -180,9 +184,9 @@ func TestLXDBackendDetachNetworkIface(t *testing.T) {
 	}
 }
 
-func TestLXDBackendUpdateNetworkIface(t *testing.T) {
+func TestIncusBackendUpdateNetworkIface(t *testing.T) {
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, _ := NewLXDBackend(sock)
+	b, _ := NewIncusBackend(sock)
 	net := "lan"
 	if err := b.UpdateNetworkIface("ct1", "00:16:3e:aa:bb:cc", models.UpdateNetIfaceRequest{Network: &net}); err != nil {
 		t.Fatal(err)
@@ -196,9 +200,9 @@ func TestLXDBackendUpdateNetworkIface(t *testing.T) {
 	}
 }
 
-func TestLXDBackendUpdateNetworkIfaceRejectsVLAN(t *testing.T) {
+func TestIncusBackendUpdateNetworkIfaceRejectsVLAN(t *testing.T) {
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, _ := NewLXDBackend(sock)
+	b, _ := NewIncusBackend(sock)
 	vlan := 10
 	err := b.UpdateNetworkIface("ct1", "00:16:3e:aa:bb:cc", models.UpdateNetIfaceRequest{VLANTag: &vlan})
 	if !isErrNotImplemented(err) {

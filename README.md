@@ -74,60 +74,63 @@ rollback if anything fails.
 
 ## Containers (LXC) — opt-in module
 
-WebKVM manages containers natively through the LXD daemon (v2.1.0). Containers
-appear alongside VMs in the same unified list with a `KVM`/`LXC` badge, are
-created from the same form (friendly image picker + cloud-init credentials),
-support root-disk resize, network interfaces and live CPU/RAM metrics.
+WebKVM manages containers natively through **Incus** (the community fork of
+LXD, v2.2.0). The Incus Go client keeps the LXD REST API, so **existing LXD
+daemons keep working unchanged**. Containers appear alongside VMs in the same
+unified list with a `KVM`/`Incus` badge, are created from the same form
+(friendly image picker + cloud-init credentials), support root-disk resize,
+network interfaces and live CPU/RAM metrics.
 
-**Host dependency.** The LXD daemon must be installed and running **on the host**
-— WebKVM does not install it for you unless you pass `WEBKVM_INSTALL_LXD=1` to
-the installer:
+**Host dependency.** The Incus daemon must be installed and running **on the
+host** — WebKVM does not install it for you unless you pass
+`WEBKVM_INSTALL_INCUS=1` to the installer. Native packages (no snap):
 
 ```bash
-# Debian / Ubuntu
-sudo apt install lxd        # (Ubuntu: sudo snap install lxd && sudo lxd init)
-# Arch / Fedora / RedHat family (native package; if absent, see your distro wiki)
-sudo pacman -S lxd          # or: sudo dnf install lxd
-sudo systemctl enable --now lxd
+# Debian / Ubuntu / Arch / Fedora / RedHat family (native package)
+sudo apt install incus    # or: sudo pacman -S incus / sudo dnf install incus
+sudo systemctl enable --now incus
+# first-run setup
+sudo incus admin init     # legacy LXD: sudo lxd init
 ```
 
 **Activation.** The container module is an opt-in (disabled by default). Enable
-it with the `WEBKVM_LXD_ENABLED=1` environment variable — in the systemd unit
-(`Environment=WEBKVM_LXD_ENABLED=1` in a drop-in under
+it with the `WEBKVM_INCUS_ENABLED=1` environment variable — in the systemd unit
+(`Environment=WEBKVM_INCUS_ENABLED=1` in a drop-in under
 `/etc/systemd/system/webkvm.service.d/`) or in the project `.env`:
 
 ```bash
-WEBKVM_LXD_ENABLED=1        # enable the container module
-LXD_SOCKET=                 # optional override; auto-detected otherwise
+WEBKVM_INCUS_ENABLED=1    # enable the container module
+INCUS_SOCKET=             # optional override; auto-detected otherwise
 ```
 
-The socket is auto-detected (`/var/snap/lxd/common/lxd/unix.socket` for snap,
-`/var/lib/lxd/unix.socket` for apt); override it with `LXD_SOCKET` if your
-daemon listens elsewhere.
+The socket is auto-detected, probing the **Incus paths first**
+(`/var/lib/incus/unix.socket`, `/run/incus/*`) and falling back to the legacy
+LXD paths (snap `/var/snap/lxd/common/lxd/unix.socket`, apt
+`/var/lib/lxd/unix.socket`); override with `INCUS_SOCKET` if your daemon
+listens elsewhere.
 
 **Permissions.** The user that runs the WebKVM process must be able to read the
-LXD socket. The native service runs as `root` (no extra step). If you run the
-binary as a non-root user (direct execution, hardened service or Docker), add
-that user to the `lxd` group:
+daemon socket. The native service runs as `root` (no extra step). If you run
+the binary as a non-root user (direct execution, hardened service or Docker),
+add that user to the **`incus-admin`** group (Incus) or **`lxd`** group
+(legacy LXD):
 
 ```bash
-sudo usermod -aG lxd <user> && sudo systemctl restart webkvm
+sudo usermod -aG incus-admin <user> && sudo systemctl restart webkvm
 ```
 
-**Verify.** `lxd_connected` appears in the backend log at startup and
+**Verify.** `incus_connected` appears in the backend log at startup and
 containers show up in the web UI. The installer can do all of the above for you:
 
 ```bash
-sudo WEBKVM_INSTALL_LXD=1 bash install-webkvm.sh
+sudo WEBKVM_INSTALL_INCUS=1 bash install-webkvm.sh
 ```
 
-> **Installer note (v2.1.0):** with `WEBKVM_INSTALL_LXD=1` the installer
-> installs LXD via **snap only on genuine Ubuntu** (which ships snap);
-> Debian, Mint, Zorin and the rest of the apt family use the **native
-> `lxd` package**, and Arch/Fedora (and derivatives) the native package too.
-> If no native package is available it prints a warning asking you to install
-> LXD or Incus manually and continues with a KVM-only install — it never
-> forces snap anywhere.
+> **Installer note (v2.2.0):** `WEBKVM_INSTALL_INCUS=1` installs the **native
+> `incus` package** on every package manager (apt/pacman/dnf), falling back to
+> the legacy native `lxd` package when `incus` is unavailable. Snap is **never**
+> installed or forced. If no package is available it prints a warning asking you
+> to install Incus or LXD manually and continues with a KVM-only install.
 
 ## Documentation
 
