@@ -103,26 +103,56 @@ pkg_available() {
   esac
 }
 pkg_install() {
-  local failed=0
+  # Retry package installs: mirror timeouts (pacman/dnf/apt) are transient,
+  # so a failed transaction is retried a couple of times before aborting.
+  local failed=0 attempts="${WEBKVM_PKG_RETRIES:-3}" retry_delay="${WEBKVM_PKG_RETRY_DELAY:-4}"
   for p in "$@"; do
     pkg_available "$p" && continue
-    case "${PKG}" in
-      apt) apt-get install -y --no-install-recommends "$p" ;;
-      dnf) "${YUM_BIN:-dnf}" install -y "$p" ;;
-      pacman) pacman -S --needed --noconfirm "$p" ;;
-    esac || { echo "    failed to install: $p" >&2; failed=1; }
+    local ok=0
+    for attempt in $(seq 1 "${attempts}"); do
+      if case "${PKG}" in
+        apt) apt-get install -y --no-install-recommends "$p" ;;
+        dnf) "${YUM_BIN:-dnf}" install -y "$p" ;;
+        pacman) pacman -S --needed --noconfirm "$p" ;;
+      esac; then
+        ok=1
+        break
+      fi
+      if [[ "${attempt}" -lt "${attempts}" ]]; then
+        log "package install failed for '${p}' (attempt ${attempt}/${attempts}); retrying in ${retry_delay}s..."
+        sleep "${retry_delay}"
+      fi
+    done
+    if [[ "${ok}" != 1 ]]; then
+      echo "    failed to install: $p" >&2
+      failed=1
+    fi
   done
   [[ "${failed}" == 1 ]] && return 1
   return 0
 }
 pkg_update() {
-  case "${PKG}" in
-    apt) apt-get update ;;
-    dnf) "${YUM_BIN:-dnf}" check-update >/dev/null 2>&1 || true ;;
-    pacman)
-      pacman -Sy --noconfirm archlinux-keyring >/dev/null 2>&1 || true
-      pacman -Sy ;;
-  esac
+  # Same retry policy for the package index refresh — mirrors time out too.
+  local attempts="${WEBKVM_PKG_RETRIES:-3}" retry_delay="${WEBKVM_PKG_RETRY_DELAY:-4}"
+  local attempt=0
+  while :; do
+    attempt=$((attempt+1))
+    if case "${PKG}" in
+      apt) apt-get update ;;
+      dnf) "${YUM_BIN:-dnf}" check-update >/dev/null 2>&1 || true ;;
+      pacman)
+        pacman -Sy --noconfirm archlinux-keyring >/dev/null 2>&1 || true
+        pacman -Sy ;;
+    esac; then
+      return 0
+    fi
+    if [[ "${attempt}" -lt "${attempts}" ]]; then
+      log "package index update failed (attempt ${attempt}/${attempts}); retrying in ${retry_delay}s..."
+      sleep "${retry_delay}"
+    else
+      return 1
+    fi
+  done
 }
 
 # Host only needs the hypervisor stack (VMs run under THIS host's
@@ -149,12 +179,22 @@ install_docker() {
   else
     log "installing Docker Engine..."
     case "${PKG}" in
-      apt)    pkg_install docker.io docker-compose-v2 || die "could not install docker.io — see https://docs.docker.com/engine/install/" ;;
-      dnf)    pkg_install moby-engine docker-compose-plugin || die "docker isn't in Fedora/RHEL's default repos under that name — add Docker's official repo per https://docs.docker.com/engine/install/fedora/ and re-run" ;;
-      pacman) pkg_install docker docker-compose || die "could not install docker — see https://docs.docker.com/engine/install/archlinux/" ;;
+      apt)    pkg_install docker.io || die "could not install docker.io — see https://docs.docker.com/engine/install/" ;;
+      dnf)    pkg_install moby-engine || die "docker isn't in Fedora/RHEL's default repos under that name — add Docker's official repo per https://docs.docker.com/engine/install/fedora/ and re-run" ;;
+      pacman) pkg_install docker || die "could not install docker — see https://docs.docker.com/engine/install/archlinux/" ;;
     esac
   fi
   systemctl enable --now docker
+  # Compose: prefer the v2 plugin package where the distro ships it
+  # (docker-compose-v2 / docker-compose-plugin); otherwise fall back to
+  # the standalone v2 binary package `docker-compose`. Debian 13 trixie
+  # and Fedora 44 do NOT ship the plugin under those *_plugin names, so
+  # the fallback is required there. detect_compose() below accepts both.
+  case "${PKG}" in
+    apt)    pkg_install docker-compose-v2 || pkg_install docker-compose || log "warning: no docker-compose package available; detect_compose() will fail unless a compose binary exists" ;;
+    dnf)    pkg_install docker-compose-plugin || pkg_install docker-compose || log "warning: no docker-compose package available; detect_compose() will fail unless a compose binary exists" ;;
+    pacman) pkg_install docker-compose || true ;;
+  esac
   if [[ -n "${SUDO_USER:-}" ]] && ! id -nG "${SUDO_USER}" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
     log "adding ${SUDO_USER} to the 'docker' group (re-login required for manual 'docker' use without sudo)"
     usermod -aG docker "${SUDO_USER}" || true
@@ -212,7 +252,7 @@ if [[ "${DRY_RUN}" == 1 ]]; then
 fi
 
 log "updating package index..."
-pkg_update
+pkg_update || log "warning: could not refresh the package index; continuing anyway"
 
 log "installing libvirt/QEMU (host hypervisor stack: ${LIBVIRT_PKGS[*]})..."
 pkg_install "${LIBVIRT_PKGS[@]}" || die "one or more libvirt/QEMU packages failed to install"

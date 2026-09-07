@@ -4,6 +4,31 @@ Todos los cambios notables de este proyecto se documentan en este
 fichero, siguiendo [Keep a Changelog](https://keepachangelog.com/es/1.1.0/)
 y [Semantic Versioning](https://semver.org/lang/es/).
 
+## [2.2.1] — Instalador: fallback de release y resiliencia de red (2026-09-07)
+
+### Fixed
+
+- **Fallback de binario de GitHub Releases**: el instalador ahora busca el
+  tarball oficial `webkvm-*.tar.gz` (antes buscaba `*linux_amd64*`, que no
+  existe como asset de release) y extrae `backend/webkvm` de él. Un
+  `git clone` sin binario precompilado ya instala sin `WEBKVM_BINARY`. El
+  checksum SHA-256 del tarball se verifica antes de extraer (fail-closed).
+- **Reintentos en gestores de paquetes**: `pkg_update` y `pkg_install`
+  reintentan automáticamente (3 intentos, 4 s de espera) cuando `apt`/`dnf`/
+  `pacman` fallan por timeout de mirror. Configurable con
+  `WEBKVM_PKG_RETRIES` / `WEBKVM_PKG_RETRY_DELAY`.
+- `pkg_update` ya no aborta la instalación si no puede refrescar el índice de
+  paquetes: avisa y continúa (la instalación de dependencias sigue con sus
+  propios reintentos).
+- El `--dry-run` ya no falla cuando no hay binario local: reporta el fallback
+  del tarball de release como fuente.
+- **Instalador Docker** (`packaging/docker/install.sh`): mismos reintentos de
+  paquete que el instalador nativo, y corrección de los nombres de paquete de
+  Compose — Debian 13 / Fedora 44 no tienen `docker-compose-v2` /
+  `docker-compose-plugin`, ahora se instala el binario standalone
+  `docker-compose` como fallback (la imagen `slaker1908/webkvm` se despliega
+  igualmente con `docker-compose`).
+
 ## [2.2.0] — Migración estratégica a Incus (2026-09-07)
 
 ### Changed

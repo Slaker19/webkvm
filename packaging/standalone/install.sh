@@ -61,6 +61,8 @@ PREVIOUS="${BIN}.previous"
 SERVICE_PREVIOUS="${SERVICE_PATH}.previous"
 CONFIG_EXISTED=0
 DOWNLOADED_BIN=""
+DOWNLOADED_TARBALL=""
+RELEASE_DIR=""
 HEALTH_FILE=""
 HAD_BIN=0
 HAD_SERVICE=0
@@ -79,6 +81,7 @@ DRY_RUN=0
 rollback_on_failure() {
   local rc=$?
   [[ -n "${DOWNLOADED_BIN}" ]] && rm -f -- "${DOWNLOADED_BIN}"
+  [[ -n "${DOWNLOADED_TARBALL}" ]] && rm -f -- "${DOWNLOADED_TARBALL}"
   if [[ "${rc}" -ne 0 && "${ROLLBACK_ARMED}" == 1 && "${INSTALL_SUCCEEDED}" == 0 ]]; then
     log "deployment failed; restoring previous installation"
     if [[ "${HAD_BIN}" == 1 && -f "${PREVIOUS}" ]]; then
@@ -207,27 +210,58 @@ pkg_available() { # package provided by this distro?
   esac
 }
 pkg_install() {
-  local pkg_installed=0 failed=0
+  # Retry package installs: mirror timeouts (pacman/dnf/apt) are transient,
+  # so a failed transaction is retried a couple of times before aborting.
+  local failed=0 attempts="${WEBKVM_PKG_RETRIES:-3}" retry_delay="${WEBKVM_PKG_RETRY_DELAY:-4}"
   for p in "$@"; do
     pkg_available "$p" && continue
-    case "${PKG}" in
-      apt) apt-get install -y --no-install-recommends "$p" ;;
-      dnf) "${YUM_BIN:-dnf}" install -y "$p" ;;
-      pacman) pacman -S --needed --noconfirm "$p" ;;
-    esac || { echo "    failed to install: $p" >&2; failed=1; }
+    local ok=0
+    for attempt in $(seq 1 "${attempts}"); do
+      if case "${PKG}" in
+        apt) apt-get install -y --no-install-recommends "$p" ;;
+        dnf) "${YUM_BIN:-dnf}" install -y "$p" ;;
+        pacman) pacman -S --needed --noconfirm "$p" ;;
+      esac; then
+        ok=1
+        break
+      fi
+      if [[ "${attempt}" -lt "${attempts}" ]]; then
+        log "package install failed for '${p}' (attempt ${attempt}/${attempts}); retrying in ${retry_delay}s..."
+        sleep "${retry_delay}"
+      fi
+    done
+    if [[ "${ok}" != 1 ]]; then
+      echo "    failed to install: $p" >&2
+      failed=1
+    fi
   done
   [[ "${failed}" == 1 ]] && return 1
   return 0
 }
 pkg_update() {
-  case "${PKG}" in
-    apt) apt-get update ;;
-    dnf) "${YUM_BIN:-dnf}" check-update >/dev/null 2>&1 || true ;;
-    pacman)
-      # Old ISOs ship a stale keyring -> signature errors on EVERY package.
-      pacman -Sy --noconfirm archlinux-keyring >/dev/null 2>&1 || true
-      pacman -Sy ;;
-  esac
+  # Same retry policy for the package index refresh (apt update / dnf
+  # check-update / pacman -Sy) — these hit the mirrors too.
+  local attempts="${WEBKVM_PKG_RETRIES:-3}" retry_delay="${WEBKVM_PKG_RETRY_DELAY:-4}"
+  local attempt=0
+  while :; do
+    attempt=$((attempt+1))
+    if case "${PKG}" in
+      apt) apt-get update ;;
+      dnf) "${YUM_BIN:-dnf}" check-update >/dev/null 2>&1 || true ;;
+      pacman)
+        # Old ISOs ship a stale keyring -> signature errors on EVERY package.
+        pacman -Sy --noconfirm archlinux-keyring >/dev/null 2>&1 || true
+        pacman -Sy ;;
+    esac; then
+      return 0
+    fi
+    if [[ "${attempt}" -lt "${attempts}" ]]; then
+      log "package index update failed (attempt ${attempt}/${attempts}); retrying in ${retry_delay}s..."
+      sleep "${retry_delay}"
+    else
+      return 1
+    fi
+  done
 }
 
 setup_package_map() {
@@ -382,7 +416,7 @@ if [[ "${DRY_RUN}" == 1 ]]; then
   elif [[ -n "${BIN_URL}" && -n "${BIN_SHA256}" ]]; then
     log "fuente binario      : descarga desde BIN_URL"
   else
-    die "dry-run: sin fuente de binario (define WEBKVM_BINARY o compila con make dist)"
+    log "fuente binario      : release tarball oficial (webkvm-*.tar.gz) de GitHub Releases (extracción automática del binario)"
   fi
   log "dry-run OK — sistema intacto."
   exit 0
@@ -408,7 +442,7 @@ if command -v ss >/dev/null 2>&1 && ss -ltnH 2>/dev/null | grep -q ":${DEFAULT_P
 fi
 
 log "installing runtime dependencies (${PKG})"
-pkg_update
+pkg_update || log "warning: could not refresh the package index; continuing anyway"
 pkg_install "${RUNTIME_PACKAGES[@]}" || die "runtime dependencies could not be installed"
 
 # v2.1.0: optional LXD daemon for the container module (opt-in).
@@ -445,29 +479,39 @@ elif [[ -x "${REPO_DIR}/backend/webkvm" ]]; then
   SOURCE_BIN="${REPO_DIR}/backend/webkvm"
   log "using binary from repo checkout: ${SOURCE_BIN}"
 else
-  # Try to fetch latest release binary from GitHub (last resort)
-  log "fetching latest release binary from GitHub..."
+  # Last resort: fetch the official release tarball (webkvm-*.tar.gz) from
+  # GitHub Releases and extract the precompiled binary from it. This covers
+  # `git clone` checkouts where backend/webkvm has not been built, and any
+  # server that only has the installer script (curl | bash one-liner).
+  log "fetching latest release tarball from GitHub..."
   RELEASE_API="https://api.github.com/repos/Slaker19/webkvm/releases/latest"
-  BIN_URL=$(curl -fsSL "${RELEASE_API}" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*webkvm[^"]*linux_amd64[^"]*"' | head -1 | cut -d'"' -f4 || true)
-  SHA256_URL=$(curl -fsSL "${RELEASE_API}" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*SHA256SUMS[^"]*"' | head -1 | cut -d'"' -f4 || true)
-  if [[ -n "${BIN_URL}" && -n "${SHA256_URL}" ]]; then
-    DOWNLOADED_BIN="$(mktemp /tmp/webkvm.XXXXXX)"
-    log "downloading release binary from ${BIN_URL}"
-    curl --fail --location --retry 3 --proto '=https' --tlsv1.2 "${BIN_URL}" -o "${DOWNLOADED_BIN}"
-    chmod 0755 "${DOWNLOADED_BIN}"
-    # Fetch SHA256 for this binary
-    BIN_NAME=$(basename "${BIN_URL}")
-    BIN_SHA256=$(curl -fsSL "${SHA256_URL}" 2>/dev/null | grep "${BIN_NAME}" | awk '{print $1}' || true)
-    if [[ -n "${BIN_SHA256}" && "${BIN_SHA256}" =~ ^[[:xdigit:]]{64}$ ]]; then
-      printf '%s  %s\n' "${BIN_SHA256}" "${DOWNLOADED_BIN}" | sha256sum --check --status || die "downloaded binary checksum mismatch"
+  TARBALL_URL=$(curl -fsSL --retry 3 --proto '=https' --tlsv1.2 "${RELEASE_API}" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*webkvm-[^"]*\.tar\.gz"' | head -1 | cut -d'"' -f4 || true)
+  SHA256_URL=$(curl -fsSL --retry 3 --proto '=https' --tlsv1.2 "${RELEASE_API}" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*SHA256SUMS[^"]*"' | head -1 | cut -d'"' -f4 || true)
+  if [[ -n "${TARBALL_URL}" && -n "${SHA256_URL}" ]]; then
+    DOWNLOADED_TARBALL="$(mktemp /tmp/webkvm.XXXXXX.tar.gz)"
+    log "downloading release tarball from ${TARBALL_URL}"
+    curl --fail --location --retry 3 --proto '=https' --tlsv1.2 "${TARBALL_URL}" -o "${DOWNLOADED_TARBALL}" || die "release tarball download failed"
+    TARBALL_NAME=$(basename "${TARBALL_URL}")
+    # Fail closed: the extracted binary runs as root — installing it
+    # unverified would be an avatar of RCE.
+    TARBALL_SHA256=$(curl -fsSL --retry 3 --proto '=https' --tlsv1.2 "${SHA256_URL}" 2>/dev/null | grep "${TARBALL_NAME}" | awk '{print $1}' || true)
+    if [[ -n "${TARBALL_SHA256}" && "${TARBALL_SHA256}" =~ ^[[:xdigit:]]{64}$ ]]; then
+      printf '%s  %s\n' "${TARBALL_SHA256}" "${DOWNLOADED_TARBALL}" | sha256sum --check --status || die "downloaded tarball checksum mismatch"
     else
-      # Fail closed: this binary runs as root — installing it unverified
-      # would be an avatar of RCE.
-      die "checksum could not be verified (no SHA256SUMS entry for this asset); refusing to install an unverified binary as root"
+      die "tarball checksum could not be verified (no SHA256SUMS entry for this asset); refusing to install an unverified binary as root"
     fi
-    SOURCE_BIN="${DOWNLOADED_BIN}"
+    RELEASE_DIR="$(mktemp -d /tmp/webkvm-release.XXXXXX)"
+    tar xzf "${DOWNLOADED_TARBALL}" -C "${RELEASE_DIR}" || die "failed to extract release tarball"
+    if [[ -x "${RELEASE_DIR}/backend/webkvm" ]]; then
+      DOWNLOADED_BIN="${RELEASE_DIR}/backend/webkvm"
+      chmod 0755 "${DOWNLOADED_BIN}"
+      SOURCE_BIN="${DOWNLOADED_BIN}"
+      log "using binary extracted from release tarball: ${SOURCE_BIN}"
+    else
+      die "release tarball does not contain backend/webkvm"
+    fi
   else
-    die "no webkvm binary found. Provide one with WEBKVM_BINARY=<path>, WEBKVM_BINARY_URL=<https>+WEBKVM_BINARY_SHA256, or build it first with 'make dist' (the server never compiles)."
+    die "no webkvm binary found. Provide one with WEBKVM_BINARY=<path>, WEBKVM_BINARY_URL=<https>+WEBKVM_BINARY_SHA256, build it with 'make dist' (the server never compiles), or check that a GitHub release for Slaker19/webkvm exists."
   fi
 fi
 [[ -x "${SOURCE_BIN}" ]] || die "binary not found: ${SOURCE_BIN}"
@@ -497,6 +541,9 @@ elif [[ -n "${BIN_URL}" ]]; then
     CLI_SRC="${DOWNLOADED_BIN}.cli"
     chmod 0755 "${CLI_SRC}"
   fi
+elif [[ -n "${RELEASE_DIR}" && -x "${RELEASE_DIR}/backend/webkvm-cli" ]]; then
+  # Release-tarball fallback: ship the CLI bundled in the same tarball.
+  CLI_SRC="${RELEASE_DIR}/backend/webkvm-cli"
 fi
 if [[ -n "${CLI_SRC}" && -x "${CLI_SRC}" ]]; then
   install -D -m 0755 "${CLI_SRC}" "${PREFIX}/bin/webkvm-cli"
