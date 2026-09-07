@@ -10,7 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
-	github.com/klauspost/compress v1.19.2
+	github.com/klauspost/compress v1.20.0
 	github.com/lxc/incus/v6 v6.23.0
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/pkg/sftp v1.13.11
