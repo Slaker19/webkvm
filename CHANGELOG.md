@@ -4,6 +4,15 @@ Todos los cambios notables de este proyecto se documentan en este
 fichero, siguiendo [Keep a Changelog](https://keepachangelog.com/es/1.1.0/)
 y [Semantic Versioning](https://semver.org/lang/es/).
 
+## [2.1.1] — Fix instalador LXD (2026-09-07)
+
+### Fixed
+
+- `install_lxd()`: snap se usa **solo en Ubuntu genuino** (`ID`/`ID_LIKE`).
+  Debian, Mint, Zorin y el resto de la familia apt **no traen snap** → el
+  instalador usa el paquete nativo `lxd` (o avisa y continúa KVM-only si no
+  existe). Nunca se fuerza snap en ninguna distribución.
+
 ## [2.1.0] — Soporte Híbrido KVM/LXC (2026-09-07)
 
 El salto de arquitectura a v2.x: WebKVM ya no gestiona solo máquinas

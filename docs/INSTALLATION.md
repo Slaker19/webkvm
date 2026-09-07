@@ -101,7 +101,7 @@ Fedora 43/44 and Arch. The installer adds each distro's libvirt packages.
 | `NETWORK_MODE` | `nat`, `bridge` or `both`. Interactive default `both`; piped installs default to **`nat`** so your LAN is never reconfigured silently. |
 | `BRIDGE_DHCP`, `BRIDGE_STATIC_IP`, `BRIDGE_STATIC_GW`, `BRIDGE_STATIC_DNS` | br0 bridge settings (DHCP by default, or static). |
 | `WEBKVM_NONINTERACTIVE=1` | Ask nothing; apply defaults. |
-| `WEBKVM_INSTALL_LXD=1` | *(v2.1.0)* install + enable the LXD daemon for containers (snap on Ubuntu/Debian only; native package on Arch/Fedora with a non-fatal warning if unavailable) and set `WEBKVM_LXD_ENABLED=1` in the unit. |
+| `WEBKVM_INSTALL_LXD=1` | *(v2.1.0)* install + enable the LXD daemon for containers (snap only on genuine Ubuntu; native `lxd` package on Debian/Mint/Zorin/Arch/Fedora — non-fatal warning if unavailable) and set `WEBKVM_LXD_ENABLED=1` in the unit. |
 | `WEBKVM_ADMIN_PASSWORD` | Choose the initial admin password (otherwise a random one is generated and saved). |
 
 ### 5. HTTPS (no reverse proxy required)
@@ -161,16 +161,17 @@ badge). The module is **opt-in** and disabled by default.
 
 ```bash
 # Debian / Ubuntu
-sudo apt install lxd          # or: sudo snap install lxd && sudo lxd init
+sudo apt install lxd          # (Ubuntu: sudo snap install lxd && sudo lxd init)
 # Arch / Fedora / RedHat family
 sudo pacman -S lxd            # or: sudo dnf install lxd
 sudo systemctl enable --now lxd
 ```
 
 **Installer automation.** `WEBKVM_INSTALL_LXD=1` installs + enables LXD and
-wires the opt-in into the unit. Snap is used **only on the Ubuntu/Debian
-family**; on Arch/Fedora (and derivatives) the installer uses the **native
-package** — and if none is available it prints a warning asking you to install
+wires the opt-in into the unit. Snap is used **only on genuine Ubuntu**;
+Debian, Mint, Zorin and the rest of the apt family use the **native `lxd`
+package** (they don't ship snap), and Arch/Fedora (and derivatives) the native
+package too — if none is available it prints a warning asking you to install
 LXD or Incus manually per your distro's wiki and **continues KVM-only
 (never fails, never forces snap)**:
 

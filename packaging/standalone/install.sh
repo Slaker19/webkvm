@@ -253,25 +253,32 @@ setup_package_map() {
 
 # ── LXD (containers, v2.1.0) ───────────────────────────────────────────
 # install_lxd installs the LXD daemon when WEBKVM_INSTALL_LXD=1.
-#   - Ubuntu/Debian family (apt): snap preferred (Ubuntu's blessed path).
+#   - Snap is ONLY used on genuine Ubuntu (Debian, Mint, Zorin and other
+#     apt-family distros do NOT ship snap, so they get the native package).
 #   - Arch/Fedora family (pacman/dnf): native package ONLY — snap is NEVER
-#     forced/installed on non-Debian distros. If the package is missing
-#     the installer warns and continues KVM-only (never aborts).
+#     forced/installed there. If the package is missing the installer warns
+#     and continues KVM-only (never aborts).
 install_lxd() {
   [[ "${WEBKVM_INSTALL_LXD}" == "1" ]] || return 0
   log "installing LXD (containers) — WEBKVM_INSTALL_LXD=1"
+  # Distro identity (sourced in preflight) drives the snap decision.
+  [[ -f /etc/os-release ]] && . /etc/os-release
+  local is_ubuntu=0
+  [[ "${ID:-}" == "ubuntu" || "${ID_LIKE:-}" == *"ubuntu"* ]] && is_ubuntu=1
   case "${PKG}" in
     apt)
-      if command -v snap >/dev/null 2>&1; then
+      if [[ "${is_ubuntu}" == "1" ]] && command -v snap >/dev/null 2>&1; then
         snap install lxd 2>&1 | tail -1
-        log "LXD instalado vía snap; ejecuta 'sudo lxd init' para configurarlo"
+        log "LXD instalado vía snap (Ubuntu); ejecuta 'sudo lxd init' para configurarlo"
       else
-        pkg_install lxd || true
-        if command -v lxd >/dev/null 2>&1; then
+        # Debian, Mint, Zorin, etc.: native package (snap is not available
+        # there). Non-fatal on failure.
+        if pkg_available lxd; then
+          pkg_install lxd || true
           systemctl enable --now lxd >/dev/null 2>&1 || true
-          log "LXD instalado vía apt"
+          log "LXD instalado vía paquete nativo (${PKG})"
         else
-          log "ADVERTENCIA: LXD no disponible como paquete apt; instálalo manualmente y habilítalo con WEBKVM_LXD_ENABLED=1"
+          log "ADVERTENCIA: no hay paquete 'lxd' en ${PKG}. Instala LXD o Incus manualmente según la wiki de tu distribución; WebKVM continúa en modo KVM-only."
         fi
       fi
       ;;

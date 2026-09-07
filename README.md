@@ -85,7 +85,7 @@ the installer:
 
 ```bash
 # Debian / Ubuntu
-sudo apt install lxd        # or: sudo snap install lxd && sudo lxd init
+sudo apt install lxd        # (Ubuntu: sudo snap install lxd && sudo lxd init)
 # Arch / Fedora / RedHat family (native package; if absent, see your distro wiki)
 sudo pacman -S lxd          # or: sudo dnf install lxd
 sudo systemctl enable --now lxd
@@ -122,10 +122,12 @@ sudo WEBKVM_INSTALL_LXD=1 bash install-webkvm.sh
 ```
 
 > **Installer note (v2.1.0):** with `WEBKVM_INSTALL_LXD=1` the installer
-> installs LXD via **snap only on the Ubuntu/Debian family**; on Arch/Fedora
-> (and derivatives) it uses the **native package** and, if that is unavailable,
-> prints a warning asking you to install LXD or Incus manually and continues
-> with a KVM-only install — it never forces snap there.
+> installs LXD via **snap only on genuine Ubuntu** (which ships snap);
+> Debian, Mint, Zorin and the rest of the apt family use the **native
+> `lxd` package**, and Arch/Fedora (and derivatives) the native package too.
+> If no native package is available it prints a warning asking you to install
+> LXD or Incus manually and continues with a KVM-only install — it never
+> forces snap anywhere.
 
 ## Documentation
 
