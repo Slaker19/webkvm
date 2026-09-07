@@ -105,6 +105,23 @@ func (c *Combined) GetDomain(id string) (models.VM, error) {
 
 // --- Instance-scoped operations: routed to the owning backend ---
 
+// CreateDomain routes to the secondary backend when the request names
+// an LXD image (or an explicit container type) — a container has no
+// owner to route by yet. Without a secondary it is a clean 501.
+func (c *Combined) CreateDomain(req models.CreateVMRequest) (models.VM, error) {
+	if req.Image != "" || req.Type == "container" {
+		if c.secondary == nil {
+			return models.VM{}, ErrNotImplemented
+		}
+		vm, err := c.secondary.CreateDomain(req)
+		if err == nil {
+			c.remember(vm.ID, c.secondary)
+		}
+		return vm, err
+	}
+	return c.Backend.CreateDomain(req)
+}
+
 func (c *Combined) DomainExists(name string) (bool, error) {
 	return c.route(name).DomainExists(name)
 }

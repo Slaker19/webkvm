@@ -13,9 +13,21 @@
   import Icon from '$lib/components/Icon.svelte';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import { t } from '../lib/i18n.svelte.js';
+import { LXD_IMAGE_PRESETS, CUSTOM_IMAGE, labelForImage } from '$lib/utils/lxdImages.js';
+import { networkLabel } from '$lib/utils/networkLabel.js';
 
   let name = $state('');
   let showCiPass = $state(false);
+  // v1.4 Fase 4: instance kind selector ("vm" = KVM, "container" = LXC).
+  // When "container" the form collapses to the LXD fields (image, root
+  // disk, cloud-init) and hides every KVM-only section.
+  let instanceType = $state('vm');
+  const isContainer = $derived(instanceType === 'container');
+  // v1.4 Fase 4.1: image picker = dropdown of presets + "Custom/Other".
+  // containerImage is derived: a preset ref, or the manual custom ref.
+  let imageChoice = $state('ubuntu:24.04');
+  let customImage = $state('');
+  const containerImage = $derived(imageChoice === CUSTOM_IMAGE.ref ? customImage.trim() : imageChoice);
   let vcpus = $state(2);
   let ramMB = $state(2048);
   let storagePool = $state('');
@@ -100,7 +112,7 @@
   let loadingVolumes = $state(false);
 
   // Validation
-  let touched = $state({ name: false, vcpus: false, ramMB: false, diskSize: false });
+  let touched = $state({ name: false, vcpus: false, ramMB: false, diskSize: false, image: false });
   const nameError = $derived(
     !name.trim() ? t('vmCreate.nameRequired') : name.length > 64 ? t('vmCreate.nameTooLong') : ''
   );
@@ -109,25 +121,50 @@
   const diskSizeError = $derived(
     !useExistingDisk && (diskSize < 1 || diskSize > 1024) ? t('vmCreate.diskSizeRange') : ''
   );
+  // LXC image reference: required and must look like <remote>:<alias>.
+  // The LXD remote list is finite (ubuntu:, ubuntu-daily:, images:,
+  // almalinux:, rockylinux:) or a full <server-url>:<alias> pair.
+  const imageError = $derived(
+    !isContainer
+      ? ''
+      : !containerImage.trim()
+        ? t('vmCreate.containerImageRequired')
+        : !containerImage.includes(':')
+          ? t('vmCreate.imageFormatError')
+          : ''
+  );
   const ciError = $derived(
     !ciEnabled
       ? ''
-      : !ciUser.trim()
-        ? 'Username is required for cloud-init provisioning'
-        : /^(root|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|proxy|www-data|backup|list|irc|_apt|nobody|systemd-network|systemd-timesync|dhcpcd|messagebus|syslog|systemd-resolve|uuidd|tss|sshd|pollinate|tcpdump|landscape|fwupd-refresh|polkitd|sudo|adm|admin)$/i.test(
+      : isContainer
+        ? !ciPassword
+          ? 'Password is required for cloud-init provisioning'
+          : ciPassword.length < 6
+            ? 'Password must be at least 6 characters'
+            : ciPassword.length > 12
+              ? 'Password must be at most 12 characters'
+              : ciUser &&
+                  /^(root|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|proxy|www-data|backup|list|irc|_apt|nobody|systemd-network|systemd-timesync|dhcpcd|messagebus|syslog|systemd-resolve|uuidd|tss|sshd|pollinate|tcpdump|landscape|fwupd-refresh|polkitd|sudo|adm|admin)$/i.test(
+                    ciUser
+                  )
+                ? 'That name is a system group and would fail to provision; choose a different user name'
+                : ''
+        : !ciUser.trim()
+          ? 'Username is required for cloud-init provisioning'
+          : /^(root|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|proxy|www-data|backup|list|irc|_apt|nobody|systemd-network|systemd-timesync|dhcpcd|messagebus|syslog|systemd-resolve|uuidd|tss|sshd|pollinate|tcpdump|landscape|fwupd-refresh|polkitd|sudo|adm|admin)$/i.test(
               ciUser
             )
-          ? 'That name is a system group and would fail to provision; choose a different user name'
-          : !ciPassword
-            ? 'Password is required for cloud-init provisioning'
-            : ciPassword.length < 6
-              ? 'Password must be at least 6 characters'
-              : ciPassword.length > 12
-                ? 'Password must be at most 12 characters'
-                : ''
+            ? 'That name is a system group and would fail to provision; choose a different user name'
+            : !ciPassword
+              ? 'Password is required for cloud-init provisioning'
+              : ciPassword.length < 6
+                ? 'Password must be at least 6 characters'
+                : ciPassword.length > 12
+                  ? 'Password must be at most 12 characters'
+                  : ''
   );
   const isValid = $derived(
-    !nameError && !vcpusError && !ramError && !diskSizeError && !ciError && !cpuTopologyError
+    !nameError && !vcpusError && !ramError && !diskSizeError && !imageError && !ciError && !cpuTopologyError
   );
 
   // Capacity bars against the current user's quota (null/0 = unlimited,
@@ -267,6 +304,14 @@
     else osVersion = 'arch';
   });
 
+  // Containers are unusable without a first-boot login, so switching to
+  // LXC enables cloud-init automatically (still toggleable). Prefill the
+  // hostname from the instance name for a zero-friction create.
+  $effect(() => {
+    if (isContainer && !ciEnabled) ciEnabled = true;
+    if (isContainer && !ciHostname && name) ciHostname = name;
+  });
+
   onMount(async () => {
     try {
       const [p, n, i] = await Promise.all([api.listPools(), api.listNetworks(), api.listISOs()]);
@@ -319,7 +364,7 @@
   }
 
   async function create() {
-    touched = { name: true, vcpus: true, ramMB: true, diskSize: true };
+    touched = { name: true, vcpus: true, ramMB: true, diskSize: true, image: true };
     if (!isValid) {
       error = t('vmCreate.fixErrors');
       return;
@@ -327,31 +372,44 @@
     loading = true;
     error = '';
     try {
-      const payload = {
-        name,
-        vcpus,
-        ram_mb: ramMB,
-        storage_pool: useExistingDisk ? undefined : storagePool,
-        cpu_mode: cpuMode === 'custom' ? 'custom' : cpuMode,
-        cpu_model: cpuMode === 'custom' ? cpuModel : undefined,
-        video_model: videoModel,
-        network,
-        network_model: networkModel,
-        iso: iso || undefined,
-        os_type: osType,
-        os_version: osVersion,
-        chipset,
-        firmware,
-        secure_boot: chipset === 'q35' ? secureBoot : false,
-        tpm_enabled: chipset === 'q35' ? tpmEnabled : false,
-        disk_gb: useExistingDisk ? undefined : diskSize,
-        disk_bus: diskBus,
-        disk_format: useExistingDisk ? undefined : diskFormat,
-        virtio_iso: virtioISO || undefined,
-        disk_cache_io: diskCacheIO,
-        disk_discard: diskDiscard,
-      };
-      if (cpuTopologyEnabled) {
+      // Containers (LXC) collapse to image + resources + cloud-init; KVM
+      // keeps the full v1.3 form. Sending type/image ONLY for containers
+      // keeps the KVM payload byte-identical to before.
+      const payload = isContainer
+        ? {
+            name,
+            type: 'container',
+            image: containerImage,
+            vcpus,
+            ram_mb: ramMB,
+            disk_gb: diskSize,
+            network,
+          }
+        : {
+            name,
+            vcpus,
+            ram_mb: ramMB,
+            storage_pool: useExistingDisk ? undefined : storagePool,
+            cpu_mode: cpuMode === 'custom' ? 'custom' : cpuMode,
+            cpu_model: cpuMode === 'custom' ? cpuModel : undefined,
+            video_model: videoModel,
+            network,
+            network_model: networkModel,
+            iso: iso || undefined,
+            os_type: osType,
+            os_version: osVersion,
+            chipset,
+            firmware,
+            secure_boot: chipset === 'q35' ? secureBoot : false,
+            tpm_enabled: chipset === 'q35' ? tpmEnabled : false,
+            disk_gb: useExistingDisk ? undefined : diskSize,
+            disk_bus: diskBus,
+            disk_format: useExistingDisk ? undefined : diskFormat,
+            virtio_iso: virtioISO || undefined,
+            disk_cache_io: diskCacheIO,
+            disk_discard: diskDiscard,
+          };
+      if (!isContainer && cpuTopologyEnabled) {
         payload.cpu_sockets = cpuSockets;
         payload.cpu_cores = cpuCores;
         payload.cpu_threads = cpuThreads;
@@ -446,6 +504,38 @@
           <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
             {t('vmCreate.general')}
           </div>
+          <!-- v1.4 Fase 4: instance-kind selector. KVM keeps the full
+               form; LXC collapses to image + resources + cloud-init. -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4" role="radiogroup" aria-label={t('vmCreate.instanceType')}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={!isContainer}
+              onclick={() => (instanceType = 'vm')}
+              class="text-left rounded-lg border p-3 transition-colors {!isContainer
+                ? 'border-accent bg-accent/10'
+                : 'border-border hover:border-border-hover bg-background'}"
+            >
+              <span class="block text-sm font-medium {!isContainer ? 'text-accent' : 'text-foreground'}">
+                {t('vmCreate.typeKvm')}
+              </span>
+              <span class="block text-[11px] text-muted-foreground mt-0.5">{t('vmCreate.typeKvmHint')}</span>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={isContainer}
+              onclick={() => (instanceType = 'container')}
+              class="text-left rounded-lg border p-3 transition-colors {isContainer
+                ? 'border-[#d97706] bg-[#d97706]/10'
+                : 'border-border hover:border-border-hover bg-background'}"
+            >
+              <span class="block text-sm font-medium {isContainer ? 'text-[#d97706]' : 'text-foreground'}">
+                {t('vmCreate.typeLxc')}
+              </span>
+              <span class="block text-[11px] text-muted-foreground mt-0.5">{t('vmCreate.typeLxcHint')}</span>
+            </button>
+          </div>
           <SettingRow
             label={t('common.name')}
             helper={t('vmCreate.nameHelper')}
@@ -460,6 +550,47 @@
               onblur={() => (touched.name = true)}
             />
           </SettingRow>
+          {#if isContainer}
+            <!-- LXC: friendly image dropdown (+ custom) and the SAME
+                 network selector as KVM — the backend resolves the
+                 libvirt network to its Linux bridge (v1.4 Fase 4.1). -->
+            <SettingRow
+              label={t('vmCreate.containerImage')}
+              helper={t('vmCreate.containerImageHelper')}
+              error={touched.image ? imageError : ''}
+            >
+              <div class="w-full max-w-sm space-y-2">
+                <select
+                  bind:value={imageChoice}
+                  class="input w-full"
+                  aria-invalid={touched.image && imageError ? 'true' : undefined}
+                  onchange={() => (touched.image = true)}
+                >
+                  {#each LXD_IMAGE_PRESETS as p}
+                    <option value={p.ref}>{p.label}</option>
+                  {/each}
+                  <option value={CUSTOM_IMAGE.ref}>{t('vmCreate.customImage')}</option>
+                </select>
+                {#if imageChoice === CUSTOM_IMAGE.ref}
+                  <Input
+                    bind:value={customImage}
+                    type="text"
+                    placeholder="images:rockylinux/9"
+                    class="w-full font-mono"
+                    aria-invalid={touched.image && imageError ? 'true' : undefined}
+                    onblur={() => (touched.image = true)}
+                  />
+                {/if}
+              </div>
+            </SettingRow>
+            <SettingRow label={t('vmDetail.networkLabel')} helper={t('vmCreate.networkHelper')}>
+              <select bind:value={network} class="input max-w-xs">
+                {#each networks as net}
+                  <option value={net.name}>{networkLabel(net)}</option>
+                {/each}
+              </select>
+            </SettingRow>
+          {:else}
           <SettingRow label={t('vmCreate.operatingSystem')} helper={t('vmCreate.osHelper')}>
             <div class="grid grid-cols-[8rem_minmax(0,1fr)] gap-3 w-full">
               <select bind:value={osType} class="input">
@@ -481,10 +612,12 @@
               {/each}
             </select>
           </SettingRow>
+          {/if}
         </div>
 
-        <!-- System -->
-        <div id="step-system" class="border border-border rounded-lg bg-card p-5 scroll-mt-4">
+        <!-- System (KVM-only: chipsets, firmware, TPM) -->
+        {#if !isContainer}
+          <div id="step-system" class="border border-border rounded-lg bg-card p-5 scroll-mt-4">
           <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
             {t('vmCreate.system')}
           </div>
@@ -548,7 +681,8 @@
               </button>
             </SettingRow>
           {/if}
-        </div>
+          </div>
+        {/if}
 
         <!-- Hardware -->
         <div id="step-hardware" class="border border-border rounded-lg bg-card p-5 scroll-mt-4">
@@ -603,6 +737,24 @@
               {/if}
             </div>
           </SettingRow>
+          {#if isContainer}
+            <!-- LXC: only the root disk size is meaningful (LXD manages
+                 the pool/bus/format itself). -->
+            <SettingRow
+              label={t('vmCreate.lxcRootDisk')}
+              helper={t('vmCreate.lxcRootDiskHelper')}
+              error={touched.diskSize ? diskSizeError : ''}
+            >
+              <Input
+                type="number"
+                bind:value={diskSize}
+                min="1"
+                max="1024"
+                class="w-24 tnum"
+                onblur={() => (touched.diskSize = true)}
+              />
+            </SettingRow>
+          {:else}
           <SettingRow
             label={t('vmCreate.useExistingDisk')}
             helper={t('vmCreate.useExistingDiskHelper')}
@@ -738,13 +890,17 @@
               </select>
             </SettingRow>
           {/if}
+          {/if}
         </div>
 
-        <!-- CPU + Video + Network -->
+        <!-- CPU + Video + Network (KVM-only) -->
         <div id="step-advanced" class="border border-border rounded-lg bg-card p-5 scroll-mt-4">
           <div class="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
             {t('vmCreate.advanced')}
           </div>
+          {#if isContainer}
+            <p class="text-sm text-muted-foreground mb-4">{t('vmCreate.lxcNote')}</p>
+          {:else}
           <SettingRow label={t('vmDetail.cpuModeLabel')} helper={t('vmCreate.cpuModeHelper')}>
             <select bind:value={cpuMode} class="input max-w-xs">
               {#each cpuModes as m}
@@ -837,9 +993,13 @@
               {/each}
             </select>
           </SettingRow>
+          {/if}
 
-          <!-- Cloud-init (optional provisioning) -->
-          <SettingRow label={t('vmCreate.cloudInitLabel')} helper={t('vmCreate.cloudInitHelper')}>
+          <!-- Cloud-init / LXC credentials (optional provisioning) -->
+          <SettingRow
+            label={isContainer ? t('vmCreate.lxcCredentialsLabel') : t('vmCreate.cloudInitLabel')}
+            helper={isContainer ? t('vmCreate.lxcCredentialsHelper') : t('vmCreate.cloudInitHelper')}
+          >
             <div class="w-full max-w-md space-y-3">
               <label class="flex items-center gap-2 text-sm cursor-pointer select-none">
                 <input
@@ -853,16 +1013,18 @@
                 <div class="grid grid-cols-2 gap-3">
                   <div>
                     <label class="text-xs text-muted-foreground"
-                      >{t('vmCreate.cloudInitUser')}</label
+                      >{t('vmCreate.cloudInitUser')}{isContainer ? ' (optional)' : ''}</label
                     >
                     <input
                       bind:value={ciUser}
                       class="input w-full"
-                      placeholder="webkvm"
+                      placeholder={isContainer ? t('vmCreate.lxcUserPlaceholder') : 'webkvm'}
                       oninput={() => (touched.name = true)}
                     />
                     <p class="text-[11px] text-muted-foreground mt-1">
-                      Cannot be a system group name (e.g. admin, sudo, adm, root)
+                      {isContainer
+                        ? t('vmCreate.lxcUserOptional')
+                        : 'Cannot be a system group name (e.g. admin, sudo, adm, root)'}
                     </p>
                   </div>
                   <div>
@@ -949,7 +1111,9 @@
           </div>
           <div class="flex items-center justify-between gap-2">
             <dt class="text-muted-foreground">{t('vmCreate.operatingSystem')}</dt>
-            <dd class="font-medium truncate max-w-[140px]">{summaryOs}</dd>
+            <dd class="font-medium truncate max-w-[140px]"
+              >{isContainer ? labelForImage(containerImage) || '—' : summaryOs}</dd
+            >
           </div>
           <div class="flex items-center justify-between gap-2">
             <dt class="text-muted-foreground">{t('common.vcpu')}</dt>
@@ -960,17 +1124,17 @@
             <dd class="font-medium tnum">{ramMB} MB</dd>
           </div>
           <div class="flex items-center justify-between gap-2">
-            <dt class="text-muted-foreground">{t('vmCreate.diskSizeGb')}</dt>
-            <dd class="font-medium truncate max-w-[140px]">{summaryDisk}</dd>
+            <dt class="text-muted-foreground">{isContainer ? t('vmCreate.lxcRootDisk') : t('vmCreate.diskSizeGb')}</dt>
+            <dd class="font-medium truncate max-w-[140px]">{isContainer ? `${diskSize} GB` : summaryDisk}</dd>
           </div>
           <div class="flex items-center justify-between gap-2">
             <dt class="text-muted-foreground">{t('vmDetail.networkLabel')}</dt>
-            <dd class="font-medium truncate max-w-[140px]">{network}</dd>
+            <dd class="font-medium truncate max-w-[140px]">{isContainer ? 'lxdbr0' : network}</dd>
           </div>
           {#if ciEnabled}
             <div class="flex items-center justify-between gap-2">
               <dt class="text-muted-foreground">{t('vmCreate.cloudInitLabel')}</dt>
-              <dd class="font-medium truncate max-w-[140px]">{ciUser || '—'}</dd>
+              <dd class="font-medium truncate max-w-[140px]">{ciUser || (isContainer ? 'root' : '—')}</dd>
             </div>
           {/if}
         </dl>

@@ -287,6 +287,15 @@ func (h *Handler) ListAllTags(w http.ResponseWriter, r *http.Request) {
 // is empty if the collector hasn't sampled the VM yet.
 func (h *Handler) GetVMMetrics(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	// v1.4 Fase 4.1: containers are sampled by the LXD collector; route
+	// by hypervisor so LXC charts work exactly like KVM.
+	if h.lxdMetrics != nil {
+		if vm, err := h.compute.GetDomain(id); err == nil && vm.Hypervisor == "lxd" {
+			m, _ := h.lxdMetrics.Get(id)
+			jsonResp(w, http.StatusOK, m)
+			return
+		}
+	}
 	if h.metrics == nil {
 		jsonResp(w, http.StatusOK, models.VMMetrics{VMID: id})
 		return

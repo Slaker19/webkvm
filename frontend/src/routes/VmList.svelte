@@ -13,6 +13,20 @@
   import { toast } from '$lib/components/ui/toast';
   import { t } from '../lib/i18n.svelte.js';
   import { stateDotClass } from '$lib/utils/vmState.js';
+import {
+  computeTypeBadgeClass,
+  computeTypeLabel,
+  isContainer,
+  provisionChip,
+} from '$lib/utils/computeType.js';
+import { networkLabel } from '$lib/utils/networkLabel.js';
+
+// Friendly label for a network option {name, bridge} (v1.4 Fase 4.1):
+// "Red Interna (vmbr0)" instead of a raw bridge/name.
+function netDisplay(n) {
+  if (!n) return '';
+  return networkLabel({ name: n.name, bridge: n.bridge });
+}
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
@@ -40,6 +54,11 @@
     FileCode2,
     Eye,
     EyeOff,
+    Cpu,
+    Container,
+    CloudCog,
+    Box,
+    SquareTerminal,
   } from '@lucide/svelte';
 
   let vms = $state([]);
@@ -54,6 +73,8 @@
   let search = $state(readQuery('q'));
   let groupFilter = $state(readQuery('group') || 'all');
   let stateFilter = $state(readQuery('state') || 'all');
+  // v1.4 Fase 4: type filter (All · VMs · Containers), PLAN-LXD 5.1.
+  let typeFilter = $state(readQuery('type') || 'all');
 
   // Sync filters → URL.
   $effect(() => {
@@ -61,6 +82,7 @@
     if (search) q.set('q', search);
     if (groupFilter && groupFilter !== 'all') q.set('group', groupFilter);
     if (stateFilter && stateFilter !== 'all') q.set('state', stateFilter);
+    if (typeFilter && typeFilter !== 'all') q.set('type', typeFilter);
     if (selectMode) q.set('select', '1');
     const target = '/vms' + (q.toString() ? '?' + q.toString() : '');
     if (typeof location !== 'undefined' && location.hash !== '#' + target) {
@@ -315,6 +337,9 @@ apt-get update -y
     }
     if (stateFilter !== 'all') {
       out = out.filter((v) => v.state === stateFilter);
+    }
+    if (typeFilter !== 'all') {
+      out = out.filter((v) => (typeFilter === 'container' ? isContainer(v) : v.type === 'vm'));
     }
     if (q) {
       out = out.filter(
@@ -623,6 +648,7 @@ apt-get update -y
       instNetOptions = (nets.networks || nets || []).map((n) => ({
         name: n.name,
         type: n.mode || n.type || '',
+        bridge: n.bridge || '',
       }));
       if (!instNetOptions.some((n) => n.name === instNet)) {
         instNet = instNetOptions[0]?.name || 'default';
@@ -707,6 +733,7 @@ apt-get update -y
         netOptions = (nets.networks || nets || []).map((n) => ({
           name: n.name,
           type: n.mode || n.type || '',
+          bridge: n.bridge || '',
         }));
         const def = {};
         for (const app of appliances) def[app.id] = appNets[app.id] || 'default';
@@ -1321,6 +1348,34 @@ apt-get update -y
     onClear={() => (selectedKeys = new Set())}
   />
 
+  <!-- v1.4 Fase 4: instance-type filter (PLAN-LXD 5.1), always visible -->
+  <div class="flex items-center gap-1.5 flex-wrap mb-4">
+    {#each [
+      { v: 'all', l: t('vms.allTypes'), c: '' },
+      { v: 'vm', l: t('vms.typeVms'), c: '' },
+      { v: 'container', l: t('vms.typeContainers'), c: 'text-[#d97706]' },
+    ] as f}
+      <button
+        onclick={() => (typeFilter = typeFilter === f.v ? 'all' : f.v)}
+        class="text-xs px-2.5 py-1 rounded-full border transition-colors {typeFilter === f.v
+          ? 'border-foreground text-foreground bg-muted'
+          : 'border-border text-muted-foreground hover:text-foreground'}"
+      >
+        <span class="inline-flex items-center gap-1">
+          {#if f.v === 'vm'}
+            <Cpu class="w-3 h-3" />
+          {:else if f.v === 'container'}
+            <Container class="w-3 h-3 {f.c}" />
+          {/if}
+          {f.l}
+          <span class="text-[10px] opacity-60"
+            >({f.v === 'all' ? vms.length : f.v === 'container' ? vms.filter((v) => isContainer(v)).length : vms.filter((v) => v.type === 'vm').length})</span
+          >
+        </span>
+      </button>
+    {/each}
+  </div>
+
   {#if groups.length > 0 || stateFilter !== 'all'}
     <div class="flex items-center gap-1.5 flex-wrap mb-4">
       <button
@@ -1409,6 +1464,7 @@ apt-get update -y
         {@const metrics = metricsByVm[vm.id]}
         {@const cpuPts = last30(metrics?.cpu?.points)}
         {@const ramPts = last30(metrics?.ram?.points)}
+        {@const chip = provisionChip(vm.provision_method)}
         <div
           role="button"
           tabindex="0"
@@ -1452,6 +1508,19 @@ apt-get update -y
             >
               <span class="w-1.5 h-1.5 rounded-full {stateDotClass(vm.state)}"></span>
               {vm.state}
+            </div>
+            <!-- v1.4 Fase 4: identity badge (PLAN-LXD 5.2) — top-right,
+                 shifts left of the select checkbox when in select mode -->
+            <div
+              class="absolute top-2 {selectMode ? 'right-9' : 'right-2'} inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wider font-medium {computeTypeBadgeClass(vm.type)}"
+              title={isContainer(vm) ? 'LXC container' : 'KVM virtual machine'}
+            >
+              {#if isContainer(vm)}
+                <Container class="w-3 h-3" />
+              {:else}
+                <Cpu class="w-3 h-3" />
+              {/if}
+              {computeTypeLabel(vm.type)}
             </div>
             {#if selectMode}
               <div
@@ -1541,13 +1610,15 @@ apt-get update -y
                           {t('vms.forceOff')}
                         </button>
                       {/if}
-                      <button
-                        type="button"
-                        class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                        onclick={() => quickAction(vm, 'console')}
-                      >
-                        {t('vms.openConsole')}
-                      </button>
+                      {#if !isContainer(vm)}
+                        <button
+                          type="button"
+                          class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                          onclick={() => quickAction(vm, 'console')}
+                        >
+                          {t('vms.openConsole')}
+                        </button>
+                      {/if}
                       <button
                         type="button"
                         class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
@@ -1603,6 +1674,21 @@ apt-get update -y
                   <span class="inline-flex items-center gap-1 shrink-0">
                     <HardDrive class="w-3 h-3" />
                     {vmDiskGB(vm)} GB
+                  </span>
+                {/if}
+                <!-- v1.4 Fase 4: tertiary provisioning chip (PLAN-LXD 5.2) -->
+                {#if chip}
+                  <span
+                    class="inline-flex items-center gap-1 shrink-0 text-muted-foreground/70"
+                    title={`Provisioning: ${chip.label}`}
+                  >
+                    {#if chip.icon === 'cloud-cog'}
+                      <CloudCog class="w-3 h-3" />
+                    {:else if chip.icon === 'square-terminal'}
+                      <SquareTerminal class="w-3 h-3" />
+                    {:else}
+                      <Box class="w-3 h-3" />
+                    {/if}
                   </span>
                 {/if}
               </span>
@@ -1847,7 +1933,7 @@ apt-get update -y
           <Label for="inst-net">{t('vmDetail.networkLabel')}</Label>
           <select id="inst-net" bind:value={instNet} class="input w-full">
             {#each instNetOptions as n (n.name)}
-              <option value={n.name}>{n.name}{n.type ? ' (' + n.type + ')' : ''}</option>
+              <option value={n.name}>{netDisplay(n)}</option>
             {/each}
           </select>
         </div>
@@ -2064,7 +2150,7 @@ apt-get update -y
                             {/if}
                             {#each netOptions as n (n.name)}
                               <option value={n.name}
-                                >{n.name}{n.type ? ' (' + n.type + ')' : ''}</option
+                                >{netDisplay(n)}</option
                               >
                             {/each}
                           </select>
@@ -2454,7 +2540,7 @@ set -e
               <option value="default">default</option>
             {/if}
             {#each netOptions as n (n.name)}
-              <option value={n.name}>{n.name}{n.type ? ' (' + n.type + ')' : ''}</option>
+              <option value={n.name}>{netDisplay(n)}</option>
             {/each}
           </select>
         </div>

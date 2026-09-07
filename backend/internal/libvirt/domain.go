@@ -1071,6 +1071,12 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 		vm.Cover = meta.Cover
 		vm.Groups = meta.Groups
 		vm.Tags = meta.Tags
+		// A recorded cloud-init username means the guest was provisioned
+		// at creation (NoCloud seed or appliance provision script), which
+		// drives the provisioning chip on the VM card (PLAN-LXD 5.2).
+		if meta.CiUser != "" {
+			vm.ProvisionMethod = "cloud-init"
+		}
 	}
 
 	if state == libvirt.DOMAIN_RUNNING {

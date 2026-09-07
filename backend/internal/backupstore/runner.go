@@ -64,6 +64,16 @@ type VMXMLSource func(vmID string) (string, error)
 // are written to the per-VM archive (backward-compatible).
 type VMSnapshotSource func(vmID string) ([]SnapshotBackup, error)
 
+// VMExportSource streams a single instance's backup archive into w
+// (v1.4 Fase 3). The runner uses it for LXD containers, whose data
+// lives inside the LXD storage pool and cannot be read as local disk
+// files: the archive IS the native LXD export (tar.gz), copied straight
+// from /1.0/instances/<name>/export via io.Copy — no double buffering,
+// no temp download. Returns the number of bytes written. Optional; nil
+// makes a container in scope fail the run (a silent empty container
+// backup would be worse than a loud error).
+type VMExportSource func(ctx context.Context, vm models.VM, w io.Writer) (int64, error)
+
 // Runner executes backup jobs. It maintains a cron ticker and
 // records Jobs in the Store as it goes. Manual "backup now" calls
 // go through the same RunOnce path.
@@ -93,6 +103,9 @@ type Runner struct {
 	// for a single VM. Optional; nil means no snapshot entries
 	// are written (backward-compatible with older connectors).
 	snapSource VMSnapshotSource
+	// exportSource streams the native LXD export for containers.
+	// Optional; nil fails a run that includes a container.
+	exportSource VMExportSource
 }
 
 // NewRunnerWithConfig wires the runner with a live config provider.
@@ -110,7 +123,11 @@ type Runner struct {
 // snapSource is optional; nil means snapshot metadata and
 // overlay volumes are not included in per-VM archives
 // (backward-compatible).
-func NewRunnerWithConfig(store *Store, dataDir string, config ConfigProvider, vms VMSource, xmlSource VMXMLSource, snapSource VMSnapshotSource, logger *slog.Logger) *Runner {
+//
+// exportSource is optional; nil means a container in scope fails the
+// run with a loud error instead of writing an empty archive (there is
+// no local disk file to fall back to for LXD).
+func NewRunnerWithConfig(store *Store, dataDir string, config ConfigProvider, vms VMSource, xmlSource VMXMLSource, snapSource VMSnapshotSource, exportSource VMExportSource, logger *slog.Logger) *Runner {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -118,14 +135,15 @@ func NewRunnerWithConfig(store *Store, dataDir string, config ConfigProvider, vm
 		panic("backupstore: NewRunnerWithConfig requires a non-nil ConfigProvider")
 	}
 	return &Runner{
-		store:      store,
-		dataDir:    dataDir,
-		cron:       cron.New(),
-		logger:     logger,
-		config:     config,
-		vms:        vms,
-		xmlSource:  xmlSource,
-		snapSource: snapSource,
+		store:        store,
+		dataDir:      dataDir,
+		cron:         cron.New(),
+		logger:       logger,
+		config:       config,
+		vms:          vms,
+		xmlSource:    xmlSource,
+		snapSource:   snapSource,
+		exportSource: exportSource,
 	}
 }
 
@@ -585,11 +603,83 @@ func (r *Runner) writeBackup(tgt Target, destDir string, onProgress ...func(int,
 		// lowercase-ish). The producer does not impose any
 		// constraint on the name; the runner does.
 		name := sanitizeVMName(vm.ID)
-		filename, outPath, err := r.allocateOutputPath(destDir, host, tsNano, suffix, name+".tar.zst")
+		// Containers have no local disk files to tar up: the per-VM
+		// archive IS the native LXD export (tar.gz), streamed straight
+		// from the daemon. KVM VMs keep the historical tar.zst.
+		ext := ".tar.zst"
+		if vm.Hypervisor == "lxd" {
+			ext = ".tar.gz"
+		}
+		filename, outPath, err := r.allocateOutputPath(destDir, host, tsNano, suffix, name+ext)
 		if err != nil {
 			r.logger.Error("backup_create_failed", "target", tgt.ID, "path", outPath, "err", err)
 			return files, totalBytes, fmt.Errorf("%w: create: %v", ErrTargetPathUnwritable, err)
 		}
+		// Shared progress window for this VM (both branches).
+		base := i * 70 / vmTotal
+		vmNextBase := (i + 1) * 70 / vmTotal
+		vmSpan := vmNextBase - base
+		if vmSpan < 1 {
+			vmSpan = 1
+		}
+		vmVars := map[string]any{"name": vm.ID, "i": i + 1, "n": len(scope)}
+		if progress != nil {
+			// Report the phase immediately so the bar isn't stuck on
+			// "preparing" while the first ~1GB streams out.
+			progress(base, "compress_vm", vmVars)
+		}
+
+		if vm.Hypervisor == "lxd" {
+			// Container: stream the LXD export directly into the
+			// artifact. MaxFileSizeMB is not applied here — the export
+			// is a single opaque tar.gz produced by the daemon (there
+			// is no per-disk granularity to skip).
+			if r.exportSource == nil {
+				r.logger.Error("backup_no_export_source", "vm", vm.ID)
+				return nil, totalBytes, fmt.Errorf("container %s cannot be backed up: no LXD export source wired", vm.ID)
+			}
+			f, cerr := os.Create(outPath)
+			if cerr != nil {
+				r.logger.Error("backup_create_failed", "target", tgt.ID, "path", outPath, "err", cerr)
+				return files, totalBytes, fmt.Errorf("%w: create: %v", ErrTargetPathUnwritable, cerr)
+			}
+			// Progress denominator: the configured root disk size is the
+			// documented upper bound of the export.
+			var est int64 = int64(vm.DiskGB) * (1 << 30)
+			if est <= 0 {
+				est = 1
+			}
+			var out io.Writer = f
+			if progress != nil {
+				out = &byteProgressWriter{
+					w:     f,
+					total: est,
+					base:  base,
+					span:  vmSpan,
+					last:  base,
+					on: func(pct int) {
+						progress(pct, "compress_vm", vmVars)
+					},
+				}
+			}
+			size, werr := r.exportSource(ctx, vm, out)
+			closeErr := f.Close()
+			if werr != nil || closeErr != nil {
+				_ = os.Remove(outPath)
+				err := werr
+				if err == nil {
+					err = closeErr
+				}
+				return nil, totalBytes, fmt.Errorf("write container %s: %w", vm.ID, err)
+			}
+			if progress != nil {
+				progress(vmNextBase, "compress_vm", vmVars)
+			}
+			files = append(files, JobFile{Filename: filename, Size: size, Kind: "vm", VMID: vm.ID})
+			totalBytes += size
+			continue
+		}
+
 		// Fetch the VM's libvirt XML. If the source is nil
 		// (test path), use a placeholder so the archive
 		// shape stays consistent.
@@ -645,19 +735,7 @@ func (r *Runner) writeBackup(tgt Target, destDir string, onProgress ...func(int,
 			est = 1
 		}
 		var out io.Writer = f
-		var vmNextBase, vmSpan int
-		var vmVars map[string]any
 		if progress != nil {
-			base := i * 70 / vmTotal
-			vmNextBase = (i + 1) * 70 / vmTotal
-			vmSpan = vmNextBase - base
-			if vmSpan < 1 {
-				vmSpan = 1
-			}
-			vmVars = map[string]any{"name": vm.ID, "i": i + 1, "n": len(scope)}
-			// Report the phase immediately so the bar isn't stuck on
-			// "preparing" while the first ~1GB streams out.
-			progress(base, "compress_vm", vmVars)
 			out = &byteProgressWriter{
 				w:     f,
 				total: est,

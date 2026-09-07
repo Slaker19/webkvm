@@ -2,6 +2,7 @@ package backupstore
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -1441,5 +1442,95 @@ func TestCollectConfigEntriesExcludesSecrets(t *testing.T) {
 		if have[secret] {
 			t.Fatalf("SECRET %q leaked into the config backup entries", secret)
 		}
+	}
+}
+
+// TestWriteBackupContainerStreamsLXDExport covers the Fase 3 container
+// path: an LXD container in scope is backed up by streaming its native
+// export (io.Copy from the daemon) into a .tar.gz artifact — never by
+// reading local disk files (a container has none).
+func TestWriteBackupContainerStreamsLXDExport(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "users.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	export := []byte("\x1f\x8b\x08\x00real-lxd-export-stream-bytes")
+	calls := 0
+	r := &Runner{
+		dataDir: dir,
+		vms: stubVMSource([]models.VM{{
+			ID: "web", Type: "container", Hypervisor: "lxd", DiskGB: 10,
+		}}),
+		config: func() BackupConfig { return BackupConfig{MaxFileSizeMB: 100, VerifyOnWrite: false} },
+		exportSource: func(_ context.Context, vm models.VM, w io.Writer) (int64, error) {
+			if vm.ID != "web" {
+				t.Errorf("export called for %q, want web", vm.ID)
+			}
+			calls++
+			return io.Copy(w, bytes.NewReader(export))
+		},
+		logger: discardLogger(),
+	}
+	tgt := Target{ID: "t1", Path: target, VMFilter: "all", Enabled: true}
+
+	files, total, err := r.writeBackup(tgt, tgt.Path)
+	if err != nil {
+		t.Fatalf("writeBackup: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("export source called %d times, want 1", calls)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files (container + config), got %d: %+v", len(files), files)
+	}
+	container := files[0]
+	if container.Kind != "vm" || container.VMID != "web" {
+		t.Errorf("first file = %+v, want the container", container)
+	}
+	if !strings.HasSuffix(container.Filename, ".tar.gz") {
+		t.Errorf("container archive must be .tar.gz (the LXD export format), got %q", container.Filename)
+	}
+	if container.Size != int64(len(export)) {
+		t.Errorf("recorded size = %d, want %d", container.Size, len(export))
+	}
+	if total != container.Size+files[1].Size {
+		t.Errorf("run total = %d, want container+config = %d", total, container.Size+files[1].Size)
+	}
+	// The artifact on disk is EXACTLY the streamed export — no
+	// re-compression, no temp file, byte-for-byte passthrough.
+	onDisk, err := os.ReadFile(filepath.Join(target, container.Filename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(onDisk, export) {
+		t.Error("container artifact differs from the streamed export")
+	}
+	// The config tar follows.
+	if files[1].Kind != "config" {
+		t.Errorf("second file = %+v, want config", files[1])
+	}
+}
+
+// TestWriteBackupContainerWithoutExportSource: a container in scope with
+// no export source wired must fail loudly, never write an empty archive.
+func TestWriteBackupContainerWithoutExportSource(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "users.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	r := &Runner{
+		dataDir: dir,
+		vms: stubVMSource([]models.VM{{
+			ID: "db", Type: "container", Hypervisor: "lxd",
+		}}),
+		config: func() BackupConfig { return BackupConfig{MaxFileSizeMB: 100} },
+		logger: discardLogger(),
+	}
+	tgt := Target{ID: "t1", Path: target, VMFilter: "all", Enabled: true}
+	_, _, err := r.writeBackup(tgt, tgt.Path)
+	if err == nil || !strings.Contains(err.Error(), "no LXD export source") {
+		t.Fatalf("expected a loud no-export-source error, got %v", err)
 	}
 }

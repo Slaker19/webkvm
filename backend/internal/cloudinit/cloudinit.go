@@ -34,6 +34,11 @@ type Config struct {
 	// and executed on first boot (as root). Used by appliance "apps" to
 	// install software on a base cloud image.
 	ProvisionScript string `json:"-"`
+	// SkipGuestAgent skips installing/starting the QEMU guest agent
+	// (v1.4 Fase 4.1). Containers have no QEMU guest agent — the LXD
+	// backend sets this so the provisioned cloud-init does not try to
+	// install an irrelevant package on every container.
+	SkipGuestAgent bool `json:"-"`
 }
 
 var (
@@ -53,8 +58,8 @@ var (
 // Validate checks the config fields. An all-empty config is an error
 // (there is nothing to provision).
 func (c Config) Validate() error {
-	if c.User == "" && c.SSHKey == "" && c.Hostname == "" {
-		return errors.New("cloud-init needs at least a user, an SSH key or a hostname")
+	if c.User == "" && c.SSHKey == "" && c.Hostname == "" && c.Password == "" {
+		return errors.New("cloud-init needs at least a user, a password, an SSH key or a hostname")
 	}
 	if c.User != "" && !userRe.MatchString(c.User) {
 		return fmt.Errorf("invalid cloud-init user %q (letters, digits, _ and - only)", c.User)
@@ -178,6 +183,21 @@ func buildUserData(cfg Config) string {
 		ud.WriteString("    sudo: ALL=(ALL) NOPASSWD:ALL\n")
 		ud.WriteString("    groups: sudo,adm\n")
 		ud.WriteString("    shell: /bin/bash\n")
+	} else if cfg.Password != "" {
+		// Root-only mode (v1.4 Fase 4.1): no dedicated user was
+		// requested, so apply the password (and optional SSH key)
+		// straight to root. `lock_passwd: false` is mandatory — without
+		// it cloud-init stores the hash with a leading '!' and login is
+		// impossible.
+		ud.WriteString("users:\n")
+		ud.WriteString("  - name: root\n")
+		hash := cryptSHA512(cfg.Password, "")
+		fmt.Fprintf(&ud, "    passwd: %s\n", hash)
+		ud.WriteString("    lock_passwd: false\n")
+		if cfg.SSHKey != "" {
+			ud.WriteString("    ssh_authorized_keys:\n")
+			fmt.Fprintf(&ud, "      - %s\n", yamlSingleQuote(cfg.SSHKey))
+		}
 	} else if cfg.SSHKey != "" {
 		// Key-only: still create a default user so the key lands in
 		// an account cloud-init manages.
@@ -187,7 +207,9 @@ func buildUserData(cfg Config) string {
 	// Install and start the QEMU guest agent so WebKVM can change the
 	// VM password (virDomainSetUserPassword) without SSH. This guarantees
 	// a working password-reset path for every cloud-init VM.
-	ud.WriteString("packages:\n  - qemu-guest-agent\n")
+	if !cfg.SkipGuestAgent {
+		ud.WriteString("packages:\n  - qemu-guest-agent\n")
+	}
 	// If an app provisioning script was supplied, write it to disk plus a
 	// small runner that logs execution to /var/log/webkvm-provision.log and
 	// records the outcome in /run/webkvm-provision.status (running | ok |
@@ -242,7 +264,9 @@ fi
 	// ROOT console too (root logins skip profile.d on some images), and
 	// run the app provisioning runner if a script was supplied.
 	ud.WriteString("runcmd:\n")
-	ud.WriteString("  - [systemctl, enable, --now, qemu-guest-agent]\n")
+	if !cfg.SkipGuestAgent {
+		ud.WriteString("  - [systemctl, enable, --now, qemu-guest-agent]\n")
+	}
 	ud.WriteString("  - [sh, -c, \"grep -q zz-webkvm-term /root/.bashrc || printf '%s\\n' '. /etc/profile.d/zz-webkvm-term.sh' >> /root/.bashrc\"]\n")
 	if cfg.ProvisionScript != "" {
 		ud.WriteString("  - [/usr/local/bin/webkvm-run-provision]\n")

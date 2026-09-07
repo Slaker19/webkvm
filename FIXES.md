@@ -1,5 +1,173 @@
 # FIXES — Correcciones aplicadas (2026-09-05)
 
+## v1.4 — Fase 4.1: Pulido UX y Paridad KVM/LXC (2026-09-07)
+
+- **Selector de imágenes (nada de texto a mano)**: el modo contenedor de
+  `VmCreate` usa un **dropdown con etiquetas amigables** (Ubuntu 24.04 LTS,
+  Debian 12 bookworm, Alpine Linux 3.20, Fedora 40, CentOS Stream 9,
+  AlmaLinux 9, Rocky Linux 9…) + opción **"Custom / Other…"** que revela el
+  input manual. Nueva util pura `lxdImages.js` (`LXD_IMAGE_PRESETS`,
+  `labelForImage`) con tests vitest. Corrige el bug de Fase 4: `debian:12`
+  habría fallado en `parseImageRef` (remotes válidos: ubuntu, ubuntu-daily,
+  images, almalinux, rockylinux) → ahora `images:debian/12`.
+- **Paridad de discos y métricas**:
+  - `instanceToVM` expone el device `root` como `Disks[0]` (Target root, Pool,
+    SizeGB) y cada NIC `ethN` como `Networks[]` (MAC vía `volatile.ethN.hwaddr`,
+    Network = bridge `parent`). `DiskGB` se puebla para el footer de la tarjeta.
+  - `ResizeDomainDisk` implementado (solo `root`, read-modify-write de
+    `devices.root.size` vía `UpdateInstance` — hotplug en running; otro target
+    → 501). `AttachNetworkIface` añade `eth<next>` bridged; `DetachNetworkIface`
+    y `UpdateNetworkIface` resuelven el NIC por MAC (VLAN/MAC change → 501).
+  - **MetricsCollector LXD** (`metrics.go`): collector separado (ring @5s,
+    patrón libvirt) que muestrea `GetInstanceState` — CPU% delta de
+    `cpu.usage`, RAM% `memory.usage/total`, net por counters acumulativos
+    (disk I/O no expone counters → 0). Emite `vm.metrics` al hub y alimenta el
+    **mismo sink history/alerts**; `GetVMMetrics` rutea por hypervisor.
+  - `VmDetail`: las pestañas **Disks y Net ya NO se ocultan** para contenedores.
+    Disks muestra el root con **Resize** (oculto change-bus/remove/+Add Disk en
+    LXC); Net habilita add/remove/update de interfaces.
+- **"Credenciales LXC" + root flexible**: en modo contenedor la sección se
+  titula **Credenciales LXC** (i18n 3 idiomas) y el **usuario es opcional** —
+  vacío = el backend inyecta la contraseña a `root` (`cloudinit`:
+  `users: - name: root ... lock_passwd: false`; `Validate()` admite
+  `User=="" && Password!=""`). Nuevo flag `SkipGuestAgent` (LXD ya NO instala
+  `qemu-guest-agent` en contenedores — antes se metía en el user-data).
+- **Redes unificadas (adiós lxdbr0)**: `NewLXDBackend(socket, opts...)` con
+  `WithNetworkResolver(name→bridge)`; main.go la cablea a `lv.ListNetworks()`
+  (red libvirt `default` → `virbr0`). `CreateDomain`/`AttachNetworkIface`/
+  `UpdateNetworkIface` atan la NIC al bridge resuelto (fallback `lxdbr0` solo
+  sin red indicada). El selector de red de `VmCreate` (modo LXC) es el MISMO
+  que el de KVM; se envía `network: <name>`.
+- **Nombres propios y claridad visual**: util pura `networkLabel.js`
+  (`networkLabel` → "Red Interna (vmbr0)", `networkLabelFor` para filas de
+  ifaces KVM/LXC) aplicada en los selectores de `VmCreate`, `VmDetail`
+  (add/change iface + filas) y los diálogos de appliances/instantiate
+  (`netDisplay`). La imagen y el usuario en el summary usan `labelForImage` y
+  el fallback `root`.
+- **Gate real VM (v1.4.1-fase41, LXD 6.9) — FASE41_GATE_OK**: payload exacto
+  del formulario (image dropdown `ubuntu:24.04`, `network:'default'`,
+  cloud-init SOLO contraseña) → 201 → RUNNING. `lxc config show web5`:
+  `parent=virbr0` (red resuelta), root 10GB, user-data con `name: root` +
+  `lock_passwd` y **sin** qemu-guest-agent. Lista unificada con root disk +
+  iface virbr0 + provision cloud-init. **Resize root → 12GB** aplicado vía
+  API. **Attach NIC → eth1** (2 ifaces). **Métricas CPU(9)/RAM(10) puntos**
+  desde el collector LXD. Assets con etiquetas amigables. Smoke Fase 0 OK
+  (cero regresión KVM). LXD queda habilitado en la VM para probar la UI.
+- **Gates**: vitest **35/35** · eslint 0 · `golangci-lint` 0 issues ·
+  vet/build OK · `go test -race` → solo los 2 `backupstore` root preexistentes.
+
+## v1.4 — Fase 4: Frontend — Vista Unificada y Creación LXC (2026-09-07)
+
+- **Formulario de despliegue dual** (`VmCreate.svelte`): segmented control
+  superior "Máquina virtual (KVM) / Contenedor (LXC)" que condiciona todo el
+  formulario (PLAN-LXD 5.5).
+  - **KVM**: formulario v1.3 intacto (payload byte-idéntico, sin `type`/`image`).
+  - **LXC**: se ocultan ISO, OS, sistema (chipset/UEFI/TPM), disco existente,
+    formatos/buses/cache/discard, virtio-ISO, CPU mode/topología, video y
+    adapter. Se muestran: **Imagen** (input + `<datalist>` con
+    `ubuntu:24.04`, `ubuntu:22.04`, `debian:12`, `debian:11`,
+    `images:alpine/3.20`…, validada como `<remote>:<alias>`), disco raíz (GB),
+    vCPU/RAM y red fija `lxdbr0`. **Cloud-init con inputs estándar** (usuario,
+    contraseña con toggle mostrar/ocultar 6–12, clave SSH opcional, hostname
+    prefill) — **cero YAML/scripts en crudo**; el payload es
+    `cloud_init:{user,password,ssh_key,hostname}` que el backend convierte al
+    `user.user-data`/`user.network-config` nativos. El toggle cloud-init se
+    auto-activa en modo contenedor (sin login no sería operable). Summary
+    lateral adaptado (imagen + disco raíz).
+- **Vista unificada (`VmList.svelte`)**:
+  - **Filtro de tipo global** `All · VMs · Containers` (query `type`, AND con
+    grupos/estado) — PLAN-LXD 5.1.
+  - **Badge de identidad top-right** en cada tarjeta: icono `Cpu`/`Container`
+    + etiqueta `KVM`/`LXC` (accent neutro para KVM, ámbar para LXC); en
+    select-mode se desplaza a la izquierda del checkbox — PLAN-LXD 5.2.
+  - **Chip terciario de provisión** en el footer: `CloudCog` (cloud-init),
+    `SquareTerminal` (script), `Box` (seed-iso/none), ortogonal al hipervisor.
+  - Quick-menu: "Open Console (VNC)" se oculta para contenedores (la serial
+    LXD exec se mantiene).
+- **Detalle por capabilities (`VmDetail.svelte`)** — PLAN-LXD 5.4:
+  - **Fix crítico**: `listSnapshots` ahora con `.catch(() => [])` — un
+    contenedor (snapshots → 501/500) ya **no rompe toda la página de detalle**.
+  - Ocultos para LXC: chipset/SecureBoot/TPM/BIOS/CPU-mode/video y selector de
+    boot en el spec (se añade fila "Tipo: LXC"); "+ Add Disk"/resize/bus/
+    remove y "+ Add Interface"/remove sustituidos por nota "No aplica a
+    contenedores"; botón VNC console, "Reset Password" (guest agent) y "Clone"
+    ocultos. Se mantienen power, serial console, delete y backup/export.
+- **Backend (`provision_method`)**: nuevo campo `models.VM.ProvisionMethod`
+  (`cloud-init` | `script` | `seed-iso` | ""). KVM: `domainToVM` lo marca
+  `cloud-init` si `VMMeta.CiUser` está presente (NoCloud/appliance). LXD:
+  `instanceToVM` lo marca `cloud-init` si existe `user.user-data`. Test unitario
+  nuevo en `lxd_test.go`.
+- **Utilidades puras** (`src/lib/utils/computeType.js` + `computeType.test.js`):
+  `computeTypeBadgeClass`, `computeTypeLabel`, `isContainer`, `provisionChip` —
+  Vitest node env (política FE-04), 11 tests nuevos.
+- **Gate real en la VM (v1.4.0-fase4, LXD 6.9)**: payload exacto del formulario
+  (`{name, type:'container', image:'ubuntu:24.04', vcpus, ram_mb, disk_gb,
+  cloud_init:{user:'alvin', password:'Fase4Pass#26', hostname}}`) → **201**;
+  arrancado → RUNNING; lista unificada con `type=container`, `hypervisor=lxd`,
+  `provision_method=cloud-init`; detalle 200; `lxc config show` confirma
+  `user.user-data` (#cloud-config + alvin) y `user.network-config`; dist
+  empaquetado contiene las cadenas del formulario dual/badges/filtro;
+  snapshots tolerado (ya no rompe la página). Smoke Fase 0 OK (cero regresión).
+  **LXD queda habilitado en la VM para probar la UI en el navegador** (quitar
+  `/etc/systemd/system/webkvm.service.d/override.conf` para volver a KVM-only).
+- **Gates**: vitest 25/25 · eslint 0 · `golangci-lint` 0 issues · vet/build OK ·
+  `go test -race` → solo los 2 `backupstore` root preexistentes.
+
+## v1.4 — Fase 3: Backend LXD Final — Creación, Tags y Backups (2026-09-06)
+
+- **Deploy con imágenes (cero ISOs)** (`CreateDomain` en `lxd.go`): crea el
+  contenedor desde un remote oficial (`ubuntu:24.04`, `images:alpine/3.20`,
+  o `<server-url>:<alias>`) con `source: {type:image, protocol:simplestreams,
+  server, alias}` — el daemon resuelve y descarga la plantilla. `parseImageRef`
+  mapea los remotes conocidos y rechaza los desconocidos. Cloud-init inyectado
+  DIRECTAMENTE en las keys nativas `user.user-data` (con `#cloud-config`) y
+  `user.network-config` (la preparación de Fase 2). Dispositivos: root disk
+  con el tamaño pedido + NIC bridged en `lxdbr0`. En `CreateVM` el NoCloud ISO
+  de KVM se salta para contenedores (ya provisionados nativamente).
+- **Tags y Metadatos (RBAC)** (`UpdateDomain` + trío `SetVMMeta`/`GetVMMeta`/
+  `UpdateVMMeta`): la metadata de app vive en dos keys custom del contenedor —
+  **`user.webkvm.tags`** (comma-joined) y **`user.webkvm.desc`** (JSON con
+  alias/notes/cover/groups/owner/template/ci_user/app_info). `instanceToVM`
+  puebla `Tags`/`Alias` desde esas keys, así que las políticas RBAC y de
+  backups-por-tag de la v1.3 funcionan para contenedores sin tocar el API.
+  `UpdateDomain` soporta rename + límites CPU/RAM; los campos solo-KVM
+  devuelven `ErrNotImplemented` (501) en lugar de ignorarse.
+- **Backups en streaming (crítico)**: LXD 6.x ELIMINÓ `/1.0/instances/<name>/
+  export` — `lxc export` ahora crea un backup temporal, exporta y lo borra.
+  `ExportDomain` replica ese flujo EXACTO con el cliente oficial: `CreateInstanceBackup`
+  → espera → **GET crudo `/1.0/instances/<name>/backups/<backup>/export`
+  copiado con `io.Copy` directo a `w`** (unix-socket HTTP propio, sin
+  doble-buffering en RAM ni descarga temporal a disco) → `DeleteInstanceBackup`
+  diferido (sin residuos). `EstimateExportSize` usa el tamaño del root disk.
+- **Runner integrado**: nuevo hook `VMExportSource` en `backupstore.Runner`;
+  un contenedor en scope se respalda como **`{name}.tar.gz` = la exportación
+  LXD nativa** (io.Copy puro), sin archivos locales que leer. KVM sigue en
+  `.tar.zst`. main.go cablea el runner al backend combinado (VMSource =
+  ListDomains mezclado; export source = ExportDomain). Export handler: el guard
+  "must be shut off" y el pre-flight de discos se saltan para contenedores LXD
+  (la exportación en caliente es nativa).
+- **Tests** (`-race`): fake daemon con estado (create/update/rename/backups/
+  export/operations) — creación con cloud-init en las keys nativas, rename +
+  límites, round-trip de tags/desc (incl. limpiar tags borra la key), export
+  con UNA sola GET + DELETE del backup temporal + bytes idénticos, estimación
+  de tamaño, y el runner generando el artifact `.tar.gz` byte-por-byte (y
+  fallando ruidosamente si no hay export source).
+- **Gate real en la VM (v1.3.1-fase3, LXD snap real v6.9)**:
+  - **Creación**: `POST /api/vms {image: "ubuntu:24.04", cloud_init:{user,
+    password, hostname}}` → 201, contenedor `web2` RUNNING. `lxc config show`
+    confirma `user.user-data` (#cloud-config + alvin) y `user.network-config`.
+  - **Tags RBAC**: `PUT /api/vms/web2/meta {tags:["prod","web"], notes}`
+    → roundtrip OK; `lxc config get web2 user.webkvm.tags` = `prod,web`;
+    tags visibles en la lista unificada.
+  - **Export**: `GET /api/vms/web2/export?format=backup&legacy=gzip` →
+    **tar.gz válido con `backup/index.yaml`, 47.624 entradas** (contenido real).
+  - **Backup programado**: target local → run → job `success` → artifact
+    `web2.tar.gz` (422 MB) válido; además el contenedor `web` de Fase 2
+    también se respaldó (338 MB). Backend híbrido KVM+LXC 100% funcional.
+  - Restaurado KVM-only (sin drop-in) → smoke Fase 0 idéntico (cero regresión).
+- **Gates**: `golangci-lint` 0 issues · build/vet OK · `go test -race ./...`
+  → 20 paquetes ok (solo los 2 `backupstore` root preexistentes).
+
 ## v1.4 — Fase 2: Ciclo de Vida LXD (Start/Stop/ForceOff/Reboot/Delete + Consola) (2026-09-06)
 
 - **Control de estado puro** (`lxd.go`): `StartDomain`/`ShutdownDomain`/

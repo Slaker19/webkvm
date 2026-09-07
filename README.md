@@ -1,10 +1,11 @@
 # WebKVM
 
-A **native** virtual machine manager (libvirt + QEMU/KVM) with a web UI.
-Go backend + embedded Svelte 5 frontend in a single binary (~14 MB). No
-mandatory reverse proxy: the backend serves **HTTPS directly** with a
-self-signed certificate. Docker is supported as an alternative to the native
-install (see [docs/DOCKER.md](docs/DOCKER.md)) for those who prefer it.
+A **native** hybrid virtual machine manager (**QEMU/KVM** VMs **and
+**LXC containers**) with a web UI. Go backend + embedded Svelte 5 frontend
+in a single binary (~14 MB). No mandatory reverse proxy: the backend serves
+**HTTPS directly** with a self-signed certificate. Docker is supported as an
+alternative to the native install (see [docs/DOCKER.md](docs/DOCKER.md)) for
+those who prefer it.
 
 [![CI](https://github.com/Slaker19/webkvm/actions/workflows/ci.yml/badge.svg)](https://github.com/Slaker19/webkvm/actions/workflows/ci.yml)
 ![Go](https://img.shields.io/badge/Go-1.25-blue)
@@ -70,6 +71,61 @@ sudo /opt/webkvm-repo/packaging/standalone/update.sh --source
 The updater downloads the latest release, stops the service, backs up the old
 binary, installs the new one, runs a health check and restarts — with automatic
 rollback if anything fails.
+
+## Containers (LXC) — opt-in module
+
+WebKVM manages containers natively through the LXD daemon (v2.1.0). Containers
+appear alongside VMs in the same unified list with a `KVM`/`LXC` badge, are
+created from the same form (friendly image picker + cloud-init credentials),
+support root-disk resize, network interfaces and live CPU/RAM metrics.
+
+**Host dependency.** The LXD daemon must be installed and running **on the host**
+— WebKVM does not install it for you unless you pass `WEBKVM_INSTALL_LXD=1` to
+the installer:
+
+```bash
+# Debian / Ubuntu
+sudo apt install lxd        # or: sudo snap install lxd && sudo lxd init
+# Arch / Fedora / RedHat family (native package; if absent, see your distro wiki)
+sudo pacman -S lxd          # or: sudo dnf install lxd
+sudo systemctl enable --now lxd
+```
+
+**Activation.** The container module is an opt-in (disabled by default). Enable
+it with the `WEBKVM_LXD_ENABLED=1` environment variable — in the systemd unit
+(`Environment=WEBKVM_LXD_ENABLED=1` in a drop-in under
+`/etc/systemd/system/webkvm.service.d/`) or in the project `.env`:
+
+```bash
+WEBKVM_LXD_ENABLED=1        # enable the container module
+LXD_SOCKET=                 # optional override; auto-detected otherwise
+```
+
+The socket is auto-detected (`/var/snap/lxd/common/lxd/unix.socket` for snap,
+`/var/lib/lxd/unix.socket` for apt); override it with `LXD_SOCKET` if your
+daemon listens elsewhere.
+
+**Permissions.** The user that runs the WebKVM process must be able to read the
+LXD socket. The native service runs as `root` (no extra step). If you run the
+binary as a non-root user (direct execution, hardened service or Docker), add
+that user to the `lxd` group:
+
+```bash
+sudo usermod -aG lxd <user> && sudo systemctl restart webkvm
+```
+
+**Verify.** `lxd_connected` appears in the backend log at startup and
+containers show up in the web UI. The installer can do all of the above for you:
+
+```bash
+sudo WEBKVM_INSTALL_LXD=1 bash install-webkvm.sh
+```
+
+> **Installer note (v2.1.0):** with `WEBKVM_INSTALL_LXD=1` the installer
+> installs LXD via **snap only on the Ubuntu/Debian family**; on Arch/Fedora
+> (and derivatives) it uses the **native package** and, if that is unavailable,
+> prints a warning asking you to install LXD or Incus manually and continues
+> with a KVM-only install — it never forces snap there.
 
 ## Documentation
 

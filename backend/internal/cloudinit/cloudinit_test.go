@@ -12,6 +12,9 @@ func TestValidate(t *testing.T) {
 		{User: "deploy_user", Password: "secret1", SSHKey: "ssh-rsa AAAA test"},
 		{Hostname: "my-host.local"},
 		{SSHKey: "ssh-ed25519 AAAAx3zaC1yc2EAAA test"},
+		// v1.4 Fase 4.1: root-only — password without a dedicated user.
+		{Password: "secret1", Hostname: "ct1"},
+		{Password: "secret1"},
 	}
 	for i, c := range valid {
 		if err := c.Validate(); err != nil {
@@ -105,5 +108,36 @@ func TestBuildUserDataSingleWriteFilesBlock(t *testing.T) {
 	}
 	if !strings.Contains(ud, "/etc/profile.d/zz-webkvm-term.sh") {
 		t.Fatal("expected terminal-hook entry under the single write_files: block")
+	}
+}
+
+// v1.4 Fase 4.1: a password without a dedicated user must be applied to
+// root (users: - name: root ... lock_passwd: false).
+func TestBuildUserDataRootPassword(t *testing.T) {
+	ud := buildUserData(Config{Password: "secret1", Hostname: "ct1"})
+	if !strings.Contains(ud, "  - name: root\n") {
+		t.Fatalf("expected root user block, got:\n%s", ud)
+	}
+	if !strings.Contains(ud, "lock_passwd: false") {
+		t.Fatalf("expected lock_passwd: false for root, got:\n%s", ud)
+	}
+	if !strings.Contains(ud, "passwd: $6$") {
+		t.Fatalf("expected a $6$ crypt hash for the root password, got:\n%s", ud)
+	}
+	if strings.Contains(ud, "- name: webkvm") {
+		t.Fatal("must not create a dedicated user in root-only mode")
+	}
+}
+
+// v1.4 Fase 4.1: SkipGuestAgent removes the qemu-guest-agent package and
+// its systemd enable step (containers have no guest agent).
+func TestBuildUserDataSkipGuestAgent(t *testing.T) {
+	ud := buildUserData(Config{User: "webkvm", Password: "secret1", SkipGuestAgent: true})
+	if strings.Contains(ud, "qemu-guest-agent") {
+		t.Fatalf("SkipGuestAgent still references qemu-guest-agent:\n%s", ud)
+	}
+	with := buildUserData(Config{User: "webkvm", Password: "secret1"})
+	if !strings.Contains(with, "qemu-guest-agent") {
+		t.Fatal("default config must keep installing the guest agent")
 	}
 }

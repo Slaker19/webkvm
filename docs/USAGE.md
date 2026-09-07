@@ -89,6 +89,25 @@ plugged into the host. PCI/GPU passthrough is not supported.
   can reconnect and its power buttons need it too), unlike the single-use,
   30-second tickets the serial/host terminals use.
 
+## 3.1. Containers (LXC)
+
+WebKVM **v2.1.0** manages **LXC containers natively** (opt-in, see
+[INSTALLATION.md](INSTALLATION.md) → "Containers (LXC)"). Containers share the
+same UI as VMs:
+
+- **Unified list**: containers appear alongside VMs, each card showing a
+  `KVM`/`LXC` badge and a provisioning chip; the `All · VMs · Containers`
+  filter narrows the list.
+- **Creation**: the same "Create" form with the instance-type selector set to
+  **Container (LXC)** — pick a distribution from the image dropdown (or
+  "Custom / Other…"), choose the network (same bridges as VMs), and set the
+  **LXC credentials** (username optional; blank = the password is applied to
+  `root`). No ISOs, no manual YAML.
+- **Detail**: containers support root-disk **resize**, **add/remove/change**
+  network interfaces, serial console and live CPU/RAM **metrics**. KVM-only
+  controls (chipset/UEFI/TPM, VNC, CD-ROM, guest-agent password reset, clone)
+  are hidden.
+
 ## 4. Storage
 
 - **Pools**: the backend manages its own pools under `/opt/webkvm/pools`:

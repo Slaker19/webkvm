@@ -45,15 +45,28 @@ type VM struct {
 	Cover      string      `json:"cover,omitempty"`
 	Groups     []string    `json:"groups,omitempty"`
 	Tags       []string    `json:"tags,omitempty"`
-	Disks      []DiskInfo  `json:"disks,omitempty"`
+	// ProvisionMethod describes how the guest is provisioned at first
+	// boot (PLAN-LXD 5.2): "cloud-init" (native LXD user-data or NoCloud
+	// ISO), "script", "seed-iso" or "" (none). Orthogonal to the
+	// hypervisor; drives the footer chip on the VM card.
+	ProvisionMethod string      `json:"provision_method,omitempty"`
+	Disks           []DiskInfo  `json:"disks,omitempty"`
 	Networks   []NetIface  `json:"networks,omitempty"`
 	USBDevices []USBDevice `json:"usb_devices,omitempty"`
 }
 
 type CreateVMRequest struct {
-	Name             string `json:"name"`
-	VCPUs            int    `json:"vcpus"`
-	RAMMB            int64  `json:"ram_mb"`
+	Name string `json:"name"`
+	// Type is the instance kind to create: "vm" (default, KVM) or
+	// "container" (LXD). Empty keeps the historical default (vm).
+	Type string `json:"type,omitempty"`
+	// Image is the LXD image reference for container creation, e.g.
+	// "ubuntu:24.04" or "images:alpine/3.20" (<remote>:<alias>, where
+	// remote is one of the official LXD remotes). When set, the request
+	// is routed to the LXD backend — zero ISOs involved.
+	Image string `json:"image,omitempty"`
+	VCPUs int    `json:"vcpus"`
+	RAMMB int64  `json:"ram_mb"`
 	DiskGB           int64  `json:"disk_gb"`
 	ISO              string `json:"iso,omitempty"`
 	Network          string `json:"network,omitempty"`

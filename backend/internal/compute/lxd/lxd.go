@@ -1,24 +1,36 @@
-// Package lxd is the LXD container backend (v1.4 Fase 1).
+// Package lxd is the LXD container backend (v1.4).
 //
-// LXDBackend implements the full compute.Backend seam against the LXD
-// daemon via the official Canonical Go client (github.com/canonical/lxd
-// /client). Connection targets the local unix socket — the snap path
+// LXDBackend implements the compute.Backend seam against the LXD daemon
+// via the official Canonical Go client (github.com/canonical/lxd/client).
+// Connection targets the local unix socket — the snap path
 // /var/snap/lxd/common/lxd/unix.socket by default.
 //
-// Implementation is GRADUAL and fail-safe: Fase 1 implements the
-// read path (ListVMs) so containers appear alongside VMs in the API;
-// every other operation returns compute.ErrNotImplemented, which the
-// handlers surface as HTTP 501 Not Implemented. As features land they
-// replace the stub one at a time without touching the seam or the
-// handlers.
+// Implementation is GRADUAL and fail-safe:
+//   - Fase 1: read path (ListVMs) so containers appear alongside VMs.
+//   - Fase 2: lifecycle (start/stop/forceoff/reboot/freeze) + interactive
+//     serial console (exec bash over websockets) + cloud-init mapping.
+//   - Fase 3: creation from image remotes (zero ISOs, cloud-init injected
+//     as user.user-data/user.network-config), tags/metadata in LXD custom
+//     config keys (user.webkvm.tags / user.webkvm.desc) so the v1.3 RBAC
+//     and backup-by-tag policies keep working, and streaming backups via
+//     the native /1.0/instances/<name>/export endpoint (io.Copy, no
+//     double buffering, no temp download).
+//
+// Unimplemented operations return compute.ErrNotImplemented, which the
+// handlers surface as HTTP 501 Not Implemented.
 package lxd
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,10 +40,12 @@ import (
 	lxd "github.com/canonical/lxd/client"
 	"github.com/canonical/lxd/shared/api"
 	"github.com/gorilla/websocket"
+	"github.com/klauspost/compress/zstd"
 
 	"webkvm/internal/backupstore"
 	"webkvm/internal/cloudinit"
 	"webkvm/internal/compute"
+	"webkvm/internal/events"
 	"webkvm/internal/models"
 )
 
@@ -48,13 +62,31 @@ func DefaultSocketPath() string {
 // LXDBackend is the compute.Backend adapter for the LXD daemon.
 type LXDBackend struct {
 	client lxd.InstanceServer
+	// socketPath is the unix socket the client dials. Kept so the
+	// backup export can stream /1.0/instances/<name>/export over its
+	// own unix-socket HTTP request (the official client only decodes
+	// JSON bodies, never binary streams).
+	socketPath string
+	// networkResolver maps a libvirt network NAME to the Linux bridge
+	// it runs on (v1.4 Fase 4.1): containers attach to the very same
+	// bridges as KVM VMs. Nil keeps the historical lxdbr0 default.
+	networkResolver func(networkName string) (bridge string, err error)
+}
+
+// LXDBackendOption customizes the backend at construction time.
+type LXDBackendOption func(*LXDBackend)
+
+// WithNetworkResolver wires the libvirt network-name -> Linux bridge
+// resolver so containers can join the same networks as KVM VMs.
+func WithNetworkResolver(resolver func(networkName string) (bridge string, err error)) LXDBackendOption {
+	return func(b *LXDBackend) { b.networkResolver = resolver }
 }
 
 // NewLXDBackend connects to the LXD daemon over a unix socket. An empty
 // path uses DefaultSocketPath(). Returns an error (including
 // compute.ErrNotImplemented if LXD is unreachable) when the daemon
 // cannot be reached, so the caller can degrade to KVM-only.
-func NewLXDBackend(socketPath string) (*LXDBackend, error) {
+func NewLXDBackend(socketPath string, opts ...LXDBackendOption) (*LXDBackend, error) {
 	if socketPath == "" {
 		socketPath = DefaultSocketPath()
 	}
@@ -62,7 +94,32 @@ func NewLXDBackend(socketPath string) (*LXDBackend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &LXDBackend{client: client}, nil
+	b := &LXDBackend{client: client, socketPath: socketPath}
+	for _, o := range opts {
+		o(b)
+	}
+	return b, nil
+}
+
+// bridgeForNetwork resolves a libvirt network name to the Linux bridge
+// the container NIC should attach to. An empty name keeps the managed
+// default bridge (lxdbr0); a name with no resolver falls back to it too.
+func (b *LXDBackend) bridgeForNetwork(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "lxdbr0", nil
+	}
+	if b.networkResolver == nil {
+		return "lxdbr0", nil
+	}
+	bridge, err := b.networkResolver(name)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve network %q for the container: %w", name, err)
+	}
+	if strings.TrimSpace(bridge) == "" {
+		return "", fmt.Errorf("network %q has no Linux bridge to attach the container to", name)
+	}
+	return bridge, nil
 }
 
 // ServerInfo returns the LXD daemon version for the status page.
@@ -77,6 +134,12 @@ func (b *LXDBackend) ServerInfo() (string, error) {
 // Close closes the underlying client connections.
 func (b *LXDBackend) Close() {
 	b.client.Disconnect()
+}
+
+// NewMetricsCollector builds the per-container metrics collector
+// (v1.4 Fase 4.1) bound to this backend's daemon connection.
+func (b *LXDBackend) NewMetricsCollector(hub *events.Hub) *MetricsCollector {
+	return NewMetricsCollector(clientAdapter{client: b.client}, hub)
 }
 
 // --- Instance lifecycle ---
@@ -115,12 +178,6 @@ func (b *LXDBackend) DomainExists(name string) (bool, error) {
 	return true, nil
 }
 
-func (b *LXDBackend) CreateDomain(req models.CreateVMRequest) (models.VM, error) {
-	return models.VM{}, compute.ErrNotImplemented
-}
-func (b *LXDBackend) UpdateDomain(id string, req models.UpdateVMRequest) (models.VM, error) {
-	return models.VM{}, compute.ErrNotImplemented
-}
 func (b *LXDBackend) DeleteDomain(id string) error {
 	// Force: deleting a running container would otherwise be rejected and
 	// the handler expects delete to always succeed (matching KVM).
@@ -159,6 +216,158 @@ func (b *LXDBackend) GetDomainAutostart(id string) (bool, error) {
 func (b *LXDBackend) SetBootDevice(id string, device string) error { return compute.ErrNotImplemented }
 func (b *LXDBackend) GetBootDevice(id string) (string, error)      { return "", compute.ErrNotImplemented }
 func (b *LXDBackend) ValidateDomainDisks(id string) error          { return compute.ErrNotImplemented }
+
+// CreateDomain creates a container from an official LXD image remote
+// (v1.4 Fase 3) — zero ISOs, templates only. The image reference is
+// req.Image ("ubuntu:24.04", "images:alpine/3.20", or a full
+// <server-url>:<alias>). Cloud-init is injected straight into the native
+// user.user-data / user.network-config config keys the Fase 2 mapper
+// already produces.
+func (b *LXDBackend) CreateDomain(req models.CreateVMRequest) (models.VM, error) {
+	if strings.TrimSpace(req.Image) == "" {
+		return models.VM{}, errors.New("an LXD image reference is required to create a container (e.g. ubuntu:24.04)")
+	}
+	server, alias, err := parseImageRef(req.Image)
+	if err != nil {
+		return models.VM{}, err
+	}
+	// v1.4 Fase 4.1: the operator picks the network from the SAME
+	// selector as KVM; resolve the libvirt network name to the Linux
+	// bridge the container NIC lands on.
+	bridge, err := b.bridgeForNetwork(req.Network)
+	if err != nil {
+		return models.VM{}, err
+	}
+	config := map[string]string{
+		"boot.autostart": "true",
+	}
+	if req.VCPUs > 0 {
+		config["limits.cpu"] = strconv.Itoa(req.VCPUs)
+	}
+	if req.RAMMB > 0 {
+		config["limits.memory"] = formatMemoryMB(req.RAMMB)
+	}
+	devices := map[string]map[string]string{}
+	if req.DiskGB > 0 {
+		devices["root"] = map[string]string{
+			"type": "disk",
+			"path": "/",
+			"pool": "default",
+			"size": fmt.Sprintf("%dGB", req.DiskGB),
+		}
+	}
+	// NIC on the chosen bridge (like `lxc launch -n <network>`).
+	devices["eth0"] = map[string]string{
+		"type":    "nic",
+		"nictype": "bridged",
+		"parent":  bridge,
+		"name":    "eth0",
+	}
+	if req.CloudInit != nil {
+		ci := cloudinit.Config{
+			User:            req.CloudInit.User,
+			Password:        req.CloudInit.Password,
+			SSHKey:          req.CloudInit.SSHKey,
+			Hostname:        req.CloudInit.Hostname,
+			ProvisionScript: req.CloudInit.ProvisionScript,
+			// Containers have no QEMU guest agent (v1.4 Fase 4.1).
+			SkipGuestAgent: true,
+		}
+		if err := ci.Validate(); err != nil {
+			return models.VM{}, err
+		}
+		cloudKeys, _ := lxdCloudInitConfig(ci, bridge)
+		for k, v := range cloudKeys {
+			config[k] = v
+		}
+	}
+	post := api.InstancesPost{
+		Name: req.Name,
+		Type: api.InstanceTypeContainer,
+		Source: api.InstanceSource{
+			Type:     "image",
+			Protocol: "simplestreams",
+			Server:   server,
+			Alias:    alias,
+		},
+		InstancePut: api.InstancePut{
+			Config:  config,
+			Devices: devices,
+		},
+	}
+	op, err := b.client.CreateInstance(post)
+	if err != nil {
+		return models.VM{}, err
+	}
+	if err := waitOperation(op); err != nil {
+		return models.VM{}, err
+	}
+	return b.GetDomain(req.Name)
+}
+
+// UpdateDomain updates a container's writable properties: the name
+// (rename), CPU/RAM limits. KVM-only fields (video, firmware, chipset,
+// secure boot, TPM, network model) are not applicable to containers and
+// return compute.ErrNotImplemented instead of silently ignoring them.
+func (b *LXDBackend) UpdateDomain(id string, req models.UpdateVMRequest) (models.VM, error) {
+	for name, v := range map[string]bool{
+		"CPUMode": req.CPUMode != nil, "VideoModel": req.VideoModel != nil,
+		"OSType": req.OSType != nil, "OSVersion": req.OSVersion != nil,
+		"Chipset": req.Chipset != nil, "SecureBoot": req.SecureBoot != nil,
+		"TPMEnabled": req.TPMEnabled != nil, "Firmware": req.Firmware != nil,
+		"NetworkModel": req.NetworkModel != nil, "Network": req.Network != nil,
+	} {
+		if v {
+			return models.VM{}, fmt.Errorf("field %s is not applicable to a container: %w", name, compute.ErrNotImplemented)
+		}
+	}
+
+	if req.Name != nil && *req.Name != id {
+		op, err := b.client.RenameInstance(id, api.InstancePost{Name: *req.Name})
+		if err != nil {
+			return models.VM{}, err
+		}
+		if err := waitOperation(op); err != nil {
+			return models.VM{}, err
+		}
+		id = *req.Name
+	}
+	// CPU/RAM limits require a full config update (read-modify-write).
+	if req.VCPUs != nil || req.RAMMB != nil {
+		inst, etag, err := b.client.GetInstance(id)
+		if err != nil {
+			return models.VM{}, err
+		}
+		cfg := inst.Config
+		if req.VCPUs != nil {
+			if *req.VCPUs > 0 {
+				cfg["limits.cpu"] = strconv.Itoa(*req.VCPUs)
+			} else {
+				delete(cfg, "limits.cpu")
+			}
+		}
+		if req.RAMMB != nil {
+			if *req.RAMMB > 0 {
+				cfg["limits.memory"] = formatMemoryMB(*req.RAMMB)
+			} else {
+				delete(cfg, "limits.memory")
+			}
+		}
+		op, err := b.client.UpdateInstance(id, api.InstancePut{
+			Config:      cfg,
+			Devices:     inst.Devices,
+			Profiles:    inst.Profiles,
+			Description: inst.Description,
+		}, etag)
+		if err != nil {
+			return models.VM{}, err
+		}
+		if err := waitOperation(op); err != nil {
+			return models.VM{}, err
+		}
+	}
+	return b.GetDomain(id)
+}
 
 // setState drives the LXD instance state machine (start/stop/restart/
 // freeze/unfreeze) and waits for the operation to complete.
@@ -218,14 +427,150 @@ func (b *LXDBackend) UpdateDiskSource(id, target, source string) error {
 	return compute.ErrNotImplemented
 }
 func (b *LXDBackend) ResizeDomainDisk(ctx context.Context, id, target string, newSizeGB int64) (int64, error) {
-	return 0, compute.ErrNotImplemented
+	// Containers have a single root device; only that can be resized
+	// (lxc config device set <name> root size=X), applied live via a
+	// read-modify-write instance update.
+	if target != "" && target != "root" {
+		return 0, fmt.Errorf("only the root device can be resized on a container: %w", compute.ErrNotImplemented)
+	}
+	if newSizeGB <= 0 {
+		return 0, errors.New("size must be positive")
+	}
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return 0, err
+	}
+	root, ok := inst.Devices["root"]
+	if !ok {
+		return 0, errors.New("container has no root device")
+	}
+	root["size"] = fmt.Sprintf("%dGB", newSizeGB)
+	inst.Devices["root"] = root
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return 0, err
+	}
+	if err := waitOperation(op); err != nil {
+		return 0, err
+	}
+	return newSizeGB, nil
 }
+
 func (b *LXDBackend) AttachNetworkIface(id string, req models.AttachNetRequest) error {
-	return compute.ErrNotImplemented
+	bridge, err := b.bridgeForNetwork(req.Network)
+	if err != nil {
+		return err
+	}
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return err
+	}
+	nicName := nextNicName(inst.Devices)
+	inst.Devices[nicName] = map[string]string{
+		"type":    "nic",
+		"nictype": "bridged",
+		"parent":  bridge,
+		"name":    nicName,
+	}
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
 }
-func (b *LXDBackend) DetachNetworkIface(id, mac string) error { return compute.ErrNotImplemented }
+
+func (b *LXDBackend) DetachNetworkIface(id, mac string) error {
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return err
+	}
+	devName := nicDeviceByMAC(inst, mac)
+	if devName == "" {
+		return fmt.Errorf("no network interface with MAC %s", mac)
+	}
+	delete(inst.Devices, devName)
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
+}
+
 func (b *LXDBackend) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIfaceRequest) error {
-	return compute.ErrNotImplemented
+	if req.VLANTag != nil && *req.VLANTag != 0 {
+		return fmt.Errorf("VLAN tags are not applicable to a container NIC: %w", compute.ErrNotImplemented)
+	}
+	if req.MAC != nil && *req.MAC != oldMAC {
+		return fmt.Errorf("changing a container NIC MAC is not supported: %w", compute.ErrNotImplemented)
+	}
+	if req.Network == nil {
+		return nil
+	}
+	bridge, err := b.bridgeForNetwork(*req.Network)
+	if err != nil {
+		return err
+	}
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return err
+	}
+	devName := nicDeviceByMAC(inst, oldMAC)
+	if devName == "" {
+		return fmt.Errorf("no network interface with MAC %s", oldMAC)
+	}
+	inst.Devices[devName]["parent"] = bridge
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
+}
+
+// nextNicName returns the first free ethN device name for a container.
+func nextNicName(devices map[string]map[string]string) string {
+	n := 0
+	for name := range devices {
+		if len(name) > 3 && name[:3] == "eth" {
+			if v, err := strconv.Atoi(name[3:]); err == nil && v >= n {
+				n = v + 1
+			}
+		}
+	}
+	return fmt.Sprintf("eth%d", n)
+}
+
+// nicDeviceByMAC returns the NIC device name whose volatile MAC equals
+// mac (LXD stores NIC MACs as volatile.<name>.hwaddr config keys).
+func nicDeviceByMAC(inst *api.Instance, mac string) string {
+	for name, dev := range inst.Devices {
+		if dev["type"] != "nic" {
+			continue
+		}
+		if inst.Config["volatile."+name+".hwaddr"] == mac {
+			return name
+		}
+	}
+	return ""
 }
 func (b *LXDBackend) AttachUSBDevice(id, vendorID, productID string) error {
 	return compute.ErrNotImplemented
@@ -437,15 +782,161 @@ func (b *LXDBackend) OpenSerialConsole(id string) (compute.ConsoleStream, error)
 func (b *LXDBackend) SetUserPassword(id, user, password string) error {
 	return compute.ErrNotImplemented
 }
+
+// WebKVM app metadata for LXD instances is stored in two custom config
+// keys (v1.4 Fase 3): user.webkvm.tags (comma-joined) and
+// user.webkvm.desc (JSON of the remaining VMMeta fields). Keys persist
+// with the instance and keep the v1.3 RBAC / backup-by-tag policies
+// working for containers with zero changes on the API side.
+const (
+	metaTagsKey = "user.webkvm.tags"
+	metaDescKey = "user.webkvm.desc"
+)
+
+type lxdWebKVMMeta struct {
+	Alias     string   `json:"alias,omitempty"`
+	Notes     string   `json:"notes,omitempty"`
+	Cover     string   `json:"cover,omitempty"`
+	Groups    []string `json:"groups,omitempty"`
+	OwnerID   string   `json:"owner_id,omitempty"`
+	Template  bool     `json:"template"`
+	CiUser    string   `json:"ci_user,omitempty"`
+	AppInfo   string   `json:"app_info,omitempty"`
+	UpdatedAt int64    `json:"updated_at,omitempty"`
+}
+
 func (b *LXDBackend) GetVMMeta(uuid string) (models.VMMeta, error) {
-	return models.VMMeta{}, compute.ErrNotImplemented
+	inst, _, err := b.client.GetInstance(uuid)
+	if err != nil {
+		return models.VMMeta{}, err
+	}
+	return lxdMetaToModel(inst.Config), nil
 }
+
+// lxdMetaToModel decodes the two webkvm config keys back into VMMeta.
+// Missing keys yield the zero value (no error), matching KVM.
+func lxdMetaToModel(config map[string]string) models.VMMeta {
+	meta := models.VMMeta{}
+	if raw, ok := config[metaTagsKey]; ok && raw != "" {
+		meta.Tags = strings.Split(raw, ",")
+	}
+	if raw, ok := config[metaDescKey]; ok && raw != "" {
+		var d lxdWebKVMMeta
+		if err := json.Unmarshal([]byte(raw), &d); err == nil {
+			meta.Alias, meta.Notes, meta.Cover = d.Alias, d.Notes, d.Cover
+			meta.Groups, meta.OwnerID = d.Groups, d.OwnerID
+			meta.Template, meta.CiUser = d.Template, d.CiUser
+			meta.AppInfo, meta.UpdatedAt = d.AppInfo, d.UpdatedAt
+		}
+	}
+	return meta
+}
+
+// applyMetaToConfig encodes VMMeta into the two config keys.
+func applyMetaToConfig(config map[string]string, meta models.VMMeta) {
+	if len(meta.Tags) == 0 {
+		delete(config, metaTagsKey)
+	} else {
+		config[metaTagsKey] = strings.Join(meta.Tags, ",")
+	}
+	d := lxdWebKVMMeta{
+		Alias: meta.Alias, Notes: meta.Notes, Cover: meta.Cover,
+		Groups: meta.Groups, OwnerID: meta.OwnerID, Template: meta.Template,
+		CiUser: meta.CiUser, AppInfo: meta.AppInfo, UpdatedAt: meta.UpdatedAt,
+	}
+	if d.Alias == "" && d.Notes == "" && d.Cover == "" && len(d.Groups) == 0 &&
+		d.OwnerID == "" && !d.Template && d.CiUser == "" && d.AppInfo == "" && d.UpdatedAt == 0 {
+		delete(config, metaDescKey)
+		return
+	}
+	raw, err := json.Marshal(d)
+	if err != nil {
+		return
+	}
+	config[metaDescKey] = string(raw)
+}
+
 func (b *LXDBackend) SetVMMeta(uuid string, meta models.VMMeta) error {
-	return compute.ErrNotImplemented
+	return b.setMetaConfig(uuid, func(cfg map[string]string) { applyMetaToConfig(cfg, meta) })
 }
+
 func (b *LXDBackend) UpdateVMMeta(uuid string, upd models.VMMetaUpdate) (models.VMMeta, error) {
-	return models.VMMeta{}, compute.ErrNotImplemented
+	inst, etag, err := b.client.GetInstance(uuid)
+	if err != nil {
+		return models.VMMeta{}, err
+	}
+	current := lxdMetaToModel(inst.Config)
+	if upd.Alias != nil {
+		current.Alias = *upd.Alias
+	}
+	if upd.Notes != nil {
+		current.Notes = *upd.Notes
+	}
+	if upd.Cover != nil {
+		current.Cover = *upd.Cover
+	}
+	if upd.Groups != nil {
+		if *upd.Groups == nil {
+			current.Groups = nil
+		} else {
+			current.Groups = *upd.Groups
+		}
+	}
+	if upd.Tags != nil {
+		if *upd.Tags == nil {
+			current.Tags = nil
+		} else {
+			current.Tags = *upd.Tags
+		}
+	}
+	if upd.OwnerID != nil {
+		current.OwnerID = *upd.OwnerID
+	}
+	if upd.Template != nil {
+		current.Template = *upd.Template
+	}
+	if upd.CiUser != nil {
+		current.CiUser = *upd.CiUser
+	}
+	if upd.AppInfo != nil {
+		current.AppInfo = *upd.AppInfo
+	}
+	current.UpdatedAt = time.Now().Unix()
+	if err := b.setMetaConfig(uuid, func(cfg map[string]string) { applyMetaToConfig(cfg, current) }, etag); err != nil {
+		return models.VMMeta{}, err
+	}
+	return current, nil
 }
+
+// setMetaConfig is the shared read-modify-write helper: it applies fn
+// to a copy of the instance config and pushes the result via
+// UpdateInstance, preserving devices/profiles/description. An ETag from
+// a previous read avoids clobbering a concurrent edit.
+func (b *LXDBackend) setMetaConfig(uuid string, fn func(map[string]string), etag ...string) error {
+	inst, curETag, err := b.client.GetInstance(uuid)
+	if err != nil {
+		return err
+	}
+	cfg := inst.Config
+	if cfg == nil {
+		cfg = map[string]string{}
+	}
+	fn(cfg)
+	if len(etag) > 0 {
+		curETag = etag[0]
+	}
+	op, err := b.client.UpdateInstance(uuid, api.InstancePut{
+		Config:      cfg,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, curETag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
+}
+
 func (b *LXDBackend) GetVNCInfo(id string) (compute.GraphicsInfo, error) {
 	return compute.GraphicsInfo{}, compute.ErrNotImplemented
 }
@@ -460,14 +951,122 @@ func (b *LXDBackend) GuestSetClipboard(id, text string) error { return compute.E
 
 // --- Backup / export / OVA / import ---
 
+// ExportDomain streams the container's native LXD backup export straight
+// into w via io.Copy (v1.4 Fase 3). Modern LXD (6.x) dropped the
+// standalone /1.0/instances/<name>/export endpoint — `lxc export` now
+// creates a temporary instance backup, streams its export and deletes it
+// again. This mirrors that exact flow:
+//
+//  1. CreateInstanceBackup → wait for the storage snapshot to land.
+//  2. Raw GET /1.0/instances/<name>/backups/<backup>/export, copied
+//     chunk-by-chunk into w — no whole-archive buffering in RAM, no
+//     temp download on our side.
+//  3. DeleteInstanceBackup (deferred) so no backup is left behind.
+//
+// When the caller asked for zstd, the stream is re-encoded with a
+// streaming zstd compressor (bounded window, still no full buffering)
+// so the declared Content-Type stays truthful.
 func (b *LXDBackend) ExportDomain(ctx context.Context, id string, opts compute.ExportBackupOptions, w io.Writer) (backupstore.ProducerResult, error) {
-	return backupstore.ProducerResult{}, compute.ErrNotImplemented
+	backupName := fmt.Sprintf("webkvm-export-%d", time.Now().UnixNano())
+	op, err := b.client.CreateInstanceBackup(id, api.InstanceBackupsPost{Name: backupName})
+	if err != nil {
+		return backupstore.ProducerResult{}, err
+	}
+	if err := waitOperation(op); err != nil {
+		return backupstore.ProducerResult{}, err
+	}
+	defer func() {
+		if dop, derr := b.client.DeleteInstanceBackup(id, backupName); derr == nil {
+			_ = waitOperation(dop)
+		}
+	}()
+
+	body, err := b.exportStream(ctx, id, backupName)
+	if err != nil {
+		return backupstore.ProducerResult{}, err
+	}
+	defer body.Close()
+
+	var out io.Writer = w
+	var zw io.Closer
+	if opts.Compress == "zstd" {
+		level := opts.ZstdLevel
+		if level < 1 || level > 22 {
+			level = 19
+		}
+		enc, zerr := zstd.NewWriter(w, zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)))
+		if zerr != nil {
+			return backupstore.ProducerResult{}, zerr
+		}
+		zw = enc
+		out = enc
+	}
+	n, err := io.Copy(out, body)
+	if err != nil {
+		return backupstore.ProducerResult{}, err
+	}
+	if zw != nil {
+		if cerr := zw.Close(); cerr != nil {
+			return backupstore.ProducerResult{}, cerr
+		}
+	}
+	return backupstore.ProducerResult{DisksIncluded: 1, TotalBytes: n}, nil
 }
+
+// exportStream opens the raw binary backup-export endpoint. The official
+// client only hands out io.WriteSeeker downloaders; streaming into an
+// arbitrary io.Writer needs a minimal unix-socket HTTP round-trip (same
+// socket + X-LXD-authenticated handshake as the client, which is how the
+// local daemon authorizes the root peer).
+func (b *LXDBackend) exportStream(ctx context.Context, id, backupName string) (io.ReadCloser, error) {
+	if b.socketPath == "" {
+		return nil, errors.New("lxd socket path unknown; cannot stream instance export")
+	}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", b.socketPath)
+		},
+		DisableKeepAlives: true,
+	}
+	hc := &http.Client{Transport: transport}
+	u := "http://unix.socket/1.0/instances/" + url.PathEscape(id) + "/backups/" + url.PathEscape(backupName) + "/export"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-LXD-authenticated", "true")
+	req.Header.Set("User-Agent", "webkvm")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return nil, fmt.Errorf("LXD export failed: %s: %s", resp.Status, strings.TrimSpace(string(detail)))
+	}
+	return resp.Body, nil
+}
+
 func (b *LXDBackend) ExportDomainOVA(ctx context.Context, id string, opts compute.OVAOptions, w io.Writer) error {
 	return compute.ErrNotImplemented
 }
+
+// EstimateExportSize returns the configured root disk size as a
+// pre-export progress estimate. The true archive size is not knowable
+// without exporting, so this is the documented upper bound; 0 = unknown.
 func (b *LXDBackend) EstimateExportSize(ctx context.Context, id string, compress bool) (int64, error) {
-	return 0, compute.ErrNotImplemented
+	inst, _, err := b.client.GetInstance(id)
+	if err != nil {
+		return 0, err
+	}
+	if root, ok := inst.Devices["root"]; ok {
+		if gb := parseDiskSizeGB(root["size"]); gb > 0 {
+			return gb * int64(1<<30), nil
+		}
+	}
+	return 0, nil
 }
 func (b *LXDBackend) EstimateOVASize(ctx context.Context, id string, target compute.OVATarget) (int64, error) {
 	return 0, compute.ErrNotImplemented
@@ -479,9 +1078,12 @@ func (b *LXDBackend) ImportOVA(ovaPath, newName, poolName string) (string, strin
 	return "", "", compute.ErrNotImplemented
 }
 
-// Capabilities reports what LXD supports (Fase 1: read-only listing).
+// Capabilities reports what LXD supports (Fase 3: listing, lifecycle,
+// serial console, create/update, metadata and streaming backups).
 func (b *LXDBackend) Capabilities() compute.Capabilities {
-	return compute.Capabilities{}
+	return compute.Capabilities{
+		SupportsSerialConsole: true,
+	}
 }
 
 // --- helpers ---
@@ -501,6 +1103,57 @@ func instanceToVM(i *api.Instance) models.VM {
 	}
 	if i.Type == string(api.InstanceTypeVM) {
 		vm.Type = "vm"
+	}
+	// v1.4 Fase 4.1: surface the root device as a disk and each NIC as
+	// a network interface so the KVM-equivalent Disks/Net tabs work on
+	// containers (root resize + interface attach/detach/update).
+	devNames := make([]string, 0, len(i.Devices))
+	for name := range i.Devices {
+		devNames = append(devNames, name)
+	}
+	sort.Strings(devNames)
+	for _, name := range devNames {
+		dev := i.Devices[name]
+		switch dev["type"] {
+		case "disk":
+			if name == "root" {
+				d := models.DiskInfo{
+					Device: "disk", Bus: "lxd", Target: "root", Name: "root",
+					Pool: dev["pool"], Type: "block",
+				}
+				if sz := parseDiskGB(dev["size"]); sz > 0 {
+					d.SizeGB = sz
+					vm.DiskGB = sz
+				}
+				vm.Disks = append(vm.Disks, d)
+			}
+		case "nic":
+			parent := dev["parent"]
+			vm.Networks = append(vm.Networks, models.NetIface{
+				MAC:     i.Config["volatile."+name+".hwaddr"],
+				Network: parent,
+				Model:   "lxd",
+				Type:    "lxd",
+				Source:  parent,
+			})
+		}
+	}
+	// v1.4 Fase 3: surface the webkvm metadata (tags for RBAC and
+	// backup-by-tag, alias for the UI) straight from the config keys so
+	// the unified list and the tag filters work for containers too.
+	if t := i.Config[metaTagsKey]; t != "" {
+		vm.Tags = strings.Split(t, ",")
+	}
+	if d := i.Config[metaDescKey]; d != "" {
+		var m lxdWebKVMMeta
+		if json.Unmarshal([]byte(d), &m) == nil {
+			vm.Alias = m.Alias
+		}
+	}
+	// Native cloud-init (user.user-data present at creation) drives the
+	// provisioning chip on the VM card (PLAN-LXD 5.2).
+	if i.Config["user.user-data"] != "" {
+		vm.ProvisionMethod = "cloud-init"
 	}
 	return vm
 }
@@ -570,6 +1223,32 @@ func parseMemoryMB(v string) int64 {
 	return int64(n * float64(mult))
 }
 
+// parseDiskGB parses an LXD root device size ("10GB", "2GiB") into a
+// whole GB count. GiB is converted up to GB (1024 vs 1000); returns 0
+// when unparseable.
+func parseDiskGB(v string) int64 {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	mult := float64(1)
+	num := v
+	upper := strings.ToUpper(v)
+	switch {
+	case strings.HasSuffix(upper, "GIB"):
+		mult, num = 1.073741824, strings.TrimSuffix(v, "GiB")
+	case strings.HasSuffix(upper, "GB"):
+		mult, num = 1, strings.TrimSuffix(v, "GB")
+	case strings.HasSuffix(upper, "TB"):
+		mult, num = 1000, strings.TrimSuffix(v, "TB")
+	}
+	n, err := strconv.ParseFloat(strings.TrimSpace(num), 64)
+	if err != nil {
+		return 0
+	}
+	return int64(n * mult)
+}
+
 // isNotFound reports whether an LXD error is a "not found" (instance
 // absent), so DomainExists can distinguish it from real failures.
 func isNotFound(err error) bool {
@@ -582,6 +1261,76 @@ func isNotFound(err error) bool {
 
 // httpNotFound mirrors net/http.StatusNotFound to avoid importing net/http.
 const httpNotFound = 404
+
+// imageRemotes maps the well-known official LXD remote names to their
+// simplestreams image servers (v1.4 Fase 3). Any full <server-url>:<alias>
+// reference is also accepted; unknown names are rejected up front.
+var imageRemotes = map[string]string{
+	"ubuntu":       "https://cloud-images.ubuntu.com/releases",
+	"ubuntu-daily": "https://cloud-images.ubuntu.com/daily",
+	"images":       "https://images.linuxcontainers.org",
+	"almalinux":    "https://repo.almalinux.org/almalinux",
+	"rockylinux":   "https://dl.rockylinux.org/pub/rocky",
+}
+
+// parseImageRef splits an LXD image reference ("ubuntu:24.04",
+// "https://images.linuxcontainers.org:alpine/3.20") into the
+// simplestreams server URL and the alias. Bare names without a remote
+// are rejected (ambiguous).
+func parseImageRef(ref string) (server, alias string, err error) {
+	ref = strings.TrimSpace(ref)
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		// Full server URL: the alias is the segment after the LAST colon.
+		i := strings.LastIndex(ref, ":")
+		if i <= 0 || i == len(ref)-1 {
+			return "", "", fmt.Errorf("invalid LXD image reference %q (want <server-url>:<alias>)", ref)
+		}
+		return strings.TrimSuffix(ref[:i], "/"), ref[i+1:], nil
+	}
+	i := strings.Index(ref, ":")
+	if i <= 0 || i == len(ref)-1 {
+		return "", "", fmt.Errorf("invalid LXD image reference %q (want <remote>:<alias>, e.g. ubuntu:24.04)", ref)
+	}
+	remote, alias := ref[:i], ref[i+1:]
+	if strings.Contains(remote, "/") || strings.HasPrefix(remote, "http") {
+		// Full server URL without scheme is unusual; treat as URL anyway.
+		return strings.TrimSuffix(remote, "/"), alias, nil
+	}
+	server, ok := imageRemotes[remote]
+	if !ok {
+		known := make([]string, 0, len(imageRemotes))
+		for k := range imageRemotes {
+			known = append(known, k)
+		}
+		sort.Strings(known)
+		return "", "", fmt.Errorf("unknown LXD image remote %q (known: %s)", remote, strings.Join(known, ", "))
+	}
+	return server, alias, nil
+}
+
+// formatMemoryMB renders a RAM limit in MiB as LXD expects it.
+func formatMemoryMB(mb int64) string { return fmt.Sprintf("%dMiB", mb) }
+
+// parseDiskSizeGB parses an LXD root disk size ("10GB", "20GiB") into
+// whole GB; 0 when unparseable.
+func parseDiskSizeGB(v string) int64 {
+	v = strings.TrimSpace(v)
+	upper := strings.ToUpper(v)
+	var num string
+	switch {
+	case strings.HasSuffix(upper, "GIB"):
+		num = strings.TrimSuffix(v, "GiB")
+	case strings.HasSuffix(upper, "GB"):
+		num = strings.TrimSuffix(v, "GB")
+	default:
+		return 0
+	}
+	n, err := strconv.ParseFloat(strings.TrimSpace(num), 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return int64(n)
+}
 
 // mapLXErr translates LXD daemon errors to the neutral compute sentinels
 // where a meaningful mapping exists; anything else passes through.

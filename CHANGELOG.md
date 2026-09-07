@@ -4,6 +4,50 @@ Todos los cambios notables de este proyecto se documentan en este
 fichero, siguiendo [Keep a Changelog](https://keepachangelog.com/es/1.1.0/)
 y [Semantic Versioning](https://semver.org/lang/es/).
 
+## [2.1.0] — Soporte Híbrido KVM/LXC (2026-09-07)
+
+El salto de arquitectura a v2.x: WebKVM ya no gestiona solo máquinas
+virtuales QEMU/KVM, sino también **contenedores LXC de forma nativa** a
+través del daemon LXD, con una vista unificada en la que cada instancia
+lleva su badge de identidad (`KVM` / `LXC`).
+
+### Added
+
+- **Backend LXD (Fases 1–3)**:
+  - Conector `LXDBackend` contra el daemon LXD (socket unix, snap o apt)
+    con seam `compute.Backend` y listado unificado (`Combined`) — la
+    caída del daemon degrada a KVM-only sin regresión.
+  - Ciclo de vida de contenedores (start/stop/forceoff/reboot/freeze)
+    + **consola serial interactiva** (exec bash sobre websockets).
+  - **Creación con imágenes oficiales (cero ISOs)**: `ubuntu:24.04`,
+    `images:alpine/3.20`, … con cloud-init inyectado nativamente en
+    `user.user-data`/`user.network-config`.
+  - Tags/metadatos RBAC (`user.webkvm.tags`/`user.webkvm.desc`) y
+    **backups en streaming** (`/1.0/instances/<name>/export`, io.Copy,
+    sin doble buffer ni descarga temporal).
+- **Frontend híbrido (Fase 4)**:
+  - Formulario de despliegue dual (KVM / LXC), filtro `All · VMs ·
+    Containers`, badge de tipo por tarjeta y chip de provisión.
+  - Detalle por capabilities: se ocultan/adaptan los controles solo-KVM.
+- **Paridad KVM/LXC (Fase 4.1)**:
+  - Selector de **imágenes con etiquetas amigables** (+ Custom/Other).
+  - **Disco raíz redimensionable** (`lxc config device set root size=X`),
+    **interfaces de red** gestionables y **métricas CPU/RAM** propias
+    (MetricsCollector LXD) con el mismo sink de history/alerts.
+  - **Credenciales LXC** (usuario opcional → contraseña de root) y
+    **redes unificadas**: los contenedores se atan a los mismos Linux
+    bridges de libvirt que las VMs (adiós `lxdbr0` hardcodeado).
+  - Nombres propios: "Ubuntu 24.04 LTS", "Red Interna (vmbr0)".
+- **Instalador**: flag opcional `WEBKVM_INSTALL_LXD=1` (snap solo en la
+  familia Ubuntu/Debian; paquete nativo en Arch/Fedora con aviso no-fatal)
+  y documentación del opt-in `WEBKVM_LXD_ENABLED=1`.
+
+### Fixed
+
+- `debian:12` fallaba en `parseImageRef` → presets con refs válidas
+  (`images:debian/12`).
+- Los contenedores ya no instalan `qemu-guest-agent` (paquete QEMU).
+
 ## [Unreleased] — v1.2.0 "Estabilización"
 
 El objetivo de esta versión es estabilizar la plataforma sobre los

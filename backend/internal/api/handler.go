@@ -13,6 +13,7 @@ import (
 	"webkvm/internal/auth"
 	"webkvm/internal/backupstore"
 	"webkvm/internal/compute"
+	"webkvm/internal/compute/lxd"
 	"webkvm/internal/config"
 	"webkvm/internal/configstore"
 	"webkvm/internal/events"
@@ -56,6 +57,9 @@ type Handler struct {
 	// V13-C-03/04: metric history + alert engine.
 	metricHist *metrics.TimeSeriesStore
 	alerter    *metrics.AlertEngine
+	// lxdMetrics collects CPU/RAM/Net for LXD containers (v1.4 Fase 4.1).
+	// GET /vms/{id}/metrics routes to it when the instance is a container.
+	lxdMetrics *lxd.MetricsCollector
 	StartedAt  time.Time
 
 	// V12-DATA-01: per-name serialization of appliance deployments. Two

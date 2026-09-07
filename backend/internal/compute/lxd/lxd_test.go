@@ -49,6 +49,27 @@ func TestInstanceToVM(t *testing.T) {
 	if !vm.Autostart {
 		t.Error("autostart should be true")
 	}
+	if vm.ProvisionMethod != "" {
+		t.Errorf("provision_method = %q, want empty without user-data", vm.ProvisionMethod)
+	}
+}
+
+// A container created with native cloud-init carries user.user-data in
+// its config -> the provisioning chip should read "cloud-init".
+func TestInstanceToVM_ProvisionMethod(t *testing.T) {
+	provisioned := instanceToVM(&api.Instance{
+		Name:   "web2",
+		Status: "Running",
+		Type:   "container",
+		Config: map[string]string{"user.user-data": "#cloud-config\n"},
+	})
+	if provisioned.ProvisionMethod != "cloud-init" {
+		t.Errorf("provision_method = %q, want cloud-init", provisioned.ProvisionMethod)
+	}
+	plain := instanceToVM(&api.Instance{Name: "plain", Status: "Stopped", Type: "container"})
+	if plain.ProvisionMethod != "" {
+		t.Errorf("provision_method = %q, want empty", plain.ProvisionMethod)
+	}
 }
 
 // An LXD virtual-machine maps Type=vm; a stopped container -> shutoff.
@@ -95,14 +116,11 @@ func TestParseIntConfig(t *testing.T) {
 func TestLXDBackendFailSafe(t *testing.T) {
 	b := &LXDBackend{} // no client needed for stubs
 	ops := []func() error{
-		func() error { _, err := b.CreateDomain(models.CreateVMRequest{}); return err },
-		func() error {
-			_, err := b.ExportDomain(context.Background(), "x", compute.ExportBackupOptions{}, nil)
-			return err
-		},
 		func() error { _, err := b.ListSnapshots("x"); return err },
 		func() error { _, err := b.ListStoragePools(); return err },
 		func() error { return b.AttachDisk("x", models.AttachDiskRequest{}) },
+		func() error { return b.ExportDomainOVA(context.Background(), "x", compute.OVAOptions{}, nil) },
+		func() error { _, err := b.ListHostUSBDevices(); return err },
 	}
 	for i, op := range ops {
 		if err := op(); !errors.Is(err, compute.ErrNotImplemented) {
@@ -110,7 +128,10 @@ func TestLXDBackendFailSafe(t *testing.T) {
 		}
 	}
 	if c := b.Capabilities(); c.SupportsOVA || c.SupportsVNC || c.SupportsSnapshots {
-		t.Errorf("LXD capabilities must all be false in Fase 1, got %+v", c)
+		t.Errorf("LXD must not advertise OVA/VNC/snapshots, got %+v", c)
+	}
+	if c := b.Capabilities(); !c.SupportsSerialConsole {
+		t.Error("LXD advertises the interactive serial console since Fase 2")
 	}
 }
 

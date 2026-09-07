@@ -13,6 +13,8 @@
   import { api, auth } from '$lib/stores/auth.svelte.js';
   import { t } from '../lib/i18n.svelte.js';
   import { stateDotClass } from '$lib/utils/vmState.js';
+import { isContainer } from '$lib/utils/computeType.js';
+import { networkLabel, networkLabelFor } from '$lib/utils/networkLabel.js';
   import { formatRate } from '$lib/utils/format.js';
   import { events } from '$lib/stores/events.svelte.js';
   import { navigate, getRoute } from '$lib/router.svelte.js';
@@ -44,6 +46,10 @@
   let { vmId } = $props();
 
   let vm = $state(null);
+  // v1.4 Fase 4: an LXD container has no KVM concepts (no chipset/UEFI/
+  // TPM, no cdrom, no VNC, no per-disk attach). Sections and controls
+  // below are gated on this derived flag (PLAN-LXD 5.4).
+  const isContainerVm = $derived(vm && isContainer(vm));
   let snapshots = $state([]);
   let bootDevice = $state('hd');
   let loading = $state(true);
@@ -386,7 +392,7 @@
     try {
       const [vmData, snapData, bootData] = await Promise.all([
         api.getVM(vmId),
-        api.listSnapshots(vmId),
+        api.listSnapshots(vmId).catch(() => []),
         api.getBootDevice(vmId).catch(() => ({ boot_device: 'hd' })),
       ]);
       vm = vmData;
@@ -1553,6 +1559,16 @@
               </div>
             </div>
             <div class="grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+              <div class="flex gap-2">
+                <span class="text-muted-foreground shrink-0">{t('vmDetail.typeLabel')}</span>
+                <span
+                  class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wider font-medium {isContainerVm
+                    ? 'border-[#b45309]/30 bg-[#b45309]/10 text-[#d97706]'
+                    : 'border-accent/30 bg-accent/10 text-accent'}"
+                >
+                  {isContainerVm ? 'LXC' : 'KVM'}
+                </span>
+              </div>
               {#if vm.os_type}
                 <div class="flex gap-2">
                   <span class="text-muted-foreground shrink-0">{t('vmDetail.os')}</span><span
@@ -1560,6 +1576,7 @@
                   >
                 </div>
               {/if}
+              {#if !isContainerVm}
               <div class="flex gap-2">
                 <span class="text-muted-foreground shrink-0">{t('vmDetail.chipset')}</span><span
                   >{vm.chipset}</span
@@ -1606,6 +1623,7 @@
                   <option value="network">{t('vmDetail.network')}</option>
                 </select>
               </div>
+              {/if}
             </div>
           </BlockCard>
         {/snippet}
@@ -1714,6 +1732,7 @@
 
         {#snippet sec_disks()}
           <BlockCard bid="disks" title={t('vmDetail.disks')}>
+            {#if !isContainerVm}
             <div class="flex items-center justify-between mb-3">
               <Button
                 size="xs"
@@ -1729,6 +1748,7 @@
                 }}>+ Add Disk</Button
               >
             </div>
+            {/if}
             {#if !vm.disks || vm.disks.length === 0}
               <p class="text-sm text-muted-foreground">{t('vmDetail.noDisks')}</p>
             {:else}
@@ -1774,6 +1794,7 @@
                           >{t('vmDetail.resize')}</button
                         >
                       {/if}
+                      {#if !isContainerVm}
                       <button
                         onclick={() => {
                           changeBusTarget = disk.target;
@@ -1793,6 +1814,7 @@
                         class="text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10"
                         >{t('vmDetail.remove')}</button
                       >
+                      {/if}
                     </div>
                   </div>
                 {/each}
@@ -1809,7 +1831,7 @@
                 variant="outline"
                 onclick={() => {
                   aNetNetwork = networks[0]?.name || 'default';
-                  aNetModel = 'virtio';
+                  aNetModel = isContainerVm ? 'lxd' : 'virtio';
                   showAddNet = true;
                 }}>+ {t('vmDetail.addInterface')}</Button
               >
@@ -1828,7 +1850,7 @@
                         class="text-xs px-1.5 py-0.5 rounded border border-border bg-muted text-muted-foreground"
                         >{iface.model}</span
                       >
-                      <span class="text-sm">{iface.network}</span>
+                      <span class="text-sm">{networkLabelFor(iface.network, networks)}</span>
                       {#if vm.state === 'running' && idx === 0 && vm.ip}
                         <span
                           class="text-xs px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent font-mono"
@@ -2367,10 +2389,12 @@
             {t('vmDetail.actions')}
           </h2>
           <div class="space-y-2">
-            <Button onclick={openConsole} class="w-full">
-              <Terminal class="w-4 h-4 mr-1.5" />
-              {t('vmDetail.openConsole')}
-            </Button>
+            {#if !isContainerVm}
+              <Button onclick={openConsole} class="w-full">
+                <Terminal class="w-4 h-4 mr-1.5" />
+                {t('vmDetail.openConsole')}
+              </Button>
+            {/if}
             <Button variant="outline" onclick={gotoSerial} class="w-full">
               <Terminal class="w-4 h-4 mr-1.5" />
               Serial Console
@@ -2381,7 +2405,7 @@
                 Credenciales de la app
               </Button>
             {/if}
-            {#if auth.isAdmin()}
+            {#if auth.isAdmin() && !isContainerVm}
               <Button
                 variant="outline"
                 onclick={resetPassword}
@@ -2403,6 +2427,7 @@
               <Trash2 class="w-4 h-4 mr-1.5" />
               {t('vmDetail.deleteVM')}
             </Button>
+            {#if !isContainerVm}
             <Button
               variant="outline"
               onclick={() => {
@@ -2415,6 +2440,7 @@
               <CopyPlus class="w-4 h-4 mr-1.5" />
               {t('vmDetail.cloneVM')}
             </Button>
+            {/if}
             <Button variant="outline" onclick={openEdit} class="w-full">
               <Pencil class="w-4 h-4 mr-1.5" />
               {t('vmDetail.editSettings')}
@@ -2683,7 +2709,7 @@
             >{t('vmDetail.networkLabel')}</label
           >
           <select id="edit-net" bind:value={eNetwork} class="input">
-            {#each networks as net}<option value={net.name}>{net.name}</option>{/each}
+            {#each networks as net}<option value={net.name}>{networkLabel(net)}</option>{/each}
           </select>
         </div>
         <div>
@@ -3022,7 +3048,7 @@
           >{t('vmDetail.networkLabel')}</label
         >
         <select id="anet-net" bind:value={aNetNetwork} class="input">
-          {#each networks as net}<option value={net.name}>{net.name}</option>{/each}
+          {#each networks as net}<option value={net.name}>{networkLabel(net)}</option>{/each}
         </select>
       </div>
       <div>

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -47,6 +49,30 @@ func mustLXDVersion(b *lxd.LXDBackend) string {
 		return ""
 	}
 	return v
+}
+
+// networkBridgeResolver maps a libvirt network name to the Linux bridge
+// it runs on (v1.4 Fase 4.1). Containers attach their NICs to the very
+// same bridges as KVM VMs; nil connector degrades to the lxdbr0 default.
+func networkBridgeResolver(lv *libvirt.Connector) func(string) (string, error) {
+	return func(name string) (string, error) {
+		if lv == nil {
+			return "", errors.New("libvirt connector unavailable")
+		}
+		nets, err := lv.ListNetworks()
+		if err != nil {
+			return "", err
+		}
+		for _, n := range nets {
+			if n.Name == name {
+				if n.Bridge == "" {
+					return "", fmt.Errorf("network %q has no bridge device", name)
+				}
+				return n.Bridge, nil
+			}
+		}
+		return "", fmt.Errorf("network %q not found", name)
+	}
 }
 
 func main() {
@@ -350,6 +376,12 @@ func main() {
 	// backend uses, so a backup of {DataDir} covers every file
 	// the running server depends on (users.json, audit.log,
 	// backup/, nodes.json, api-tokens.json, jwt.key, etc.).
+	//
+	// computeBackend is declared here (assigned once the KVM connector
+	// and optional LXD backend are built below) so the runner's VMSource
+	// / XML / snapshot / export closures see the FINAL combined backend:
+	// containers from LXD are backed up via their native export stream.
+	var computeBackend compute.Backend
 	backupStore, err := backupstore.New(cfg.DataDir)
 	if err != nil {
 		logger.Error("backupstore_init_failed", "err", err)
@@ -367,20 +399,34 @@ func main() {
 		// VMSource lets the runner honour per-target VMFilter
 		// (all / include / exclude) and per-target VMIDs at
 		// backup time. A failure here aborts the run rather
-		// than silently writing an empty archive.
-		lv.ListDomains,
+		// than silently writing an empty archive. The combined
+		// backend merges KVM VMs and LXD containers (v1.4).
+		func() ([]models.VM, error) { return computeBackend.ListDomains() },
 		// VMXMLSource returns the libvirt <domain> XML for
 		// each in-scope VM, used to populate domain.xml in
 		// the per-VM archive. Without this the per-VM tars
 		// would be missing the XML and a restore would be
 		// incomplete. main.go is the only production caller;
 		// tests can pass nil.
-		lv.GetDomainXML,
+		func(id string) (string, error) { return computeBackend.GetDomainXML(id) },
 		// VMSnapshotSource returns snapshot metadata and
 		// overlay volumes for each in-scope VM, used to
 		// populate the snapshots/ entries in the per-VM
 		// archive. Optional; nil skips snapshot data.
-		lv.ExportSnapshots,
+		func(id string) ([]backupstore.SnapshotBackup, error) {
+			return computeBackend.ExportSnapshots(id)
+		},
+		// VMExportSource streams the native LXD export for
+		// containers straight into the per-VM archive
+		// (io.Copy from /1.0/instances/<name>/export — no
+		// double buffering). KVM VMs never take this path.
+		func(ctx context.Context, vm models.VM, w io.Writer) (int64, error) {
+			if vm.Hypervisor != "lxd" {
+				return 0, fmt.Errorf("instance %q is not an LXD container", vm.ID)
+			}
+			res, xerr := computeBackend.ExportDomain(ctx, vm.ID, compute.ExportBackupOptions{Compress: "gzip"}, w)
+			return res.TotalBytes, xerr
+		},
 		logger,
 	)
 	go backupRunner.Start(eventCtx)
@@ -527,23 +573,35 @@ func main() {
 	// V1.4-Fase 0: the ComputeBackend seam. KVM is the only backend; the
 	// adapter wraps the existing connector so api handlers never touch
 	// libvirt types. Bind the managed-bridge/network predicates too.
-	var computeBackend compute.Backend = compute.NewKVMBackend(lv)
+	computeBackend = compute.NewKVMBackend(lv)
 	compute.BindHelpers(libvirt.IsManagedBridge, libvirt.IsManagedNetwork)
 
 	// V1.4-Fase 1: optional LXD container backend. Fail-safe: when
 	// disabled or when the daemon socket is unreachable, the backend
 	// degrades to KVM-only with zero regression.
+	// v1.4 Fase 4.1: the backend also resolves libvirt network names to
+	// their Linux bridge (containers join the same networks as VMs) and
+	// exposes a per-container metrics collector sharing the KVM sink.
+	var lxdMetrics *lxd.MetricsCollector
 	if cfg.LXDEnabled {
 		lxdSocket := cfg.LXDSocket
-		if lxdBackend, lerr := lxd.NewLXDBackend(lxdSocket); lerr != nil {
+		if lxdBackend, lerr := lxd.NewLXDBackend(lxdSocket, lxd.WithNetworkResolver(networkBridgeResolver(lv))); lerr != nil {
 			logger.Warn("lxd_disabled", "err", lerr, "socket", lxdSocket)
 		} else {
 			computeBackend = compute.NewCombined(computeBackend, lxdBackend)
 			logger.Info("lxd_connected", "socket", lxdSocket, "server_version", mustLXDVersion(lxdBackend))
+			// Container metrics feed the same history store + alert
+			// engine as KVM, so charts and alerts just work for LXC.
+			lxdMetrics = lxdBackend.NewMetricsCollector(hub)
+			go lxdMetrics.Run(eventCtx)
+			lxdMetrics.SetSink(func(vmID string, at time.Time, m models.VMMetrics) {
+				metricHist.Record(vmID, at, m)
+				alerter.Evaluate(vmID, at, m)
+			})
 		}
 	}
 
-	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter)
+	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter, lxdMetrics)
 
 	srv := &http.Server{
 		Addr:    net.JoinHostPort(cfg.BindAddr, fmt.Sprintf("%d", cfg.Port)),

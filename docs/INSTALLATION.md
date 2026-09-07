@@ -18,6 +18,7 @@ Single document covering **installation** of the WebKVM manager and the
 | RAM | at least 2 GB |
 | Disk | at least 5 GB free |
 | Network | outbound internet (packages and tool downloads) |
+| LXD *(optional, containers)* | the LXD daemon installed and running on the host to manage **LXC containers** (v2.1.0). Skip for KVM-only. See [Containers (LXC)](#6-vm-networking) below. |
 
 ### 2. One-command install
 
@@ -100,6 +101,7 @@ Fedora 43/44 and Arch. The installer adds each distro's libvirt packages.
 | `NETWORK_MODE` | `nat`, `bridge` or `both`. Interactive default `both`; piped installs default to **`nat`** so your LAN is never reconfigured silently. |
 | `BRIDGE_DHCP`, `BRIDGE_STATIC_IP`, `BRIDGE_STATIC_GW`, `BRIDGE_STATIC_DNS` | br0 bridge settings (DHCP by default, or static). |
 | `WEBKVM_NONINTERACTIVE=1` | Ask nothing; apply defaults. |
+| `WEBKVM_INSTALL_LXD=1` | *(v2.1.0)* install + enable the LXD daemon for containers (snap on Ubuntu/Debian only; native package on Arch/Fedora with a non-fatal warning if unavailable) and set `WEBKVM_LXD_ENABLED=1` in the unit. |
 | `WEBKVM_ADMIN_PASSWORD` | Choose the initial admin password (otherwise a random one is generated and saved). |
 
 ### 5. HTTPS (no reverse proxy required)
@@ -148,6 +150,46 @@ Chosen with `NETWORK_MODE`:
 From the UI (**Networking**) you can create extra networks/bridges and per-VM
 nftables firewall rules. The installer wires this up through
 `scripts/setup-network.sh`.
+
+### 7. Containers (LXC) — hybrid KVM/LXC
+
+WebKVM **v2.1.0** manages **LXC containers natively** through the LXD daemon
+on the same host, in a unified view (each instance carries a `KVM`/`LXC`
+badge). The module is **opt-in** and disabled by default.
+
+**Host dependency.** The LXD daemon must be installed and running:
+
+```bash
+# Debian / Ubuntu
+sudo apt install lxd          # or: sudo snap install lxd && sudo lxd init
+# Arch / Fedora / RedHat family
+sudo pacman -S lxd            # or: sudo dnf install lxd
+sudo systemctl enable --now lxd
+```
+
+**Installer automation.** `WEBKVM_INSTALL_LXD=1` installs + enables LXD and
+wires the opt-in into the unit. Snap is used **only on the Ubuntu/Debian
+family**; on Arch/Fedora (and derivatives) the installer uses the **native
+package** — and if none is available it prints a warning asking you to install
+LXD or Incus manually per your distro's wiki and **continues KVM-only
+(never fails, never forces snap)**:
+
+```bash
+sudo WEBKVM_INSTALL_LXD=1 bash install-webkvm.sh
+```
+
+**Activation (env).** Set `WEBKVM_LXD_ENABLED=1` in the systemd unit
+(`Environment=WEBKVM_LXD_ENABLED=1`) or in `.env`. `LXD_SOCKET` overrides the
+auto-detected socket (`/var/snap/lxd/common/lxd/unix.socket` snap,
+`/var/lib/lxd/unix.socket` apt).
+
+**Permissions.** The process user must read the LXD socket. The native service
+runs as `root` (no step needed); for a non-root/Docker run add the user to the
+`lxd` group: `sudo usermod -aG lxd <user> && sudo systemctl restart webkvm`.
+
+**Verify.** `lxd_connected` in the backend log at startup; containers appear in
+the VM list and can be created from the same form as VMs (friendly image
+picker, cloud-init credentials, root-disk resize, interfaces, live metrics).
 
 ### 7. Non-interactive install (servers / pipelines)
 
@@ -295,6 +337,8 @@ Three planes:
 | `CORS_ORIGIN` | `*` | Allowed CORS origins (comma-separated). |
 | `TLS_CERT` / `TLS_KEY` / `TLS_DOMAIN` | — | TLS settings (persisted as server.tls_*). |
 | `WEBKVM_ADMIN_PASSWORD` | — | Initial admin password (random generated otherwise). |
+| `WEBKVM_LXD_ENABLED` | `0` | *(v2.1.0)* enable the LXD container module (requires the LXD daemon on the host). |
+| `LXD_SOCKET` | auto | LXD unix socket override (`/var/snap/lxd/common/lxd/unix.socket` snap, `/var/lib/lxd/unix.socket` apt). |
 
 `.env` in the working directory is loaded as fallback (godotenv); real
 environment variables always win.

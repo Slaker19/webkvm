@@ -164,13 +164,18 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 			_, _ = h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{CiUser: &u})
 		}
 		createdPassword = req.CloudInit.Password
-		if err := h.applyCloudInit(vm.ID, vm.Name, req.CloudInit); err != nil {
-			jsonResp(w, http.StatusCreated, map[string]any{
-				"id":      vm.ID,
-				"name":    vm.Name,
-				"warning": "cloud-init failed: " + err.Error(),
-			})
-			return
+		// LXD containers already received their cloud-init natively at
+		// creation (user.user-data / user.network-config config keys) —
+		// the NoCloud ISO path is KVM-only and would 501 on a container.
+		if vm.Hypervisor != "lxd" {
+			if err := h.applyCloudInit(vm.ID, vm.Name, req.CloudInit); err != nil {
+				jsonResp(w, http.StatusCreated, map[string]any{
+					"id":      vm.ID,
+					"name":    vm.Name,
+					"warning": "cloud-init failed: " + err.Error(),
+				})
+				return
+			}
 		}
 	}
 	h.audit.Log(auditFor(r, "vm.create", vm.ID, map[string]interface{}{"name": vm.Name}))
@@ -844,7 +849,7 @@ func (h *Handler) ExportVM(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if vm.State == models.VMStateRunning {
+	if vm.State == models.VMStateRunning && vm.Hypervisor != "lxd" {
 		jsonErr(w, http.StatusConflict, "VM must be shut off before exporting")
 		return
 	}
@@ -854,10 +859,14 @@ func (h *Handler) ExportVM(w http.ResponseWriter, r *http.Request) {
 	// error on a single disk surfaces inside the streaming
 	// goroutine (after the headers are already sent) and the
 	// client receives a truncated download with HTTP 200 instead
-	// of a clean 500 with an actionable error.
-	if err := h.compute.ValidateDomainDisks(id); err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
-		return
+	// of a clean 500 with an actionable error. LXD containers have no
+	// local disk files to pre-flight (their export is streamed natively
+	// by the daemon, even while running).
+	if vm.Hypervisor != "lxd" {
+		if err := h.compute.ValidateDomainDisks(id); err != nil {
+			jsonErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 
 	format := strings.ToLower(r.URL.Query().Get("format"))
