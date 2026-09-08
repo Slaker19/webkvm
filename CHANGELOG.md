@@ -4,6 +4,56 @@ Todos los cambios notables de este proyecto se documentan en este
 fichero, siguiendo [Keep a Changelog](https://keepachangelog.com/es/1.1.0/)
 y [Semantic Versioning](https://semver.org/lang/es/).
 
+## [2.4.0] — Arquitectura de red unificada estilo Proxmox (2026-09-08)
+
+### Added
+
+- **Modelo de red único y agnóstico**: WebKVM solo busca, lista y usa
+  **puentes Linux reales del SO** (`vmbr0`, `vmbr1`, `vmbrX`). Las redes
+  lógicas de los hipervisores (`default`, `webkvm-bridge`, `br0-bridge`,
+  `virbr0`, `lxdbr0`) desaparecen del backend, la UI y los scripts.
+  - **KVM**: `<interface type='bridge'><source bridge='vmbrX'/>` siempre
+    (se eliminó el camino `<interface type='network'>`/NAT).
+  - **Incus**: `nictype=bridged parent=vmbrX` siempre; `bridgeForNetwork`
+    ya no traduce nombres lógicos (se eliminó el resolver). Un nombre de
+    red debe ser un bridge real del host.
+  - **`ListNetworks`** devuelve únicamente bridges reales (con su IP);
+    `CreateNetwork` crea un bridge a nivel de SO (jamás una red libvirt);
+    Update/Delete/Start/Stop se rechazan (los bridges se gestionan en el
+    SO). Se elimina la creación en el arranque de `default`/`webkvm-bridge`.
+- **Fix contenedores con eth0+eth1 (Incus)**: el NIC de la instancia se
+  llama estrictamente `eth0` (clave + `name`), que sobreescribe el NIC del
+  perfil `default` — un solo interfaz, nunca el duplicado de `lxdbr0`.
+  Verificado en vivo: los contenedores muestran `NICs=1`.
+- **Adjuntar/desadjuntar NIC a un contenedor ahora configura el guest**:
+  `AttachNetworkIface`/`DetachNetworkIface` regeneran `user.network-config`
+  (netplan) con todos los NICs (`eth0`, `eth1`, …) en `dhcp4: true`, así
+  que tras el siguiente reinicio cada interfaz adjuntada recibe DHCP de su
+  bridge (LAN vía router o `vmbr1` vía dnsmasq). Antes, un NIC adjuntado al
+  vuelo quedaba sin configuración en el guest (sin IP), lo que parecía un
+  NIC roto/duplicado.
+- **Varias IPs por instancia**: `VM.IPs []string` expone una IP por NIC
+  (KVM vía guest agent/ARP; Incus vía estado de instancia), con `VM.IP` como
+  primaria (eth0). La UI (lista, detalle y red) muestra todas las IPs
+  (`vmIps()`); un contenedor con 2 NICs ya enseña sus 2 IPs, no solo la
+  primera. La búsqueda también filtra por cualquier IP.
+- **`vmbr1` — bridge NAT/aislado estilo Proxmox** (`setup-network.sh`):
+  crea `dummy0` (ancla del bridge sin NIC física), el bridge `vmbr1` con
+  `100.0.0.1/24`, **MASQUERADE/NAT** hacia el uplink principal
+  (firewalld/UFW/iptables) y **dnsmasq** sirviendo DHCP `100.0.0.100-200`
+  — igual que los `vmbrN` NAT de Proxmox. Persistencia vía netplan
+  (+ oneshot `webkvm-dummy0.service`), systemd-networkd o nmcli.
+  Verificado en vivo: contenedor en `vmbr1` recibe `100.0.0.x` y sale a
+  internet por NAT.
+- **Scripts**: se elimina la creación de la red libvirt `br0-bridge`; el
+  puente físico `vmbr0` sigue siendo el default (LAN real, DHCP del router).
+
+### Changed
+
+- El backend ya no crea/gestióna redes libvirt virtuales: `ensureDefaultNetwork`
+  y `ensureDefaultBridgeNetwork` fueron eliminadas; `ListNetworks` no consulta
+  `libvirtd`. El conector Incus ya no necesita `WithNetworkResolver`.
+
 ## [2.3.1] — Red física por defecto en todo el stack (2026-09-08)
 
 ### Added

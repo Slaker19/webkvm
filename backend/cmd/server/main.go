@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -41,38 +40,12 @@ var (
 )
 
 // mustContainerVersion returns the container daemon version ("" on error)
-// for the startup log. Errors are non-fatal — connectivity was already
-// proven by NewIncusBackend.
 func mustContainerVersion(b *incus.IncusBackend) string {
 	v, err := b.ServerInfo()
 	if err != nil {
 		return ""
 	}
 	return v
-}
-
-// networkBridgeResolver maps a libvirt network name to the Linux bridge
-// it runs on (v1.4 Fase 4.1). Containers attach their NICs to the very
-// same bridges as KVM VMs; nil connector degrades to the lxdbr0 default.
-func networkBridgeResolver(lv *libvirt.Connector) func(string) (string, error) {
-	return func(name string) (string, error) {
-		if lv == nil {
-			return "", errors.New("libvirt connector unavailable")
-		}
-		nets, err := lv.ListNetworks()
-		if err != nil {
-			return "", err
-		}
-		for _, n := range nets {
-			if n.Name == name {
-				if n.Bridge == "" {
-					return "", fmt.Errorf("network %q has no bridge device", name)
-				}
-				return n.Bridge, nil
-			}
-		}
-		return "", fmt.Errorf("network %q not found", name)
-	}
 }
 
 func main() {
@@ -579,13 +552,14 @@ func main() {
 	// V1.4-Fase 1: optional LXD container backend. Fail-safe: when
 	// disabled or when the daemon socket is unreachable, the backend
 	// degrades to KVM-only with zero regression.
-	// v1.4 Fase 4.1: the backend also resolves libvirt network names to
-	// their Linux bridge (containers join the same networks as VMs) and
-	// exposes a per-container metrics collector sharing the KVM sink.
+	// v2.4: the backend uses ONE network model — real OS-level Linux
+	// bridges (vmbr0, vmbr1, …). No libvirt network-name resolver is
+	// needed: the network IS the bridge. A per-container metrics collector
+	// shares the KVM sink.
 	var incusMetrics *incus.MetricsCollector
 	if cfg.IncusEnabled {
 		incusSocket := cfg.IncusSocket
-		if incusBackend, lerr := incus.NewIncusBackend(incusSocket, incus.WithNetworkResolver(networkBridgeResolver(lv))); lerr != nil {
+		if incusBackend, lerr := incus.NewIncusBackend(incusSocket); lerr != nil {
 			logger.Warn("incus_disabled", "err", lerr, "socket", incusSocket)
 		} else {
 			computeBackend = compute.NewCombined(computeBackend, incusBackend)

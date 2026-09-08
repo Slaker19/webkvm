@@ -75,20 +75,10 @@ type IncusBackend struct {
 	// own unix-socket HTTP request (the official client only decodes
 	// JSON bodies, never binary streams).
 	socketPath string
-	// networkResolver maps a libvirt network NAME to the Linux bridge
-	// it runs on (v1.4 Fase 4.1): containers attach to the very same
-	// bridges as KVM VMs. Nil keeps the historical lxdbr0 default.
-	networkResolver func(networkName string) (bridge string, err error)
 }
 
 // IncusBackendOption customizes the backend at construction time.
 type IncusBackendOption func(*IncusBackend)
-
-// WithNetworkResolver wires the libvirt network-name -> Linux bridge
-// resolver so containers can join the same networks as KVM VMs.
-func WithNetworkResolver(resolver func(networkName string) (bridge string, err error)) IncusBackendOption {
-	return func(b *IncusBackend) { b.networkResolver = resolver }
-}
 
 // NewIncusBackend connects to the LXD daemon over a unix socket. An empty
 // path uses DefaultSocketPath(). Returns an error (including
@@ -109,9 +99,12 @@ func NewIncusBackend(socketPath string, opts ...IncusBackendOption) (*IncusBacke
 	return b, nil
 }
 
-// bridgeForNetwork resolves a libvirt network name to the Linux bridge
-// the container NIC should attach to. An empty name keeps the managed
-// default bridge (lxdbr0); a name with no resolver falls back to it too.
+// bridgeForNetwork resolves the container's network to the Linux bridge its
+// NIC attaches to. WebKVM v2.4 uses ONE model: real OS-level Linux bridges
+// (vmbr0, vmbr1, … — Proxmox-style). An empty name lands on the host's main
+// physical bridge; a named network must itself be a real host bridge.
+// libvirt virtual/NAT networks ("default", "webkvm-bridge", virbr0/lxdbr0)
+// are never used.
 func (b *IncusBackend) bridgeForNetwork(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -123,35 +116,12 @@ func (b *IncusBackend) bridgeForNetwork(name string) (string, error) {
 		}
 		return "", compute.ErrNoPhysicalBridge
 	}
-	// 3. A direct PHYSICAL Linux bridge on the host (vmbr0/br0): use it
-	//    as-is — the SAME bridge KVM attaches to (shared L2).
-	if isPhysicalBridge(name) {
-		return name, nil
+	// A named network must BE a real Linux bridge on the host (vmbrX).
+	// This rejects virbr0/lxdbr0 and any virtual/NAT network name.
+	if !isPhysicalBridge(name) {
+		return "", fmt.Errorf("%w: %q is not a physical Linux bridge on the host (WebKVM only uses vmbrX bridges; virtual/NAT networks like virbr0/lxdbr0 are not used)", compute.ErrNoPhysicalBridge, name)
 	}
-	// 1. Mandatory logical→physical translation. NEVER pass the logical
-	//    name ("webkvm-bridge", "default", …) to Incus as `parent`: the
-	//    container NIC must land on the network's REAL underlying bridge
-	//    (vmbr0/br0). If no resolver is wired, fail loudly.
-	if b.networkResolver == nil {
-		return "", fmt.Errorf("cannot resolve network %q for the container: no network resolver configured (the Incus backend must be wired to the libvirt connector)", name)
-	}
-	bridge, err := b.networkResolver(name)
-	if err != nil {
-		// No fallback to NAT/virtual bridges: the host must provide a
-		// physical bridge. Surface the requirement clearly.
-		return "", fmt.Errorf("%w (network %q: %v)", compute.ErrNoPhysicalBridge, name, err)
-	}
-	bridge = strings.TrimSpace(bridge)
-	if bridge == "" {
-		return "", fmt.Errorf("%w (network %q has no bridge)", compute.ErrNoPhysicalBridge, name)
-	}
-	// 2. Guard: the resolved bridge must be a PHYSICAL Linux bridge on the
-	//    host. This rejects virbr0/lxdbr0 and stops a logical/virtual
-	//    network name from being passed as the container NIC parent.
-	if !isPhysicalBridge(bridge) {
-		return "", fmt.Errorf("network %q resolves to %q, which is not a physical Linux bridge on the host — refusing to pass a non-shared bridge as the container NIC parent", name, bridge)
-	}
-	return bridge, nil
+	return name, nil
 }
 
 // incusMainBridge returns the host's primary PHYSICAL Linux bridge for
@@ -237,7 +207,7 @@ func (b *IncusBackend) ListDomains() ([]models.VM, error) {
 		// N+1: surface the container's LAN IP (Incus GetInstance does not
 		// include it). Acceptable for the homelab context.
 		if st, _, err := b.client.GetInstanceState(instances[i].Name); err == nil {
-			vm.IP = instanceIP(st)
+			vm.IP = instanceIP(st); vm.IPs = instanceIPs(st)
 		}
 		out = append(out, vm)
 	}
@@ -252,31 +222,45 @@ func (b *IncusBackend) GetDomain(id string) (models.VM, error) {
 	vm := instanceToVM(inst)
 	// Surface the container's IP from the live instance state (eth0 IPv4).
 	if st, _, err := b.client.GetInstanceState(id); err == nil {
-		vm.IP = instanceIP(st)
+		vm.IP = instanceIP(st); vm.IPs = instanceIPs(st)
 	}
 	return vm, nil
 }
 
-// instanceIP extracts the primary IPv4 (eth0 first, then any interface
-// except lo) from an Incus instance state, so containers show their real
-// LAN IP in the UI instead of appearing isolated.
-func instanceIP(st *api.InstanceState) string {
+// instanceIPs extracts every IPv4 (eth0 first, then any interface except lo)
+// from an Incus instance state, so containers with several NICs expose all
+// their IPs instead of a single one. The first entry is the primary (eth0).
+func instanceIPs(st *api.InstanceState) []string {
 	if st == nil {
-		return ""
+		return nil
 	}
-	if net, ok := st.Network["eth0"]; ok {
-		for _, a := range net.Addresses {
-			if a.Family == "inet" && a.Address != "" {
-				return a.Address
+	seen := map[string]bool{}
+	out := []string{}
+	// eth0 (and other ethernet NICs) first, in a stable order.
+	names := make([]string, 0, len(st.Network))
+	for name := range st.Network {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if name == "lo" {
+			continue
+		}
+		for _, a := range st.Network[name].Addresses {
+			if a.Family == "inet" && a.Address != "" && !seen[a.Address] {
+				seen[a.Address] = true
+				out = append(out, a.Address)
 			}
 		}
 	}
-	for _, net := range st.Network {
-		for _, a := range net.Addresses {
-			if a.Family == "inet" && a.Address != "" {
-				return a.Address
-			}
-		}
+	return out
+}
+
+// instanceIP returns the primary IPv4 (eth0's first, else the first address
+// on any non-loopback interface). Kept for the single-IP model field.
+func instanceIP(st *api.InstanceState) string {
+	if ips := instanceIPs(st); len(ips) > 0 {
+		return ips[0]
 	}
 	return ""
 }
@@ -392,7 +376,11 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 			"size": fmt.Sprintf("%dGB", req.DiskGB),
 		}
 	}
-	// NIC on the chosen bridge (like `lxc launch -n <network>`).
+	// NIC on the chosen bridge. The device MUST be named strictly "eth0"
+	// (map key AND name property): LXD overrides a same-name profile device
+	// (the "default" profile's NIC), so the container gets exactly ONE
+	// interface on the physical bridge — never an extra eth0/eth1 duplicate
+	// from the profile's lxdbr0 NIC.
 	devices["eth0"] = map[string]string{
 		"type":    "nic",
 		"nictype": "bridged",
@@ -416,6 +404,9 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 		for k, v := range cloudKeys {
 			config[k] = v
 		}
+		// Derive the netplan from the actual NIC devices (currently just
+		// eth0) so the guest is configured exactly for what is attached.
+		config["user.network-config"] = lxdNetworkConfig(devices)
 	}
 	post := api.InstancesPost{
 		Name: req.Name,
@@ -658,6 +649,13 @@ func (b *IncusBackend) AttachNetworkIface(id string, req models.AttachNetRequest
 		"parent":  bridge,
 		"name":    nicName,
 	}
+	// The guest only configures the NICs declared in its netplan
+	// (user.network-config). Regenerate it so the newly attached NIC
+	// gets DHCP on the next cloud-init/netplan run — otherwise the new
+	// interface would sit in the guest without an IP and look broken.
+	if inst.Config["user.network-config"] != "" {
+		inst.Config["user.network-config"] = lxdNetworkConfig(inst.Devices)
+	}
 	op, err := b.client.UpdateInstance(id, api.InstancePut{
 		Config:      inst.Config,
 		Devices:     inst.Devices,
@@ -680,6 +678,10 @@ func (b *IncusBackend) DetachNetworkIface(id, mac string) error {
 		return fmt.Errorf("no network interface with MAC %s", mac)
 	}
 	delete(inst.Devices, devName)
+	// Drop the removed NIC from the guest's netplan config too.
+	if inst.Config["user.network-config"] != "" {
+		inst.Config["user.network-config"] = lxdNetworkConfig(inst.Devices)
+	}
 	op, err := b.client.UpdateInstance(id, api.InstancePut{
 		Config:      inst.Config,
 		Devices:     inst.Devices,
@@ -1573,4 +1575,28 @@ func lxdCloudInitConfig(cfg cloudinit.Config, networkBridge string) (map[string]
 		out["user.network-config"] = "network:\n  version: 2\n  ethernets:\n    eth0:\n      dhcp4: true\n"
 	}
 	return out, true
+}
+
+// lxdNetworkConfig renders a netplan (version 2) user.network-config that
+// declares every NIC device (eth0, eth1, …) with dhcp4: true, so cloud-init
+// configures ALL of them in the guest. Attaching/detaching a NIC without
+// regenerating this leaves the new interface unconfigured (no DHCP client),
+// which looked like a broken/duplicate NIC.
+func lxdNetworkConfig(devices map[string]map[string]string) string {
+	names := make([]string, 0, len(devices))
+	for name, dev := range devices {
+		if dev["type"] == "nic" && len(name) > 3 && name[:3] == "eth" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "network:\n  version: 2\n"
+	}
+	sort.Strings(names)
+	var sb strings.Builder
+	sb.WriteString("network:\n  version: 2\n  ethernets:\n")
+	for _, n := range names {
+		sb.WriteString("    " + n + ":\n      dhcp4: true\n")
+	}
+	return sb.String()
 }

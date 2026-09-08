@@ -374,7 +374,7 @@ disable_conflicting_dhcp_clients() {
 # --- libvirt default NAT network --------------------------------------------
 ensure_default_network() {
     if ! sudo virsh net-list --all --name 2>/dev/null | grep -qx default; then
-        echo "  - libvirt default network is not defined (the backend will create it on startup)"
+        echo "  - libvirt default network is not defined (NAT mode: start it manually if needed)"
         return 0
     fi
     if ! sudo virsh net-list --name 2>/dev/null | grep -qx default; then
@@ -385,41 +385,6 @@ ensure_default_network() {
         sudo virsh net-autostart default >/dev/null 2>&1 || true
         echo "  + libvirt default network: autostart enabled"
     fi
-}
-
-# --- libvirt bridge network (br0-bridge) ------------------------------------
-ensure_bridge_network() {
-    local br_name="$1"
-    local net_name="br0-bridge"
-    if sudo virsh net-list --all --name 2>/dev/null | grep -qx "${net_name}"; then
-        local current
-        current="$(sudo virsh net-dumpxml "${net_name}" 2>/dev/null \
-            | grep -oE "bridge name='[^']+'" | head -1 | sed -E "s/.*'([^']+)'.*/\1/")"
-        if [ "${current}" = "${br_name}" ]; then
-            echo "  = libvirt network '${net_name}' already wired to ${br_name}"
-            sudo virsh net-list --name 2>/dev/null | grep -qx "${net_name}" \
-                || sudo virsh net-start "${net_name}" >/dev/null 2>&1 || true
-            sudo virsh net-list --autostart --name 2>/dev/null | grep -qx "${net_name}" \
-                || sudo virsh net-autostart "${net_name}" >/dev/null 2>&1 || true
-            return 0
-        fi
-        echo "  ! libvirt network '${net_name}' is wired to '${current}', not ${br_name}; leaving it alone"
-        echo "    (re-point it manually with: virsh net-destroy ${net_name} && virsh net-edit ${net_name})"
-        return 0
-    fi
-    local xml
-    xml=$(cat <<EOF
-<network>
-  <name>${net_name}</name>
-  <forward mode='bridge'/>
-  <bridge name='${br_name}'/>
-</network>
-EOF
-)
-    echo "${xml}" | sudo virsh net-define /dev/stdin >/dev/null
-    sudo virsh net-autostart "${net_name}" >/dev/null
-    sudo virsh net-start "${net_name}" >/dev/null
-    echo "  + libvirt network '${net_name}' created on bridge ${br_name}"
 }
 
 # --- systemd-networkd config for physical interface (NAT mode) --------------
@@ -1253,6 +1218,206 @@ disable_libvirt_nat_default() {
     fi
 }
 
+# --- vmbr1 (NAT/aislada) — Proxmox-style ------------------------------------
+# vmbr0 is the physical LAN bridge (real L2, DHCP from the router). In
+# addition, Proxmox keeps isolated bridges (vmbr1, vmbr2, …) "up" by
+# anchoring them to a kernel `dummy` interface. WebKVM mirrors that: vmbr1
+# is a real Linux bridge on dummy0 with a static 100.0.0.1/24 and NAT
+# (MASQUERADE) so its tenants reach the internet through the main uplink —
+# exactly the /etc/network/interfaces pattern:
+#
+#   auto dummy0
+#   iface dummy0 inet manual
+#       pre-up ip link add dummy0 type dummy 2>/dev/null || true
+#       up ip link set dummy0 up
+#
+#   auto vmbr1
+#   iface vmbr1 inet static
+#       address 100.0.0.1/24
+#       bridge-ports dummy0
+#       bridge-stp off
+#       bridge-fd 0
+VM1_NET="100.0.0.0/24"
+VM1_IP="100.0.0.1/24"
+VM1_BR="vmbr1"
+VM1_DUMMY="dummy0"
+
+exit_uplink() {
+    ip route show default 2>/dev/null | awk '{print $5; exit}'
+}
+
+# ensure_dummy_dev creates the kernel dummy interface (keeps the isolated
+# bridge "up" without a physical NIC, exactly like Proxmox).
+ensure_dummy_dev() {
+    local name="$1"
+    if [ ! -d "/sys/class/net/${name}" ]; then
+        echo "  + creating dummy interface ${name}"
+        sudo ip link add "${name}" type dummy 2>/dev/null \
+            || echo "  ! could not create ${name} (kernel dummy module?)"
+    fi
+    sudo ip link set "${name}" up 2>/dev/null || true
+}
+
+# apply_nat_vmbr1 sets up MASQUERADE for the isolated bridge on the host's
+# firewall (firewalld → ufw → iptables/nftables), with the FORWARD accept
+# the routed traffic needs.
+apply_nat_vmbr1() {
+    local uplink="$1"
+    [ -n "${uplink}" ] || uplink="$(exit_uplink)"
+    [ -n "${uplink}" ] || { echo "  = no default uplink; skipping NAT for ${VM1_BR}"; return 0; }
+
+    # firewalld: masquerade + FORWARD accept for the isolated zone.
+    if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        sudo firewall-cmd --permanent --zone=internal --add-interface="${VM1_BR}" >/dev/null 2>&1 || true
+        sudo firewall-cmd --permanent --zone=internal --add-masquerade >/dev/null 2>&1 || true
+        sudo firewall-cmd --reload >/dev/null 2>&1 || true
+        echo "  + firewalld: ${VM1_BR} in internal zone with masquerade (NAT → ${uplink})"
+        return 0
+    fi
+
+    # ufw: NAT masquerade in before.rules' *nat section + FORWARD accept.
+    if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+        local f="/etc/ufw/before.rules"
+        if ! sudo grep -qF "webkvm vmbr1 masquerade" "${f}" 2>/dev/null; then
+            sudo awk -v net="${VM1_NET}" -v uplink="${uplink}" '
+                /^COMMIT$/ && !done && !natdone && !seen_nat {
+                    print "# webkvm vmbr1 masquerade (NAT to " uplink ")"
+                    print "*nat"
+                    print ":POSTROUTING ACCEPT [0:0]"
+                    print "-A POSTROUTING -s " net " -o " uplink " -j MASQUERADE"
+                    print "COMMIT"
+                    seen_nat = 1
+                }
+                { print }
+            ' "${f}" > "${f}.tmp" && sudo mv "${f}.tmp" "${f}"
+        fi
+        echo "  + ufw: MASQUERADE ${VM1_NET} → ${uplink} added to before.rules"
+        return 0
+    fi
+
+    # raw iptables/nftables.
+    if command -v iptables >/dev/null 2>&1; then
+        sudo iptables -t nat -C POSTROUTING -s "${VM1_NET}" -o "${uplink}" -j MASQUERADE 2>/dev/null \
+            || sudo iptables -t nat -A POSTROUTING -s "${VM1_NET}" -o "${uplink}" -j MASQUERADE 2>/dev/null || true
+        sudo iptables -C FORWARD -i "${VM1_BR}" -j ACCEPT 2>/dev/null \
+            || sudo iptables -I FORWARD -i "${VM1_BR}" -j ACCEPT 2>/dev/null || true
+        sudo iptables -C FORWARD -o "${VM1_BR}" -j ACCEPT 2>/dev/null \
+            || sudo iptables -I FORWARD -o "${VM1_BR}" -j ACCEPT 2>/dev/null || true
+        echo "  + iptables: MASQUERADE ${VM1_NET} → ${uplink} + FORWARD accept on ${VM1_BR}"
+        return 0
+    fi
+    echo "  = no firewall detected; NAT for ${VM1_BR} not configured"
+}
+
+# ensure_vmbr1_nat creates the isolated bridge vmbr1 on dummy0 (100.0.0.1/24)
+# with NAT, with persistence through netplan / systemd-networkd / nmcli.
+ensure_vmbr1_nat() {
+    ensure_dummy_dev "${VM1_DUMMY}"
+
+    if [ ! -d "/sys/class/net/${VM1_BR}/bridge" ]; then
+        echo "  + creating Linux bridge ${VM1_BR} (slave: ${VM1_DUMMY})"
+        sudo ip link add name "${VM1_BR}" type bridge
+        sudo ip link set "${VM1_DUMMY}" master "${VM1_BR}"
+        sudo ip link set "${VM1_BR}" up
+    else
+        echo "  = Linux bridge ${VM1_BR} already exists"
+    fi
+
+    if ! ip -4 -o addr show dev "${VM1_BR}" scope global 2>/dev/null | grep -q "${VM1_IP%/*}"; then
+        sudo ip addr flush dev "${VM1_BR}" scope global 2>/dev/null || true
+        sudo ip addr add "${VM1_IP}" dev "${VM1_BR}" 2>/dev/null || true
+        echo "  + ${VM1_BR}: IP ${VM1_IP} assigned"
+    fi
+
+    apply_nat_vmbr1
+
+    # DHCP for the isolated bridge: Proxmox serves its NAT vmbr networks
+    # with dnsmasq. The host dnsmasq (bind-interfaces on vmbr1 only) hands
+    # out 100.0.0.100-200 with the bridge as gateway — containers/cloud-init
+    # get an IP and the MASQUERADE rule carries them out to the internet.
+    if command -v dnsmasq >/dev/null 2>&1 && [ -d /etc/dnsmasq.d ]; then
+        write_managed_file "/etc/dnsmasq.d/webkvm-${VM1_BR}.conf" \
+"# webkvm ${VM1_BR} DHCP (Proxmox-style isolated NAT bridge)
+interface=${VM1_BR}
+bind-interfaces
+dhcp-range=100.0.0.100,100.0.0.200,255.255.255.0,12h
+dhcp-option=option:router,100.0.0.1
+dhcp-option=option:dns-server,1.1.1.1
+"
+        if systemctl list-unit-files dnsmasq.service >/dev/null 2>&1; then
+            sudo systemctl enable dnsmasq >/dev/null 2>&1 || true
+            sudo systemctl restart dnsmasq >/dev/null 2>&1 || true
+        fi
+        echo "  + dnsmasq: ${VM1_BR} DHCP (100.0.0.100-200) configured"
+    fi
+
+    # --- persistence ---
+    if [ -d /etc/netplan ] && command -v netplan >/dev/null 2>&1; then
+        # netplan cannot create dummy devices; a boot-time oneshot does.
+        local svc="webkvm-dummy0.service"
+        write_managed_file "/etc/systemd/system/${svc}" \
+"[Unit]
+Description=webkvm ${VM1_DUMMY} (anchor for isolated bridge ${VM1_BR})
+Before=network-pre.target
+Wants=network-pre.target
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'ip link add ${VM1_DUMMY} type dummy 2>/dev/null || true; ip link set ${VM1_DUMMY} up'
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+"
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl enable "${svc}" 2>/dev/null || true
+        write_managed_file "/etc/netplan/zz-webkvm-${VM1_BR}.yaml" \
+"network:
+  version: 2
+  bridges:
+    ${VM1_BR}:
+      interfaces: [${VM1_DUMMY}]
+      addresses: [${VM1_IP}]
+      parameters:
+        stp: false
+"
+        if [ "${BRIDGE_APPLY:-0}" = "1" ]; then
+            sudo netplan apply 2>/dev/null || true
+        fi
+        echo "  + netplan: ${VM1_BR} (${VM1_IP}) + dummy0 oneshot written"
+    elif command -v nmcli >/dev/null 2>&1 && systemctl is-active --quiet NetworkManager 2>/dev/null; then
+        if ! nmcli con show "${VM1_BR}" >/dev/null 2>&1; then
+            nmcli con add type bridge con-name "${VM1_BR}" ifname "${VM1_BR}" ipv4.addresses "${VM1_IP}" ipv4.method manual >/dev/null 2>&1 || true
+            nmcli con add type ethernet con-name "${VM1_BR}-${VM1_DUMMY}" ifname "${VM1_DUMMY}" master "${VM1_BR}" >/dev/null 2>&1 || true
+        fi
+        echo "  + nmcli: ${VM1_BR} (${VM1_IP}) bridge connection written"
+    elif systemctl is-active --quiet systemd-networkd 2>/dev/null; then
+        write_managed_file "/etc/systemd/network/${VM1_DUMMY}.netdev" \
+"[NetDev]
+Name=${VM1_DUMMY}
+Kind=dummy
+"
+        write_managed_file "/etc/systemd/network/${VM1_BR}.netdev" \
+"[NetDev]
+Name=${VM1_BR}
+Kind=bridge
+"
+        write_managed_file "/etc/systemd/network/${VM1_DUMMY}.network" \
+"[Match]
+Name=${VM1_DUMMY}
+[Network]
+Bridge=${VM1_BR}
+"
+        write_managed_file "/etc/systemd/network/${VM1_BR}.network" \
+"[Match]
+Name=${VM1_BR}
+[Network]
+Address=${VM1_IP}
+"
+        echo "  + systemd-networkd: ${VM1_DUMMY} + ${VM1_BR} (${VM1_IP}) written"
+    else
+        echo "  ! ${VM1_BR} created live only — configure persistence manually (netplan/systemd-networkd)"
+    fi
+}
+
 # --- main -------------------------------------------------------------------
 echo "=== webkvm network setup (mode: ${MODE}) ==="
 
@@ -1388,8 +1553,8 @@ if [[ "${MODE}" == "bridge" || "${MODE}" == "both" ]]; then
     allow_bridge_forward "${BR_NAME}"
     configure_incus_default_profile "${BR_NAME}"
     disable_libvirt_nat_default
-    echo "[4/5] wiring libvirt network to physical bridge ${BR_NAME}"
-    ensure_bridge_network "${BR_NAME}"
+    ensure_vmbr1_nat
+    echo "[4/5] wiring KVM/Incus to physical bridge ${BR_NAME} (no libvirt virtual networks)"
     if [ -n "${IFACE:-}" ]; then
         verify_post_state_bridge "${BR_NAME}" "${IFACE}"
     fi
@@ -1457,7 +1622,7 @@ elif [[ "${MODE}" == "bridge" ]]; then
   Mode: Bridge only (direct)
   - Linux bridge ${BR_NAME} created with slave ${IFACE}
   - ${BR_NAME} has static IP ${BRIDGE_STATIC_IP}
-  - VMs use libvirt 'br0-bridge' network (visible on LAN)
+  - VMs/containers attach DIRECTLY to the physical bridge (visible on LAN, no libvirt networks)
 EOF
     else
         bridge_ip="$(ip -4 -o addr show dev "${BR_NAME}" scope global 2>/dev/null | awk '{print $4}' | head -1)"
@@ -1468,7 +1633,7 @@ EOF
   - ${BR_NAME} IP: ${bridge_ip:-<acquiring>}${ip_type}
   - ${IFACE} IP untouched: ${phys_ip:-<none>}
   - macvlan mv-${BR_NAME} bridges ${IFACE} → ${BR_NAME}
-  - VMs use libvirt 'br0-bridge' (visible on LAN)
+  - VMs/containers attach DIRECTLY to the physical bridge (visible on LAN)
 EOF
     fi
 else
@@ -1480,7 +1645,7 @@ else
   - Host interface ${IFACE} has static IP ${BRIDGE_STATIC_IP} (for NAT)
   - Linux bridge ${BR_NAME} created with slave ${IFACE} (for Bridge)
   - ${BR_NAME} has static IP ${BRIDGE_STATIC_IP}
-  - VMs can use 'default' (NAT, 192.168.122.x) OR 'br0-bridge' (LAN)
+  - VMs/containers attach to real bridges: vmbr0 (LAN, DHCP del router) or vmbr1 (100.0.0.0/24, NAT)
 EOF
     else
         bridge_ip="$(ip -4 -o addr show dev "${BR_NAME}" scope global 2>/dev/null | awk '{print $4}' | head -1)"
@@ -1491,7 +1656,7 @@ EOF
   - ${IFACE} IP untouched: ${phys_ip:-<none>}
   - ${BR_NAME} IP: ${bridge_ip:-<acquiring>}${ip_type}
   - macvlan mv-${BR_NAME} bridges ${IFACE} → ${BR_NAME}
-  - VMs: 'default' (NAT, 192.168.122.x) OR 'br0-bridge' (LAN)
+  - VMs/containers: vmbr0 (LAN) or vmbr1 (100.0.0.0/24, NAT)
 EOF
     fi
 fi

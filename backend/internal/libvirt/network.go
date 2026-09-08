@@ -1,929 +1,144 @@
 package libvirt
 
 import (
+	"errors"
 	"fmt"
-	"net"
+	"os"
+	"os/exec"
 	"strings"
 
 	"webkvm/internal/models"
-
-	"libvirt.org/go/libvirt"
 )
 
-// validateDNS checks a slice of DNS forwarder IPs and returns an error if any
-// are invalid. An empty slice is valid (means "use host DNS").
-func validateDNS(dns []string) error {
-	for _, d := range dns {
-		d = strings.TrimSpace(d)
-		if d == "" {
-			continue
-		}
-		if net.ParseIP(d) == nil {
-			return fmt.Errorf("invalid DNS server: %q", d)
-		}
-	}
-	return nil
+// WebKVM v2.4 uses ONE network model: real OS-level Linux bridges
+// (vmbr0, vmbr1, … — Proxmox-style). libvirt virtual networks (NAT
+// virbr0, forward='bridge' libvirt nets, macvtap/direct) are no longer
+// created, listed or used. KVM attaches with <interface type='bridge'>
+// and Incus with nictype=bridged parent=<bridge>, both against these
+// host bridges. Networks are configured at the OS level
+// (setup-network.sh); this package only lists and validates them.
+
+// IsManagedNetwork reports whether a network id is WebKVM-managed. In the
+// agnostic-L2 model every network is an OS-level host bridge, so every id
+// is "managed" and the API refuses to delete any of them (clean 403).
+func IsManagedNetwork(id string) bool {
+	return true
 }
 
-// buildDNSXML produces a <dns>...</dns> element for libvirt. When the slice
-// is empty it returns an empty string so no <dns> element is emitted and
-// dnsmasq falls back to the host's resolv.conf.
-func buildDNSXML(dns []string) string {
-	cleaned := make([]string, 0, len(dns))
-	for _, d := range dns {
-		d = strings.TrimSpace(d)
-		if d != "" {
-			cleaned = append(cleaned, d)
-		}
-	}
-	if len(cleaned) == 0 {
-		return ""
-	}
-	out := "<dns>"
-	for _, d := range cleaned {
-		out += fmt.Sprintf("<forwarder addr='%s'/>", xmlEscape(d))
-	}
-	out += "</dns>\n  "
-	return out
-}
-
+// ListNetworks returns the host's REAL Linux bridges as the only network
+// resources. Virtual/NAT bridges (virbr*, lxdbr*, lxcbr*, docker, br-*)
+// are excluded — they are plumbing, never a place to attach a VM.
 func (c *Connector) ListNetworks() ([]models.Network, error) {
-	if err := c.ensureConnected(); err != nil {
-		return nil, err
-	}
-
-	// Unified L2 network model (Proxmox-style): the host's traditional
-	// Linux bridges (vmbr0, br0, …) are first-class network resources
-	// shared by KVM and Incus. VMs attach with <interface type='bridge'>,
-	// containers with nictype=bridged parent=<bridge>. libvirt virtual
-	// networks (NAT virbr0, bridge/direct forwards) follow.
-	result := make([]models.Network, 0, 8)
-	for _, b := range listLinuxBridges() {
+	bridges := listLinuxBridges()
+	result := make([]models.Network, 0, len(bridges))
+	for _, b := range bridges {
 		result = append(result, models.Network{
 			Name:      b,
 			Forward:   "bridge",
 			Bridge:    b,
+			CIDR:      bridgeIPv4(b),
 			Active:    true,
 			Autostart: true,
-			// Host bridges (vmbr0, br0, …) are not libvirt resources:
+			// Host bridges are OS-level resources (setup-network.sh);
 			// the UI greys out delete and the API refuses it.
 			Protected: true,
 		})
 	}
-
-	nets, err := c.conn.ListAllNetworks(libvirt.CONNECT_LIST_NETWORKS_ACTIVE | libvirt.CONNECT_LIST_NETWORKS_INACTIVE)
-	if err != nil {
-		return nil, fmt.Errorf("list networks: %w", err)
-	}
-
-	for i := range nets {
-		n, err := networkToModel(&nets[i])
-		nets[i].Free()
-		if err != nil {
-			continue
-		}
-		result = append(result, n)
-	}
 	return result, nil
 }
 
-func (c *Connector) CreateNetwork(req models.CreateNetworkRequest) (models.Network, error) {
-	if err := c.ensureConnected(); err != nil {
-		return models.Network{}, err
+// validBridgeName reports whether name is a safe identifier for a NEW host
+// Linux bridge: no slashes/whitespace, no virtual/NAT prefixes, and no
+// collision with an existing interface that is not itself a bridge.
+func validBridgeName(name string) bool {
+	if name == "" || strings.ContainsAny(name, "/ \t\n\r\\") || name == "lo" {
+		return false
 	}
-
-	if err := validateDNS(req.DNS); err != nil {
-		return models.Network{}, err
-	}
-
-	// A host Linux bridge (vmbr0, br0, …) is already a shared L2 resource
-	// surfaced by ListNetworks; creating a libvirt network over it would
-	// shadow it and break the unified model. Refuse.
-	if isLinuxBridge(req.Name) {
-		return models.Network{}, fmt.Errorf("network %q is a host Linux bridge (already shared by KVM and Incus); no libvirt network is needed", req.Name)
-	}
-
-	// For forward=bridge, libvirt expects the named interface to
-	// already be a Linux bridge on the host. The default forward mode is
-	// now "bridge" (Proxmox-style shared L2): when no bridge is supplied
-	// we auto-detect the host's main Linux bridge (vmbr0/br0).
-	forward := req.Forward
-	if forward == "" {
-		forward = "bridge"
-	}
-	bridge := req.Bridge
-	if bridge == "" {
-		if forward == "bridge" {
-			bridge = mainBridge()
-		} else {
-			bridge = bridgeNameFor(req.Name)
+	for _, p := range []string{"virbr", "lxdbr", "lxcbr", "docker", "br-"} {
+		if strings.HasPrefix(name, p) {
+			return false
 		}
 	}
-	if forward == "bridge" {
-		if !isLinuxBridge(bridge) {
-			available := listLinuxBridges()
-			hint := ""
-			if len(available) == 0 {
-				hint = " (the host has no Linux bridges yet — create one first)"
-			} else {
-				hint = " (available: " + strings.Join(available, ", ") + ")"
-			}
-			return models.Network{}, fmt.Errorf("'%s' is not a Linux bridge on the host%s. Create a bridge first (e.g. via the Networks page or POST /api/host/bridges) and try again", bridge, hint)
-		}
+	// Legacy libvirt virtual-network names are abandoned: they must never
+	// be created as (or confused with) real bridges.
+	switch name {
+	case "default", "webkvm-bridge", "br0-bridge":
+		return false
 	}
-
-	// For forward=direct, the network is bound straight to a physical
-	// (or wireless) host NIC via macvtap — no Linux bridge device is
-	// created or required (that's the whole point vs. forward=bridge).
-	if req.Forward == "direct" {
-		if !isPhysicalInterface(req.Interface) {
-			available := listPhysicalInterfaces()
-			hint := ""
-			if len(available) == 0 {
-				hint = " (no physical network interfaces were found on this host)"
-			} else {
-				hint = " (available: " + strings.Join(available, ", ") + ")"
-			}
-			return models.Network{}, fmt.Errorf("'%s' is not a physical network interface on the host%s", req.Interface, hint)
-		}
+	if _, err := os.Stat("/sys/class/net/" + name); err == nil {
+		// An existing interface must already be a Linux bridge.
+		return isLinuxBridge(name)
 	}
-
-	var forwardXML string
-	switch forward {
-	case "nat":
-		forwardXML = `<forward mode='nat'/>
-  <bridge name='` + xmlEscape(bridge) + `' stp='on' delay='0'/>`
-	case "bridge":
-		forwardXML = `<forward mode='bridge'/>
-  <bridge name='` + xmlEscape(bridge) + `'/>`
-	case "direct":
-		// macvtap "direct" attachment to a physical NIC — no <bridge>
-		// element at all (that's what makes this a "direct" network
-		// rather than a "bridge" one when read back by networkToModel/
-		// extractNetworkForward).
-		forwardXML = `<forward mode='bridge'>
-    <interface dev='` + xmlEscape(req.Interface) + `'/>
-  </forward>`
-	case "isolated":
-		forwardXML = `<forward mode='none'/>
-  <bridge name='` + xmlEscape(bridge) + `' stp='on' delay='0'/>`
-	default:
-		forwardXML = `<forward mode='` + xmlEscape(forward) + `'/>
-  <bridge name='` + xmlEscape(bridge) + `' stp='on' delay='0'/>`
-	}
-
-	var ipXML string
-	// forward=bridge/direct networks MUST NOT have an <ip>
-	// element — the IP belongs to the underlying bridge or physical
-	// NIC (managed externally, not by libvirt), and libvirt rejects
-	// any such network that also specifies an <ip> with "Unsupported
-	// <ip> element in network <name> with forward mode='bridge'".
-	if forward == "bridge" || forward == "direct" {
-		// Note: req.CIDR / req.DHCP / req.DHCPStart / req.DHCPEnd
-		// are intentionally ignored for bridge-mode networks.
-	} else if req.CIDR != "" {
-		parsed, err := parseCIDR(req.CIDR)
-		if err != nil {
-			return models.Network{}, fmt.Errorf("invalid CIDR %q: %w", req.CIDR, err)
-		}
-
-		dhcpEnabled := true
-		if req.DHCP != nil {
-			dhcpEnabled = *req.DHCP
-		}
-
-		start := req.DHCPStart
-		end := req.DHCPEnd
-		if start == "" {
-			start = parsed.DHCPStart
-		}
-		if end == "" {
-			end = parsed.DHCPEnd
-		}
-
-		if dhcpEnabled && start != "" && end != "" {
-			ipXML = fmt.Sprintf(`<ip address='%s' netmask='%s'>
-      <dhcp>
-        <range start='%s' end='%s'/>
-      </dhcp>
-    </ip>`, xmlEscape(parsed.Gateway), xmlEscape(parsed.Netmask), xmlEscape(start), xmlEscape(end))
-		} else {
-			ipXML = fmt.Sprintf(`<ip address='%s' netmask='%s'/>`, xmlEscape(parsed.Gateway), xmlEscape(parsed.Netmask))
-		}
-	}
-
-	xmlStr := fmt.Sprintf(`<network>
-  <name>%s</name>
-  %s
-  %s%s
-</network>`, xmlEscape(req.Name), forwardXML, buildDNSXML(req.DNS), ipXML)
-
-	net, err := c.conn.NetworkDefineXML(xmlStr)
-	if err != nil {
-		return models.Network{}, fmt.Errorf("define network: %w", err)
-	}
-	defer net.Free()
-
-	autostart := true
-	if req.Autostart != nil {
-		autostart = *req.Autostart
-	}
-	if err := net.SetAutostart(autostart); err != nil {
-		net.Undefine()
-		return models.Network{}, fmt.Errorf("set autostart: %w", err)
-	}
-
-	if err := net.Create(); err != nil {
-		net.Undefine()
-		return models.Network{}, fmt.Errorf("create network: %w", err)
-	}
-
-	return networkToModel(net)
+	return true
 }
 
-// IsManagedNetwork reports whether the given network name is one that
-// webkvm.s setup-bridge.sh (legacy) auto-created. The API refuses to
-// delete these (and the UI greys out the delete button) so a stray
-// click can't silently remove the bridge that holds the host's LAN
-// IP — doing so would also delete the bridged network's only path
-// to the outside world, breaking every VM attached to it.
-//
-// The legacy auto-created name is "br0-bridge" (see
-// ensure_bridge_network in scripts/setup-bridge.sh). This function
-// exists to protect that network on upgraded installations. New
-// installs use NAT and don't create this network.
-func IsManagedNetwork(name string) bool {
-	return name == "br0-bridge"
+// CreateNetwork creates a REAL Linux bridge at the OS level (Proxmox-style,
+// e.g. vmbr1, vmbr2). It never creates a libvirt virtual network. The bridge
+// is created live; for persistence across reboots use setup-network.sh.
+func (c *Connector) CreateNetwork(req models.CreateNetworkRequest) (models.Network, error) {
+	if f := strings.TrimSpace(req.Forward); f != "" && f != "bridge" {
+		return models.Network{}, fmt.Errorf("forward=%q is not supported — WebKVM v2.4 only creates real Linux bridges (forward=bridge)", f)
+	}
+	name := strings.TrimSpace(req.Name)
+	if !validBridgeName(name) {
+		return models.Network{}, fmt.Errorf("invalid bridge name %q — WebKVM only manages real Linux bridges (vmbr0, vmbr1, br0, …), and virtual/NAT bridge names are not allowed", name)
+	}
+	if isLinuxBridge(name) {
+		// Already a host bridge: return it as-is.
+		return models.Network{
+			Name:      name,
+			Forward:   "bridge",
+			Bridge:    name,
+			CIDR:      bridgeIPv4(name),
+			Active:    true,
+			Autostart: true,
+			Protected: true,
+		}, nil
+	}
+	if out, err := exec.Command("ip", "link", "add", name, "type", "bridge").CombinedOutput(); err != nil {
+		return models.Network{}, fmt.Errorf("create Linux bridge %q: %v (%s)", name, err, strings.TrimSpace(string(out)))
+	}
+	_ = exec.Command("ip", "link", "set", name, "up").Run()
+	return models.Network{
+		Name:      name,
+		Forward:   "bridge",
+		Bridge:    name,
+		Active:    true,
+		Autostart: true,
+		Protected: true,
+	}, nil
+}
+
+// UpdateNetwork, DeleteNetwork, StartNetwork and StopNetwork are refused:
+// host Linux bridges are configured at the OS level (setup-network.sh) and
+// are always active. WebKVM no longer manages libvirt virtual networks.
+func (c *Connector) UpdateNetwork(name string, req models.UpdateNetworkRequest) (models.Network, error) {
+	return models.Network{}, errors.New("host Linux bridges are configured at the OS level (setup-network.sh); WebKVM does not edit network definitions")
 }
 
 func (c *Connector) DeleteNetwork(id string) error {
-	if IsManagedNetwork(id) {
-		return fmt.Errorf("network %q is managed by webkvm and cannot be deleted via the API; remove the underlying Linux bridge manually (or re-run setup-bridge.sh) if you really want it gone", id)
-	}
-	// A traditional Linux bridge on the host (vmbr0, br0, …) is a shared
-	// L2 resource, not a libvirt network — never let the API remove it.
-	if isLinuxBridge(id) {
-		return fmt.Errorf("network %q is a host Linux bridge (shared L2); manage it at the OS level (e.g. 'ip link delete %s') instead", id, id)
-	}
-	net, err := c.lookupNetwork(id)
-	if err != nil {
-		return err
-	}
-	defer net.Free()
-
-	if active, _ := net.IsActive(); active {
-		if err := net.Destroy(); err != nil {
-			return err
-		}
-	}
-
-	return net.Undefine()
+	return errors.New("host Linux bridges are configured at the OS level (setup-network.sh) and cannot be deleted via the API")
 }
 
-// UpdateNetwork applies changes to a network. The network is briefly destroyed
-// and re-created so that the new DHCP range and other settings take effect
-// immediately. This requires no VMs to be running on the network.
-func (c *Connector) UpdateNetwork(name string, req models.UpdateNetworkRequest) (models.Network, error) {
-	if err := c.ensureConnected(); err != nil {
-		return models.Network{}, err
-	}
-
-	if err := validateDNS(req.DNS); err != nil {
-		return models.Network{}, err
-	}
-
-	net, err := c.lookupNetwork(name)
-	if err != nil {
-		return models.Network{}, err
-	}
-	defer net.Free()
-
-	xmlDesc, err := net.GetXMLDesc(0)
-	if err != nil {
-		return models.Network{}, fmt.Errorf("get xml: %w", err)
-	}
-
-	forward := extractNetworkForward(xmlDesc)
-
-	// Bridge-mode networks don't (and can't) have an <ip> block in
-	// their XML — the IP belongs to the underlying Linux bridge.
-	// For those, the only thing the user can update via the UI is
-	// autostart and DNS, both of which are applied below without
-	// touching the IP block.
-	var parsed cidrInfo
-	cidr, _ := extractNetworkCIDR(xmlDesc)
-	if cidr != "" {
-		p, err := parseCIDR(cidr)
-		if err != nil {
-			return models.Network{}, fmt.Errorf("parse current CIDR %q: %w", cidr, err)
-		}
-		parsed = p
-	}
-
-	dhcpEnabled := req.DHCP != nil && *req.DHCP
-	if req.DHCP == nil {
-		_, curEnd := extractNetworkDHCP(xmlDesc)
-		dhcpEnabled = curEnd != ""
-	}
-	start := req.DHCPStart
-	end := req.DHCPEnd
-	if start == "" && parsed.Gateway != "" {
-		start = parsed.DHCPStart
-	}
-	if end == "" && parsed.Gateway != "" {
-		end = parsed.DHCPEnd
-	}
-
-	// DNS: nil means "leave as is", []string{} means "clear"
-	var dnsXML string
-	if req.DNS != nil {
-		dnsXML = buildDNSXML(req.DNS)
-	} else {
-		// Preserve the current DNS block
-		dnsXML = extractNetworkDNSBlock(xmlDesc)
-	}
-
-	bridge := name
-	if b, _ := net.GetBridgeName(); b != "" {
-		bridge = b
-	}
-
-	var forwardXML string
-	switch forward {
-	case "nat":
-		forwardXML = `<forward mode='nat'/>
-  <bridge name='` + xmlEscape(bridge) + `' stp='on' delay='0'/>`
-	case "bridge":
-		forwardXML = `<forward mode='bridge'/>
-  <bridge name='` + xmlEscape(bridge) + `'/>`
-	case "direct":
-		// Preserve the existing physical-interface binding — forward
-		// mode/target aren't editable via UpdateNetworkRequest, so
-		// re-read it from the network's current XML rather than
-		// synthesizing a <bridge> element (which would silently turn
-		// a macvtap "direct" network into a broken bridge-mode one).
-		forwardXML = `<forward mode='bridge'>
-    <interface dev='` + xmlEscape(extractNetworkInterface(xmlDesc)) + `'/>
-  </forward>`
-	case "isolated":
-		forwardXML = `<forward mode='none'/>
-  <bridge name='` + xmlEscape(bridge) + `' stp='on' delay='0'/>`
-	default:
-		forwardXML = `<forward mode='` + xmlEscape(forward) + `'/>
-  <bridge name='` + xmlEscape(bridge) + `' stp='on' delay='0'/>`
-	}
-
-	// Same forward=bridge/direct restriction as CreateNetwork: no
-	// <ip> block on a network that points at an external bridge or a
-	// physical NIC. For NAT/isolated/default networks the <ip> block
-	// is required, so refuse if we don't have one.
-	var ipXML string
-	if forward == "bridge" || forward == "direct" {
-		// ipXML stays empty — bridge/direct networks have no <ip>.
-	} else if parsed.Gateway == "" {
-		return models.Network{}, fmt.Errorf("network has no IP configuration")
-	} else if dhcpEnabled && start != "" && end != "" {
-		ipXML = fmt.Sprintf(`<ip address='%s' netmask='%s'>
-      <dhcp>
-        <range start='%s' end='%s'/>
-      </dhcp>
-    </ip>`, xmlEscape(parsed.Gateway), xmlEscape(parsed.Netmask), xmlEscape(start), xmlEscape(end))
-	} else {
-		ipXML = fmt.Sprintf(`<ip address='%s' netmask='%s'/>`, xmlEscape(parsed.Gateway), xmlEscape(parsed.Netmask))
-	}
-
-	xmlStr := fmt.Sprintf(`<network>
-  <name>%s</name>
-  %s
-  %s%s
-</network>`, xmlEscape(name), forwardXML, dnsXML, ipXML)
-
-	wasActive, _ := net.IsActive()
-	autostart, _ := net.GetAutostart()
-	if req.Autostart != nil {
-		autostart = *req.Autostart
-	}
-
-	if wasActive {
-		if err := net.Destroy(); err != nil {
-			return models.Network{}, fmt.Errorf("stop network: %w", err)
-		}
-	}
-
-	if err := net.Undefine(); err != nil {
-		return models.Network{}, fmt.Errorf("undefine network: %w", err)
-	}
-
-	newNet, err := c.conn.NetworkDefineXML(xmlStr)
-	if err != nil {
-		return models.Network{}, fmt.Errorf("redefine network: %w", err)
-	}
-	defer newNet.Free()
-
-	if err := newNet.SetAutostart(autostart); err != nil {
-		return models.Network{}, fmt.Errorf("set autostart: %w", err)
-	}
-
-	if wasActive {
-		if err := newNet.Create(); err != nil {
-			return models.Network{}, fmt.Errorf("start network: %w", err)
-		}
-	}
-
-	return networkToModel(newNet)
-}
-
-// StartNetwork starts (activates) a previously defined but inactive network.
 func (c *Connector) StartNetwork(name string) (models.Network, error) {
-	if err := c.ensureConnected(); err != nil {
-		return models.Network{}, err
-	}
-	net, err := c.lookupNetwork(name)
-	if err != nil {
-		return models.Network{}, err
-	}
-	defer net.Free()
-
-	active, _ := net.IsActive()
-	if active {
-		return networkToModel(net)
-	}
-	if err := net.Create(); err != nil {
-		return models.Network{}, fmt.Errorf("start network: %w", err)
-	}
-	return networkToModel(net)
+	return models.Network{}, errors.New("host Linux bridges are always active; WebKVM does not start/stop OS-level bridges")
 }
 
-// StopNetwork stops (deactivates) a network. The network definition is kept.
 func (c *Connector) StopNetwork(name string) (models.Network, error) {
-	if err := c.ensureConnected(); err != nil {
-		return models.Network{}, err
-	}
-	net, err := c.lookupNetwork(name)
+	return models.Network{}, errors.New("host Linux bridges are always active; WebKVM does not start/stop OS-level bridges")
+}
+
+// bridgeIPv4 returns the bridge's IPv4 CIDR (e.g. "192.168.1.30/24"), or ""
+// when the bridge has no IPv4 address.
+func bridgeIPv4(br string) string {
+	out, err := exec.Command("ip", "-4", "-o", "addr", "show", "dev", br, "scope", "global").CombinedOutput()
 	if err != nil {
-		return models.Network{}, err
-	}
-	defer net.Free()
-
-	active, _ := net.IsActive()
-	if !active {
-		return networkToModel(net)
-	}
-	if err := net.Destroy(); err != nil {
-		return models.Network{}, fmt.Errorf("stop network: %w", err)
-	}
-	return networkToModel(net)
-}
-
-func (c *Connector) lookupNetwork(id string) (*libvirt.Network, error) {
-	net, err := c.conn.LookupNetworkByName(id)
-	if err != nil {
-		return nil, fmt.Errorf("network not found: %w", err)
-	}
-	return net, nil
-}
-
-func networkToModel(net *libvirt.Network) (models.Network, error) {
-	name, _ := net.GetName()
-	bridgeName, _ := net.GetBridgeName()
-
-	active, _ := net.IsActive()
-	autostart, _ := net.GetAutostart()
-
-	var forward string
-	xmlDesc, _ := net.GetXMLDesc(0)
-	forward = extractNetworkForward(xmlDesc)
-	// virNetworkGetBridgeName returns empty for forward='bridge' networks
-	// (the bridge is host-managed and only declared in the XML) — fall
-	// back to parsing it so the unified L2 resolver can attach containers.
-	if bridgeName == "" {
-		bridgeName = extractNetworkBridge(xmlDesc)
-	}
-
-	cidr, gateway := extractNetworkCIDR(xmlDesc)
-	dhcpStart, dhcpEnd := extractNetworkDHCP(xmlDesc)
-	dns := extractNetworkDNS(xmlDesc)
-	iface := extractNetworkInterface(xmlDesc)
-
-	return models.Network{
-		Name:      name,
-		Forward:   forward,
-		Bridge:    bridgeName,
-		Interface: iface,
-		CIDR:      cidr,
-		Gateway:   gateway,
-		DHCP:      dhcpStart != "" || dhcpEnd != "",
-		DHCPStart: dhcpStart,
-		DHCPEnd:   dhcpEnd,
-		DNS:       dns,
-		Active:    active,
-		Autostart: autostart,
-		Protected: IsManagedNetwork(name),
-	}, nil
-}
-
-// extractNetworkDNS parses all <forwarder addr='...'/> inside a <dns> block.
-func extractNetworkDNS(xml string) []string {
-	s := strings.Index(xml, "<dns>")
-	if s < 0 {
-		s = strings.Index(xml, "<dns ")
-		if s < 0 {
-			return nil
-		}
-	}
-	e := strings.Index(xml[s:], "</dns>")
-	if e < 0 {
-		return nil
-	}
-	block := xml[s : s+e]
-
-	out := []string{}
-	for {
-		tag := "<forwarder addr='"
-		i := strings.Index(block, tag)
-		if i < 0 {
-			tag = "<forwarder addr=\""
-			i = strings.Index(block, tag)
-		}
-		if i < 0 {
-			break
-		}
-		i += len(tag)
-		end := strings.Index(block[i:], "'")
-		if end < 0 {
-			end = strings.Index(block[i:], "\"")
-		}
-		if end < 0 {
-			break
-		}
-		out = append(out, block[i:i+end])
-		block = block[i+end:]
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// extractNetworkDNSBlock returns the raw "<dns>...</dns>\n  " block as it
-// should appear in a network XML, or empty string if there is no DNS.
-func extractNetworkDNSBlock(xml string) string {
-	s := strings.Index(xml, "<dns>")
-	if s < 0 {
-		s = strings.Index(xml, "<dns ")
-		if s < 0 {
-			return ""
-		}
-	}
-	e := strings.Index(xml[s:], "</dns>")
-	if e < 0 {
 		return ""
 	}
-	return xml[s:s+e+len("</dns>")] + "\n  "
-}
-
-// extractNetworkBridge returns the Linux bridge name declared in a
-// libvirt network XML (the <bridge name='…'/> element). virNetworkGetBridgeName
-// only reports the bridge for networks libvirt itself manages (NAT virbr0);
-// for forward='bridge' networks the bridge lives in the XML and must be
-// parsed here, otherwise the unified L2 resolver can't find it.
-func extractNetworkBridge(xml string) string {
-	idx := strings.Index(xml, "<bridge")
-	if idx < 0 {
-		return ""
-	}
-	rest := xml[idx:]
-	end := strings.IndexByte(rest, '>')
-	if end < 0 {
-		return ""
-	}
-	tag := rest[:end+1]
-	for _, q := range []string{`name='`, `name="`} {
-		if m := strings.Index(tag, q); m >= 0 {
-			m += len(q)
-			// q[len(q)-1] is the closing quote that matches q's opening
-			// quote (either ' or ").
-			e := strings.IndexByte(tag[m:], q[len(q)-1])
-			if e > 0 {
-				return tag[m : m+e]
-			}
+	for _, f := range strings.Fields(string(out)) {
+		if strings.Contains(f, "/") {
+			return f
 		}
 	}
 	return ""
-}
-
-func extractNetworkForward(xml string) string {
-	fwd := strings.Index(xml, "<forward")
-	if fwd < 0 {
-		return "nat"
-	}
-	end := strings.IndexByte(xml[fwd:], '>')
-	if end < 0 {
-		return "nat"
-	}
-	tag := xml[fwd : fwd+end+1]
-	// Extract mode from attributes in any order
-	modeKey := `mode='`
-	m := strings.Index(tag, modeKey)
-	if m < 0 {
-		modeKey = `mode="`
-		m = strings.Index(tag, modeKey)
-	}
-	if m < 0 {
-		return "nat"
-	}
-	m += len(modeKey)
-	e := strings.IndexByte(tag[m:], '\'')
-	if e < 0 {
-		e = strings.IndexByte(tag[m:], '"')
-	}
-	if e < 0 {
-		return "nat"
-	}
-	mode := tag[m : m+e]
-
-	// A libvirt forward mode='bridge' element either points at a real
-	// host Linux bridge (self-closed, with a <bridge name='...'/>
-	// sibling) or, when it instead has one or more <interface dev=.../>
-	// children, binds guests straight to a physical NIC via macvtap —
-	// no host-side bridge device involved at all. WebKVM surfaces the
-	// second case as forward="direct" so the UI (and CreateNetwork's
-	// own validation) never confuses it with a network that needs an
-	// existing Linux bridge.
-	if mode == "bridge" && !strings.HasSuffix(strings.TrimRight(tag[:len(tag)-1], " "), "/") {
-		if closeIdx := strings.Index(xml[fwd:], "</forward>"); closeIdx >= 0 {
-			if strings.Contains(xml[fwd:fwd+closeIdx], "<interface ") {
-				return "direct"
-			}
-		}
-	}
-	return mode
-}
-
-// extractNetworkInterface returns the physical interface name bound
-// to a forward="direct" (macvtap) network, e.g. "eth0" from
-// "<forward mode='bridge'><interface dev='eth0'/></forward>". Returns
-// "" for any other forward mode.
-func extractNetworkInterface(xml string) string {
-	fwd := strings.Index(xml, "<forward")
-	if fwd < 0 {
-		return ""
-	}
-	closeIdx := strings.Index(xml[fwd:], "</forward>")
-	if closeIdx < 0 {
-		return ""
-	}
-	block := xml[fwd : fwd+closeIdx]
-	i := strings.Index(block, "<interface ")
-	if i < 0 {
-		return ""
-	}
-	rest := block[i:]
-	devKey := `dev='`
-	d := strings.Index(rest, devKey)
-	if d < 0 {
-		devKey = `dev="`
-		d = strings.Index(rest, devKey)
-	}
-	if d < 0 {
-		return ""
-	}
-	d += len(devKey)
-	e2 := strings.IndexByte(rest[d:], '\'')
-	if e2 < 0 {
-		e2 = strings.IndexByte(rest[d:], '"')
-	}
-	if e2 < 0 {
-		return ""
-	}
-	return rest[d : d+e2]
-}
-
-// extractNetworkCIDR returns the network CIDR (e.g. "192.168.100.0/24") and
-// the gateway IP (e.g. "192.168.100.1"). libvirt only stores the gateway and
-// the netmask in <ip>, so we compute the network address as gateway & netmask.
-func extractNetworkCIDR(xml string) (string, string) {
-	addr, netmask := extractIPAndNetmask(xml)
-	if addr == "" {
-		return "", ""
-	}
-
-	if netmask == "" {
-		return fmt.Sprintf("%s/32", addr), addr
-	}
-
-	prefix := netmaskToPrefix(netmask)
-	if prefix <= 0 {
-		return fmt.Sprintf("%s/32", addr), addr
-	}
-
-	gatewayIP := net.ParseIP(addr).To4()
-	maskIP := net.ParseIP(netmask).To4()
-	if gatewayIP == nil || maskIP == nil {
-		return addr, addr
-	}
-
-	networkIP := make(net.IP, 4)
-	for i := range networkIP {
-		networkIP[i] = gatewayIP[i] & maskIP[i]
-	}
-
-	return fmt.Sprintf("%s/%d", networkIP.String(), prefix), addr
-}
-
-// extractIPAndNetmask returns the raw <ip address='...'> and netmask values
-// from a libvirt network XML.
-func extractIPAndNetmask(xml string) (string, string) {
-	start := `<ip address='`
-	s := strings.Index(xml, start)
-	if s < 0 {
-		start = `<ip address="`
-		s = strings.Index(xml, start)
-		if s < 0 {
-			return "", ""
-		}
-	}
-	s += len(start)
-	e := strings.Index(xml[s:], "'")
-	if e < 0 {
-		e = strings.Index(xml[s:], "\"")
-		if e < 0 {
-			return "", ""
-		}
-	}
-	addr := xml[s : s+e]
-
-	netmask := ""
-	nmStart := `netmask='`
-	nmS := strings.Index(xml, nmStart)
-	if nmS >= 0 {
-		nmS += len(nmStart)
-		nmE := strings.Index(xml[nmS:], "'")
-		if nmE >= 0 {
-			netmask = xml[nmS : nmS+nmE]
-		}
-	}
-	if netmask == "" {
-		nmStart = `netmask="`
-		nmS := strings.Index(xml, nmStart)
-		if nmS >= 0 {
-			nmS += len(nmStart)
-			nmE := strings.Index(xml[nmS:], "\"")
-			if nmE >= 0 {
-				netmask = xml[nmS : nmS+nmE]
-			}
-		}
-	}
-
-	return addr, netmask
-}
-
-// extractNetworkDHCP looks for <range> inside the <dhcp> block only,
-// so it doesn't match unrelated 'start=' or 'end=' attributes.
-func extractNetworkDHCP(xml string) (string, string) {
-	dhcpStart := strings.Index(xml, "<dhcp>")
-	if dhcpStart < 0 {
-		dhcpStart = strings.Index(xml, "<dhcp ")
-		if dhcpStart < 0 {
-			return "", ""
-		}
-	}
-	dhcpEnd := strings.Index(xml[dhcpStart:], "</dhcp>")
-	if dhcpEnd < 0 {
-		return "", ""
-	}
-	dhcpBlock := xml[dhcpStart : dhcpStart+dhcpEnd]
-
-	var start, end string
-
-	sStart := `<range start='`
-	s := strings.Index(dhcpBlock, sStart)
-	if s < 0 {
-		sStart = `<range start="`
-		s = strings.Index(dhcpBlock, sStart)
-	}
-	if s >= 0 {
-		s += len(sStart)
-		e := strings.Index(dhcpBlock[s:], "'")
-		if e < 0 {
-			e = strings.Index(dhcpBlock[s:], "\"")
-		}
-		if e >= 0 {
-			start = dhcpBlock[s : s+e]
-		}
-	}
-
-	eStart := `end='`
-	s2 := strings.Index(dhcpBlock, eStart)
-	if s2 < 0 {
-		eStart = `end="`
-		s2 = strings.Index(dhcpBlock, eStart)
-	}
-	if s2 >= 0 {
-		s2 += len(eStart)
-		e := strings.Index(dhcpBlock[s2:], "'")
-		if e < 0 {
-			e = strings.Index(dhcpBlock[s2:], "\"")
-		}
-		if e >= 0 {
-			end = dhcpBlock[s2 : s2+e]
-		}
-	}
-
-	return start, end
-}
-
-func netmaskToPrefix(netmask string) int {
-	ip := net.ParseIP(netmask)
-	if ip == nil {
-		return 0
-	}
-	ip = ip.To4()
-	if ip == nil {
-		return 0
-	}
-	ones, _ := net.IPv4Mask(ip[0], ip[1], ip[2], ip[3]).Size()
-	if ones < 0 {
-		return 0
-	}
-	return ones
-}
-
-// bridgeNameFor returns a Linux interface name for a network. Linux limits
-// network interface names to 15 characters (IFNAMSIZ=16, including null
-// terminator). The "virbr-" prefix consumes 6, leaving 9 characters for the
-// network name. If the name is too long, it is truncated to 9 chars to fit.
-func bridgeNameFor(name string) string {
-	const prefix = "virbr-"
-	const maxIface = 15
-	maxName := maxIface - len(prefix)
-	if len(name) > maxName {
-		name = name[:maxName]
-	}
-	return prefix + name
-}
-
-// cidrInfo holds derived values from a CIDR notation.
-type cidrInfo struct {
-	Gateway   string
-	Netmask   string
-	Prefix    int
-	DHCPStart string
-	DHCPEnd   string
-}
-
-// parseCIDR parses a CIDR like "192.168.100.0/24" and returns the first usable
-// IP (gateway), netmask, prefix length, and the default DHCP range
-// (second usable IP to last usable IP).
-func parseCIDR(cidr string) (cidrInfo, error) {
-	ip, ipnet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return cidrInfo{}, err
-	}
-	ip = ip.To4()
-	if ip == nil {
-		return cidrInfo{}, fmt.Errorf("not an IPv4 CIDR")
-	}
-	ones, bits := ipnet.Mask.Size()
-	if bits != 32 {
-		return cidrInfo{}, fmt.Errorf("not an IPv4 CIDR")
-	}
-	mask := ipnet.Mask
-
-	// First usable IP = network address + 1
-	first := make(net.IP, 4)
-	copy(first, ipnet.IP.To4())
-	first[3]++
-
-	// Last usable IP = broadcast - 1
-	broadcast := make(net.IP, 4)
-	for i := range broadcast {
-		broadcast[i] = ipnet.IP.To4()[i] | ^mask[i]
-	}
-	last := make(net.IP, 4)
-	copy(last, broadcast)
-	last[3]--
-
-	// For /31 and /32, DHCP range is unusual; default to nothing.
-	dhcpStart := ""
-	dhcpEnd := ""
-	if ones <= 30 {
-		dhcpStartIP := make(net.IP, 4)
-		copy(dhcpStartIP, first)
-		dhcpStartIP[3]++
-		if dhcpStartIP.To4()[3] < last.To4()[3] {
-			dhcpStart = dhcpStartIP.String()
-			dhcpEnd = last.String()
-		}
-	}
-
-	netmask := fmt.Sprintf("%d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3])
-
-	return cidrInfo{
-		Gateway:   first.String(),
-		Netmask:   netmask,
-		Prefix:    ones,
-		DHCPStart: dhcpStart,
-		DHCPEnd:   dhcpEnd,
-	}, nil
 }

@@ -20,6 +20,7 @@
     provisionChip,
   } from '$lib/utils/computeType.js';
   import { networkLabel } from '$lib/utils/networkLabel.js';
+  import { vmIps } from '$lib/utils/vmIps.js';
 
   // Friendly label for a network option {name, bridge} (v1.4 Fase 4.1):
   // "Red Interna (vmbr0)" instead of a raw bridge/name.
@@ -346,7 +347,8 @@ apt-get update -y
         (v) =>
           (v.name || '').toLowerCase().includes(q) ||
           (v.alias && v.alias.toLowerCase().includes(q)) ||
-          (v.ip && v.ip.includes(q))
+          (v.ip && v.ip.includes(q)) ||
+          vmIps(v).some((ip) => ip.includes(q))
       );
     }
     return out;
@@ -1553,8 +1555,8 @@ apt-get update -y
             <div class="flex items-center justify-between gap-2">
               <div class="font-medium text-sm truncate min-w-0">{vm.alias || vm.name}</div>
               <div class="flex items-center gap-1 shrink-0">
-                {#if vm.state === 'running' && vm.ip}
-                  <span class="font-mono text-[10px] text-accent">{vm.ip}</span>
+                {#if vm.state === 'running' && vmIps(vm).length}
+                  <span class="font-mono text-[10px] text-accent">{vmIps(vm).join(', ')}</span>
                 {/if}
                 <div class="relative">
                   <button

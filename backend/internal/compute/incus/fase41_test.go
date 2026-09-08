@@ -3,6 +3,7 @@ package incus
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,8 @@ func TestParseDiskGB(t *testing.T) {
 
 // instanceToVM must surface the root device as a disk and each NIC as a
 // network interface (v1.4 Fase 4.1) so the KVM-equivalent tabs work.
+// v2.4: containers have exactly ONE NIC on a real Linux bridge (vmbr0) —
+// never a duplicate eth0+eth1 from a virtual/NAT profile NIC.
 func TestInstanceToVM_DisksAndNetworks(t *testing.T) {
 	inst := &api.Instance{
 		Name:   "ct1",
@@ -40,13 +43,11 @@ func TestInstanceToVM_DisksAndNetworks(t *testing.T) {
 			Config: map[string]string{
 				"limits.cpu":           "2",
 				"volatile.eth0.hwaddr": "00:16:3e:aa:bb:cc",
-				"volatile.eth1.hwaddr": "00:16:3e:dd:ee:ff",
 				"user.user-data":       "#cloud-config\n",
 			},
 			Devices: map[string]map[string]string{
 				"root": {"type": "disk", "path": "/", "pool": "default", "size": "10GB"},
-				"eth0": {"type": "nic", "nictype": "bridged", "parent": "virbr0", "name": "eth0"},
-				"eth1": {"type": "nic", "nictype": "bridged", "parent": "lxdbr0", "name": "eth1"},
+				"eth0": {"type": "nic", "nictype": "bridged", "parent": "vmbr0", "name": "eth0"},
 			},
 		},
 	}
@@ -61,16 +62,13 @@ func TestInstanceToVM_DisksAndNetworks(t *testing.T) {
 	if vm.DiskGB != 10 {
 		t.Errorf("disk_gb = %d, want 10", vm.DiskGB)
 	}
-	if len(vm.Networks) != 2 {
-		t.Fatalf("expected 2 ifaces, got %d", len(vm.Networks))
+	// Exactly ONE NIC, on a real bridge — no eth0+eth1 duplicate.
+	if len(vm.Networks) != 1 {
+		t.Fatalf("expected 1 iface, got %d (v2.4: single bridged NIC)", len(vm.Networks))
 	}
 	n0 := vm.Networks[0]
-	if n0.MAC != "00:16:3e:aa:bb:cc" || n0.Network != "virbr0" {
+	if n0.MAC != "00:16:3e:aa:bb:cc" || n0.Network != "vmbr0" {
 		t.Errorf("eth0 = %+v", n0)
-	}
-	n1 := vm.Networks[1]
-	if n1.Network != "lxdbr0" {
-		t.Errorf("eth1 network = %q, want lxdbr0", n1.Network)
 	}
 }
 
@@ -81,6 +79,31 @@ func TestNextNicName(t *testing.T) {
 	devs := map[string]map[string]string{"eth0": {}, "eth2": {}}
 	if got := nextNicName(devs); got != "eth3" {
 		t.Errorf("gapped = %q, want eth3", got)
+	}
+}
+
+// TestLxdNetworkConfig: attaching/detaching a container NIC must regenerate
+// user.network-config so the guest's netplan configures EVERY NIC (eth0,
+// eth1, …) with DHCP — otherwise a newly attached interface sits without an
+// IP and looks like a broken duplicate.
+func TestLxdNetworkConfig(t *testing.T) {
+	devs := map[string]map[string]string{
+		"root": {"type": "disk", "path": "/"},
+		"eth0": {"type": "nic", "nictype": "bridged", "parent": "vmbr0"},
+		"eth1": {"type": "nic", "nictype": "bridged", "parent": "vmbr0"},
+	}
+	nc := lxdNetworkConfig(devs)
+	if !strings.Contains(nc, "eth0:") || !strings.Contains(nc, "eth1:") {
+		t.Errorf("network-config must declare eth0 and eth1:\n%s", nc)
+	}
+	if strings.Contains(nc, "root:") {
+		t.Errorf("network-config must not include non-NIC devices:\n%s", nc)
+	}
+	// After detaching eth1, only eth0 remains.
+	delete(devs, "eth1")
+	nc2 := lxdNetworkConfig(devs)
+	if strings.Contains(nc2, "eth1:") || !strings.Contains(nc2, "eth0:") {
+		t.Errorf("after detach, network-config must only declare eth0:\n%s", nc2)
 	}
 }
 
@@ -140,13 +163,9 @@ func TestIncusBackendAttachNetworkIface(t *testing.T) {
 		t.Skip("no Linux bridge on the host; attach resolution requires one")
 	}
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, _ := NewIncusBackend(sock, WithNetworkResolver(func(name string) (string, error) {
-		if name == "default" || name == "lan" {
-			return real, nil
-		}
-		return "", compute.ErrNotImplemented
-	}))
-	if err := b.AttachNetworkIface("ct1", models.AttachNetRequest{Network: "default"}); err != nil {
+	b, _ := NewIncusBackend(sock)
+	// v2.4: the network IS the bridge — attach by the real bridge name.
+	if err := b.AttachNetworkIface("ct1", models.AttachNetRequest{Network: real}); err != nil {
 		t.Fatal(err)
 	}
 	vm, err := b.GetDomain("ct1")
@@ -157,7 +176,7 @@ func TestIncusBackendAttachNetworkIface(t *testing.T) {
 		t.Fatalf("expected 2 ifaces after attach, got %d", len(vm.Networks))
 	}
 	if vm.Networks[1].Network != real {
-		t.Errorf("eth1 parent = %q, want %q (resolved bridge)", vm.Networks[1].Network, real)
+		t.Errorf("eth1 parent = %q, want %q (real bridge)", vm.Networks[1].Network, real)
 	}
 }
 
@@ -167,21 +186,16 @@ func TestIncusBackendAttachUsesResolvedBridge(t *testing.T) {
 		t.Skip("no Linux bridge on the host")
 	}
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, err := NewIncusBackend(sock, WithNetworkResolver(func(name string) (string, error) {
-		if name == "lan" {
-			return real, nil
-		}
-		return "", compute.ErrNotImplemented
-	}))
+	b, err := NewIncusBackend(sock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := b.AttachNetworkIface("ct1", models.AttachNetRequest{Network: "lan"}); err != nil {
+	if err := b.AttachNetworkIface("ct1", models.AttachNetRequest{Network: real}); err != nil {
 		t.Fatal(err)
 	}
 	vm, _ := b.GetDomain("ct1")
 	if vm.Networks[1].Network != real {
-		t.Errorf("eth1 parent = %q, want %q (resolved bridge)", vm.Networks[1].Network, real)
+		t.Errorf("eth1 parent = %q, want %q (real bridge)", vm.Networks[1].Network, real)
 	}
 }
 
@@ -203,16 +217,14 @@ func TestIncusBackendUpdateNetworkIface(t *testing.T) {
 		t.Skip("no Linux bridge on the host; update resolution requires one")
 	}
 	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
-	b, _ := NewIncusBackend(sock, WithNetworkResolver(func(name string) (string, error) {
-		return real, nil
-	}))
-	net := "lan"
+	b, _ := NewIncusBackend(sock)
+	net := real
 	if err := b.UpdateNetworkIface("ct1", "00:16:3e:aa:bb:cc", models.UpdateNetIfaceRequest{Network: &net}); err != nil {
 		t.Fatal(err)
 	}
 	vm, _ := b.GetDomain("ct1")
 	if len(vm.Networks) != 1 || vm.Networks[0].Network != real {
-		t.Errorf("eth0 parent after update = %q, want %q (resolved bridge)", vm.Networks[0].Network, real)
+		t.Errorf("eth0 parent after update = %q, want %q (real bridge)", vm.Networks[0].Network, real)
 	}
 }
 

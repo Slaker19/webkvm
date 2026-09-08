@@ -45,6 +45,9 @@ type VM struct {
 	Nesting    bool        `json:"nesting"`
 	Profiles   []string    `json:"profiles,omitempty"`
 	IP         string      `json:"ip,omitempty"`
+	// IPs lists every IPv4 the instance holds across its NICs (containers
+	// with several interfaces expose one per NIC). IP is the primary.
+	IPs []string `json:"ips,omitempty"`
 	Alias      string      `json:"alias,omitempty"`
 	Cover      string      `json:"cover,omitempty"`
 	Groups     []string    `json:"groups,omitempty"`

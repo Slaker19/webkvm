@@ -336,9 +336,13 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 		networkModel = "virtio"
 	}
 
-	// WebKVM requires shared Layer-2 (Proxmox-style): a VM with no network
-	// selected must land on a physical Linux bridge (vmbr0/br0). If the
-	// host has none, fail loudly instead of falling back to a NAT network.
+	// WebKVM v2.4 (Proxmox-style): KVM always attaches to a REAL OS-level
+	// Linux bridge (vmbr0, vmbr1, …). A provided network must be an existing
+	// host bridge; an empty selection lands on the main bridge. Never a
+	// libvirt virtual/NAT network.
+	if req.Network != "" && !isLinuxBridge(req.Network) {
+		return models.VM{}, fmt.Errorf("network %q is not a host Linux bridge; WebKVM only uses real bridges (vmbr0, vmbr1, …)", req.Network)
+	}
 	if req.Network == "" && mainBridge() == "" {
 		return models.VM{}, errNoPhysicalBridge
 	}
@@ -1144,35 +1148,29 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 	}
 
 	if state == libvirt.DOMAIN_RUNNING {
-		ifaces, err := dom.ListAllInterfaceAddresses(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE)
-		if err == nil {
+		collect := func(src libvirt.DomainInterfaceAddressesSource) {
+			ifaces, err := dom.ListAllInterfaceAddresses(src)
+			if err != nil {
+				return
+			}
+			seen := map[string]bool{}
 			for _, iface := range ifaces {
 				for _, a := range iface.Addrs {
-					if a.Type == libvirt.IP_ADDR_TYPE_IPV4 {
-						vm.IP = a.Addr
-						break
+					if a.Type == libvirt.IP_ADDR_TYPE_IPV4 && !seen[a.Addr] {
+						seen[a.Addr] = true
+						vm.IPs = append(vm.IPs, a.Addr)
 					}
-				}
-				if vm.IP != "" {
-					break
 				}
 			}
 		}
-		if vm.IP == "" {
-			ifaces, err = dom.ListAllInterfaceAddresses(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_ARP)
-			if err == nil {
-				for _, iface := range ifaces {
-					for _, a := range iface.Addrs {
-						if a.Type == libvirt.IP_ADDR_TYPE_IPV4 {
-							vm.IP = a.Addr
-							break
-						}
-					}
-					if vm.IP != "" {
-						break
-					}
-				}
-			}
+		// SRC_LEASE first (authoritative); fall back to SRC_ARP only when
+		// it yields nothing, so the IP list stays accurate.
+		collect(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE)
+		if len(vm.IPs) == 0 {
+			collect(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_ARP)
+		}
+		if len(vm.IPs) > 0 {
+			vm.IP = vm.IPs[0]
 		}
 	}
 
@@ -1195,13 +1193,6 @@ func stateToVMState(state libvirt.DomainState) models.VMState {
 	}
 }
 
-func defaultNetwork(net string) string {
-	if net == "" {
-		return "default"
-	}
-	return net
-}
-
 // linuxBridgeCheck reports whether a network name is a traditional Linux
 // bridge on the host. Extracted so tests can exercise the bridge branch of
 // interfaceXML without requiring a real bridge device.
@@ -1211,29 +1202,19 @@ var linuxBridgeCheck = isLinuxBridge
 // Extracted so tests can exercise interfaceXML's empty-network default.
 var mainBridgeCheck = mainBridge
 
-// interfaceXML renders the guest <interface> element. When the selected
-// network is a traditional Linux bridge on the host (Proxmox-style shared
-// L2), the guest attaches DIRECTLY to it with <interface type='bridge'>.
-// Otherwise it falls back to a libvirt virtual network (<interface
-// type='network'>, e.g. the NAT "default"/virbr0).
+// interfaceXML renders the guest <interface> element. WebKVM v2.4 uses ONE
+// network model: real OS-level Linux bridges (vmbr0, vmbr1, …). KVM always
+// attaches with <interface type='bridge'><source bridge='vmbrX'/> — there
+// is no libvirt virtual-network (NAT) path anymore. When the requested
+// network is empty or not a host bridge, the host's main bridge is used.
 func interfaceXML(net, model string) string {
-	// Proxmox-style shared L2: when no network is selected, prefer the
-	// host's main Linux bridge (vmbr0/br0) over the legacy NAT default.
-	if net == "" {
-		if mainBridgeCheck() != "" {
-			net = mainBridgeCheck()
-		}
+	if net == "" || !linuxBridgeCheck(net) {
+		net = mainBridgeCheck()
 	}
-	if linuxBridgeCheck(net) {
-		return fmt.Sprintf(`<interface type='bridge'>
+	return fmt.Sprintf(`<interface type='bridge'>
       <source bridge='%s'/>
       <model type='%s'/>
     </interface>`, xmlEscape(net), xmlEscape(model))
-	}
-	return fmt.Sprintf(`<interface type='network'>
-      <source network='%s'/>
-      <model type='%s'/>
-    </interface>`, xmlEscape(defaultNetwork(net)), xmlEscape(model))
 }
 
 type GraphicsInfo struct {
@@ -2158,6 +2139,9 @@ func (c *Connector) AttachNetworkIface(id string, req models.AttachNetRequest) e
 	model := req.Model
 	if model == "" {
 		model = "virtio"
+	}
+	if req.Network == "" || !isLinuxBridge(req.Network) {
+		return fmt.Errorf("network %q is not a host Linux bridge; WebKVM only attaches to real bridges (vmbr0, vmbr1, …)", req.Network)
 	}
 
 	ifaceXML := interfaceXML(req.Network, model)

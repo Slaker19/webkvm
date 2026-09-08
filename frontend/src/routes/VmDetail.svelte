@@ -15,6 +15,7 @@
   import { stateDotClass } from '$lib/utils/vmState.js';
   import { isContainer } from '$lib/utils/computeType.js';
   import { networkLabel, networkLabelFor } from '$lib/utils/networkLabel.js';
+  import { vmIps } from '$lib/utils/vmIps.js';
   import { formatRate } from '$lib/utils/format.js';
   import { events } from '$lib/stores/events.svelte.js';
   import { navigate, getRoute } from '$lib/router.svelte.js';
@@ -1520,11 +1521,11 @@
           <span class="text-xs text-muted-foreground font-mono truncate shrink-0">({vm.name})</span>
         {/if}
         <span class="text-xs text-muted-foreground capitalize shrink-0">{vm.state}</span>
-        {#if vm.state === 'running' && vm.ip}
+        {#if vm.state === 'running' && vmIps(vm).length}
           <span
-            class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent font-mono truncate shrink-0 max-w-[15rem]"
+            class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent font-mono truncate shrink-0 max-w-[24rem]"
           >
-            {vm.ip}
+            {vmIps(vm).join(', ')}
           </span>
         {/if}
         {#if vmMeta?.template}
@@ -1873,10 +1874,10 @@
                         >{iface.model}</span
                       >
                       <span class="text-sm">{networkLabelFor(iface.network, networks)}</span>
-                      {#if vm.state === 'running' && idx === 0 && vm.ip}
+                      {#if vm.state === 'running' && vmIps(vm).length}
                         <span
                           class="text-xs px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent font-mono"
-                          >{t('vmDetail.ipLabel', { ip: vm.ip })}</span
+                          >{vmIps(vm).join(', ')}</span
                         >
                       {/if}
                     </div>

@@ -365,17 +365,17 @@ func TestIncusBackendCreateDomain(t *testing.T) {
 		t.Errorf("user.network-config not injected: %q", nc)
 	}
 	// Devices: root disk with the requested size + shared-L2 NIC. With no
-	// explicit network, the container lands on the host's shared bridge
-	// (vmbr0/br0) when one exists, else the backend's own lxdbr0.
-	if root := post.Devices["root"]; root["size"] != "10GB" {
-		t.Errorf("root device = %+v", post.Devices["root"])
+	// explicit network, the container lands on the host's physical bridge
+	// (vmbr0/br0). The NIC is strictly eth0 (overrides the profile's NIC).
+	wantParent := incusMainBridge()
+	if wantParent == "" {
+		t.Fatal("expected a physical bridge (test would have skipped otherwise)")
 	}
-	wantParent := "lxdbr0"
-	if mb := incusMainBridge(); mb != "" {
-		wantParent = mb
+	if eth0 := post.Devices["eth0"]; eth0["parent"] != wantParent || eth0["nictype"] != "bridged" || eth0["name"] != "eth0" {
+		t.Errorf("eth0 device = %+v (want parent %q, name eth0)", post.Devices["eth0"], wantParent)
 	}
-	if eth0 := post.Devices["eth0"]; eth0["parent"] != wantParent || eth0["nictype"] != "bridged" {
-		t.Errorf("eth0 device = %+v (want parent %q)", post.Devices["eth0"], wantParent)
+	if len(post.Devices) != 2 {
+		t.Errorf("expected exactly root + eth0 (single NIC, no eth1 duplicate), got %d devices: %v", len(post.Devices), post.Devices)
 	}
 	if vm.ID != "web" || vm.Name != "web" || vm.Hypervisor != "incus" {
 		t.Errorf("mapped vm = %+v", vm)

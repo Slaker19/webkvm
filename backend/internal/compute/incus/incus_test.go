@@ -366,6 +366,9 @@ func TestIncusBackendSurfacesContainerIP(t *testing.T) {
 	if vm.IP != "192.168.1.121" {
 		t.Errorf("GetDomain IP = %q, want 192.168.1.121 (container must show its LAN IP, not look isolated)", vm.IP)
 	}
+	if len(vm.IPs) != 1 || vm.IPs[0] != "192.168.1.121" {
+		t.Errorf("GetDomain IPs = %v, want [192.168.1.121]", vm.IPs)
+	}
 
 	vms, err := b.ListDomains()
 	if err != nil {
@@ -373,6 +376,9 @@ func TestIncusBackendSurfacesContainerIP(t *testing.T) {
 	}
 	if len(vms) != 1 || vms[0].IP != "192.168.1.121" {
 		t.Errorf("ListDomains IP = %+v, want the container LAN IP surfaced", vms)
+	}
+	if len(vms[0].IPs) != 1 || vms[0].IPs[0] != "192.168.1.121" {
+		t.Errorf("ListDomains IPs = %v, want [192.168.1.121]", vms[0].IPs)
 	}
 }
 
@@ -395,6 +401,33 @@ func TestInstanceIPFallbackAnyInterface(t *testing.T) {
 	}
 }
 
+// TestInstanceIPsAll: a container with several NICs must expose EVERY IPv4,
+// eth0 first — the whole reason IPs[] exists (one IP per interface).
+func TestInstanceIPsAll(t *testing.T) {
+	st := &api.InstanceState{
+		Network: map[string]api.InstanceStateNetwork{
+			"eth0": {Addresses: []api.InstanceStateNetworkAddress{
+				{Family: "inet", Address: "192.168.1.121"},
+				{Family: "inet", Address: "192.168.1.121"}, // duplicate
+			}},
+			"eth1": {Addresses: []api.InstanceStateNetworkAddress{
+				{Family: "inet", Address: "100.0.0.118"},
+			}},
+			"lo": {Addresses: []api.InstanceStateNetworkAddress{
+				{Family: "inet", Address: "127.0.0.1"},
+			}},
+		},
+	}
+	got := instanceIPs(st)
+	want := []string{"192.168.1.121", "100.0.0.118"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("instanceIPs = %v, want %v (all NICs, deduped, no loopback)", got, want)
+	}
+	if instanceIP(st) != "192.168.1.121" {
+		t.Errorf("instanceIP should return the primary (eth0): %v", instanceIP(st))
+	}
+}
+
 func TestBridgeForNetwork(t *testing.T) {
 	b := &IncusBackend{}
 
@@ -408,45 +441,20 @@ func TestBridgeForNetwork(t *testing.T) {
 		t.Errorf("empty network without a physical bridge: err=%v, want ErrNoPhysicalBridge", err)
 	}
 
-	// Without a resolver, a logical network must NOT be silently guessed.
-	if _, err := b.bridgeForNetwork("webkvm-bridge"); err == nil {
-		t.Error("expected an error for a logical network when no resolver is wired")
+	// v2.4 agnostic L2: a named network must BE a real host Linux bridge.
+	// Virtual/NAT names ("webkvm-bridge", "default", virbr0, lxdbr0) are
+	// rejected outright — never a logical→physical guess.
+	for _, bad := range []string{"webkvm-bridge", "default", "virbr0", "lxdbr0", "lan"} {
+		if _, err := b.bridgeForNetwork(bad); !errors.Is(err, compute.ErrNoPhysicalBridge) {
+			t.Errorf("bridgeForNetwork(%q): want ErrNoPhysicalBridge, got %v", bad, err)
+		}
 	}
 
-	// A resolver returning a VIRTUAL bridge (virbr0) — or the logical name
-	// — must be rejected: only physical bridges are valid NIC parents.
-	b.networkResolver = func(name string) (string, error) { return "virbr0", nil }
-	if _, err := b.bridgeForNetwork("webkvm-bridge"); err == nil {
-		t.Error("expected an error when the resolver returns a virtual bridge (virbr0)")
-	}
-
-	// Resolver error: propagates as ErrNoPhysicalBridge — NO fallback to
-	// NAT/virtual bridges.
-	b.networkResolver = func(name string) (string, error) { return "", fmt.Errorf("no such network") }
-	if _, err := b.bridgeForNetwork("mynet"); !errors.Is(err, compute.ErrNoPhysicalBridge) {
-		t.Errorf("resolver error should surface ErrNoPhysicalBridge, got: %v", err)
-	}
-
-	// A resolver returning a REAL physical host bridge is used as the
-	// parent (logical → physical translation).
+	// A named REAL physical bridge is used directly as the NIC parent.
 	if real := findAnyPhysicalBridge(); real != "" {
-		b.networkResolver = func(name string) (string, error) { return real, nil }
-		if br, err := b.bridgeForNetwork("webkvm-bridge"); err != nil || br != real {
-			t.Errorf("resolved bridge: bridge=%q err=%v (want %q)", br, err, real)
+		if br, err := b.bridgeForNetwork(real); err != nil || br != real {
+			t.Errorf("named physical bridge: bridge=%q err=%v (want %q)", br, err, real)
 		}
-	}
-
-	// A name that IS a physical Linux bridge on the host is used directly.
-	if isPhysicalBridge("vmbr0") {
-		if br, err := b.bridgeForNetwork("vmbr0"); err != nil || br != "vmbr0" {
-			t.Errorf("direct bridge: bridge=%q err=%v", br, err)
-		}
-	}
-	if isPhysicalBridge("virbr0") {
-		t.Error("virbr0 must not be treated as a physical (shared) bridge")
-	}
-	if isPhysicalBridge("definitely-not-a-bridge") {
-		t.Error("isPhysicalBridge should be false for a non-bridge name")
 	}
 }
 

@@ -222,19 +222,23 @@ func TestInterfaceXML(t *testing.T) {
 		mainBridgeCheck = origMain
 	})
 
-	// Non-bridge network name -> libvirt virtual network interface.
+	// v2.4 agnostic L2: there is NO libvirt virtual-network path. A
+	// non-bridge network name falls back to the host's main bridge.
+	linuxBridgeCheck = func(string) bool { return false }
+	mainBridgeCheck = func() string { return "vmbr0" }
+	out := interfaceXML("default", "virtio")
+	if !strings.Contains(out, "<interface type='bridge'>") ||
+		!strings.Contains(out, "<source bridge='vmbr0'/>") ||
+		!strings.Contains(out, "<model type='virtio'/>") {
+		t.Errorf("non-bridge name should fall back to main bridge:\n%s", out)
+	}
+	// Empty name with no host bridge -> empty source (CreateDomain guards
+	// this with ErrNoPhysicalBridge before interfaceXML is reached).
 	linuxBridgeCheck = func(string) bool { return false }
 	mainBridgeCheck = func() string { return "" }
-	out := interfaceXML("default", "virtio")
-	if !strings.Contains(out, "<interface type='network'>") ||
-		!strings.Contains(out, "<source network='default'/>") ||
-		!strings.Contains(out, "<model type='virtio'/>") {
-		t.Errorf("network interface XML wrong:\n%s", out)
-	}
-	// Empty name with no host bridge falls back to the NAT default network.
 	out = interfaceXML("", "virtio")
-	if !strings.Contains(out, "<source network='default'/>") {
-		t.Errorf("empty network should fall back to 'default':\n%s", out)
+	if !strings.Contains(out, "<interface type='bridge'>") {
+		t.Errorf("empty network must still emit type='bridge':\n%s", out)
 	}
 	// Empty name WITH a main host bridge defaults to a direct bridge
 	// attachment (Proxmox-style shared L2).
