@@ -1201,6 +1201,58 @@ allow_bridge_forward() {
     echo "  = no active firewall detected; nothing to open for ${br}"
 }
 
+# configure_incus_default_profile points the Incus "default" profile NIC at
+# the host's PHYSICAL Linux bridge (vmbr0/br0) so any `incus launch` — and
+# containers WebKVM creates through that profile — land on the real LAN, never
+# on the factory NAT lxdbr0. Handles the `incus` and `lxc` (LXD snap) CLIs.
+configure_incus_default_profile() {
+    local br="$1" cli=""
+    if command -v incus >/dev/null 2>&1; then
+        cli="incus"
+    elif command -v lxc >/dev/null 2>&1; then
+        cli="lxc"
+    fi
+    if [ -z "${cli}" ]; then
+        echo "  = no Incus/LXD CLI found; skipping default-profile bridge wiring"
+        return 0
+    fi
+    if [ ! -d "/sys/class/net/${br}/bridge" ]; then
+        echo "  ! ${cli}: bridge ${br} not present; leaving default profile untouched"
+        return 0
+    fi
+    # Modern LXD/Incus NICs use the "network" property (points at a managed
+    # NAT network, e.g. lxdbr0). Unset it so parent= + nictype=bridged win;
+    # a remove+add fallback covers stubborn states.
+    sudo "${cli}" profile device unset default eth0 network 2>/dev/null || true
+    if ! sudo "${cli}" profile device set default eth0 parent="${br}" nictype=bridged 2>/dev/null; then
+        sudo "${cli}" profile device remove default eth0 2>/dev/null || true
+        sudo "${cli}" profile device add default eth0 nic nictype=bridged parent="${br}" name=eth0 2>/dev/null || true
+    fi
+    if [ "$(sudo "${cli}" profile device get default eth0 parent 2>/dev/null)" = "${br}" ]; then
+        echo "  + ${cli}: default profile eth0 → ${br} (nictype=bridged, shared L2 — no lxdbr0)"
+    else
+        echo "  ! ${cli}: could not point default profile eth0 at ${br} (is the daemon running?)"
+    fi
+}
+
+# disable_libvirt_nat_default stops libvirt's factory NAT "default" network
+# (virbr0) and disables its autostart. WebKVM requires shared L2 — VMs must
+# attach to the physical bridge, never to the isolated NAT network.
+disable_libvirt_nat_default() {
+    if ! sudo virsh net-list --all --name 2>/dev/null | grep -qx default; then
+        echo "  = libvirt 'default' NAT network not defined (nothing to disable)"
+        return 0
+    fi
+    if sudo virsh net-list --name 2>/dev/null | grep -qx default; then
+        sudo virsh net-destroy default >/dev/null 2>&1 || true
+        echo "  - libvirt 'default' NAT network: stopped"
+    fi
+    if sudo virsh net-list --autostart --name 2>/dev/null | grep -qx default; then
+        sudo virsh net-autostart --disable default >/dev/null 2>&1 || true
+        echo "  - libvirt 'default' NAT network: autostart disabled"
+    fi
+}
+
 # --- main -------------------------------------------------------------------
 echo "=== webkvm network setup (mode: ${MODE}) ==="
 
@@ -1334,6 +1386,8 @@ if [[ "${MODE}" == "bridge" || "${MODE}" == "both" ]]; then
     fi
     apply_bridge_sysctl
     allow_bridge_forward "${BR_NAME}"
+    configure_incus_default_profile "${BR_NAME}"
+    disable_libvirt_nat_default
     echo "[4/5] wiring libvirt network to physical bridge ${BR_NAME}"
     ensure_bridge_network "${BR_NAME}"
     if [ -n "${IFACE:-}" ]; then

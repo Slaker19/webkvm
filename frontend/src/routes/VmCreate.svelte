@@ -14,7 +14,7 @@
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import { t } from '../lib/i18n.svelte.js';
   import { INCUS_IMAGE_PRESETS, CUSTOM_IMAGE, labelForImage } from '$lib/utils/incusImages.js';
-  import { networkLabel } from '$lib/utils/networkLabel.js';
+  import { networkLabel, networkLabelFor } from '$lib/utils/networkLabel.js';
 
   let name = $state('');
   let showCiPass = $state(false);
@@ -36,7 +36,7 @@
   let cpuMode = $state('host-passthrough');
   let cpuModel = $state('');
   let videoModel = $state('virtio');
-  let network = $state('default');
+  let network = $state('');
   let iso = $state('');
   let loading = $state(false);
   let error = $state('');
@@ -66,6 +66,21 @@
   let networks = $state([]);
   let isos = $state([]);
   let loadingData = $state(true);
+
+  // Proxmox-style: default the network selector to the host's PHYSICAL
+  // Linux bridge (vmbr0/br0) or the WebKVM network wired to it — never a
+  // NAT/virtual network. Falls back to '' only when no physical bridge
+  // exists (the backend then fails loudly instead of using NAT).
+  function preselectNetwork(nets) {
+    const virt = /^(virbr|lxdbr|lxcbr|docker|br-)/;
+    const pick = (n) => !virt.test(n.name) && !virt.test(n.bridge || '');
+    const hit =
+      nets.find((n) => n.name === 'vmbr0' || n.bridge === 'vmbr0') ||
+      nets.find((n) => n.name === 'br0' || n.bridge === 'br0') ||
+      nets.find((n) => n.bridge && pick(n)) ||
+      nets.find((n) => n.forward === 'bridge' && pick(n));
+    return hit ? hit.name : '';
+  }
 
   let osType = $state('linux');
   let osVersion = $state('arch');
@@ -335,6 +350,9 @@
       pools = p;
       networks = n;
       isos = i;
+      // Default the network selector to the physical bridge (vmbr0/br0)
+      // or the WebKVM network wired to it — never NAT (Proxmox-style).
+      network = preselectNetwork(n);
       // Fase 5: available Incus profiles for the container form (empty on
       // KVM-only hosts — the section just shows "default").
       try {
@@ -1270,7 +1288,7 @@
           </div>
           <div class="flex items-center justify-between gap-2">
             <dt class="text-muted-foreground">{t('vmDetail.networkLabel')}</dt>
-            <dd class="font-medium truncate max-w-[140px]">{isContainer ? 'lxdbr0' : network}</dd>
+            <dd class="font-medium truncate max-w-[140px]">{networkLabelFor(network, networks)}</dd>
           </div>
           {#if ciEnabled}
             <div class="flex items-center justify-between gap-2">

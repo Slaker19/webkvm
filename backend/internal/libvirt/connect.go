@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
 	"libvirt.org/go/libvirt"
@@ -202,6 +203,27 @@ func (c *Connector) ensureDefaultNetwork() {
 	net, err := c.conn.LookupNetworkByName("default")
 	if err == nil {
 		defer net.Free()
+		// Proxmox-style: the default network must be shared Layer-2. If
+		// libvirt ships its factory NAT "default" (virbr0) or the existing
+		// default is any virtual network (nat/route/isolated), redefine it
+		// as forward='bridge' on the host's physical bridge so nothing ever
+		// falls back to an isolated NAT network.
+		if !isBridgeNetwork(net) {
+			active, _ := net.IsActive()
+			if active {
+				if err := net.Destroy(); err != nil {
+					slog.Warn("default_network_nat_destroy_failed", "err", err)
+					return
+				}
+			}
+			if err := net.Undefine(); err != nil {
+				slog.Warn("default_network_nat_undefine_failed", "err", err)
+				return
+			}
+			slog.Info("default_network_redefined_from_nat_to_bridge")
+			c.defineBridgeDefaultNetwork()
+			return
+		}
 		active, _ := net.IsActive()
 		if !active {
 			if err := net.Create(); err != nil {
@@ -213,10 +235,34 @@ func (c *Connector) ensureDefaultNetwork() {
 		return
 	}
 
-	// Proxmox-style shared L2: the default network is a BRIDGE pointing at
-	// the host's main physical Linux bridge (vmbr0/br0) — never an
-	// isolated NAT. If the host has no physical bridge, skip and surface
-	// the requirement instead of creating a NAT fallback.
+	// No default network defined yet: create it as a bridge (shared L2).
+	c.defineBridgeDefaultNetwork()
+}
+
+// isBridgeNetwork reports whether a libvirt network is forward='bridge'
+// (shared L2). Any other forward mode (nat/route/none/isolation) is a
+// virtual network that must not be used as the default.
+func isBridgeNetwork(net *libvirt.Network) bool {
+	xml, err := net.GetXMLDesc(libvirt.NETWORK_XML_INACTIVE)
+	if err != nil {
+		// Can't inspect → treat as non-bridge so the strict path forces a
+		// forward='bridge' redefinition (fail-safe, never NAT).
+		return false
+	}
+	return isBridgeNetworkXML(xml)
+}
+
+// isBridgeNetworkXML is the pure XML check behind isBridgeNetwork, split out
+// so the default-network policy can be unit-tested without a live libvirtd.
+func isBridgeNetworkXML(xml string) bool {
+	return strings.Contains(xml, "mode='bridge'")
+}
+
+// defineBridgeDefaultNetwork defines the "default" libvirt network as
+// forward='bridge' on the host's main physical Linux bridge (vmbr0/br0).
+// When the host has no physical bridge, it does NOT fall back to NAT — it
+// warns and leaves the network undefined (WebKVM requires shared L2).
+func (c *Connector) defineBridgeDefaultNetwork() {
 	if bridge := mainBridge(); bridge != "" {
 		xmlStr := fmt.Sprintf(`<network>
   <name>default</name>

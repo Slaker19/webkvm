@@ -244,6 +244,31 @@ func TestIsPhysicalInterfaceRejectsTraversal(t *testing.T) {
 	}
 }
 
+// TestIsBridgeNetworkXML: the default network must be forward='bridge'
+// (shared L2). Any virtual shape (nat/route/isolated) must be treated as a
+// NAT default that gets redefined — never auto-started as an isolated LAN.
+func TestIsBridgeNetworkXML(t *testing.T) {
+	cases := []struct {
+		name string
+		xml  string
+		want bool
+	}{
+		{"real bridge: self-closed forward", `<network><name>default</name><forward mode='bridge'/><bridge name='vmbr0'/></network>`, true},
+		{"direct macvtap: forward bridge with interface child", `<network><name>default</name><forward mode='bridge'><interface dev='eth0'/></forward></network>`, true},
+		{"factory NAT (virbr0)", `<network><name>default</name><forward mode='nat'/><bridge name='virbr0' stp='on' delay='0'/></network>`, false},
+		{"route network", `<network><name>default</name><forward mode='route'/><bridge name='virbr1' stp='on' delay='0'/></network>`, false},
+		{"isolated network (no forward)", `<network><name>default</name><bridge name='virbr2' stp='on' delay='0'/></network>`, false},
+		{"forward none", `<network><name>default</name><forward mode='none'/></network>`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isBridgeNetworkXML(c.xml); got != c.want {
+				t.Errorf("isBridgeNetworkXML = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestExtractNetworkBridge(t *testing.T) {
 	cases := []struct {
 		xml  string

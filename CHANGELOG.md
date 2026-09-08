@@ -4,6 +4,37 @@ Todos los cambios notables de este proyecto se documentan en este
 fichero, siguiendo [Keep a Changelog](https://keepachangelog.com/es/1.1.0/)
 y [Semantic Versioning](https://semver.org/lang/es/).
 
+## [2.3.1] — Red física por defecto en todo el stack (2026-09-08)
+
+### Added
+
+- **Bridge físico como default absoluto**: VMs KVM y contenedores Incus nacen
+  conectados a la red física (192.168.1.0/24) y obtienen su IP del router por
+  DHCP — exactamente igual que Proxmox — sin tocar ningún ajuste.
+  - **Incus (perfil `default`)**: `setup-network.sh` inyecta
+    `profile device set default eth0 parent=<vmbr0> nictype=bridged`
+    (detecta el CLI `incus` o `lxc`/LXD snap), eliminando la dependencia de
+    `lxdbr0`: cualquier `incus launch` cae en la LAN real.
+  - **Libvirt (NAT de fábrica)**: el script detiene y desactiva el
+    autoarranque de la red NAT `default` (`virsh net-destroy default`,
+    `net-autostart --disable default`) — las VMs no pueden recaer en
+    `virbr0`.
+  - **Frontend (`VmCreate.svelte`)**: el selector de Red ya no arranca en
+    `default` (NAT). Auto-preselecciona el bridge físico principal (`vmbr0`/
+    `br0`) o la red WebKVM que apunte a él; solo queda vacío si no existe
+    bridge físico (entonces el backend falla en voz alta, nunca NAT). El
+    resumen de contenedor ya no muestra `lxdbr0` falso, sino la red real.
+  - **Backend (fallback estricto)**: con `network` vacío, KVM
+    (`interfaceXML`/`mainBridge`) e Incus (`bridgeForNetwork`/
+    `incusMainBridge`) asignan el bridge físico y, si el host no tiene uno,
+    abortan con `ErrNoPhysicalBridge` — jamás una red NAT.
+  - **Backend (NAT `default` redefinida al arrancar)**: `ensureDefaultNetwork`
+    detectaba una red libvirt "default" existente y se limitaba a dejarla
+    activa — resucitando la NAT de fábrica (`virbr0`) en cada boot. Ahora
+    inspecciona su forward mode: si no es `forward='bridge'` (NAT/route/
+    aislada), la destruye, la redefine como `forward='bridge'` sobre el
+    puente físico (`vmbr0`/`br0`) y recién entonces la activa. Jamás NAT.
+
 ## [2.3.0] — Fase 5: opciones avanzadas y redes L2 unificadas (2026-09-07)
 
 ### Added
