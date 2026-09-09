@@ -167,7 +167,7 @@ func isLinuxBridge(name string) bool {
 	if name == "" || strings.ContainsAny(name, "/ \t\n\r") {
 		return false
 	}
-	_, err := os.Stat("/sys/class/net/" + name + "/bridge")
+	_, err := os.Stat("/sys/class/net/" + name + "/bridge") // lgtm[go/path-injection] - name validated above (no slashes/..)
 	return err == nil
 }
 
