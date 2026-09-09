@@ -65,7 +65,8 @@ func validBridgeName(name string) bool {
 	case "default", "webkvm-bridge", "br0-bridge":
 		return false
 	}
-	if _, err := os.Stat("/sys/class/net/" + name); err == nil { // lgtm[go/path-injection] - name validated above (no slashes/..)
+	_, err := os.Stat("/sys/class/net/" + name) // lgtm[go/path-injection] - name validated above
+	if err == nil {
 		// An existing interface must already be a Linux bridge.
 		return isLinuxBridge(name)
 	}

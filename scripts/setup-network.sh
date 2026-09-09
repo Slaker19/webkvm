@@ -52,7 +52,7 @@ set -euo pipefail
 # --- Mode parsing ----------------------------------------------------------
 MODE="${NET_MODE:-bridge}"
 DIRECT_BRIDGE=false
-BRIDGE_DHCP=true   # default: bridge gets IP via DHCP
+BRIDGE_DHCP=false  # default: the current address is pinned as STATIC on the bridge
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --nat)              MODE="nat" ;;
@@ -290,9 +290,68 @@ detect_static_for_iface() {
 }
 
 # --- is_iface_dhcp ----------------------------------------------------------
+# Detect whether an interface gets its address from DHCP, across every
+# config manager. The kernel route (proto dhcp) is the runtime truth; the
+# config files cover setups where the route isn't marked as dhcp.
 is_iface_dhcp() {
     local iface="$1"
-    ip route 2>/dev/null | grep -qE "^default .* dev ${iface} .* proto dhcp"
+
+    # 1. Runtime truth: the default route was added by a DHCP client.
+    if ip route 2>/dev/null | grep -qE "^default .* dev ${iface} .* proto dhcp"; then
+        return 0
+    fi
+
+    # 2. NetworkManager: the active connection uses auto (DHCP).
+    if command -v nmcli >/dev/null 2>&1; then
+        local con
+        con="$(nmcli -t -f NAME,DEVICE con show --active 2>/dev/null | grep ":${iface}$" | cut -d: -f1 | head -1)"
+        if [ -n "${con}" ] && [ "$(nmcli -g ipv4.method con show "${con}" 2>/dev/null)" = "auto" ]; then
+            return 0
+        fi
+    fi
+
+    # 3. netplan: dhcp4 enabled for the interface.
+    if [ -d /etc/netplan ]; then
+        if grep -rqsE "^[[:space:]]+${iface}:" /etc/netplan/*.yaml 2>/dev/null \
+            && grep -rqsE "dhcp4:[[:space:]]*true" /etc/netplan/*.yaml 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    # 4. systemd-networkd: DHCP= on the interface's .network.
+    if grep -rqsE "^Name=${iface}\b" /etc/systemd/network/*.network 2>/dev/null \
+        && grep -rqsE "^DHCP=(yes|ipv4|ipv6)\b" /etc/systemd/network/*.network 2>/dev/null; then
+        return 0
+    fi
+
+    # 5. ifupdown (/etc/network/interfaces): inet dhcp.
+    if grep -rqsE "^iface[[:space:]]+${iface}[[:space:]]+inet[[:space:]]+dhcp\b" /etc/network/interfaces* 2>/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
+# confirm_pin_static asks the operator (y/n) to accept that the current DHCP
+# lease will be pinned as a STATIC address on the bridge — the router still
+# treats the IP as part of its pool until a reservation is added, and could
+# reassign it to another device. Interactive runs prompt; automatic runs
+# proceed. Returns 0 (pin it) or 1 (abort → keep DHCP).
+confirm_pin_static() {
+    local iface="$1" ip="$2"
+    if [ -t 0 ]; then
+        local ans=""
+        echo
+        read -r -p "  ⚠  DHCP detectado en ${iface} (IP actual: ${ip}).
+     Esta IP se FIJARÁ como estática en el bridge vmbr0.
+     Tu router seguirá viéndola en su pool DHCP hasta que añadas una reserva
+     (si no, podría asignarla a otro dispositivo). ¿Aceptar? [Y/n] " ans </dev/tty || true
+        case "${ans:-y}" in
+            y|Y|"") return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+    return 0
 }
 
 # --- show_dhcp_to_static_warning --------------------------------------------
@@ -941,6 +1000,8 @@ apply_bridge_nmcli() {
     echo "  + creating bridge ${br} on ${iface} via nmcli (IP moves to the bridge)"
     nmcli con add type bridge con-name "${br}" ifname "${br}" >/dev/null 2>&1 || return 1
     nmcli con add type ethernet con-name "${br}-${iface}" ifname "${iface}" master "${br}" >/dev/null 2>&1 || return 1
+    # The enslaved port must not keep a DHCP client running on the bridge.
+    nmcli con modify "${br}-${iface}" ipv4.method disabled >/dev/null 2>&1 || true
     if [ -n "${BRIDGE_STATIC_IP:-}" ]; then
         nmcli con modify "${br}" ipv4.method manual ipv4.addresses "${BRIDGE_STATIC_IP}" \
             ipv4.gateway "${BRIDGE_STATIC_GW:-}" ipv4.dns "${BRIDGE_STATIC_DNS:-}" >/dev/null 2>&1 || true
@@ -995,7 +1056,48 @@ EOF
 
 print_netplan_instructions() {
     local br="$1" iface="$2"
-    cat <<EOF
+    if [ -n "${BRIDGE_STATIC_IP:-}" ]; then
+        cat <<EOF
+
+  ══════════════════════════════════════════════════════════════════════
+  WebKVM requires a PHYSICAL Linux bridge (${br}) so KVM and Incus share
+  your real LAN. La IP actual se fijará como ESTÁTICA (${BRIDGE_STATIC_IP}).
+  Añade una reserva DHCP en el router para la MAC de ${iface}.
+
+  Automatic creation was NOT applied (it would move the IP and could drop
+  your SSH session). Create the bridge with Netplan:
+
+    sudo tee /etc/netplan/zz-webkvm-${br}.yaml >/dev/null <<'YAML'
+network:
+  version: 2
+  ethernets:
+    ${iface}:
+      dhcp4: false
+      dhcp6: false
+  bridges:
+    ${br}:
+      interfaces: [${iface}]
+      addresses: [${BRIDGE_STATIC_IP}]
+      routes:
+        - to: default
+          via: ${BRIDGE_STATIC_GW}
+      nameservers:
+        addresses: [$(echo "${BRIDGE_STATIC_DNS}" | tr ',' ' ')]
+YAML
+    sudo netplan apply
+    ip -br addr show ${br}
+
+  (Alternatively, with NetworkManager:)
+    nmcli con add type bridge con-name ${br} ifname ${br} ipv4.method manual \\
+      ipv4.addresses ${BRIDGE_STATIC_IP} ipv4.gateway ${BRIDGE_STATIC_GW} \\
+      ipv4.dns $(echo "${BRIDGE_STATIC_DNS}" | tr ',' ' ')
+    nmcli con add type ethernet con-name ${br}-${iface} ifname ${iface} master ${br}
+    nmcli con modify ${br}-${iface} ipv4.method disabled
+    nmcli con up ${br}-${iface} && nmcli con up ${br}
+  ══════════════════════════════════════════════════════════════════════
+EOF
+    else
+        cat <<EOF
 
   ══════════════════════════════════════════════════════════════════════
   WebKVM requires a PHYSICAL Linux bridge (${br}) so KVM and Incus share
@@ -1027,6 +1129,105 @@ YAML
     nmcli con up ${br}-${iface} && nmcli con up ${br}
   ══════════════════════════════════════════════════════════════════════
 EOF
+    fi
+}
+
+# apply_bridge_networkd creates vmbr0 over a physical NIC via systemd-networkd
+# (Arch, Debian/CoreOS without NetworkManager). Static when BRIDGE_STATIC_IP
+# is set (the pinned lease), else DHCP on the bridge.
+apply_bridge_networkd() {
+    local br="$1" iface="$2"
+    backup_managed_file "/etc/systemd/network/${br}.netdev"
+    backup_managed_file "/etc/systemd/network/${br}.network"
+    backup_managed_file "/etc/systemd/network/${iface}.network"
+
+    write_managed_file "/etc/systemd/network/${br}.netdev" \
+"[NetDev]
+Name=${br}
+Kind=bridge
+"
+
+    if [ -n "${BRIDGE_STATIC_IP:-}" ]; then
+        local dns_block=""
+        local IFS=','
+        for d in ${BRIDGE_STATIC_DNS}; do
+            d="$(echo "${d}" | xargs)"
+            [ -z "${d}" ] && continue
+            dns_block="${dns_block}
+DNS=${d}"
+        done
+        unset IFS
+        write_managed_file "/etc/systemd/network/${br}.network" \
+"[Match]
+Name=${br}
+
+[Network]
+# Static IP — pinned from the previous DHCP lease at install time.
+Address=${BRIDGE_STATIC_IP}
+Gateway=${BRIDGE_STATIC_GW}${dns_block}
+"
+    else
+        write_managed_file "/etc/systemd/network/${br}.network" \
+"[Match]
+Name=${br}
+
+[Network]
+DHCP=yes
+"
+    fi
+
+    write_managed_file "/etc/systemd/network/${iface}.network" \
+"[Match]
+Name=${iface}
+
+[Network]
+Bridge=${br}
+DHCP=no
+IPv6AcceptRA=no
+"
+    sudo systemctl enable systemd-networkd >/dev/null 2>&1 || true
+    sudo systemctl restart systemd-networkd >/dev/null 2>&1 || true
+    [ -d "/sys/class/net/${br}/bridge" ]
+}
+
+# apply_bridge_ifupdown creates vmbr0 over a physical NIC via ifupdown
+# (/etc/network/interfaces — Debian minimal, Proxmox-style: bridge-ports,
+# stp off, fd 0).
+apply_bridge_ifupdown() {
+    local br="$1" iface="$2"
+    local f="/etc/network/interfaces.d/50-webkvm-${br}"
+    sudo mkdir -p /etc/network/interfaces.d
+    if [ -n "${BRIDGE_STATIC_IP:-}" ]; then
+        sudo tee "${f}" >/dev/null <<EOF
+# Managed by webkvm
+auto ${br}
+iface ${br} inet static
+    address ${BRIDGE_STATIC_IP}
+    gateway ${BRIDGE_STATIC_GW}
+    bridge-ports ${iface}
+    bridge-stp off
+    bridge-fd 0
+EOF
+    else
+        sudo tee "${f}" >/dev/null <<EOF
+# Managed by webkvm
+auto ${br}
+iface ${br} inet dhcp
+    bridge-ports ${iface}
+    bridge-stp off
+    bridge-fd 0
+EOF
+    fi
+    # Ensure /etc/network/interfaces sources interfaces.d (Debian default).
+    if ! grep -qs "source.*interfaces.d" /etc/network/interfaces 2>/dev/null; then
+        echo "source /etc/network/interfaces.d/*" | sudo tee -a /etc/network/interfaces >/dev/null
+    fi
+    if command -v ifreload >/dev/null 2>&1; then
+        sudo ifreload -a >/dev/null 2>&1 || true
+    elif command -v ifup >/dev/null 2>&1; then
+        sudo ifup "${br}" >/dev/null 2>&1 || true
+    fi
+    [ -d "/sys/class/net/${br}/bridge" ]
 }
 
 # ensure_physical_bridge reuses an existing physical bridge, or creates
@@ -1080,7 +1281,24 @@ ensure_physical_bridge() {
         echo "  = Netplan present but BRIDGE_APPLY!=1 — printing instructions"
     fi
 
-    # 5. Instructions (safe default: never risk dropping SSH automatically).
+    # 5. systemd-networkd (no netplan: Arch, Debian without NetworkManager).
+    if ! [ -d /etc/netplan ] && systemctl is-active --quiet systemd-networkd 2>/dev/null; then
+        if [ "${BRIDGE_APPLY:-0}" = "1" ] && apply_bridge_networkd "${br}" "${iface}"; then
+            return 0
+        fi
+        echo "  = systemd-networkd present but BRIDGE_APPLY!=1 — printing instructions"
+    fi
+
+    # 6. ifupdown (/etc/network/interfaces — Debian minimal, Proxmox-style).
+    if ! [ -d /etc/netplan ] && ! systemctl is-active --quiet systemd-networkd 2>/dev/null \
+        && [ -d /etc/network/interfaces.d ] && command -v ifup >/dev/null 2>&1; then
+        if [ "${BRIDGE_APPLY:-0}" = "1" ] && apply_bridge_ifupdown "${br}" "${iface}"; then
+            return 0
+        fi
+        echo "  = ifupdown present but BRIDGE_APPLY!=1 — printing instructions"
+    fi
+
+    # 7. Instructions (safe default: never risk dropping SSH automatically).
     print_netplan_instructions "${br}" "${iface}"
     return 1
 }
@@ -1262,7 +1480,7 @@ ensure_dummy_dev() {
 # firewall (firewalld → ufw → iptables/nftables), with the FORWARD accept
 # the routed traffic needs.
 apply_nat_vmbr1() {
-    local uplink="$1"
+    local uplink="${1:-}"
     [ -n "${uplink}" ] || uplink="$(exit_uplink)"
     [ -n "${uplink}" ] || { echo "  = no default uplink; skipping NAT for ${VM1_BR}"; return 0; }
 
@@ -1475,17 +1693,49 @@ if [ -n "${IFACE}" ] && [ -d "/sys/class/net/${IFACE}/brport" ]; then
     fi
 fi
 
-# 4. Resolve static IP/GW/DNS (env vars > auto-detect > [conditional error])
-# In macvlan bridge mode with DHCP, static IP is optional (bridge gets its own
-# DHCP lease). In all other modes (direct-bridge, static bridge, NAT+static),
-# we need the static IP.
+# 4. Resolve static IP/GW/DNS (env vars > auto-detect from the current
+# config). Default in bridge mode: pin the current address (DHCP lease →
+# static) so vmbr0 keeps the same IP across reboots. --dhcp keeps DHCP.
 NEEDS_STATIC_IP=false
-if [ "$DIRECT_BRIDGE" = "true" ]; then
+
+# Re-run safety: if a physical bridge already exists, it already carries the
+# host IP — reuse it and skip static resolution (nothing to pin).
+EXISTING_PHYS_BR=""
+if [ -n "${BRIDGE_NAME:-}" ] && [ -d "/sys/class/net/${BRIDGE_NAME}/bridge" ]; then
+    EXISTING_PHYS_BR="${BRIDGE_NAME}"
+fi
+if [ -z "${EXISTING_PHYS_BR}" ] && [ -d /sys/class/net/vmbr0/bridge ]; then
+    EXISTING_PHYS_BR="vmbr0"
+fi
+if [ -z "${EXISTING_PHYS_BR}" ] && [ -d /sys/class/net/br0/bridge ]; then
+    EXISTING_PHYS_BR="br0"
+fi
+if [ -n "${EXISTING_PHYS_BR}" ]; then
+    echo "  = bridge físico '${EXISTING_PHYS_BR}' ya presente: se reutiliza con su IP actual"
+    BRIDGE_DHCP=false
+elif [ "$DIRECT_BRIDGE" = "true" ]; then
     NEEDS_STATIC_IP=true
-elif [[ "${MODE}" == "bridge" || "${MODE}" == "both" ]] && [ "$BRIDGE_DHCP" = "false" ]; then
-    NEEDS_STATIC_IP=true
+elif [[ "${MODE}" == "bridge" || "${MODE}" == "both" ]]; then
+    # Default: pin the current address (DHCP lease → static). --dhcp keeps
+    # the bridge on DHCP; an explicit BRIDGE_STATIC_IP always wins.
+    if [ "$BRIDGE_DHCP" = "true" ] && [ -z "${BRIDGE_STATIC_IP:-}" ]; then
+        NEEDS_STATIC_IP=false
+    else
+        NEEDS_STATIC_IP=true
+    fi
 elif [[ "${MODE}" == "nat" || "${MODE}" == "both" ]] && [ -n "${BRIDGE_STATIC_IP:-}" ]; then
     NEEDS_STATIC_IP=true
+fi
+
+# Early y/n: if the interface is on DHCP and we are about to pin it as
+# static, ask the operator to accept it before touching anything.
+if [ "$NEEDS_STATIC_IP" = "true" ] && [ -n "${IFACE:-}" ] && is_iface_dhcp "${IFACE}"; then
+    cur_ip="$(ip -4 -o addr show dev "${IFACE}" scope global 2>/dev/null | awk '{print $4}' | head -1)"
+    if ! confirm_pin_static "${IFACE}" "${cur_ip:-<sin IP>}"; then
+        echo "  ! Operador: la IP actual NO se fija — el bridge se dejará en DHCP." >&2
+        BRIDGE_DHCP=true
+        NEEDS_STATIC_IP=false
+    fi
 fi
 
 if [ -n "${IFACE}" ]; then
@@ -1510,17 +1760,17 @@ if [ -n "${IFACE}" ]; then
             echo "    DNS: ${BRIDGE_STATIC_DNS}"
 
             if is_iface_dhcp "${IFACE}"; then
-                show_dhcp_to_static_warning "${IFACE}" "${BRIDGE_STATIC_IP}" "${BRIDGE_STATIC_GW}" "${BRIDGE_STATIC_DNS}"
+                echo "  + DHCP detectado: la concesión se fija como estática (añade la reserva en el router)"
             fi
         else
             echo "  > using env vars: IP=${BRIDGE_STATIC_IP} GW=${BRIDGE_STATIC_GW} DNS=${BRIDGE_STATIC_DNS}"
             if is_iface_dhcp "${IFACE}"; then
-                show_dhcp_to_static_warning "${IFACE}" "${BRIDGE_STATIC_IP}" "${BRIDGE_STATIC_GW}" "${BRIDGE_STATIC_DNS}"
+                echo "  + DHCP detectado: la concesión se fija como estática (añade la reserva en el router)"
             fi
         fi
     else
-        # DHCP bridge mode — auto-detect is informational only
-        echo "  > (informational) auto-detecting current IP/gateway/DNS from ${IFACE}..."
+        # --dhcp (opt-in): the bridge keeps requesting its own DHCP lease.
+        echo "  > (--dhcp) el bridge pedirá su propia IP por DHCP; no se fija nada."
         detected_info="$(detect_static_for_iface "${IFACE}" 2>/dev/null || true)"
         if [ -n "${detected_info}" ]; then
             # Use a subshell to eval without polluting our env vars

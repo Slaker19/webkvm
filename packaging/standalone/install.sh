@@ -330,14 +330,18 @@ prompt_settings() {
   if [[ "${NETWORK_MODE}" == "both" || "${NETWORK_MODE}" == "bridge" ]]; then
     if [[ -z "${BRIDGE_DHCP}" && -z "${BRIDGE_STATIC_IP}" && "${NONINTERACTIVE}" == 0 ]]; then
       local ans
-      read -r -p "  Bridge IP: DHCP (recommended) or static? [dhcp/static] (default dhcp): " ans
-      if [[ "${ans}" == "static" ]]; then
-        BRIDGE_DHCP="false"
-        read -r -p "  Static IP (CIDR, e.g. 192.168.1.100/24): " BRIDGE_STATIC_IP
-        read -r -p "  Gateway (e.g. 192.168.1.1): " BRIDGE_STATIC_GW
-        read -r -p "  DNS (comma-separated): " BRIDGE_STATIC_DNS
-      else
+      read -r -p "  Bridge IP: pin current as STATIC (recommended) or DHCP? [static/dhcp] (default static): " ans
+      if [[ "${ans}" == "dhcp" ]]; then
         BRIDGE_DHCP="true"
+      else
+        # static: setup-network.sh auto-detects the current address and pins
+        # it on the bridge (DHCP lease → static); optional explicit values.
+        BRIDGE_DHCP="false"
+        read -r -p "  Static IP (CIDR) [enter = pin current DHCP lease]: " BRIDGE_STATIC_IP
+        if [[ -n "${BRIDGE_STATIC_IP}" ]]; then
+          read -r -p "  Gateway: " BRIDGE_STATIC_GW
+          read -r -p "  DNS (comma-separated): " BRIDGE_STATIC_DNS
+        fi
       fi
     fi
   fi
@@ -647,10 +651,14 @@ if [[ -x "${SETUP_NETWORK}" && -n "${NETWORK_MODE}" && "${NETWORK_MODE}" != "non
     both) args+=(--both) ;;
   esac
   if [[ "${NETWORK_MODE}" == "both" || "${NETWORK_MODE}" == "bridge" ]]; then
-    if [[ "${BRIDGE_DHCP}" == "false" || -n "${BRIDGE_STATIC_IP}" ]]; then
-      export BRIDGE_DHCP=false BRIDGE_STATIC_IP BRIDGE_STATIC_GW BRIDGE_STATIC_DNS
-    else
-      export BRIDGE_DHCP=true
+    # Automatic: setup-network.sh DETECTS DHCP vs static and, when DHCP, pins
+    # the current lease as STATIC on the bridge (vmbr0 keeps the same IP).
+    # Apply the bridge automatically (the admin explicitly chose bridge mode);
+    # pass through explicit static values and the pin toggle if provided.
+    export BRIDGE_APPLY=1 BRIDGE_STATIC_IP BRIDGE_STATIC_GW BRIDGE_STATIC_DNS
+    export WEBKVM_PIN_STATIC="${WEBKVM_PIN_STATIC:-1}"
+    if [ -n "${BRIDGE_STATIC_IP}" ]; then
+      export BRIDGE_DHCP=false
     fi
   fi
   bash "${SETUP_NETWORK}" "${args[@]}" || {

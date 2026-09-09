@@ -37,6 +37,25 @@ y [Semantic Versioning](https://semver.org/lang/es/).
   primaria (eth0). La UI (lista, detalle y red) muestra todas las IPs
   (`vmIps()`); un contenedor con 2 NICs ya enseña sus 2 IPs, no solo la
   primera. La búsqueda también filtra por cualquier IP.
+- **Instalador automático: detección DHCP/estática y fijado en todas las
+  distros** (`setup-network.sh` + `install.sh`):
+  - `is_iface_dhcp` detecta DHCP por la ruta del kernel (`proto dhcp`) o por
+    el gestor en uso: NetworkManager (`ipv4.method auto`), netplan
+    (`dhcp4: true`), systemd-networkd (`DHCP=`), ifupdown (`inet dhcp`).
+  - Por defecto el bridge fija la IP actual: si hay DHCP, la concesión se
+    convierte en **estática** sobre vmbr0 (misma IP, GW y DNS) — con un
+    prompt **y/n** al inicio pidiendo aceptarlo (no bloqueante en modo no
+    interactivo; `WEBKVM_PIN_STATIC=0` o `--dhcp` la dejan en DHCP). Avisa de
+    que el router sigue viendo la IP en el pool hasta añadir la reserva.
+  - Aplicación multi-gestor para vmbr0: **netplan** (estático), **nmcli**
+    (bridge manual + puerto con `ipv4.method disabled`), **systemd-networkd**
+    (nuevo: `.netdev`/`.network` estáticos) e **ifupdown** (nuevo, estilo
+    Proxmox: `bridge-ports`, `stp off`, `fd 0`). Luego crea `vmbr1` (NAT).
+  - Re-run seguro: si `vmbr0`/`br0` ya existen, se reutilizan sin tocar la
+    red (el paso de resolución estática se omite).
+  - `install.sh`: en modo bridge/both exporta `BRIDGE_APPLY=1` (aplicación
+    automática) y deja que setup-network decida el fijado; el prompt
+    interactivo ahora sugiere "static (fijar la actual)" por defecto.
 - **`vmbr1` — bridge NAT/aislado estilo Proxmox** (`setup-network.sh`):
   crea `dummy0` (ancla del bridge sin NIC física), el bridge `vmbr1` con
   `100.0.0.1/24`, **MASQUERADE/NAT** hacia el uplink principal
