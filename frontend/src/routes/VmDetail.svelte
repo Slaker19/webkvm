@@ -1863,7 +1863,7 @@
               <p class="text-sm text-muted-foreground">{t('vmDetail.noNetworkInterfaces')}</p>
             {:else}
               <div class="space-y-1.5">
-                {#each vm.networks as iface, idx}
+                {#each vm.networks as iface}
                   <div
                     class="flex items-center justify-between px-3 py-2 rounded-md border border-border bg-background"
                   >
