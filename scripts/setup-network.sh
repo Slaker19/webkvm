@@ -1565,6 +1565,27 @@ dhcp-option=option:dns-server,1.1.1.1
         if systemctl list-unit-files dnsmasq.service >/dev/null 2>&1; then
             sudo systemctl enable dnsmasq >/dev/null 2>&1 || true
             sudo systemctl restart dnsmasq >/dev/null 2>&1 || true
+        elif command -v dnsmasq >/dev/null 2>&1; then
+            # Only dnsmasq-base is present (no dnsmasq.service, e.g. Ubuntu):
+            # run the binary directly through a dedicated unit.
+            local svc="webkvm-${VM1_BR}-dnsmasq.service"
+            write_managed_file "/etc/systemd/system/${svc}" \
+"[Unit]
+Description=webkvm dnsmasq for ${VM1_BR} (isolated NAT bridge DHCP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/dnsmasq.d/webkvm-${VM1_BR}.conf
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+"
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            sudo systemctl enable "${svc}" >/dev/null 2>&1 || true
+            sudo systemctl restart "${svc}" >/dev/null 2>&1 || true
         fi
         echo "  + dnsmasq: ${VM1_BR} DHCP (100.0.0.100-200) configured"
     fi
