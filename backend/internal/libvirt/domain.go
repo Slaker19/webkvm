@@ -1156,7 +1156,7 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 			seen := map[string]bool{}
 			for _, iface := range ifaces {
 				for _, a := range iface.Addrs {
-					if a.Type == libvirt.IP_ADDR_TYPE_IPV4 && !seen[a.Addr] {
+					if a.Type == libvirt.IP_ADDR_TYPE_IPV4 && !seen[a.Addr] && !strings.HasPrefix(a.Addr, "127.") {
 						seen[a.Addr] = true
 						vm.IPs = append(vm.IPs, a.Addr)
 					}
@@ -1246,7 +1246,7 @@ func (c *Connector) GetDomainIP(id string) string {
 		}
 		for _, iface := range ifaces {
 			for _, a := range iface.Addrs {
-				if a.Type == libvirt.IP_ADDR_TYPE_IPV4 {
+				if a.Type == libvirt.IP_ADDR_TYPE_IPV4 && !strings.HasPrefix(a.Addr, "127.") {
 					return a.Addr
 				}
 			}
