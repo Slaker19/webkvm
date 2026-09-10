@@ -1662,10 +1662,23 @@ if ! command -v systemctl >/dev/null; then
     echo "  ! no systemctl found; this script needs systemd"
     exit 1
 fi
-if ! systemctl is-active --quiet libvirtd; then
-    echo "  ! libvirtd is not running; start it with: systemctl start libvirtd"
+# libvirt_up reports whether the libvirt daemon is available: active, or
+# socket-activated (libvirtd.socket / virtqemud.socket on the split-daemon
+# setups used by newer Fedora/Arch) — it will start on demand.
+libvirt_up() {
+    systemctl is-active --quiet libvirtd && return 0
+    systemctl is-active --quiet libvirtd.socket 2>/dev/null && return 0
+    systemctl is-active --quiet virtqemud 2>/dev/null && return 0
+    systemctl is-active --quiet virtqemud.socket 2>/dev/null && return 0
+    return 1
+}
+
+if ! libvirt_up; then
+    echo "  ! libvirt is not available; start it with: systemctl start libvirtd"
     exit 1
 fi
+# Make sure the daemon is actually up for the virsh calls below.
+systemctl start libvirtd 2>/dev/null || systemctl start virtqemud 2>/dev/null || true
 
 # 1. Disable conflicting DHCP clients
 echo "[1/5] disabling conflicting DHCP clients"
