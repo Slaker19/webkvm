@@ -620,7 +620,7 @@ ReadWritePaths=${DATA_DIR} /var/lib/libvirt /var/tmp
 WantedBy=multi-user.target
 EOF
 
-for unit in virtqemud.socket virtstoraged.socket virtnetworkd.socket virtlogd.socket; do
+for unit in virtqemud.socket virtstoraged.socket virtnetworkd.socket virtlogd.socket virtnodedevd.socket; do
   # --no-pager: see the libvirtd/virtqemud detection above — 'systemctl cat'
   # can die with SIGPIPE (rc=141) in non-TTY contexts (the default for a
   # piped one-liner install), which reads as "unit not found" and silently

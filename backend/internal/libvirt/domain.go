@@ -1957,7 +1957,10 @@ func (c *Connector) ListHostUSBDevices() ([]models.USBDevice, error) {
 	}
 	devs, err := c.conn.ListAllNodeDevices(libvirt.CONNECT_LIST_NODE_DEVICES_CAP_USB_DEV)
 	if err != nil {
-		return nil, fmt.Errorf("list host USB devices: %w", err)
+		// On split-daemon setups (Fedora/Arch) virtnodedevd may not be
+		// running; the USB tab must never 500 the whole detail page.
+		slog.Warn("list_host_usb_devices_unavailable", "err", err)
+		return []models.USBDevice{}, nil
 	}
 	out := make([]models.USBDevice, 0, len(devs))
 	for i := range devs {
