@@ -1025,6 +1025,11 @@ apply_bridge_nmcli() {
         nmcli con modify "${br}" ipv4.method auto ipv6.method auto >/dev/null 2>&1 || true
     fi
     nmcli con up "${br}" >/dev/null 2>&1 || true
+    # Self-heal: NM's bridge activation can drop the kernel slave; re-assert
+    # the enslave so the port is ALWAYS attached (verified by the caller).
+    ip link set "${iface}" master "${br}" 2>/dev/null || true
+    ip link set "${iface}" up 2>/dev/null || true
+    ip link set "${br}" up 2>/dev/null || true
     [ -d "/sys/class/net/${br}/bridge" ]
 }
 
