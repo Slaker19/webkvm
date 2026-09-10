@@ -740,12 +740,12 @@ if [[ -f "${DATA_DIR}/admin-password.initial" ]]; then
   echo "  Admin password: $(cat "${DATA_DIR}/admin-password.initial")"
 fi
 echo ""
-echo "  Networks:"
-echo "    - NAT: 192.168.122.0/24 (VMs reach the Internet through the host)"
-if [[ "${NETWORK_MODE}" == "both" || "${NETWORK_MODE}" == "bridge" ]]; then
-  echo "    - Bridge br0 (macvlan): VMs on the real LAN with their own IP"
-fi
-echo ""
+  echo "  Networks:"
+  echo "    - vmbr0: physical bridge on the real LAN (shared Layer-2, IPs from the router)"
+  if [[ "${NETWORK_MODE}" == "both" || "${NETWORK_MODE}" == "bridge" ]]; then
+    echo "    - vmbr1: NAT bridge (100.0.0.0/24) — isolated tenants with internet via MASQUERADE"
+  fi
+  echo ""
 echo "  Commands:"
 echo "    systemctl status webkvm   # service status"
 echo "    journalctl -u webkvm -f   # follow logs"
