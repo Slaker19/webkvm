@@ -46,7 +46,7 @@ BRIDGE_STATIC_DNS="${BRIDGE_STATIC_DNS:-}"
 # package is missing it warns and continues KVM-only (non-fatal).
 # WEBKVM_INCUS_ENABLED=1 alone just wires the opt-in env var into the unit
 # (Incus must already be present).
-WEBKVM_INSTALL_INCUS="${WEBKVM_INSTALL_INCUS:-0}"
+WEBKVM_INSTALL_INCUS="${WEBKVM_INSTALL_INCUS:-1}"
 WEBKVM_INCUS_ENABLED="${WEBKVM_INCUS_ENABLED:-0}"
 
 SERVICE="${WEBKVM_SERVICE:-webkvm.service}"
@@ -317,7 +317,23 @@ install_incus() {
   fi
   pkg_install "${pkg}" || true
   systemctl enable --now "${svc}" >/dev/null 2>&1 || true
-  log "Incus/LXD instalado vía paquete nativo (${pkg}, ${PKG}) — ejecuta 'incus admin init' / 'lxd init' para configurarlo"
+  # Unprivileged containers need subuid/subgid ranges for root (Arch's
+  # incus package does not configure them) — without these, instance
+  # creation fails with "System doesn't have a functional idmap setup".
+  local subrange="root:1000000:1000000000"
+  if ! grep -qs "^root:1000000:1000000000" /etc/subuid 2>/dev/null; then
+    echo "${subrange}" >> /etc/subuid
+    echo "${subrange}" >> /etc/subgid
+    log "configured subuid/subgid for root (unprivileged containers)"
+  fi
+  # Minimal init: storage pool + default profile so `incus launch` and the
+  # WebKVM container module work immediately (setup-network.sh then points
+  # the default profile NIC at the physical bridge vmbr0).
+  if command -v "${pkg}" >/dev/null 2>&1; then
+    "${pkg}" admin init --auto >/dev/null 2>&1 || true
+    log "Incus inicializado (incus admin init --auto)"
+  fi
+  log "Incus/LXD instalado vía paquete nativo (${pkg}, ${PKG})"
 }
 
 # ── Interactive settings ───────────────────────────────────────────────
