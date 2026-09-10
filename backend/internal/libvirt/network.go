@@ -54,7 +54,7 @@ func validBridgeName(name string) bool {
 	if name == "" || strings.ContainsAny(name, "/ \t\n\r\\") || name == "lo" {
 		return false
 	}
-	for _, p := range []string{"virbr", "lxdbr", "lxcbr", "docker", "br-"} {
+	for _, p := range []string{"virbr", "lxdbr", "lxcbr", "incusbr", "docker", "br-"} {
 		if strings.HasPrefix(name, p) {
 			return false
 		}

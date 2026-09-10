@@ -25,7 +25,7 @@ func isLinuxBridge(name string) bool {
 // bridges (virbr0), container-daemon bridges (lxdbr0/lxcbr0) and Docker
 // bridges (docker0/br-*). A physical bridge (vmbr0/br0) is required so
 // KVM and Incus share the host's real LAN (Proxmox-style).
-var virtualBridgePrefixes = []string{"virbr", "lxdbr", "lxcbr", "docker", "br-"}
+var virtualBridgePrefixes = []string{"virbr", "lxdbr", "lxcbr", "incusbr", "docker", "br-"}
 
 // errNoPhysicalBridge is the fatal error when the host has no physical
 // Linux bridge. Mirrors compute.ErrNoPhysicalBridge (libvirt cannot import
@@ -104,8 +104,8 @@ func listLinuxBridges() []string {
 		if strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "br-") {
 			continue
 		}
-		// lxdbr* / lxcbr* — LXD/LXC bridges.
-		if strings.HasPrefix(name, "lxdbr") || strings.HasPrefix(name, "lxcbr") {
+		// lxdbr* / lxcbr* / incusbr* — LXD/Incus bridges.
+		if strings.HasPrefix(name, "lxdbr") || strings.HasPrefix(name, "lxcbr") || strings.HasPrefix(name, "incusbr") {
 			continue
 		}
 		if _, err := os.Stat("/sys/class/net/" + name + "/bridge"); err == nil {

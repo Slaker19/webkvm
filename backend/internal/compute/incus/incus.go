@@ -153,7 +153,7 @@ func isPhysicalBridge(name string) bool {
 	if !isLinuxBridge(name) {
 		return false
 	}
-	for _, p := range []string{"virbr", "lxdbr", "lxcbr", "docker", "br-"} {
+	for _, p := range []string{"virbr", "lxdbr", "lxcbr", "incusbr", "docker", "br-"} {
 		if strings.HasPrefix(name, p) {
 			return false
 		}
