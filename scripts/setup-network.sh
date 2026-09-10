@@ -1910,11 +1910,11 @@ EOF
         phys_ip="$(ip -4 -o addr show dev "${IFACE:-}" scope global 2>/dev/null | awk '{print $4}' | head -1)"
         if [ -n "${bridge_ip}" ]; then ip_type=""; else ip_type=" (<acquiring>)"; fi
         cat <<EOF
-  Mode: Bridge only (macvlan)
+  Mode: Bridge only (physical L2)
   - ${BR_NAME} IP: ${bridge_ip:-<acquiring>}${ip_type}
-  - ${IFACE} IP untouched: ${phys_ip:-<none>}
-  - macvlan mv-${BR_NAME} bridges ${IFACE} → ${BR_NAME}
+  - ${IFACE} enslaved into ${BR_NAME} (no standalone IP)
   - VMs/containers attach DIRECTLY to the physical bridge (visible on LAN)
+  - vmbr1: NAT bridge 100.0.0.0/24 (isolated tenants with internet)
 EOF
     fi
 else
@@ -1933,10 +1933,9 @@ EOF
         phys_ip="$(ip -4 -o addr show dev "${IFACE:-}" scope global 2>/dev/null | awk '{print $4}' | head -1)"
         if [ -n "${bridge_ip}" ]; then ip_type=""; else ip_type=" (<acquiring>)"; fi
         cat <<EOF
-  Mode: Both (NAT + Bridge macvlan)
-  - ${IFACE} IP untouched: ${phys_ip:-<none>}
+  Mode: Both (NAT + Bridge physical L2)
+  - ${IFACE} enslaved into ${BR_NAME} (no standalone IP)
   - ${BR_NAME} IP: ${bridge_ip:-<acquiring>}${ip_type}
-  - macvlan mv-${BR_NAME} bridges ${IFACE} → ${BR_NAME}
   - VMs/containers: vmbr0 (LAN) or vmbr1 (100.0.0.0/24, NAT)
 EOF
     fi
