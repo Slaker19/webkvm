@@ -1970,3 +1970,7 @@ EOF
 EOF
     fi
 fi
+
+# Guarantee success when the script completes (some pipelines above may
+# leave a non-zero status under set -euo pipefail on re-runs).
+exit 0

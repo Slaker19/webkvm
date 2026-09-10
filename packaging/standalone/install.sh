@@ -671,9 +671,7 @@ if [[ -x "${SETUP_NETWORK}" && -n "${NETWORK_MODE}" && "${NETWORK_MODE}" != "non
     fi
   fi
   bash "${SETUP_NETWORK}" "${args[@]}" || {
-    red "WebKVM requires a PHYSICAL Linux bridge (vmbr0/br0) attached to your physical NIC — shared Layer-2, IPs from your router via DHCP (Proxmox-style)."
-    red "Follow the instructions printed above, then re-run the installer. NAT is not used."
-    exit 1
+    die "WebKVM requires a PHYSICAL Linux bridge (vmbr0/br0) attached to your physical NIC — shared Layer-2, IPs from your router via DHCP (Proxmox-style). See the instructions above; NAT is not used."
   }
 fi
 
