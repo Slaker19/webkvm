@@ -12,6 +12,13 @@ REPO_URL="${WEBKVM_INSTALL_REPO:-https://github.com/Slaker19/webkvm}"
 BRANCH="${WEBKVM_INSTALL_BRANCH:-main}"
 REPO_DIR="/opt/webkvm-repo"
 
+# Piped invocation (curl ... | sudo bash) ⇒ stdin is not a TTY ⇒ run the
+# installer strictly unattended (defaults everywhere, no /dev/tty prompts).
+# Interactive installs (running the file from a terminal) keep their prompts.
+if [[ ! -t 0 && "${WEBKVM_NONINTERACTIVE:-0}" != "1" ]]; then
+  export WEBKVM_NONINTERACTIVE=1
+fi
+
 LOG_FILE="${WEBKVM_INSTALL_LOG:-/var/log/webkvm-install.log}"
 
 red()   { printf "\033[31m%s\033[0m\n" "$*"; }

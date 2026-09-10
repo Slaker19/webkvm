@@ -73,8 +73,16 @@ PKG_INSTALL=()
 PKG_CHECK=()
 RUNTIME_PACKAGES=()
 NONINTERACTIVE=0
+STRICT_NONINTERACTIVE=0
 [[ -t 0 ]] || NONINTERACTIVE=1
-[[ "${WEBKVM_NONINTERACTIVE:-0}" == "1" ]] && NONINTERACTIVE=1
+if [[ "${WEBKVM_NONINTERACTIVE:-0}" == "1" ]]; then
+  NONINTERACTIVE=1
+  STRICT_NONINTERACTIVE=1
+fi
+# Never let apt prompt (daemon restarts, GRUB, …) freeze an unattended run.
+if command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
+fi
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
@@ -107,7 +115,8 @@ confirm() { # confirm VAR "question" default
   local var="$1" q="$2" dflt="${3:-}"
   if [[ -n "${!var:-}" ]]; then return; fi
   if [[ "${NONINTERACTIVE}" == 1 ]]; then
-    if [[ -t 1 && -c /dev/tty ]]; then
+    # Strict unattended (WEBKVM_NONINTERACTIVE=1): never touch /dev/tty.
+    if [[ "${STRICT_NONINTERACTIVE}" == 0 && -t 1 && -c /dev/tty ]]; then
       local ans
       read -r -p "  ${q} [${dflt}]: " ans < /dev/tty > /dev/tty
       [[ -z "${ans}" ]] && ans="${dflt}"
@@ -128,7 +137,7 @@ prompt_select() { # prompt_select VAR "question" "opt1|label" "opt2|label" defau
   local -a opts_raw=("${@:1:$#-1}")
   if [[ -n "${!var:-}" ]]; then return; fi
   if [[ "${NONINTERACTIVE}" == 1 ]]; then
-    if [[ -t 1 && -c /dev/tty ]]; then
+    if [[ "${STRICT_NONINTERACTIVE}" == 0 && -t 1 && -c /dev/tty ]]; then
       # fall through to interactive prompt via /dev/tty
       :
     else
@@ -145,7 +154,7 @@ prompt_select() { # prompt_select VAR "question" "opt1|label" "opt2|label" defau
     i=$((i+1))
   done
   local ans
-  if [[ "${NONINTERACTIVE}" == 1 && -t 1 && -c /dev/tty ]]; then
+  if [[ "${NONINTERACTIVE}" == 1 && "${STRICT_NONINTERACTIVE}" == 0 && -t 1 && -c /dev/tty ]]; then
     read -r -p "  Choose [1-${#opts[@]}] (default ${default}): " ans < /dev/tty > /dev/tty
   else
     read -r -p "  Choose [1-${#opts[@]}] (default ${default}): " ans
