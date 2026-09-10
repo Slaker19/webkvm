@@ -1553,8 +1553,12 @@ ensure_vmbr1_nat() {
     # with dnsmasq. The host dnsmasq (bind-interfaces on vmbr1 only) hands
     # out 100.0.0.100-200 with the bridge as gateway — containers/cloud-init
     # get an IP and the MASQUERADE rule carries them out to the internet.
-    if command -v dnsmasq >/dev/null 2>&1 && [ -d /etc/dnsmasq.d ]; then
-        write_managed_file "/etc/dnsmasq.d/webkvm-${VM1_BR}.conf" \
+    if command -v dnsmasq >/dev/null 2>&1; then
+        # Dedicated, self-contained dnsmasq for the isolated bridge — works on
+        # every distro (even dnsmasq-base-only: Ubuntu, Debian without the
+        # dnsmasq package) and never conflicts with a system dnsmasq.
+        sudo mkdir -p /etc/webkvm
+        write_managed_file "/etc/webkvm/${VM1_BR}-dnsmasq.conf" \
 "# webkvm ${VM1_BR} DHCP (Proxmox-style isolated NAT bridge)
 interface=${VM1_BR}
 bind-interfaces
@@ -1562,14 +1566,8 @@ dhcp-range=100.0.0.100,100.0.0.200,255.255.255.0,12h
 dhcp-option=option:router,100.0.0.1
 dhcp-option=option:dns-server,1.1.1.1
 "
-        if systemctl list-unit-files dnsmasq.service >/dev/null 2>&1; then
-            sudo systemctl enable dnsmasq >/dev/null 2>&1 || true
-            sudo systemctl restart dnsmasq >/dev/null 2>&1 || true
-        elif command -v dnsmasq >/dev/null 2>&1; then
-            # Only dnsmasq-base is present (no dnsmasq.service, e.g. Ubuntu):
-            # run the binary directly through a dedicated unit.
-            local svc="webkvm-${VM1_BR}-dnsmasq.service"
-            write_managed_file "/etc/systemd/system/${svc}" \
+        local svc="webkvm-${VM1_BR}-dnsmasq.service"
+        write_managed_file "/etc/systemd/system/${svc}" \
 "[Unit]
 Description=webkvm dnsmasq for ${VM1_BR} (isolated NAT bridge DHCP)
 After=network-online.target
@@ -1577,17 +1575,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/dnsmasq.d/webkvm-${VM1_BR}.conf
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/webkvm/${VM1_BR}-dnsmasq.conf
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 "
-            systemctl daemon-reload >/dev/null 2>&1 || true
-            sudo systemctl enable "${svc}" >/dev/null 2>&1 || true
-            sudo systemctl restart "${svc}" >/dev/null 2>&1 || true
-        fi
-        echo "  + dnsmasq: ${VM1_BR} DHCP (100.0.0.100-200) configured"
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        sudo systemctl enable "${svc}" >/dev/null 2>&1 || true
+        sudo systemctl restart "${svc}" >/dev/null 2>&1 || true
+        echo "  + dnsmasq: ${VM1_BR} DHCP (100.0.0.100-200) configured (unit ${svc})"
     fi
 
     # --- persistence ---
