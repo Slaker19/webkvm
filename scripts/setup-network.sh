@@ -1160,6 +1160,16 @@ apply_bridge_networkd() {
     backup_managed_file "/etc/systemd/network/${br}.netdev"
     backup_managed_file "/etc/systemd/network/${br}.network"
     backup_managed_file "/etc/systemd/network/${iface}.network"
+    # Cloud-init may have written its own .network for the iface (static or
+    # DHCP) that shadows ours; retire it so ONLY the bridge config applies
+    # (otherwise the bridge stays DOWN / the IP never lands on it).
+    for f in /etc/systemd/network/*.network; do
+        [ -f "${f}" ] || continue
+        if grep -qsE "^Name=${iface}\b" "${f}" && ! grep -qsF "$MANAGED_MARKER" "${f}"; then
+            echo "    - retiring other networkd config ${f##*/} (would shadow ${iface}→${br})"
+            sudo mv "${f}" "${f}.webkvm-removed" 2>/dev/null || true
+        fi
+    done
 
     write_managed_file "/etc/systemd/network/${br}.netdev" \
 "[NetDev]
