@@ -1006,18 +1006,24 @@ apply_bridge_nmcli() {
         echo "    - deleting existing NM connection '${con}' on ${iface}"
         nmcli con delete "${con}" >/dev/null 2>&1 || true
     done
-    nmcli device set "${iface}" managed yes >/dev/null 2>&1 || true
-    nmcli con add type bridge con-name "${br}" ifname "${br}" >/dev/null 2>&1 || return 1
-    nmcli con add type ethernet con-name "${br}-${iface}" ifname "${iface}" master "${br}" >/dev/null 2>&1 || return 1
-    # The enslaved port must not keep a DHCP client running on the bridge.
-    nmcli con modify "${br}-${iface}" ipv4.method disabled >/dev/null 2>&1 || true
+    # Enslave at the KERNEL level (same as netplan/systemd-networkd) and mark
+    # the NIC unmanaged so NetworkManager never steals it back from the bridge.
+    nmcli device set "${iface}" managed no >/dev/null 2>&1 || true
+    if ! [ -d "/sys/class/net/${br}/bridge" ]; then
+        ip link add name "${br}" type bridge
+    fi
+    ip link set "${iface}" master "${br}"
+    ip link set "${iface}" up
+    ip link set "${br}" up
+    # NM bridge connection: it only carries the bridge's IP (manual or DHCP).
+    nmcli con add type bridge con-name "${br}" ifname "${br}" >/dev/null 2>&1 \
+        || nmcli con modify "${br}" ifname "${br}" >/dev/null 2>&1 || true
     if [ -n "${BRIDGE_STATIC_IP:-}" ]; then
         nmcli con modify "${br}" ipv4.method manual ipv4.addresses "${BRIDGE_STATIC_IP}" \
             ipv4.gateway "${BRIDGE_STATIC_GW:-}" ipv4.dns "${BRIDGE_STATIC_DNS:-}" >/dev/null 2>&1 || true
     else
         nmcli con modify "${br}" ipv4.method auto ipv6.method auto >/dev/null 2>&1 || true
     fi
-    nmcli con up "${br}-${iface}" >/dev/null 2>&1 || true
     nmcli con up "${br}" >/dev/null 2>&1 || true
     [ -d "/sys/class/net/${br}/bridge" ]
 }
