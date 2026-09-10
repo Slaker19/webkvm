@@ -1163,9 +1163,13 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 				}
 			}
 		}
-		// SRC_LEASE first (authoritative); fall back to SRC_ARP only when
-		// it yields nothing, so the IP list stays accurate.
+		// SRC_LEASE first (authoritative); fall back to SRC_AGENT then
+		// SRC_ARP so bridged VMs with router DHCP (no libvirt network) still
+		// surface their LAN IP. Stop at the first source that yields IPv4.
 		collect(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE)
+		if len(vm.IPs) == 0 {
+			collect(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT)
+		}
 		if len(vm.IPs) == 0 {
 			collect(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_ARP)
 		}
@@ -1231,14 +1235,20 @@ func (c *Connector) GetDomainIP(id string) string {
 	}
 	defer dom.Free()
 
-	ifaces, err := dom.ListAllInterfaceAddresses(libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE)
-	if err != nil {
-		return ""
-	}
-	for _, iface := range ifaces {
-		for _, a := range iface.Addrs {
-			if a.Type == libvirt.IP_ADDR_TYPE_IPV4 {
-				return a.Addr
+	for _, src := range []libvirt.DomainInterfaceAddressesSource{
+		libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE,
+		libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT,
+		libvirt.DOMAIN_INTERFACE_ADDRESSES_SRC_ARP,
+	} {
+		ifaces, err := dom.ListAllInterfaceAddresses(src)
+		if err != nil {
+			continue
+		}
+		for _, iface := range ifaces {
+			for _, a := range iface.Addrs {
+				if a.Type == libvirt.IP_ADDR_TYPE_IPV4 {
+					return a.Addr
+				}
 			}
 		}
 	}
