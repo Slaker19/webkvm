@@ -998,6 +998,15 @@ EOF
 apply_bridge_nmcli() {
     local br="$1" iface="$2"
     echo "  + creating bridge ${br} on ${iface} via nmcli (IP moves to the bridge)"
+    # Drop any existing NM connection that manages the physical iface (e.g.
+    # cloud-init's DHCP "System eth0"), otherwise it fights the bridge for
+    # the device and the port never enslaves (eth0 keeps the IP, bridge DOWN).
+    local con
+    for con in $(nmcli -t -f NAME,DEVICE con show 2>/dev/null | grep ":${iface}$" | cut -d: -f1); do
+        echo "    - deleting existing NM connection '${con}' on ${iface}"
+        nmcli con delete "${con}" >/dev/null 2>&1 || true
+    done
+    nmcli device set "${iface}" managed yes >/dev/null 2>&1 || true
     nmcli con add type bridge con-name "${br}" ifname "${br}" >/dev/null 2>&1 || return 1
     nmcli con add type ethernet con-name "${br}-${iface}" ifname "${iface}" master "${br}" >/dev/null 2>&1 || return 1
     # The enslaved port must not keep a DHCP client running on the bridge.
