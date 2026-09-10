@@ -722,7 +722,8 @@ INSTALL_SUCCEEDED=1
 rm -f -- "${HEALTH_FILE}"
 
 # ── Summary ────────────────────────────────────────────────────────────
-lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+[ -n "${lan_ip}" ] || lan_ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)"
 echo ""
 bold "=== webkvm installed successfully ==="
 echo ""
