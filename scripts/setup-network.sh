@@ -1919,7 +1919,7 @@ fi
 echo ""
 echo "=== network setup complete ==="
 if [[ "${MODE}" == "nat" ]]; then
-    phys_ip="$(ip -4 -o addr show dev "${IFACE:-}" scope global 2>/dev/null | awk '{print $4}' | head -1)"
+    phys_ip="$(ip -4 -o addr show dev "${IFACE:-}" scope global 2>/dev/null | awk '{print $4}' | head -1 || true)"
     unset bridge_ip ip_type
     cat <<EOF
   Mode: NAT only
@@ -1936,8 +1936,8 @@ elif [[ "${MODE}" == "bridge" ]]; then
   - VMs/containers attach DIRECTLY to the physical bridge (visible on LAN, no libvirt networks)
 EOF
     else
-        bridge_ip="$(ip -4 -o addr show dev "${BR_NAME}" scope global 2>/dev/null | awk '{print $4}' | head -1)"
-        phys_ip="$(ip -4 -o addr show dev "${IFACE:-}" scope global 2>/dev/null | awk '{print $4}' | head -1)"
+        bridge_ip="$(ip -4 -o addr show dev "${BR_NAME}" scope global 2>/dev/null | awk '{print $4}' | head -1 || true)"
+        phys_ip="$(ip -4 -o addr show dev "${IFACE:-}" scope global 2>/dev/null | awk '{print $4}' | head -1 || true)"
         if [ -n "${bridge_ip}" ]; then ip_type=""; else ip_type=" (<acquiring>)"; fi
         cat <<EOF
   Mode: Bridge only (physical L2)
@@ -1959,8 +1959,8 @@ else
   - VMs/containers attach to real bridges: vmbr0 (LAN, DHCP del router) or vmbr1 (100.0.0.0/24, NAT)
 EOF
     else
-        bridge_ip="$(ip -4 -o addr show dev "${BR_NAME}" scope global 2>/dev/null | awk '{print $4}' | head -1)"
-        phys_ip="$(ip -4 -o addr show dev "${IFACE:-}" scope global 2>/dev/null | awk '{print $4}' | head -1)"
+        bridge_ip="$(ip -4 -o addr show dev "${BR_NAME}" scope global 2>/dev/null | awk '{print $4}' | head -1 || true)"
+        phys_ip="$(ip -4 -o addr show dev "${IFACE:-}" scope global 2>/dev/null | awk '{print $4}' | head -1 || true)"
         if [ -n "${bridge_ip}" ]; then ip_type=""; else ip_type=" (<acquiring>)"; fi
         cat <<EOF
   Mode: Both (NAT + Bridge physical L2)
