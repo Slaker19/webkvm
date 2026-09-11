@@ -10,16 +10,16 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
-	github.com/klauspost/compress v1.19.2
+	github.com/klauspost/compress v1.20.0
 	github.com/lxc/incus/v6 v6.23.0
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/pkg/sftp v1.13.11
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/tredoe/osutil v1.5.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/crypto v0.55.0
-	golang.org/x/time v0.15.0
-	libvirt.org/go/libvirt v1.12006.0
+	golang.org/x/crypto v0.56.0
+	golang.org/x/time v0.16.0
+	libvirt.org/go/libvirt v1.12007.0
 )
 
 require (
