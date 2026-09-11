@@ -904,7 +904,6 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 			dom.Free()
 			return models.VM{}, fmt.Errorf("rename VM: %w", rerr)
 		}
-		curName = *req.Name
 	}
 
 	xmlDesc, err := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE)

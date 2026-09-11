@@ -92,7 +92,11 @@
     // #/vms) with NO hashchange event, silently desyncing the URL from
     // the router state — the next in-page navigation then renders the
     // wrong page.
-    if (typeof location !== 'undefined' && getRoute().name === 'vms' && location.hash !== '#' + target) {
+    if (
+      typeof location !== 'undefined' &&
+      getRoute().name === 'vms' &&
+      location.hash !== '#' + target
+    ) {
       history.replaceState(null, '', '#' + target);
     }
   });

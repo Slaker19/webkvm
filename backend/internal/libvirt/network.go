@@ -86,7 +86,7 @@ func networkView(name string) models.Network {
 		}
 	}
 
-	kind, iface := "isolated", ""
+	var kind, iface string
 	if netStoreVar != nil {
 		if rec, ok := netStoreVar.Get(name); ok {
 			kind, iface = rec.Kind, rec.Interface

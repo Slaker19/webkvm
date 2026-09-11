@@ -65,7 +65,9 @@
   // empty table with pageSize 0 can't compute NaN (ceil(0/0)) and write
   // NaN back into `page` forever — that loop trips Svelte's
   // effect_update_depth_exceeded and kills ALL in-page reactivity.
-  const totalPages = $derived(pageSize > 0 ? Math.max(1, Math.ceil(sortedRows.length / pageSize)) : 1);
+  const totalPages = $derived(
+    pageSize > 0 ? Math.max(1, Math.ceil(sortedRows.length / pageSize)) : 1
+  );
   const safePage = $derived(Math.max(0, Math.min(page, totalPages - 1)));
   const pagedRows = $derived(
     pageSize > 0 ? sortedRows.slice(safePage * pageSize, (safePage + 1) * pageSize) : sortedRows
