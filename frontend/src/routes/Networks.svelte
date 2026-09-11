@@ -198,8 +198,8 @@
       toast.error(msg, { duration: 0 });
       return;
     }
-    if (forward === 'bridge' && !hostDevice) {
-      const msg = t('networks.selectBridgeError');
+    if (forward === 'bridge' && !name.trim()) {
+      const msg = t('networks.nameRequired');
       error = msg;
       toast.error(msg, { duration: 0 });
       return;
@@ -229,7 +229,10 @@
         name: name.trim(),
         forward,
         autostart,
-        bridge: hostDevice,
+        // v2.4: creates a NEW shared Linux bridge (KVM+Incus). Optional
+        // static IP and DHCP make it usable immediately (Proxmox-style).
+        cidr: cidr || '',
+        dhcp: dhcp,
         dns: parseDNSList(dnsText),
       };
     } else if (forward === 'direct') {
@@ -679,22 +682,26 @@
           </div>
         </div>
         {#if forward === 'bridge'}
-          <div>
-            <label for="net-host-device" class="block text-sm font-medium mb-1.5"
-              >{t('networks.linuxBridge')}</label
-            >
-            <select id="net-host-device" bind:value={hostDevice} class="input">
-              <option value="" disabled>{t('networks.selectBridge')}</option>
-              {#each hostBridges as br}
-                <option value={br.name}
-                  >{br.name}{br.ip ? ` (${br.ip})` : ''} — {t('networks.ports', {
-                    n: br.slaves?.length || 0,
-                    s: br.slaves?.length === 1 ? '' : 's',
-                  })}</option
-                >
-              {/each}
-            </select>
-            <p class="text-xs text-muted-foreground mt-1">{t('networks.bridgeHelp')}</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label for="net-cidr" class="block text-sm font-medium mb-1.5">CIDR (IP del bridge)</label>
+              <Input id="net-cidr" bind:value={cidr} placeholder="100.0.1.1/24 (vacío = sin IP)" />
+            </div>
+            <div class="flex items-end gap-2 pb-1">
+              <input
+                id="net-dhcp"
+                type="checkbox"
+                bind:checked={dhcp}
+                class="w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
+              />
+              <label for="net-dhcp" class="text-sm select-none cursor-pointer"
+                >{t('networks.enableDhcp')}</label
+              >
+            </div>
+          </div>
+          <p class="text-xs text-muted-foreground mt-1">
+            Se creará un bridge Linux compartido por KVM e Incus (IPs a sus huéspedes). Necesita CIDR para asignar IP + DHCP.
+          </p>
             {#if hostBridges.length === 0}
               <button
                 type="button"
@@ -764,7 +771,6 @@
                 </div>
               {/if}
             {/if}
-          </div>
         {:else if forward === 'direct'}
           <div>
             <label for="net-direct-iface" class="block text-sm font-medium mb-1.5"

@@ -1592,6 +1592,8 @@ ensure_vmbr1_nat() {
 "# webkvm ${VM1_BR} DHCP (Proxmox-style isolated NAT bridge)
 interface=${VM1_BR}
 bind-interfaces
+except-interface=lo
+listen-address=${VM1_IP%/*}
 dhcp-range=100.0.0.100,100.0.0.200,255.255.255.0,12h
 dhcp-option=option:router,100.0.0.1
 dhcp-option=option:dns-server,1.1.1.1
