@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"webkvm/internal/models"
+	"webkvm/internal/safego"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/minio/minio-go/v7"
@@ -258,6 +259,7 @@ func (r *Runner) RunOnceAsync(targetID, scheduleID string) (Job, error) {
 		return job, err
 	}
 	go func() {
+		defer safego.Recover("backup_run")
 		_, _ = r.runJob(context.Background(), tgt, job, scheduleID)
 	}()
 	return job, nil
@@ -406,6 +408,7 @@ func (r *Runner) runJob(ctx context.Context, tgt Target, job Job, scheduleID str
 	if tgt.Retention.Enabled() {
 		pruneTgt := tgt
 		go func() {
+			defer safego.Recover("backup_retention")
 			removed, rerr := ApplyRetention(r.store, pruneTgt)
 			if rerr != nil {
 				r.logger.Warn("backup_retention_failed", "target", pruneTgt.ID, "err", rerr)

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"webkvm/internal/logging"
+	"webkvm/internal/safego"
 )
 
 // SystemInfo returned by /api/system/status.
@@ -361,6 +362,7 @@ func (h *Handler) SystemRestart(w http.ResponseWriter, r *http.Request) {
 	// Run restart in background so the HTTP response can return before
 	// the process is killed.
 	go func() {
+		defer safego.Recover("system_restart")
 		time.Sleep(500 * time.Millisecond)
 		_ = exec.Command("systemctl", "restart", "webkvm").Run()
 	}()
@@ -396,6 +398,7 @@ func (h *Handler) ApplyRestartSettings(w http.ResponseWriter, r *http.Request) {
 		h.settings.ClearPending()
 	}
 	go func() {
+		defer safego.Recover("system_restart")
 		time.Sleep(500 * time.Millisecond)
 		// systemd unit has Restart=always so it comes back up.
 		_ = exec.Command("systemctl", "restart", "webkvm").Run()
@@ -473,6 +476,7 @@ func (h *Handler) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 	h.audit.Log(auditFor(r, "system.update", "webkvm", map[string]interface{}{"repo": h.cfg.RepoDir}))
 	// Run update in background, log progress to /var/log/webkvm/update.log
 	go func() {
+		defer safego.Recover("system_update")
 		log, _ := os.OpenFile("/var/log/webkvm/update.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if log != nil {
 			defer log.Close()

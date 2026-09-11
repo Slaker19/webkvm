@@ -699,4 +699,7 @@ type DownloadJob struct {
 	Status    string  `json:"status"`
 	Error     string  `json:"error,omitempty"`
 	UpdatedAt int64   `json:"updated_at,omitempty"`
+	// Result carries the job's payload on success (e.g. the cloned VM
+	// or the created snapshot) for consumers that poll the job.
+	Result any `json:"result,omitempty"`
 }

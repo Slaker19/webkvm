@@ -20,6 +20,7 @@ import (
 	"webkvm/internal/config"
 	"webkvm/internal/firewall"
 	"webkvm/internal/models"
+	"webkvm/internal/safego"
 	"webkvm/internal/vmsched"
 
 	"github.com/go-chi/chi/v5"
@@ -264,6 +265,10 @@ func (h *Handler) UpdateVM(w http.ResponseWriter, r *http.Request) {
 
 	vm, err := h.compute.UpdateDomain(id, req)
 	if err != nil {
+		if errors.Is(err, compute.ErrDomainMustBeStoppedToRename) {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -283,9 +288,18 @@ func (h *Handler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 	}
 	var disksDeleted []string
 	if deleteDisks && vm.Name != "" {
+		// Pass the VM's ACTUAL disk filenames, not just the name-based
+		// convention: after a rename the disk keeps its original filename
+		// (<oldname>.qcow2), so a name-only sweep would orphan it.
+		var diskNames []string
+		for _, d := range vm.Disks {
+			if d.Device == "disk" && d.Name != "" {
+				diskNames = append(diskNames, d.Name)
+			}
+		}
 		var skipped []string
 		var derr error
-		disksDeleted, skipped, derr = h.compute.DeleteVMDiskFiles(vm.Name)
+		disksDeleted, skipped, derr = h.compute.DeleteVMDiskFiles(vm.Name, diskNames...)
 		if derr != nil {
 			h.logError("vm_disk_cleanup_failed", derr, vm.Name)
 		} else if len(skipped) > 0 {
@@ -321,6 +335,14 @@ func (h *Handler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) vmActionErr(w http.ResponseWriter, err error, humanize func(error) string) {
 	if errors.Is(err, compute.ErrNotImplemented) {
 		jsonErr(w, http.StatusNotImplemented, err.Error())
+		return
+	}
+	// State conflicts (start while running, force-off while stopped,
+	// resume while not paused, ...) are a 409, not a 500.
+	if errors.Is(err, compute.ErrDomainNotRunning) ||
+		errors.Is(err, compute.ErrDomainNotPaused) ||
+		errors.Is(err, compute.ErrDomainAlreadyRunning) {
+		jsonErr(w, http.StatusConflict, err.Error())
 		return
 	}
 	if humanize != nil {
@@ -465,20 +487,21 @@ func (h *Handler) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	snap, err := h.compute.CreateSnapshot(id, req)
-	if err != nil {
-		if errors.Is(err, compute.ErrMemorySnapshotRequiresRunning) {
-			jsonErr(w, http.StatusConflict, err.Error())
-			return
+	// A memory (RAM+disk) snapshot can take a while on a busy VM; run it
+	// as a background job so the request returns immediately (202) and
+	// the client polls /api/jobs/{id}.
+	job := submitJob("snapshot:"+req.Name, func() (any, error) {
+		snap, err := h.compute.CreateSnapshot(id, req)
+		if err != nil {
+			return nil, err
 		}
-		h.vmActionErr(w, err, nil)
-		return
-	}
-	h.audit.Log(auditFor(r, "vm.snapshot_create", id, map[string]interface{}{
-		"snap":            snap.Name,
-		"allocated_bytes": snap.SizeAtSnapBytes,
-	}))
-	jsonResp(w, http.StatusCreated, snap)
+		h.audit.Log(auditFor(r, "vm.snapshot_create", id, map[string]interface{}{
+			"snap":            snap.Name,
+			"allocated_bytes": snap.SizeAtSnapBytes,
+		}))
+		return snap, nil
+	})
+	jsonResp(w, http.StatusAccepted, map[string]string{"job": job.ID})
 }
 
 func (h *Handler) DeleteSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -682,7 +705,9 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Quota: a clone counts against the source VM's owner (an admin
-	// cloning their own infra stays exempt).
+	// cloning their own infra stays exempt). All checks stay synchronous
+	// so a quota/ACL violation fails fast with 4xx; only the actual
+	// (slow) clone runs in the background job.
 	owner, role, _ := audit.FromRequest(r)
 	if role != models.RoleAdmin {
 		if o := h.ownerOf(id); o != "" {
@@ -720,16 +745,18 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	vm, err := h.compute.CloneDomain(id, req)
-	if err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if owner != "" {
-		_, _ = h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
-	}
-	h.audit.Log(auditFor(r, "vm.clone", id, map[string]interface{}{"new_id": vm.ID, "name": req.Name}))
-	jsonResp(w, http.StatusCreated, vm)
+	job := submitJob("clone:"+req.Name, func() (any, error) {
+		vm, err := h.compute.CloneDomain(id, req)
+		if err != nil {
+			return nil, err
+		}
+		if owner != "" {
+			_, _ = h.compute.UpdateVMMeta(vm.ID, models.VMMetaUpdate{OwnerID: &owner})
+		}
+		h.audit.Log(auditFor(r, "vm.clone", id, map[string]interface{}{"new_id": vm.ID, "name": req.Name}))
+		return vm, nil
+	})
+	jsonResp(w, http.StatusAccepted, map[string]string{"job": job.ID})
 }
 
 func (h *Handler) GetBootDevice(w http.ResponseWriter, r *http.Request) {
@@ -1022,6 +1049,7 @@ func (h *Handler) streamLibvirtWrite(w http.ResponseWriter, r *http.Request, pro
 	pr, pw := io.Pipe()
 	errCh := make(chan error, 1)
 	go func() {
+		defer safego.Recover("vm_stream")
 		defer close(errCh)
 		defer pw.Close()
 		if err := producer(pw); err != nil {

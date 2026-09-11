@@ -344,6 +344,25 @@ export const api = {
 
   getDownloadJob: (jobId) => request(`/storage/jobs/${jobId}`),
 
+  // Async job tracking for long operations (VM clone / snapshot). The
+  // endpoints return 202 + {job}; waitJob polls until the job reaches a
+  // terminal state and returns its result (or throws the job's error).
+  getVMJob: (jobId) => request(`/jobs/${jobId}`),
+  waitJob: async (jobId, opts = {}) => {
+    const delay = opts.delay ?? 800;
+    const timeout = opts.timeout ?? 10 * 60 * 1000;
+    const started = Date.now();
+    for (;;) {
+      const job = await request(`/jobs/${jobId}`);
+      if (job.status === 'done') return job.result ?? job;
+      if (job.status === 'error') throw new ApiError(job.error || 'Job failed', 500, 'job_error');
+      if (Date.now() - started > timeout) {
+        throw new ApiError('Job timed out', 504, 'job_timeout');
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  },
+
   uploadDisk: (file, onProgress, pool) => {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();

@@ -86,7 +86,13 @@
     if (typeFilter && typeFilter !== 'all') q.set('type', typeFilter);
     if (selectMode) q.set('select', '1');
     const target = '/vms' + (q.toString() ? '?' + q.toString() : '');
-    if (typeof location !== 'undefined' && location.hash !== '#' + target) {
+    // Only touch the URL while this list is the active route. Without
+    // this guard the effect could fire during the route teardown and
+    // history.replaceState would rewrite the hash (e.g. #/storage →
+    // #/vms) with NO hashchange event, silently desyncing the URL from
+    // the router state — the next in-page navigation then renders the
+    // wrong page.
+    if (typeof location !== 'undefined' && getRoute().name === 'vms' && location.hash !== '#' + target) {
       history.replaceState(null, '', '#' + target);
     }
   });
@@ -288,8 +294,10 @@ apt-get update -y
           break;
         case 'clone': {
           const res = await api.cloneVM(vm.id, { name: `${vm.name}-clone` });
-          toast.success(t('vms.cloned', { name: res.name || `${vm.name}-clone` }));
-          if (res.id) navigate('/vms/' + res.id);
+          const cloned = await api.waitJob(res.job);
+          const cloneName = cloned?.name || `${vm.name}-clone`;
+          toast.success(t('vms.cloned', { name: cloneName }));
+          if (cloned?.id) navigate('/vms/' + cloned.id);
           else await loadVMs();
           return;
         }

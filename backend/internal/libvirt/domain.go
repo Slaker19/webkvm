@@ -548,6 +548,10 @@ func (c *Connector) StartDomain(id string) error {
 		return err
 	}
 	defer dom.Free()
+	state, _, err := dom.GetState()
+	if err == nil && state == libvirt.DOMAIN_RUNNING {
+		return ErrDomainAlreadyRunning
+	}
 	return dom.Create()
 }
 
@@ -557,6 +561,10 @@ func (c *Connector) ShutdownDomain(id string) error {
 		return err
 	}
 	defer dom.Free()
+	state, _, err := dom.GetState()
+	if err == nil && state == libvirt.DOMAIN_SHUTOFF {
+		return ErrDomainNotRunning
+	}
 	return dom.Shutdown()
 }
 
@@ -566,6 +574,10 @@ func (c *Connector) ForceOffDomain(id string) error {
 		return err
 	}
 	defer dom.Free()
+	state, _, err := dom.GetState()
+	if err == nil && (state == libvirt.DOMAIN_SHUTOFF || state == libvirt.DOMAIN_CRASHED) {
+		return ErrDomainNotRunning
+	}
 	return dom.Destroy()
 }
 
@@ -575,6 +587,10 @@ func (c *Connector) RebootDomain(id string) error {
 		return err
 	}
 	defer dom.Free()
+	state, _, err := dom.GetState()
+	if err == nil && state == libvirt.DOMAIN_SHUTOFF {
+		return ErrDomainNotRunning
+	}
 	return dom.Reboot(0)
 }
 
@@ -584,6 +600,10 @@ func (c *Connector) SuspendDomain(id string) error {
 		return err
 	}
 	defer dom.Free()
+	state, _, err := dom.GetState()
+	if err == nil && state == libvirt.DOMAIN_PAUSED {
+		return ErrDomainNotPaused
+	}
 	return dom.Suspend()
 }
 
@@ -593,6 +613,10 @@ func (c *Connector) ResumeDomain(id string) error {
 		return err
 	}
 	defer dom.Free()
+	state, _, err := dom.GetState()
+	if err == nil && state != libvirt.DOMAIN_PAUSED {
+		return ErrDomainNotPaused
+	}
 	return dom.Resume()
 }
 
@@ -692,6 +716,17 @@ func (c *Connector) ListSnapshots(domainID string) ([]models.Snapshot, error) {
 // ErrMemorySnapshotRequiresRunning is returned when a memory snapshot
 // is requested for a VM that is not running.
 var ErrMemorySnapshotRequiresRunning = errors.New("a memory snapshot requires the VM to be running")
+
+// ErrDomainNotPaused is returned when a resume targets a domain that is
+// not paused (or a suspend one that already is), and ErrDomainAlreadyRunning
+// when a start targets a domain that is already running. Handlers map them
+// to HTTP 409 Conflict instead of a generic 500. (ErrDomainNotRunning lives
+// in connect.go.)
+var (
+	ErrDomainNotPaused             = errors.New("the VM is not paused")
+	ErrDomainAlreadyRunning        = errors.New("the VM is already running")
+	ErrDomainMustBeStoppedToRename = errors.New("the VM must be stopped to rename it")
+)
 
 func (c *Connector) CreateSnapshot(domainID string, req models.CreateSnapshotRequest) (models.Snapshot, error) {
 	dom, err := c.lookupDomain(domainID)
@@ -849,6 +884,29 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 		return models.VM{}, err
 	}
 
+	// Renaming requires the domain to be inactive: patching the <name>
+	// and calling DomainDefineXML with the same UUID fails with
+	// "domain is already defined", and libvirt's virDomainRename only
+	// accepts inactive domains. Resolve the rename here, against the
+	// live handle, before we redefine the rest of the config.
+	curName, nerr := dom.GetName()
+	if nerr != nil {
+		dom.Free()
+		return models.VM{}, fmt.Errorf("get domain name: %w", nerr)
+	}
+	if req.Name != nil && *req.Name != "" && *req.Name != curName {
+		state, _, serr := dom.GetState()
+		if serr == nil && state != libvirt.DOMAIN_SHUTOFF {
+			dom.Free()
+			return models.VM{}, ErrDomainMustBeStoppedToRename
+		}
+		if rerr := dom.Rename(*req.Name, 0); rerr != nil {
+			dom.Free()
+			return models.VM{}, fmt.Errorf("rename VM: %w", rerr)
+		}
+		curName = *req.Name
+	}
+
 	xmlDesc, err := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE)
 	dom.Free()
 	if err != nil {
@@ -986,7 +1044,12 @@ func updateOSTag(title, tag, value string) string {
 	re := regexp.MustCompile(`\[` + tag + `=[^\]]*\]`)
 	result := re.FindString(title)
 	if result != "" {
-		return re.ReplaceAllString(title, "["+tag+"="+value+"]")
+		// ReplaceAllStringFunc so a '$' in value (e.g. "$1") is
+		// inserted literally instead of being treated as a capture
+		// group reference. The whole title is xmlEscape'd upstream.
+		return re.ReplaceAllStringFunc(title, func(string) string {
+			return "[" + tag + "=" + value + "]"
+		})
 	}
 	return title + " [" + tag + "=" + value + "]"
 }

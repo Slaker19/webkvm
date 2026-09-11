@@ -159,6 +159,13 @@ func NewRouter(
 		r.Get("/me", h.Me)
 	})
 
+	// Async jobs (VM clone / snapshot / downloads). Read-only job
+	// lookup; the jobs are created by the respective endpoints.
+	r.Route("/api/jobs", func(r chi.Router) {
+		r.Use(auth.RequireAtLeast("viewer"))
+		r.Get("/{id}", h.GetDownloadJob)
+	})
+
 	// User management: read-only for any authenticated user, mutating
 	// actions restricted to admins.
 	r.Route("/api/users", func(r chi.Router) {

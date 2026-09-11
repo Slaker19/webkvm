@@ -17,6 +17,7 @@ import (
 	"webkvm/internal/compute"
 	"webkvm/internal/config"
 	"webkvm/internal/models"
+	"webkvm/internal/safego"
 )
 
 // --- Targets ---
@@ -485,6 +486,7 @@ func (h *Handler) VerifyBackup(w http.ResponseWriter, r *http.Request) {
 	verifyFilename := filename
 	record := h.backupStore.RecordVerification
 	go func() {
+		defer safego.Recover("backup_verify")
 		b, err := backupstore.VerifyBackup(verifyTgt, verifyFilename)
 		if err != nil {
 			_ = record(verifyTgt.ID, verifyFilename, "", false, err.Error())
@@ -578,6 +580,7 @@ func (h *Handler) RestoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go func() {
+		defer safego.Recover("backup_op")
 		// j is a copy so the response's serialization of `job`
 		// doesn't race with the goroutine's mutations.
 		j := job
@@ -810,6 +813,7 @@ func (h *Handler) RestoreAsVM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go func() {
+		defer safego.Recover("backup_import")
 		defer cleanup()
 		// j is a copy so the response's serialization of `job`
 		// doesn't race with the goroutine's mutations.

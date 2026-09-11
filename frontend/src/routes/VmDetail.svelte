@@ -1038,11 +1038,12 @@
     if (!snapName) return;
     actionLoading = 'snapshot';
     try {
-      await api.createSnapshot(vmId, {
+      const res = await api.createSnapshot(vmId, {
         name: snapName,
         description: snapDesc,
         memory: snapMemory,
       });
+      await api.waitJob(res.job);
       snapName = '';
       snapDesc = '';
       snapMemory = false;
@@ -1302,9 +1303,10 @@
     if (!cName) return;
     actionLoading = 'clone';
     try {
-      await api.cloneVM(vmId, { name: cName, pool: cPool });
+      const res = await api.cloneVM(vmId, { name: cName, pool: cPool });
+      const cloned = await api.waitJob(res.job);
       showClone = false;
-      toast.success(t('vmDetail.vmCloned', { name: cName }));
+      toast.success(t('vmDetail.vmCloned', { name: cloned?.name || cName }));
       await load();
     } catch (e) {
       toast.error(e.message);

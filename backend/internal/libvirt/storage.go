@@ -559,12 +559,25 @@ func (c *Connector) findPathAttachments(path string) ([]models.VolumeAttachment,
 // A candidate is deleted only when no other domain references its path;
 // anything still attached (or snapshot views) is skipped and reported.
 // Used by the optional "delete disks" flag on VM deletion.
-func (c *Connector) DeleteVMDiskFiles(vmName string) (deleted []string, skipped []string, err error) {
-	if vmName == "" {
+func (c *Connector) DeleteVMDiskFiles(vmName string, exact ...string) (deleted []string, skipped []string, err error) {
+	if vmName == "" && len(exact) == 0 {
 		return nil, nil, nil
 	}
 	mainRe := regexp.MustCompile(fmt.Sprintf(`^%s(?:-\d+)?\.(?:qcow2|img)$`, regexp.QuoteMeta(vmName)))
 	devRe := regexp.MustCompile(fmt.Sprintf(`^%s-[a-z]{2,4}\d*\.qcow2$`, regexp.QuoteMeta(vmName)))
+
+	// exact holds the VM's actual disk filenames (from its domain XML),
+	// which matter after a rename: the name-based convention (<vm>.qcow2)
+	// no longer matches once the domain is renamed. A volume is a match
+	// if it is one of the exact names OR follows the name convention.
+	isExact := func(name string) bool {
+		for _, e := range exact {
+			if e == name {
+				return true
+			}
+		}
+		return false
+	}
 
 	pools, err := c.ListStoragePools()
 	if err != nil {
@@ -579,7 +592,7 @@ func (c *Connector) DeleteVMDiskFiles(vmName string) (deleted []string, skipped 
 			if v.IsSnapshot || v.Name == vmName {
 				continue
 			}
-			if !mainRe.MatchString(v.Name) && !devRe.MatchString(v.Name) {
+			if !isExact(v.Name) && !mainRe.MatchString(v.Name) && !devRe.MatchString(v.Name) {
 				continue
 			}
 			atts, aerr := c.FindVolumeAttachments(p.Name, v.Name)

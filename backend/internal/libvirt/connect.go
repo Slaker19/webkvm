@@ -11,6 +11,7 @@ import (
 
 	"libvirt.org/go/libvirt"
 	"webkvm/internal/config"
+	"webkvm/internal/safego"
 )
 
 // ErrDomainNotRunning is returned when an operation (e.g. serial console)
@@ -43,6 +44,7 @@ func ensureEventLoop(logger *slog.Logger) {
 			return
 		}
 		go func() {
+			defer safego.Recover("libvirt_event_loop")
 			// libvirt keeps per-thread C state: the event loop MUST own
 			// its OS thread forever, otherwise the connection is flagged
 			// as lost within seconds.

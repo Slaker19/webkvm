@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"time"
 
+	"webkvm/internal/safego"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 )
@@ -144,6 +146,7 @@ func (h *Handler) VNCProxy(w http.ResponseWriter, r *http.Request) {
 	errc := make(chan error, 2)
 
 	go func() {
+		defer safego.Recover("vnc_ws_to_tcp")
 		for {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {
@@ -158,6 +161,7 @@ func (h *Handler) VNCProxy(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	go func() {
+		defer safego.Recover("vnc_tcp_to_ws")
 		buf := make([]byte, 65536)
 		for {
 			n, err := tcpConn.Read(buf)

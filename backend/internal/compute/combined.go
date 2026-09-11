@@ -240,6 +240,6 @@ func (c *Combined) EstimateExportSize(ctx context.Context, id string, compress b
 func (c *Combined) EstimateOVASize(ctx context.Context, id string, target OVATarget) (int64, error) {
 	return c.route(id).EstimateOVASize(ctx, id, target)
 }
-func (c *Combined) DeleteVMDiskFiles(vmName string) (deleted []string, skipped []string, err error) {
-	return c.route(vmName).DeleteVMDiskFiles(vmName)
+func (c *Combined) DeleteVMDiskFiles(vmName string, exact ...string) (deleted []string, skipped []string, err error) {
+	return c.route(vmName).DeleteVMDiskFiles(vmName, exact...)
 }

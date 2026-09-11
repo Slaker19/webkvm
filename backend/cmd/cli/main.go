@@ -194,9 +194,9 @@ func (c *client) do(method, path string, body any) ([]byte, error) {
 	return data, nil
 }
 
-func (c *client) get(path string) ([]byte, error) { return c.do("GET", path, nil) }
+func (c *client) get(path string) ([]byte, error)            { return c.do("GET", path, nil) }
 func (c *client) post(path string, body any) ([]byte, error) { return c.do("POST", path, body) }
-func (c *client) del(path string) ([]byte, error) { return c.do("DELETE", path, nil) }
+func (c *client) del(path string) ([]byte, error)            { return c.do("DELETE", path, nil) }
 
 func run(server, token string, insecure bool, cmd []string) error {
 	c := newClient(server, token, insecure)
@@ -356,10 +356,39 @@ func runVMs(c *client, cmd []string) error {
 		_ = json.Unmarshal(out, &m)
 		if id, _ := m["id"].(string); id != "" {
 			fmt.Printf("cloned to %s\n", id)
-		} else {
-			fmt.Println("clone ok")
+			return nil
 		}
-		return nil
+		jobID, _ := m["job"].(string)
+		if jobID == "" {
+			return fmt.Errorf("clone failed: %s", out)
+		}
+		// Clone now runs as a background job: poll until it finishes
+		// so the CLI still reports the new VM id.
+		for i := 0; i < 600; i++ {
+			time.Sleep(500 * time.Millisecond)
+			jobOut, jerr := c.get("/api/jobs/" + jobID)
+			if jerr != nil {
+				return jerr
+			}
+			var j map[string]any
+			_ = json.Unmarshal(jobOut, &j)
+			switch j["status"] {
+			case "done":
+				if res, ok := j["result"].(map[string]any); ok {
+					if id, _ := res["id"].(string); id != "" {
+						fmt.Printf("cloned to %s\n", id)
+					} else {
+						fmt.Println("clone ok")
+					}
+				} else {
+					fmt.Println("clone ok")
+				}
+				return nil
+			case "error":
+				return fmt.Errorf("clone failed: %s", j["error"])
+			}
+		}
+		return fmt.Errorf("clone timed out waiting for job %s", jobID)
 
 	case "autostart":
 		if len(cmd) < 4 {
@@ -406,7 +435,9 @@ func runVMs(c *client, cmd []string) error {
 			}
 			var m map[string]any
 			_ = json.Unmarshal(out, &m)
-			if sid, _ := m["id"].(string); sid != "" {
+			if jobID, _ := m["job"].(string); jobID != "" {
+				fmt.Printf("snapshot job started: %s\n", jobID)
+			} else if sid, _ := m["id"].(string); sid != "" {
 				fmt.Printf("snapshot created: %s\n", sid)
 			} else {
 				fmt.Println("snapshot created")

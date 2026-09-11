@@ -16,6 +16,8 @@ import (
 	"log/slog"
 	"sort"
 	"time"
+
+	"webkvm/internal/safego"
 )
 
 // retentionBucket returns the UTC bucket key for a run's newest time under
@@ -191,6 +193,7 @@ func StartRetentionJanitor(ctx context.Context, interval time.Duration, store *S
 		logger = slog.Default()
 	}
 	go func() {
+		defer safego.Recover("retention_sweep")
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {

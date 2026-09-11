@@ -4,6 +4,48 @@ Todos los cambios notables de este proyecto se documentan en este
 fichero, siguiendo [Keep a Changelog](https://keepachangelog.com/es/1.1.0/)
 y [Semantic Versioning](https://semver.org/lang/es/).
 
+## [2.4.1] — Hardening tras QA exhaustivo (2026-09-11)
+
+### Added
+
+- **Clone e instantáneas asíncronos**: `POST /api/vms/{id}/clone` y
+  `POST /api/vms/{id}/snapshots` responden **202 + `{job}`** al instante
+  en lugar de bloquear el handler durante la copia del qcow2; el cliente
+  hace polling de **`GET /api/jobs/{id}`** hasta el estado terminal
+  (`done`/`error`). Las cuotas y ACL siguen validándose de forma síncrona
+  (fallo rápido 4xx). El CLI espera el job y sigue reportando el id nuevo.
+- **`safego.Recover`**: recuperación de pánicos en las 19 goroutines de
+  fondo (backup, consolas, eventos libvirt, jobs…) para que un pánico en
+  segundo plano no tumbe todo el proceso. En pruebas capturó dos
+  nil-derefs reales de la consola serial.
+
+### Fixed
+
+- **Borrado de bridges del host**: `DELETE /api/host/bridges/{name}`
+  devolvía siempre 409 (el guard "en uso por una red libvirt" coincidía
+  con cualquier bridge en el modelo v2.4). Ahora comprueba los puertos
+  reales del bridge y, al borrar, detiene/elimina la unit y config de
+  dnsmasq y el puerto dummy.
+- **Operaciones en estado incorrecto** (`forceoff` con la VM apagada,
+  `resume` sin pausa, `start` ya en marcha) devolvían 500; ahora **409**.
+- **Renombrar una VM** fallaba siempre con 500 (`DomainDefineXML` con el
+  mismo UUID). Ahora usa `dom.Rename` (solo con la VM apagada; en marcha
+  409) y `KVMBackend.UpdateDomain` pasa por `kvmErr`.
+- **Discos huérfanos al renombrar**: borrar una VM renombrada con
+  `?disks=true` dejaba su disco (`<nombre-viejo>.qcow2`) en el pool. Ahora
+  el borrado usa los nombres reales de disco del dominio.
+- **`effect_update_depth_exceeded` en la página de Instantáneas**: la
+  paginación de `DataTable` calculaba `NaN` (`ceil(0/0)`) con `pageSize=0`
+  y 0 filas, y el `$effect` escribía `page=NaN` en bucle (NaN≠NaN), lo que
+  rompía **toda la navegación in-page** hasta recargar. Corregido el
+  cálculo y la escritura condicional.
+- **URL corrupta al navegar**: `VmList` sincronizaba sus filtros con
+  `history.replaceState` también durante el teardown de la ruta,
+  reescribiendo el hash (p.ej. `#/storage` → `#/vms`) sin `hashchange`.
+  Ahora solo actúa cuando la ruta activa es `/vms`.
+- **Consola serial**: guards nil-safe en `stream.Recv/Send/Finish/Free`
+  (un stream nil tras un reacquire fallido provocaba nil-deref).
+
 ## [2.4.0] — Arquitectura de red unificada estilo Proxmox (2026-09-08)
 
 ### Added

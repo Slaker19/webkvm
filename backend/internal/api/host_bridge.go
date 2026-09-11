@@ -419,19 +419,37 @@ func (h *Handler) DeleteHostBridge(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusNotFound, fmt.Sprintf("bridge %q not found", name))
 		return
 	}
-	// Safety: refuse if any of our libvirt networks is using this
-	// bridge. Otherwise deleting the bridge would silently break
-	// every VM attached to it, mid-flight.
-	if h.lv != nil {
-		nets, err := h.compute.ListNetworks()
-		if err == nil {
-			for _, n := range nets {
-				if n.Bridge == name {
-					jsonErr(w, http.StatusConflict, fmt.Sprintf("bridge %q is in use by libvirt network %q; remove that network first", name, n.Name))
-					return
-				}
-			}
+	// Safety: refuse while a VM/container interface is attached.
+	// Deleting the bridge would silently drop those VMs mid-flight.
+	// (The old guard checked ListNetworks(), but in the v2.4 all-host-
+	// bridges model every bridge shows up as a "network", so it
+	// blocked deletion of any bridge — including freshly created ones.
+	// The real signal is the bridge's member ports.)
+	slaves := readBridgeSlaves(base)
+	dummy := name + "-d"
+	if len(dummy) > 15 {
+		dummy = name[:13] + "-d"
+	}
+	var attached []string
+	for _, s := range slaves {
+		if s != dummy {
+			attached = append(attached, s)
 		}
+	}
+	if len(attached) > 0 {
+		jsonErr(w, http.StatusConflict, fmt.Sprintf("bridge %q has attached interfaces (%s); detach VMs/containers first", name, strings.Join(attached, ", ")))
+		return
+	}
+
+	// Stop and remove the per-bridge dnsmasq DHCP service if present
+	// (created alongside the bridge when it got an IP + DHCP).
+	svcPath := "/etc/systemd/system/webkvm-" + name + "-dnsmasq.service"
+	if _, serr := os.Stat(svcPath); serr == nil {
+		_ = exec.Command("systemctl", "stop", "webkvm-"+name+"-dnsmasq.service").Run()
+		_ = exec.Command("systemctl", "disable", "webkvm-"+name+"-dnsmasq.service").Run()
+		_ = os.Remove(svcPath)
+		_ = os.Remove("/etc/webkvm/" + name + "-dnsmasq.conf")
+		_ = exec.Command("systemctl", "daemon-reload").Run()
 	}
 
 	// Take the bridge down (fails harmlessly if already down).
@@ -440,13 +458,17 @@ func (h *Handler) DeleteHostBridge(w http.ResponseWriter, r *http.Request) {
 	// command removes the slaves one by one. The user can re-add
 	// them after, but the typical flow is "I deleted the libvirt
 	// network first, now I want this bridge gone", so we do it.
-	slaves := readBridgeSlaves(base)
 	for _, s := range slaves {
 		exec.Command("ip", "link", "set", s, "nomaster").Run()
 	}
 	if out, err := exec.Command("ip", "link", "del", name).CombinedOutput(); err != nil {
 		jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("ip link del %s: %v: %s", name, err, strings.TrimSpace(string(out))))
 		return
+	}
+	// Remove the dummy carrier port (e.g. <name>-d) if it still exists
+	// as a standalone interface after the bridge went away.
+	if _, derr := os.Stat(filepath.Join("/sys/class/net", dummy)); derr == nil {
+		_ = exec.Command("ip", "link", "del", dummy).Run()
 	}
 	h.audit.Log(auditFor(r, "host.bridge.delete", name, nil))
 	jsonResp(w, http.StatusOK, map[string]string{"status": "deleted", "name": name})

@@ -41,6 +41,12 @@ func kvmErr(err error) error {
 	switch {
 	case errors.Is(err, libvirt.ErrDomainNotRunning):
 		return ErrDomainNotRunning
+	case errors.Is(err, libvirt.ErrDomainNotPaused):
+		return ErrDomainNotPaused
+	case errors.Is(err, libvirt.ErrDomainAlreadyRunning):
+		return ErrDomainAlreadyRunning
+	case errors.Is(err, libvirt.ErrDomainMustBeStoppedToRename):
+		return ErrDomainMustBeStoppedToRename
 	case errors.Is(err, libvirt.ErrMemorySnapshotRequiresRunning):
 		return ErrMemorySnapshotRequiresRunning
 	}
@@ -59,7 +65,11 @@ func (b *KVMBackend) CreateDomain(req models.CreateVMRequest) (models.VM, error)
 	return b.lv.CreateDomain(req)
 }
 func (b *KVMBackend) UpdateDomain(id string, req models.UpdateVMRequest) (models.VM, error) {
-	return b.lv.UpdateDomain(id, req)
+	vm, err := b.lv.UpdateDomain(id, req)
+	if err != nil {
+		return models.VM{}, kvmErr(err)
+	}
+	return vm, nil
 }
 func (b *KVMBackend) DeleteDomain(id string) error { return kvmErr(b.lv.DeleteDomain(id)) }
 func (b *KVMBackend) CloneDomain(id string, req models.CloneVMRequest) (models.VM, error) {
@@ -186,8 +196,8 @@ func (b *KVMBackend) RenameISO(oldName, newName, poolName string) error {
 	return b.lv.RenameISO(oldName, newName, poolName)
 }
 func (b *KVMBackend) DeleteISO(name, poolName string) error { return b.lv.DeleteISO(name, poolName) }
-func (b *KVMBackend) DeleteVMDiskFiles(vmName string) (deleted []string, skipped []string, err error) {
-	return b.lv.DeleteVMDiskFiles(vmName)
+func (b *KVMBackend) DeleteVMDiskFiles(vmName string, exact ...string) (deleted []string, skipped []string, err error) {
+	return b.lv.DeleteVMDiskFiles(vmName, exact...)
 }
 func (b *KVMBackend) RefreshCIFSSecretIfNeeded(ctx context.Context, poolName string) (*SecretRef, error) {
 	ref, err := b.lv.RefreshCIFSSecretIfNeeded(ctx, poolName)

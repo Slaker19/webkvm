@@ -24,6 +24,15 @@ var (
 	// ErrDomainNotRunning is returned when an operation (e.g. serial
 	// console) requires the instance to be running.
 	ErrDomainNotRunning = errors.New("the VM must be running to use the console")
+	// ErrDomainNotPaused is returned when a resume targets a VM that is
+	// not paused (or a suspend a VM that is already paused).
+	ErrDomainNotPaused = errors.New("the VM is not paused")
+	// ErrDomainAlreadyRunning is returned when a start targets a VM that
+	// is already running.
+	ErrDomainAlreadyRunning = errors.New("the VM is already running")
+	// ErrDomainMustBeStoppedToRename is returned when a rename targets a
+	// VM that is still running (libvirt only renames inactive domains).
+	ErrDomainMustBeStoppedToRename = errors.New("the VM must be stopped to rename it")
 	// ErrMemorySnapshotRequiresRunning is returned when a memory
 	// snapshot is requested on a powered-off instance.
 	ErrMemorySnapshotRequiresRunning = errors.New("a memory snapshot requires the VM to be running")
@@ -184,7 +193,7 @@ type Backend interface {
 	GetISOs(poolName string) ([]models.ISOScanResult, error)
 	RenameISO(oldName, newName, poolName string) error
 	DeleteISO(name, poolName string) error
-	DeleteVMDiskFiles(vmName string) (deleted []string, skipped []string, err error)
+	DeleteVMDiskFiles(vmName string, exact ...string) (deleted []string, skipped []string, err error)
 	RefreshCIFSSecretIfNeeded(ctx context.Context, poolName string) (*SecretRef, error)
 
 	// --- Networking ---

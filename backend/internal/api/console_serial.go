@@ -24,6 +24,7 @@ import (
 	"webkvm/internal/auth"
 	"webkvm/internal/compute"
 	"webkvm/internal/models"
+	"webkvm/internal/safego"
 )
 
 // serialSessions tracks the currently active SerialProxy WebSocket
@@ -93,7 +94,11 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		time.Sleep(700 * time.Millisecond)
 	}
-	defer stream.Free()
+	defer func() {
+		if stream != nil {
+			stream.Free()
+		}
+	}()
 
 	var wsDead atomic.Bool
 	slog.Info("serial_proxy_connected", "vm_id", id)
@@ -134,9 +139,17 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 
 		// libvirt stream → websocket
 		go func() {
+			defer safego.Recover("serial_stream_to_ws")
 			buf := make([]byte, 65536)
-			defer func() { _ = stream.Finish() }()
+			defer func() {
+				if stream != nil {
+					_ = stream.Finish()
+				}
+			}()
 			for {
+				if stream == nil {
+					return
+				}
 				n, err := stream.Recv(buf)
 				if err != nil {
 					slog.Warn("serial_stream_recv_end", "vm_id", id, "err", err)
@@ -152,12 +165,20 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 
 		// websocket → libvirt stream
 		go func() {
-			defer func() { _ = stream.Finish() }()
+			defer safego.Recover("serial_ws_to_stream")
+			defer func() {
+				if stream != nil {
+					_ = stream.Finish()
+				}
+			}()
 			for {
 				_, msg, err := ws.ReadMessage()
 				if err != nil {
 					wsDead.Store(true) // client went away: end session
 					errc <- err
+					return
+				}
+				if stream == nil {
 					return
 				}
 				if _, err := stream.Send(msg); err != nil {
@@ -173,7 +194,9 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 		case errc <- nil:
 		default:
 		}
-		_ = stream.Finish()
+		if stream != nil {
+			_ = stream.Finish()
+		}
 		if wsDead.Load() || reason == nil {
 			break
 		}
@@ -236,6 +259,7 @@ func (h *Handler) HostTerminal(w http.ResponseWriter, r *http.Request) {
 
 	// PTY → websocket
 	go func() {
+		defer safego.Recover("serial_pty_to_ws")
 		buf := make([]byte, 65536)
 		for {
 			n, err := ptmx.Read(buf)
@@ -253,6 +277,7 @@ func (h *Handler) HostTerminal(w http.ResponseWriter, r *http.Request) {
 
 	// websocket → PTY
 	go func() {
+		defer safego.Recover("serial_ws_to_pty")
 		for {
 			_, msg, err := ws.ReadMessage()
 			if err != nil {

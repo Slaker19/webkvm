@@ -19,6 +19,7 @@ import (
 	"webkvm/internal/compute"
 	"webkvm/internal/config"
 	"webkvm/internal/models"
+	"webkvm/internal/safego"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -120,6 +121,7 @@ func pruneExpiredJobs(now time.Time, ttl time.Duration) int {
 // that actually purged something.
 func StartJobSweeper(ctx context.Context, interval, ttl time.Duration, log func(msg string, args ...any)) {
 	go func() {
+		defer safego.Recover("job_sweeper")
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {

@@ -825,7 +825,7 @@ func (b *IncusBackend) RenameISO(oldName, newName, poolName string) error {
 	return compute.ErrNotImplemented
 }
 func (b *IncusBackend) DeleteISO(name, poolName string) error { return compute.ErrNotImplemented }
-func (b *IncusBackend) DeleteVMDiskFiles(vmName string) (deleted []string, skipped []string, err error) {
+func (b *IncusBackend) DeleteVMDiskFiles(vmName string, exact ...string) (deleted []string, skipped []string, err error) {
 	return nil, nil, compute.ErrNotImplemented
 }
 func (b *IncusBackend) RefreshCIFSSecretIfNeeded(ctx context.Context, poolName string) (*compute.SecretRef, error) {

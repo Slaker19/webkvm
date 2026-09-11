@@ -8,6 +8,7 @@ import (
 
 	"libvirt.org/go/libvirt"
 	"webkvm/internal/events"
+	"webkvm/internal/safego"
 )
 
 // StartEventLoop registers a libvirt domain-event callback that broadcasts
@@ -55,6 +56,7 @@ func (c *Connector) StartEventLoop(ctx context.Context, hub *events.Hub, pollInt
 			slog.Info("event_loop_active", "callback_id", callbackID)
 			// Run the libvirt event loop in a goroutine
 			go func() {
+				defer safego.Recover("libvirt_event_loop")
 				if err := libvirt.EventRunDefaultImpl(); err != nil {
 					slog.Warn("event_loop_default_impl_exited", "err", err)
 				}
