@@ -380,12 +380,8 @@ func NewRouter(
 		r.Get("/stats", h.GetHostStats)
 		r.Get("/metrics", h.GetHostMetrics)
 		r.Get("/interfaces", h.ListHostInterfaces)
-		r.Get("/bridges", h.ListHostBridges)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireRole(modelsRoleAdmin()))
-			r.Post("/bridges", h.CreateHostBridge)
-			r.Delete("/bridges/{name}", h.DeleteHostBridge)
-			r.Post("/bridges/{name}/vlan_aware", h.SetHostBridgeVLanAware)
 			r.Get("/usb-devices", h.ListHostUSBDevices)
 		})
 	})

@@ -26,6 +26,7 @@ import (
 	"webkvm/internal/logging"
 	metrics2 "webkvm/internal/metrics"
 	"webkvm/internal/models"
+	"webkvm/internal/netstore"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
 	"webkvm/internal/tokens"
@@ -516,6 +517,35 @@ func main() {
 		logger.Warn("firewall_host_load_failed", "err", ferr)
 	}
 	fwMgr.SetHostStore(fwHostStore)
+
+	// Networking (nat/isolated/direct): persisted record of which kind
+	// each WebKVM-created bridge is, and the wiring so a "nat" bridge's
+	// masquerade rule is rendered by the firewall package from that
+	// store (kernel state alone can't tell "isolated" apart from "nat
+	// with the rule removed by hand").
+	netStore, nerr := netstore.Open(cfg.DataDir)
+	if nerr != nil {
+		logger.Warn("netstore_load_failed", "err", nerr)
+		netStore = nil
+	}
+	libvirt.SetNetStore(netStore)
+	libvirt.SetNATChecker(firewall.HasNATRuleForBridge)
+	libvirt.SetFirewallReapply(func() error {
+		_, err := fwMgr.Apply()
+		return err
+	})
+	if netStore != nil {
+		fwMgr.SetNATProvider(func() []firewall.NATBridge {
+			var out []firewall.NATBridge
+			for _, rec := range netStore.All() {
+				if rec.Kind == "nat" && rec.CIDR != "" {
+					out = append(out, firewall.NATBridge{Name: rec.Name, CIDR: rec.CIDR})
+				}
+			}
+			return out
+		})
+	}
+
 	if _, ferr := fwMgr.Apply(); ferr != nil {
 		logger.Warn("firewall_apply_failed", "err", ferr)
 	} else {

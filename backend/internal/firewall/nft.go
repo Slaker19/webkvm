@@ -23,13 +23,28 @@ func HostPorts(webPort int) []int {
 // IPResolver returns the current IPv4 of a VM (empty when off/no lease).
 type IPResolver func(vmID string) string
 
+// NATBridge is one bridge whose subnet should reach the internet
+// through the host (kind=="nat" networks — see internal/libvirt).
+type NATBridge struct {
+	Name string
+	CIDR string
+}
+
+// NATProvider returns every currently active NAT-kind bridge. Wired to
+// the persisted network store (internal/netstore) so egress rules are
+// rendered from durable state, not guessed from kernel state — a bare
+// bridge with no masquerade rule is genuinely ambiguous ("isolated" vs
+// "nat with the rule removed by hand").
+type NATProvider func() []NATBridge
+
 // Manager builds and applies the nftables ruleset for every VM.
 type Manager struct {
-	store   *Store
-	host    *HostStore
-	resolve IPResolver
-	webPort int
-	logger  *slog.Logger
+	store      *Store
+	host       *HostStore
+	resolve    IPResolver
+	natBridges NATProvider
+	webPort    int
+	logger     *slog.Logger
 
 	// applyMu serializes safe-apply state transitions (stage/confirm/
 	// rollback) so a per-VM Apply() can never race a pending host
@@ -72,6 +87,14 @@ func (m *Manager) SetHostStore(hs *HostStore) {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
 	m.host = hs
+}
+
+// SetNATProvider wires the callback used to render the nat_bridges
+// chain (kind=="nat" networks). Safe to call before the first Apply.
+func (m *Manager) SetNATProvider(p NATProvider) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.natBridges = p
 }
 
 // RollbackDeadline sets the Safe-Apply confirmation window. Only used
@@ -132,7 +155,11 @@ func (m *Manager) BuildRuleset() string {
 // firewall and VM set. Split from BuildRuleset so Safe-Apply can render
 // the NEXT ruleset before it is persisted.
 func (m *Manager) buildRulesetWith(host HostFirewall, all []VMFirewall) string {
-	if len(all) == 0 && host.IsEmpty() {
+	var natBridges []NATBridge
+	if m.natBridges != nil {
+		natBridges = m.natBridges()
+	}
+	if len(all) == 0 && host.IsEmpty() && len(natBridges) == 0 {
 		return ""
 	}
 
@@ -242,6 +269,35 @@ func (m *Manager) buildRulesetWith(host HostFirewall, all []VMFirewall) string {
 		}
 	}
 
+	// NAT-kind network bridges: masquerade their whole subnet's egress
+	// through the host's uplink, and explicitly accept forwarding on
+	// them (some distros default FORWARD to drop). A distinct chain
+	// name/hook from "postrouting" above — that one only fires for
+	// explicit per-target DNAT forwards.
+	if len(natBridges) > 0 {
+		uplink := defaultUplinkIface()
+		b.WriteString("\tchain nat_bridges {\n")
+		b.WriteString("\t\ttype nat hook postrouting priority srcnat + 10; policy accept;\n")
+		for _, nb := range natBridges {
+			if nb.CIDR == "" {
+				continue
+			}
+			if uplink != "" {
+				fmt.Fprintf(&b, "\t\tip saddr %s oifname %q masquerade\n", nb.CIDR, uplink)
+			} else {
+				fmt.Fprintf(&b, "\t\tip saddr %s masquerade\n", nb.CIDR)
+			}
+		}
+		b.WriteString("\t}\n")
+		b.WriteString("\tchain nat_bridges_forward {\n")
+		b.WriteString("\t\ttype filter hook forward priority filter; policy accept;\n")
+		for _, nb := range natBridges {
+			fmt.Fprintf(&b, "\t\tiifname %q accept\n", nb.Name)
+			fmt.Fprintf(&b, "\t\toifname %q accept\n", nb.Name)
+		}
+		b.WriteString("\t}\n")
+	}
+
 	b.WriteString("}\n")
 	return b.String()
 }
@@ -286,6 +342,67 @@ func (m *Manager) flushTable() error {
 		return err
 	}
 	return nil
+}
+
+// HasNATRuleForBridge is a best-effort check for whether a bridge
+// already has a masquerade rule for its subnet — used only to infer
+// Kind for a bridge with no netstore record (see
+// libvirt.Connector.ListNetworks / inferKind): the installer's own
+// vmbr1 gets its MASQUERADE rule from scripts/setup-network.sh via
+// iptables/firewalld, not this package's nftables table, so both are
+// checked.
+func HasNATRuleForBridge(name string) bool {
+	out, err := exec.Command("ip", "-4", "-o", "addr", "show", "dev", name, "scope", "global").Output()
+	if err != nil {
+		return false
+	}
+	var cidr string
+	for _, f := range strings.Fields(string(out)) {
+		if strings.Contains(f, "/") {
+			cidr = f
+			break
+		}
+	}
+	if cidr == "" {
+		return false
+	}
+	if out, err := exec.Command("nft", "list", "table", "ip", "webkvm").Output(); err == nil {
+		if strings.Contains(string(out), cidr) && strings.Contains(string(out), "masquerade") {
+			return true
+		}
+	}
+	_, wantNet, perr := net.ParseCIDR(cidr)
+	if perr == nil {
+		if out, err := exec.Command("iptables", "-t", "nat", "-S", "POSTROUTING").Output(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if !strings.Contains(line, "MASQUERADE") {
+					continue
+				}
+				for _, tok := range strings.Fields(line) {
+					if _, ipnet, e := net.ParseCIDR(tok); e == nil && ipnet.String() == wantNet.String() {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// defaultUplinkIface returns the interface the host's default route
+// goes through (e.g. "eth0"), or "" if there is none.
+func defaultUplinkIface() string {
+	out, err := exec.Command("ip", "-4", "route", "show", "default").Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	for i, f := range fields {
+		if f == "dev" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
 }
 
 func validProto(p string) bool {

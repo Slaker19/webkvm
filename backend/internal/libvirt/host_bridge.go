@@ -2,7 +2,10 @@ package libvirt
 
 import (
 	"errors"
+	"fmt"
+	"net"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 )
@@ -48,18 +51,61 @@ func isPhysicalBridge(name string) bool {
 }
 
 // IsManagedBridge reports whether the given Linux bridge name is the
-// one webkvm.s setup-bridge.sh auto-creates. The API refuses to delete
-// it (and the UI greys out the delete button) so a stray click can't
-// silently remove the bridge that holds the host's LAN IP — the host
-// is reachable on the LAN through br0, and tearing it down without
-// a replacement is the same as yanking the network cable.
+// host's primary/protected bridge. The API refuses to delete it (and
+// the UI greys out the delete button) so a stray click can't silently
+// remove the bridge that holds the host's LAN IP — tearing it down
+// without a replacement is the same as yanking the network cable.
 //
-// Today the auto-created name is hardcoded as "br0" (see
-// ensure_linux_bridge in scripts/setup-bridge.sh). If setup-bridge
-// ever grows a config flag for the name, this function is the single
-// place to update.
+// Two independent checks, either of which protects a bridge:
+//  1. Its name matches one of the well-known primary-bridge names
+//     scripts/setup-network.sh creates by default ("vmbr0") or the
+//     older "br0" convention.
+//  2. It currently carries the host's default route — a dynamic
+//     safety net so a renamed/custom primary bridge is still protected
+//     even if its name doesn't match #1 (this also catches the case
+//     that motivated this check: setup-network.sh's real default is
+//     "vmbr0", but this function used to only recognize "br0").
 func IsManagedBridge(name string) bool {
-	return name == "br0"
+	if name == "vmbr0" || name == "br0" {
+		return true
+	}
+	return carriesDefaultRoute(name)
+}
+
+// carriesDefaultRoute reports whether the given interface is the one
+// the host's default route goes through (i.e. removing it would cut
+// the host off its own gateway).
+func carriesDefaultRoute(name string) bool {
+	out, err := exec.Command("ip", "-4", "route", "show", "default").Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		for i, f := range fields {
+			if f == "dev" && i+1 < len(fields) && fields[i+1] == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// defaultUplink returns the interface name the host's default route
+// goes through (e.g. "eth0"), or "" if there is none. Used to scope a
+// NAT bridge's masquerade rule to the real internet-facing interface.
+func defaultUplink() string {
+	out, err := exec.Command("ip", "-4", "route", "show", "default").Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	for i, f := range fields {
+		if f == "dev" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
 }
 
 // mainBridge returns the host's primary Linux bridge: "vmbr0" (Proxmox
@@ -119,9 +165,10 @@ func listLinuxBridges() []string {
 // isPhysicalInterface reports whether name is a real physical (or
 // wireless) network interface on the host: it has a backing device
 // (/sys/class/net/<name>/device exists) and is not itself a Linux
-// bridge. Used by CreateNetwork to validate a forward=direct
-// (macvtap) network's target interface — unlike forward=bridge, this
-// deliberately does NOT require (or accept) a Linux bridge device.
+// bridge. Used by CreateNetwork to validate a kind=="direct" network's
+// target interface, and by DeleteNetwork to tell a deliberately-
+// enslaved physical NIC (safe to release) apart from a VM/container's
+// virtual tap (must block deletion).
 func isPhysicalInterface(name string) bool {
 	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") || strings.Contains(name, "\\") {
 		return false
@@ -156,4 +203,153 @@ func listPhysicalInterfaces() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// readBridgeSlaves lists the port names attached to a Linux bridge
+// (the entries in /sys/class/net/<bridge>/brif/).
+func readBridgeSlaves(name string) []string {
+	entries, err := os.ReadDir("/sys/class/net/" + name + "/brif")
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.Name())
+	}
+	return out
+}
+
+// firstIPv4 returns the first non-loopback, non-link-local IPv4 CIDR
+// assigned to the interface, or "" if none.
+func firstIPv4(name string) string {
+	out, err := exec.Command("ip", "-4", "-o", "addr", "show", "dev", name, "scope", "global").Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		for i, f := range fields {
+			if f == "inet" && i+1 < len(fields) {
+				return fields[i+1]
+			}
+		}
+	}
+	return ""
+}
+
+// dummyNameFor returns the synthetic carrier-dummy name a bridge is
+// created with (see CreateNetwork), truncated to fit IFNAMSIZ.
+func dummyNameFor(bridge string) string {
+	dummy := bridge + "-d"
+	if len(dummy) > 15 {
+		dummy = bridge[:13] + "-d"
+	}
+	return dummy
+}
+
+// createDirectBridge enslaves a real physical/wireless interface into
+// a NEW Linux bridge (kind=="direct"): the equivalent of the host's
+// own vmbr0, but under whatever name the caller picks. It shells out
+// to `ip` because iproute2 is the canonical way to manage bridges on
+// Linux.
+//
+// Returns the IPv4 CIDR that was moved off iface (so the caller can
+// persist it and restore it on delete), or "" if iface had none.
+func createDirectBridge(name, iface string, vlanAware bool) (movedCIDR string, err error) {
+	if out, cerr := exec.Command("ip", "link", "add", "name", name, "type", "bridge").CombinedOutput(); cerr != nil {
+		return "", fmt.Errorf("ip link add %s: %v: %s", name, cerr, strings.TrimSpace(string(out)))
+	}
+
+	// Move the IP from iface to the new bridge BEFORE attaching iface
+	// as a slave. Doing it in this order keeps the host reachable on
+	// the LAN throughout: the address is held in the bridge namespace
+	// first, and iface only loses it once the bridge is already
+	// holding it — never a window with no IP anywhere.
+	moved, merr := moveIPv4ToBridge(iface, name)
+	if merr != nil {
+		exec.Command("ip", "link", "del", name).Run()
+		return "", fmt.Errorf("move IP from %s to %s: %v", iface, name, merr)
+	}
+
+	if out, aerr := exec.Command("ip", "link", "set", iface, "master", name).CombinedOutput(); aerr != nil {
+		exec.Command("ip", "link", "set", iface, "nomaster").Run()
+		exec.Command("ip", "link", "del", name).Run()
+		return "", fmt.Errorf("ip link set %s master %s: %v: %s", iface, name, aerr, strings.TrimSpace(string(out)))
+	}
+
+	// Bug fix: bring the slave itself up. Re-parenting a DOWN interface
+	// into a bridge does not implicitly bring it up on every kernel/
+	// driver — without this the bridge is left in NO-CARRIER until an
+	// operator manually runs `ip link set <iface> up`.
+	if out, uerr := exec.Command("ip", "link", "set", iface, "up").CombinedOutput(); uerr != nil {
+		exec.Command("ip", "link", "set", iface, "nomaster").Run()
+		exec.Command("ip", "link", "del", name).Run()
+		return "", fmt.Errorf("ip link set %s up: %v: %s", iface, uerr, strings.TrimSpace(string(out)))
+	}
+
+	if out, berr := exec.Command("ip", "link", "set", name, "up").CombinedOutput(); berr != nil {
+		exec.Command("ip", "link", "set", iface, "nomaster").Run()
+		exec.Command("ip", "link", "del", name).Run()
+		return "", fmt.Errorf("ip link set %s up: %v: %s", name, berr, strings.TrimSpace(string(out)))
+	}
+
+	if vlanAware {
+		exec.Command("ip", "link", "set", name, "type", "bridge", "vlan_filtering", "1").Run()
+	}
+	return moved, nil
+}
+
+// moveIPv4ToBridge transfers the first global IPv4 address (and its
+// /prefix) from `from` to `to`, returning the moved CIDR (or "" if
+// `from` had no global IPv4 — fine for setups where the bridge will be
+// DHCP'd). The destination interface must already exist.
+func moveIPv4ToBridge(from, to string) (string, error) {
+	out, err := exec.Command("ip", "-4", "-o", "addr", "show", "dev", from, "scope", "global").Output()
+	if err != nil {
+		return "", fmt.Errorf("read %s IPs: %v", from, err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if !strings.Contains(line, " inet ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		cidr := fields[3]
+		ip, ipnet, perr := net.ParseCIDR(cidr)
+		if perr != nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		prefix, _ := ipnet.Mask.Size()
+		dest := fmt.Sprintf("%s/%d", ip.String(), prefix)
+		// Add to the bridge first, then remove from the slave, to
+		// keep connectivity throughout.
+		if out, aerr := exec.Command("ip", "addr", "add", dest, "dev", to).CombinedOutput(); aerr != nil {
+			return "", fmt.Errorf("ip addr add to %s: %v: %s", to, aerr, strings.TrimSpace(string(out)))
+		}
+		if out, derr := exec.Command("ip", "addr", "del", cidr, "dev", from).CombinedOutput(); derr != nil {
+			exec.Command("ip", "addr", "del", dest, "dev", to).Run()
+			return "", fmt.Errorf("ip addr del from %s: %v: %s", from, derr, strings.TrimSpace(string(out)))
+		}
+		return dest, nil // only one address can be primary anyway
+	}
+	return "", nil
+}
+
+// restoreIPv4FromBridge is the mirror of moveIPv4ToBridge, run when a
+// "direct" network is deleted: it hands movedCIDR back to iface before
+// releasing it from the bridge, so the physical NIC isn't left
+// address-less. Best-effort — if the bridge's address was reassigned
+// independently by the operator in the meantime, this is skipped by
+// the caller (see DeleteNetwork).
+func restoreIPv4FromBridge(bridge, iface, movedCIDR string) error {
+	if movedCIDR == "" {
+		return nil
+	}
+	if out, err := exec.Command("ip", "addr", "add", movedCIDR, "dev", iface).CombinedOutput(); err != nil {
+		return fmt.Errorf("ip addr add %s to %s: %v: %s", movedCIDR, iface, err, strings.TrimSpace(string(out)))
+	}
+	exec.Command("ip", "addr", "del", movedCIDR, "dev", bridge).Run()
+	return nil
 }

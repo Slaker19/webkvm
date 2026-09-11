@@ -12,26 +12,20 @@
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import StatCard from '$lib/components/StatCard.svelte';
-  import { t, htmlVar } from '../lib/i18n.svelte.js';
+  import { t } from '../lib/i18n.svelte.js';
 
   let networks = $state([]);
   let hostInterfaces = $state([]);
-  let hostBridges = $state([]);
   let loading = $state(true);
   let error = $state('');
   let showCreate = $state(false);
-  let showBridgeCreate = $state(false);
   let editingNet = $state(null);
   let name = $state('');
   let cidr = $state('192.168.100.0/24');
-  // Shared L2 (Proxmox-style) is the default: new networks are created as
-  // Linux-bridge networks, not isolated NAT.
-  let forward = $state('bridge');
-  let hostDevice = $state('');
-  // forward=direct (macvtap): physical interface to bind straight to,
-  // e.g. "eth0" — like the auto-created "webkvm-bridge" network, but
-  // for any interface the operator picks, not just the default route.
+  // Exactly 3 kinds: isolated (no internet) is the safest default.
+  let kind = $state('isolated');
   let directInterface = $state('');
+  let vlanAware = $state(false);
   let dhcp = $state(true);
   let dhcpStart = $state('');
   let dhcpEnd = $state('');
@@ -39,13 +33,6 @@
   let autostart = $state(true);
   let saving = $state(false);
   let toggling = $state({});
-  // Linux-bridge creation form state.
-  let bridgeName = $state('br0');
-  let bridgeInterface = $state('');
-  let bridgeMoveIP = $state(true);
-  let bridgeVLanAware = $state(false);
-  let bridgeSaving = $state(false);
-  let bridgeError = $state('');
 
   let preview = $derived.by(() => computeCIDRPreview(cidr));
 
@@ -66,6 +53,10 @@
       if (!dhcpStart) dhcpStart = preview.dhcpStart;
       if (!dhcpEnd) dhcpEnd = preview.dhcpEnd;
     }
+  });
+
+  $effect(() => {
+    if (showCreate && kind === 'direct' && hostInterfaces.length === 0) loadHostInterfaces();
   });
 
   function computeCIDRPreview(c) {
@@ -108,9 +99,9 @@
   function resetForm() {
     name = '';
     cidr = '192.168.100.0/24';
-    forward = 'bridge';
-    hostDevice = '';
+    kind = 'isolated';
     directInterface = '';
+    vlanAware = false;
     dhcp = true;
     dhcpStart = '';
     dhcpEnd = '';
@@ -122,10 +113,10 @@
 
   function startEdit(net) {
     editingNet = net.name;
+    kind = net.kind || 'isolated';
     cidr = net.cidr || '';
-    forward = net.forward || 'nat';
-    hostDevice = net.bridge || '';
     directInterface = net.interface || '';
+    vlanAware = !!net.vlan_aware;
     dhcp = !!net.dhcp;
     dhcpStart = net.dhcp_start || '';
     dhcpEnd = net.dhcp_end || '';
@@ -139,10 +130,6 @@
     error = '';
     try {
       networks = await api.listNetworks();
-      // Also refresh the Linux bridge list whenever the
-      // page reloads, so the user can see their current
-      // bridges without having to open the create dialog.
-      loadHostBridges();
     } catch (e) {
       error = e.message;
     } finally {
@@ -158,59 +145,20 @@
     }
   }
 
-  async function loadHostBridges() {
-    try {
-      hostBridges = await api.listHostBridges();
-    } catch {
-      hostBridges = [];
-    }
-  }
-
-  $effect(() => {
-    if (showCreate) {
-      if (hostInterfaces.length === 0) loadHostInterfaces();
-      if (hostBridges.length === 0) loadHostBridges();
-    }
-    if (showBridgeCreate && hostInterfaces.length === 0) loadHostInterfaces();
-  });
-
-  // When the user picks forward=bridge, auto-select the first
-  // available Linux bridge so the form is immediately submittable.
-  // Without this, the user has to click the dropdown after the
-  // list loads (which can be a flash of empty state on first
-  // open) — easy to miss and produces a silent "Select a host
-  // bridge for bridge mode" error if they hit Create.
-  $effect(() => {
-    if (forward === 'bridge' && !hostDevice && hostBridges.length > 0) {
-      hostDevice = hostBridges[0].name;
-    }
-  });
-
   async function create() {
-    // Defensive validation: surface a sticky toast + inline alert
-    // instead of silently returning. The user reported that
-    // clicking Create "did nothing" — that's exactly what the
-    // old `if (!name) return;` did when the Name input was
-    // empty (or its bind hadn't fired yet on the first click).
     if (!name || !name.trim()) {
       const msg = t('networks.nameRequired');
       error = msg;
       toast.error(msg, { duration: 0 });
       return;
     }
-    if (forward === 'bridge' && !name.trim()) {
-      const msg = t('networks.nameRequired');
-      error = msg;
-      toast.error(msg, { duration: 0 });
-      return;
-    }
-    if (forward === 'direct' && !directInterface) {
+    if (kind === 'direct' && !directInterface) {
       const msg = t('networks.selectInterfaceError');
       error = msg;
       toast.error(msg, { duration: 0 });
       return;
     }
-    if (forward !== 'bridge' && forward !== 'direct' && cidr && !cidr.includes('/')) {
+    if (kind !== 'direct' && cidr && !cidr.includes('/')) {
       const msg = t('networks.cidrPrefixError');
       error = msg;
       toast.error(msg, { duration: 0 });
@@ -218,64 +166,33 @@
     }
     error = '';
     saving = true;
-    // For bridge/direct-mode networks, the backend silently drops
-    // cidr/dhcp/dhcp_start/dhcp_end because libvirt rejects networks
-    // in either mode that carry an <ip> block. Don't even send them —
-    // keeps the request body clean and makes the network's intent
-    // obvious in /api/networks output (cidr="" for both modes).
     let payload;
-    if (forward === 'bridge') {
+    if (kind === 'direct') {
       payload = {
         name: name.trim(),
-        forward,
-        autostart,
-        // v2.4: creates a NEW shared Linux bridge (KVM+Incus). Optional
-        // static IP and DHCP make it usable immediately (Proxmox-style).
-        cidr: cidr || '',
-        dhcp: dhcp,
-        dns: parseDNSList(dnsText),
-      };
-    } else if (forward === 'direct') {
-      payload = {
-        name: name.trim(),
-        forward,
+        kind,
         autostart,
         interface: directInterface,
-        dns: parseDNSList(dnsText),
+        vlan_aware: vlanAware,
       };
     } else {
-      payload = { name: name.trim(), cidr, forward, dhcp, autostart };
-    }
-    if (forward !== 'bridge' && forward !== 'direct' && dhcp) {
-      payload.dhcp_start = dhcpStart || preview?.dhcpStart || '';
-      payload.dhcp_end = dhcpEnd || preview?.dhcpEnd || '';
-    }
-    if (forward !== 'bridge' && forward !== 'direct' && dnsText) {
-      payload.dns = parseDNSList(dnsText);
+      payload = { name: name.trim(), kind, autostart, cidr: cidr || '', dhcp };
+      if (dhcp) {
+        payload.dhcp_start = dhcpStart || preview?.dhcpStart || '';
+        payload.dhcp_end = dhcpEnd || preview?.dhcpEnd || '';
+      }
+      if (dnsText) payload.dns = parseDNSList(dnsText);
     }
     try {
       const created = await api.createNetwork(payload);
-      // Don't reset the form on success — the user reported
-      // the create flow "did nothing" because the form
-      // cleared. Keep the values visible so it's obvious
-      // what was just submitted, and include the network
-      // name in the toast so they can confirm. They can
-      // close the form manually with Cancel when done.
       const label = (created && created.name) || name;
       toast.success(t('networks.networkCreated', { label }), { duration: 6000 });
+      resetForm();
       await load();
-      // Scroll the table into view so the new row is on
-      // screen even if the user was scrolled up reading
-      // the form.
       document
         .getElementById('networks-table-anchor')
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (e) {
-      // Sticky (duration: 0) so the user doesn't miss the
-      // libvirt error message if they look away — the default
-      // 3.5s toast was easy to miss and the message ("network
-      // with forward mode='bridge' cannot have <ip>") needs to
-      // be read.
       console.error('[Networks] create failed', { payload, error: e });
       error = e.message;
       toast.error(e.message, { duration: 0 });
@@ -284,111 +201,11 @@
     }
   }
 
-  async function createBridge() {
-    bridgeError = '';
-    if (!bridgeName) {
-      bridgeError = t('networks.bridgeNameRequired');
-      return;
-    }
-    // Warn loudly when the operator is about to promote a DHCP
-    // lease onto a permanent Linux bridge. The lease can change
-    // on renewal; if the router doesn't know the new IP is taken
-    // (i.e. no DHCP reservation), it'll hand it to some other
-    // device. The backend's `move_ip: true` does the right thing
-    // — the warning is to make sure the operator also did the
-    // router-side reservation.
-    if (bridgeMoveIP && bridgeInterface) {
-      const iface = hostInterfaces.find((i) => i.name === bridgeInterface);
-      if (iface && iface.ip_source === 'dhcp') {
-        const msg = t('networks.dhcpMoveWarning', {
-          iface: iface.name,
-          mac: iface.mac,
-        });
-        bridgeError = msg;
-        toast.warning(msg, { duration: 0 });
-        bridgeSaving = false;
-        return;
-      }
-    }
-    bridgeSaving = true;
-    try {
-      await api.createHostBridge({
-        name: bridgeName,
-        interface: bridgeInterface,
-        move_ip: bridgeMoveIP,
-        vlan_aware: bridgeVLanAware,
-      });
-      toast.success(t('networks.bridgeCreated', { name: bridgeName }));
-      showBridgeCreate = false;
-      bridgeName = 'br0';
-      bridgeInterface = '';
-      bridgeMoveIP = true;
-      bridgeVLanAware = false;
-      await loadHostBridges();
-      // Re-pick the new bridge as the host device in the
-      // open create-network form, so the user just has to
-      // hit Create.
-      hostDevice = bridgeName;
-    } catch (e) {
-      bridgeError = e.message;
-      // Also surface as a sticky toast in case the inline
-      // Alert is scrolled out of view.
-      toast.error(e.message, { duration: 0 });
-    } finally {
-      bridgeSaving = false;
-    }
-  }
-
-  async function toggleVLanAware(br) {
-    try {
-      await api.setHostBridgeVLanAware(br.name, !br.vlan_aware);
-      await loadHostBridges();
-      toast.success(
-        t('networks.vlanFiltering', {
-          state: !br.vlan_aware ? t('networks.enabled') : t('networks.disabled'),
-          name: br.name,
-        })
-      );
-    } catch (e) {
-      toast.error(e.message);
-    }
-  }
-
-  async function deleteBridge(name) {
-    askConfirm({
-      title: t('networks.deleteBridgeTitle', { name }),
-      description: t('networks.deleteBridgeDesc'),
-      confirmLabel: t('networks.deleteBridge'),
-      onConfirm: async () => {
-        // Close the dialog immediately + show an info toast
-        // while we run the operation. The user reported that
-        // the previous version "stayed thinking" because the
-        // dialog stayed open with a spinner and no other
-        // feedback. Now the dialog goes away instantly and
-        // the user sees the page state (the bridge is gone
-        // or a sticky error appears).
-        confirmState.open = false;
-        const pendingId = toast.info(t('networks.deletingBridge', { name }), { duration: 0 });
-        try {
-          await api.deleteHostBridge(name);
-          dismiss(pendingId);
-          toast.success(t('networks.bridgeDeleted', { name }), { duration: 4000 });
-          await loadHostBridges();
-        } catch (e) {
-          dismiss(pendingId);
-          toast.error(t('networks.deleteBridgeFailed', { name, error: e.message }), {
-            duration: 0,
-          });
-        }
-      },
-    });
-  }
-
   async function save() {
     if (!editingNet) return;
     error = '';
     saving = true;
-    const payload = { dhcp, autostart };
+    const payload = { dhcp, autostart, vlan_aware: vlanAware };
     if (dhcp) {
       payload.dhcp_start = dhcpStart || preview?.dhcpStart || '';
       payload.dhcp_end = dhcpEnd || preview?.dhcpEnd || '';
@@ -416,9 +233,6 @@
       description: t('networks.deleteNetworkDesc'),
       confirmLabel: t('common.delete'),
       onConfirm: async () => {
-        // Close the dialog immediately so the user sees the
-        // page state change. Show an info toast while the
-        // operation runs, then a success/error toast.
         confirmState.open = false;
         const pendingId = toast.info(t('networks.deletingNetwork', { name: id }), {
           duration: 0,
@@ -501,148 +315,10 @@
         label={t('networks.autostartBadge')}
         value={String(networks.filter((n) => n.autostart).length)}
       />
-      <StatCard label={t('networks.hostBridges')} value={String(hostBridges.length)} />
-    </div>
-  {/if}
-
-  {#if hostBridges.length > 0}
-    <div class="mb-4 border border-border rounded-lg bg-card p-4">
-      <div class="flex items-center justify-between mb-2">
-        <div>
-          <h3 class="text-sm font-semibold">{t('networks.hostBridges')}</h3>
-          <p class="text-xs text-muted-foreground mt-0.5">{t('networks.bridgeDesc')}</p>
-        </div>
-        <Button
-          size="sm"
-          variant="outline"
-          onclick={() => {
-            showBridgeCreate = !showBridgeCreate;
-            if (showBridgeCreate && hostInterfaces.length === 0) loadHostInterfaces();
-          }}
-        >
-          {showBridgeCreate ? t('common.cancel') : t('networks.newBridge')}
-        </Button>
-      </div>
-      {#if showBridgeCreate}
-        <div class="border border-border rounded-md p-3 space-y-3 bg-muted/30 mt-2">
-          {#if bridgeError}
-            <Alert variant="error">{bridgeError}</Alert>
-          {/if}
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label for="br-name-list" class="block text-xs font-medium mb-1"
-                >{t('networks.bridgeName')}</label
-              >
-              <Input id="br-name-list" bind:value={bridgeName} placeholder="br0" />
-            </div>
-            <div>
-              <label for="br-iface-list" class="block text-xs font-medium mb-1"
-                >{t('networks.physicalInterface')}</label
-              >
-              <select id="br-iface-list" bind:value={bridgeInterface} class="input">
-                <option value="">{t('networks.noneEmptyBridge')}</option>
-                {#each hostInterfaces as iface}
-                  <option value={iface.name}
-                    >{iface.name}
-                    {iface.type !== 'other' ? `(${iface.type})` : ''} — {iface.state}</option
-                  >
-                {/each}
-              </select>
-            </div>
-          </div>
-          <label class="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
-            <input
-              type="checkbox"
-              bind:checked={bridgeMoveIP}
-              class="mt-0.5 w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
-            />
-            <span>
-              <span class="text-foreground font-medium"
-                >{t('networks.moveIpLabel', {
-                  slave: bridgeInterface || t('networks.slaveInterface'),
-                  bridge: bridgeName || 'br0',
-                })}</span
-              >
-              <br />
-              {t('networks.moveIpRecommended')}
-            </span>
-          </label>
-          <label class="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
-            <input
-              type="checkbox"
-              bind:checked={bridgeVLanAware}
-              class="mt-0.5 w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
-            />
-            <span>
-              <span class="text-foreground font-medium">{t('networks.vlanAwareLabel')}</span>
-              <br />
-              {@html t('networks.vlanAwareDesc', {
-                code: htmlVar('<code class="text-[10px]">vlan_filtering=1</code>'),
-              })}
-            </span>
-          </label>
-          <div class="flex justify-end">
-            <Button size="sm" onclick={createBridge} disabled={bridgeSaving || !bridgeName}>
-              {#if bridgeSaving}<Spinner size="sm" color="text-white" />{:else}{t(
-                  'networks.createBridgeButton'
-                )}{/if}
-            </Button>
-          </div>
-        </div>
-      {/if}
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 mt-3">
-        {#each hostBridges as br (br.name)}
-          <div class="flex items-center justify-between border border-border rounded-md px-3 py-2">
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-1.5">
-                <span class="text-sm font-medium tnum">{br.name}</span>
-                {#if br.protected}
-                  <span
-                    class="text-[10px] px-1.5 py-0.5 rounded border border-info/30 bg-info/10 text-info uppercase tracking-wide"
-                    title={t('networks.managedTooltip')}>{t('networks.managed')}</span
-                  >
-                {/if}
-                {#if br.vlan_aware}
-                  <span
-                    class="text-[10px] px-1.5 py-0.5 rounded border border-accent/30 bg-accent/10 text-accent uppercase tracking-wide"
-                    title="vlan_filtering=1 on this bridge">{t('networks.vlanAwareBadge')}</span
-                  >
-                {/if}
-              </div>
-              <div class="text-xs text-muted-foreground truncate">
-                {br.ip || t('networks.noIp')} · {t('networks.ports', {
-                  n: br.slaves?.length || 0,
-                  s: (br.slaves?.length || 0) === 1 ? '' : 's',
-                })}{br.slaves?.length ? ` (${br.slaves.join(', ')})` : ''}
-              </div>
-            </div>
-            <div class="flex items-center gap-1">
-              <Button
-                size="xs"
-                variant="outline"
-                onclick={() => toggleVLanAware(br)}
-                title={br.vlan_aware
-                  ? t('networks.disableVlanFiltering')
-                  : t('networks.enableVlanFiltering')}
-              >
-                {br.vlan_aware ? t('networks.vlanOn') : t('networks.vlanOff')}
-              </Button>
-              <button
-                type="button"
-                onclick={() => deleteBridge(br.name)}
-                disabled={br.protected}
-                class="text-muted-foreground hover:text-destructive transition-colors p-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
-                title={br.protected
-                  ? t('networks.managedDeleteTooltip', { name: br.name })
-                  : t('networks.deleteBridgeTooltip')}
-                aria-label={`${t('networks.deleteBridge')} ${br.name}`}
-              >
-                <Icon name="trash" size={14} />
-              </button>
-            </div>
-          </div>
-        {/each}
-      </div>
+      <StatCard
+        label={t('networks.direct')}
+        value={String(networks.filter((n) => n.kind === 'direct').length)}
+      />
     </div>
   {/if}
 
@@ -670,107 +346,18 @@
             <Input id="net-name" bind:value={name} placeholder="my-network" />
           </div>
           <div>
-            <label for="net-forward" class="block text-sm font-medium mb-1.5"
+            <label for="net-kind" class="block text-sm font-medium mb-1.5"
               >{t('networks.forwardMode')}</label
             >
-            <select id="net-forward" bind:value={forward} class="input">
-              <option value="nat">NAT</option>
-              <option value="bridge">Bridge</option>
-              <option value="direct">{t('networks.direct')}</option>
+            <select id="net-kind" bind:value={kind} class="input">
               <option value="isolated">{t('networks.isolated')}</option>
+              <option value="nat">{t('networks.nat')}</option>
+              <option value="direct">{t('networks.direct')}</option>
             </select>
           </div>
         </div>
-        {#if forward === 'bridge'}
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label for="net-cidr" class="block text-sm font-medium mb-1.5"
-                >CIDR (IP del bridge)</label
-              >
-              <Input id="net-cidr" bind:value={cidr} placeholder="100.0.1.1/24 (vacío = sin IP)" />
-            </div>
-            <div class="flex items-end gap-2 pb-1">
-              <input
-                id="net-dhcp"
-                type="checkbox"
-                bind:checked={dhcp}
-                class="w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
-              />
-              <label for="net-dhcp" class="text-sm select-none cursor-pointer"
-                >{t('networks.enableDhcp')}</label
-              >
-            </div>
-          </div>
-          <p class="text-xs text-muted-foreground mt-1">
-            Se creará un bridge Linux compartido por KVM e Incus (IPs a sus huéspedes). Necesita
-            CIDR para asignar IP + DHCP.
-          </p>
-          {#if hostBridges.length === 0}
-            <button
-              type="button"
-              onclick={() => (showBridgeCreate = !showBridgeCreate)}
-              class="mt-2 text-xs text-accent hover:underline"
-            >
-              {showBridgeCreate ? t('networks.hideBridgeCreator') : t('networks.createBridgeFirst')}
-            </button>
-            {#if showBridgeCreate}
-              <div class="mt-3 border border-border rounded-md p-3 space-y-3 bg-muted/30">
-                {#if bridgeError}
-                  <Alert variant="error">{bridgeError}</Alert>
-                {/if}
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label for="br-name" class="block text-xs font-medium mb-1"
-                      >{t('networks.bridgeName')}</label
-                    >
-                    <Input id="br-name" bind:value={bridgeName} placeholder="br0" />
-                  </div>
-                  <div>
-                    <label for="br-iface" class="block text-xs font-medium mb-1"
-                      >{t('networks.physicalInterface')}</label
-                    >
-                    <select id="br-iface" bind:value={bridgeInterface} class="input">
-                      <option value="">{t('networks.noneEmptyBridge')}</option>
-                      {#each hostInterfaces as iface}
-                        <option value={iface.name}
-                          >{iface.name}
-                          {iface.type !== 'other' ? `(${iface.type})` : ''} — {iface.state}</option
-                        >
-                      {/each}
-                    </select>
-                  </div>
-                </div>
-                <label class="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    bind:checked={bridgeMoveIP}
-                    class="mt-0.5 w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
-                  />
-                  <span>
-                    <span class="text-foreground font-medium"
-                      >{t('networks.moveIpLabel', {
-                        slave: bridgeInterface || t('networks.slaveInterface'),
-                        bridge: bridgeName || 'br0',
-                      })}</span
-                    >
-                    <br />
-                    {t('networks.moveIpRecommended2')}
-                  </span>
-                </label>
-                <div class="flex justify-end gap-2">
-                  <Button variant="outline" size="sm" onclick={() => (showBridgeCreate = false)}
-                    >{t('common.cancel')}</Button
-                  >
-                  <Button size="sm" onclick={createBridge} disabled={bridgeSaving || !bridgeName}>
-                    {#if bridgeSaving}<Spinner size="sm" color="text-white" />{:else}{t(
-                        'networks.createBridgeButton'
-                      )}{/if}
-                  </Button>
-                </div>
-              </div>
-            {/if}
-          {/if}
-        {:else if forward === 'direct'}
+
+        {#if kind === 'direct'}
           <div>
             <label for="net-direct-iface" class="block text-sm font-medium mb-1.5"
               >{t('networks.directInterfaceLabel')}</label
@@ -786,33 +373,41 @@
             </select>
             <p class="text-xs text-muted-foreground mt-1">{t('networks.directHelp')}</p>
           </div>
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              bind:checked={vlanAware}
+              class="w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
+            />
+            {t('networks.vlanAwareLabel')}
+          </label>
         {:else}
           <div>
             <label for="net-cidr" class="block text-sm font-medium mb-1.5">CIDR</label>
             <Input id="net-cidr" bind:value={cidr} placeholder="192.168.100.0/24" />
+            <p class="text-xs text-muted-foreground mt-1">
+              {kind === 'nat' ? t('networks.natHelp') : t('networks.isolatedHelp')}
+            </p>
           </div>
         {/if}
       {:else}
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label for="net-edit-forward" class="block text-sm font-medium mb-1.5"
+            <label for="net-edit-kind" class="block text-sm font-medium mb-1.5"
               >{t('networks.forwardMode')}</label
             >
-            <Input id="net-edit-forward" value={forward} readonly class="opacity-50" />
+            <Input
+              id="net-edit-kind"
+              value={kind === 'direct'
+                ? t('networks.direct')
+                : kind === 'nat'
+                  ? t('networks.nat')
+                  : t('networks.isolated')}
+              readonly
+              class="opacity-50"
+            />
           </div>
-          {#if forward === 'bridge'}
-            <div>
-              <label for="net-edit-bridge" class="block text-sm font-medium mb-1.5"
-                >{t('networks.bridgedTo')}</label
-              >
-              <Input
-                id="net-edit-bridge"
-                value={hostDevice || '—'}
-                readonly
-                class="opacity-50 tnum"
-              />
-            </div>
-          {:else if forward === 'direct'}
+          {#if kind === 'direct'}
             <div>
               <label for="net-edit-iface" class="block text-sm font-medium mb-1.5"
                 >{t('networks.directBoundTo')}</label
@@ -831,9 +426,19 @@
             </div>
           {/if}
         </div>
+        {#if kind === 'direct'}
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              bind:checked={vlanAware}
+              class="w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
+            />
+            {t('networks.vlanAwareLabel')}
+          </label>
+        {/if}
       {/if}
 
-      {#if forward !== 'bridge' && forward !== 'direct'}
+      {#if kind !== 'direct'}
         <div class="flex items-center gap-2 pt-2 border-t border-border">
           <input
             id="net-dhcp"
@@ -877,14 +482,16 @@
               />
             </div>
           </div>
-          <div>
-            <label for="net-dns" class="block text-sm font-medium mb-1.5">
-              {t('networks.dnsForwarders')}
-              <span class="text-xs text-muted-foreground ml-1">{t('networks.dnsOptional')}</span>
-            </label>
-            <Input id="net-dns" bind:value={dnsText} placeholder="1.1.1.1, 8.8.8.8" />
-            <p class="text-xs text-muted-foreground mt-1">{t('networks.dnsHelp')}</p>
-          </div>
+          {#if !editingNet}
+            <div>
+              <label for="net-dns" class="block text-sm font-medium mb-1.5">
+                {t('networks.dnsForwarders')}
+                <span class="text-xs text-muted-foreground ml-1">{t('networks.dnsOptional')}</span>
+              </label>
+              <Input id="net-dns" bind:value={dnsText} placeholder="1.1.1.1, 8.8.8.8" />
+              <p class="text-xs text-muted-foreground mt-1">{t('networks.dnsHelp')}</p>
+            </div>
+          {/if}
         {/if}
       {/if}
 
@@ -941,7 +548,7 @@
     <DataTable
       columns={[
         { key: 'name', label: t('networks.name'), render: nameCell },
-        { key: 'forward', label: t('networks.forward'), width: '110px', render: forwardCell },
+        { key: 'kind', label: t('networks.forwardMode'), width: '110px', render: kindCell },
         { key: 'cidr', label: 'CIDR', width: '170px', render: cidrCell },
         { key: 'gateway', label: t('networks.gatewayCol'), width: '150px', render: gatewayCell },
         { key: 'dhcp', label: 'DHCP', width: '130px', render: dhcpCell },
@@ -995,28 +602,28 @@
   </div>
 {/snippet}
 
-{#snippet forwardCell(row)}
+{#snippet kindCell(row)}
   <span
-    class="inline-flex items-center text-xs px-2 py-1 rounded-full font-medium {row.forward ===
-    'nat'
+    class="inline-flex items-center text-xs px-2 py-1 rounded-full font-medium {row.kind === 'nat'
       ? 'bg-info/10 text-info'
-      : row.forward === 'bridge' || row.forward === 'direct'
+      : row.kind === 'direct'
         ? 'bg-accent/10 text-accent'
         : 'bg-muted text-muted-foreground'}"
   >
-    {#if row.forward === 'nat'}
+    {#if row.kind === 'nat'}
       <Icon name="arrowRight" size={12} class="mr-1" />
-    {:else if row.forward === 'bridge' || row.forward === 'direct'}
+    {:else if row.kind === 'direct'}
       <Icon name="network" size={12} class="mr-1" />
     {/if}
-    {row.forward === 'nat'
-      ? 'NAT'
-      : row.forward === 'bridge'
-        ? 'Bridge'
-        : row.forward === 'direct'
-          ? t('networks.direct')
-          : t('networks.isolated')}
+    {row.kind === 'nat'
+      ? t('networks.nat')
+      : row.kind === 'direct'
+        ? t('networks.direct')
+        : t('networks.isolated')}
   </span>
+  {#if row.kind === 'direct' && row.interface}
+    <div class="text-[11px] text-muted-foreground font-mono tnum mt-0.5">{row.interface}</div>
+  {/if}
 {/snippet}
 
 {#snippet cidrCell(row)}
@@ -1071,7 +678,7 @@
     {#if row.active}
       <button
         onclick={() => toggleNet(row)}
-        disabled={toggling[row.name]}
+        disabled={toggling[row.name] || row.protected}
         class="p-1.5 rounded-md text-warning hover:bg-warning/10 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         aria-label={`${t('networks.stop')} ${row.name}`}
         title={t('networks.stop')}

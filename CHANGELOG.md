@@ -4,6 +4,46 @@ Todos los cambios notables de este proyecto se documentan en este
 fichero, siguiendo [Keep a Changelog](https://keepachangelog.com/es/1.1.0/)
 y [Semantic Versioning](https://semver.org/lang/es/).
 
+## [2.5.0] — Unificación de redes NAT/aislada/directa (2026-09-11)
+
+### Added
+
+- **Los 3 tipos de red, unificados en un solo endpoint**: `/api/networks`
+  ahora soporta `kind` = `nat` (subred con salida real a Internet, vía dos
+  cadenas nftables nuevas `nat_bridges`/`nat_bridges_forward`), `isolated`
+  (subred sin Internet) y `direct` (adaptador real → bridge con nombre
+  propio, como el `vmbr0` del host) — los tres funcionan igual para KVM e
+  Incus. Se elimina `/api/host/bridges` (toda su funcionalidad pasa a ser
+  `kind=direct` de `/api/networks`).
+- **Rango DHCP configurable** (`dhcp_start`/`dhcp_end`) para redes
+  `isolated`/`nat` — antes siempre se calculaba automáticamente a partir del
+  CIDR, ignorando estos campos (que ya existían en el modelo pero ningún
+  código los leía).
+- **`DeleteNetwork` real** para los 3 tipos: libera cualquier NIC física
+  esclavizada (restaurando su IP) y retira la regla NAT si la tenía, en un
+  solo camino de código.
+- Paquete nuevo `internal/netstore`: persiste qué tipo es cada bridge creado
+  por la API, ya que el estado del kernel por sí solo no distingue
+  "aislada" de "NAT con la regla borrada a mano".
+
+### Fixed
+
+- **3 bugs reales** encontrados probando en vivo la antigua función
+  "Host bridges" (`/api/host/bridges`, ahora eliminada): (1) la NIC
+  esclavizada podía quedar en NO-CARRIER porque nunca se hacía
+  `ip link set <iface> up` tras esclavizarla; (2) un bridge creado con una
+  NIC física **nunca se podía borrar** — el guard de borrado confundía la
+  NIC física esclavizada a propósito con una interfaz de VM/contenedor
+  todavía conectada; (3) al borrar, la NIC liberada se quedaba sin IP (sin
+  ningún restablecimiento). Verificado en vivo contra la VM de pruebas
+  Arch: se creó un bridge `direct` sobre una NIC libre, quedó con conectividad
+  real a la LAN sin ningún paso manual, y se borró correctamente por la API.
+- **Bridge principal mal protegido**: `IsManagedBridge` solo reconocía el
+  nombre `"br0"`, pero el instalador real usa `vmbr0` por defecto — el
+  bridge principal del host no estaba protegido contra borrado. Ahora
+  reconoce `vmbr0`/`br0` y, dinámicamente, cualquier bridge que lleve
+  actualmente la ruta por defecto del host.
+
 ## [2.4.1] — Hardening tras QA exhaustivo (2026-09-11)
 
 ### Added

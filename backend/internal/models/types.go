@@ -317,13 +317,25 @@ type CreateVolumeRequest struct {
 	Format   string `json:"format"`
 }
 
+// Network describes one WebKVM network: a real Linux bridge, of one of
+// three kinds:
+//   - "nat": an isolated bridge with a masquerade rule, so its subnet
+//     reaches the internet through the host.
+//   - "isolated": an isolated bridge with no internet access.
+//   - "direct": a real physical/wireless NIC enslaved into a bridge with
+//     a user-chosen name (like the host's own vmbr0), for VMs/containers
+//     that need to be on the real LAN.
+//
+// Forward is kept as a deprecated alias of Kind for backward
+// compatibility with callers written before Kind existed; new code
+// should read/write Kind.
 type Network struct {
 	Name    string `json:"name"`
+	Kind    string `json:"kind"` // "nat" | "isolated" | "direct"
 	Forward string `json:"forward"`
 	Bridge  string `json:"bridge"`
-	// Interface is the physical (or wireless) host NIC a "direct"
-	// (macvtap) forward-mode network is bound to, e.g. "eth0". Empty
-	// for every other forward mode.
+	// Interface is the physical/wireless host NIC enslaved into a
+	// "direct" bridge, e.g. "eth0". Empty for "nat"/"isolated".
 	Interface string   `json:"interface,omitempty"`
 	CIDR      string   `json:"cidr"`
 	DHCP      bool     `json:"dhcp"`
@@ -331,29 +343,32 @@ type Network struct {
 	DHCPEnd   string   `json:"dhcp_end,omitempty"`
 	Gateway   string   `json:"gateway,omitempty"`
 	DNS       []string `json:"dns,omitempty"` // DNS forwarders for dnsmasq
+	VLanAware bool     `json:"vlan_aware,omitempty"`
+	Slaves    []string `json:"slaves,omitempty"` // "direct" only: the bridge's real ports
 	Active    bool     `json:"active"`
 	Autostart bool     `json:"autostart"`
-	// Protected is true for networks that webkvm.s setup-bridge.sh
-	// auto-creates. The API refuses to delete these (and the UI
-	// greys out the delete button) so a stray click can't silently
-	// remove the bridge that holds the host's LAN IP.
+	// Protected is true for the host's primary bridge (the one holding
+	// its LAN IP) and for any bridge WebKVM did not create itself. The
+	// API refuses to delete these (and the UI greys out the delete
+	// button) so a stray click can't silently cut the host off the LAN.
 	Protected bool `json:"protected,omitempty"`
 }
 
 type CreateNetworkRequest struct {
-	Name    string `json:"name"`
+	Name string `json:"name"`
+	Kind string `json:"kind"` // "nat" | "isolated" | "direct"; falls back to Forward when empty
+	// Forward is a deprecated alias for Kind ("" / "bridge" == "isolated").
 	Forward string `json:"forward"`
-	CIDR    string `json:"cidr"`
+	CIDR    string `json:"cidr"` // required for "nat"/"isolated"
 	Bridge  string `json:"bridge,omitempty"`
-	// Interface is required when Forward == "direct": the physical
-	// (or wireless) host NIC to bind the network to via macvtap, e.g.
-	// "eth0". Unlike "bridge" mode, this does not need (or use) an
-	// existing Linux bridge device on the host.
+	// Interface is required for kind=="direct": the physical/wireless
+	// host NIC to enslave into the new bridge, e.g. "eth0".
 	Interface string   `json:"interface,omitempty"`
 	DHCP      *bool    `json:"dhcp,omitempty"`
 	DHCPStart string   `json:"dhcp_start,omitempty"`
 	DHCPEnd   string   `json:"dhcp_end,omitempty"`
 	DNS       []string `json:"dns,omitempty"`
+	VLanAware bool     `json:"vlan_aware,omitempty"` // "direct" only
 	Autostart *bool    `json:"autostart,omitempty"`
 }
 
@@ -362,6 +377,7 @@ type UpdateNetworkRequest struct {
 	DHCPStart string   `json:"dhcp_start,omitempty"`
 	DHCPEnd   string   `json:"dhcp_end,omitempty"`
 	DNS       []string `json:"dns,omitempty"`
+	VLanAware *bool    `json:"vlan_aware,omitempty"` // "direct" only
 	Autostart *bool    `json:"autostart,omitempty"`
 }
 

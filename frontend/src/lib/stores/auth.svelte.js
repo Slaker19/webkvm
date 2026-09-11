@@ -425,11 +425,6 @@ export const api = {
   getHostInfo: () => request('/host'),
   getHostStats: () => request('/host/stats'),
   listHostInterfaces: () => request('/host/interfaces'),
-  listHostBridges: () => request('/host/bridges'),
-  createHostBridge: (data) =>
-    request('/host/bridges', { method: 'POST', body: JSON.stringify(data) }),
-  deleteHostBridge: (name) =>
-    request(`/host/bridges/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   listHostUSBDevices: () => request('/host/usb-devices'),
 
   // --- graphics ---
@@ -721,13 +716,6 @@ export const api = {
 
   // --- cross-fleet snapshots ---
   listAllSnapshots: () => request('/vms/snapshots'),
-
-  // --- Host bridges (extended) ---
-  setHostBridgeVLanAware: (name, enabled) =>
-    request(`/host/bridges/${name}/vlan_aware`, {
-      method: 'POST',
-      body: JSON.stringify({ enabled }),
-    }),
 
   // --- Backup v2 ---
   listBackupTargets: () => request('/backup/targets'),
