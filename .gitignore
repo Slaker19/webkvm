@@ -59,3 +59,6 @@ coverage.out
 packaging/standalone/*.tmp
 /install.log
 backend/webkvm
+
+# Internal planning artifacts (not for the repo)
+.hermes/
