@@ -1,5 +1,10 @@
 # APPLIANCES-AUDIT — Plantillas de apps comunitarias (WebKVM)
 
+> **Nota histórica:** auditoría puntual de 2026-09-05 (`SHA 51898b1` + fixes de
+> `FIXES.md` de esa fecha), con verificación en `webvm` 192.168.1.121. El
+> estado actual es **v2.4.1**; el catálogo desplegado y el sistema de
+> appliances han evolucionado (ver `CHANGELOG.md` y `FIXES.md`).
+
 Auditoría exhaustiva del sistema de **aplicaciones comunitarias** ("appliances",
 deploy 1-click): catalogo de 34 plantillas, capa de API, job de deploy,
 scripts de provisión, frontend y verificación **en la VM real** (URLs testeadas,

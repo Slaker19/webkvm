@@ -50,9 +50,10 @@ En una terminal, el instalador pregunta:
 3. **Dominio público** (opcional): si resuelve al servidor, se obtiene un certificado
    **Let's Encrypt automático** (autocert, con renovación); si no puede validarse,
    se cae al auto-firmado con ese dominio en el SAN.
-4. **Redes**: `NAT` / `Bridge` / `Both` (recomendado). NAT = salida a Internet por el
-   host (192.168.122.x). Bridge = bridge macvlan `br0` sobre la NIC física para que las
-   VMs tengan IP propia en la LAN real.
+4. **Redes**: `Bridge` (recomendado) / `NAT` / `Both`. Bridge = puente Linux
+   real (`vmbr0`/`br0`) en la LAN física para que las VMs/containers tengan IP
+   propia en la red real. NAT = puente aislado (`vmbr1`, `100.0.0.1/24`) con
+   salida a Internet por el host (modelo Proxmox; sin redes virtuales libvirt).
 
 ## Variables
 

@@ -30,7 +30,7 @@ registros de auditoría**.
 
 4. **Descarga el artefacto y verifica su checksum** (V12-OPS-01):
    ```bash
-   VERSION=v1.2.0
+   VERSION=v2.4.1
    curl -fsSL -o /tmp/webkvm-$VERSION.tar.gz \
      https://github.com/Slaker19/webkvm/releases/download/$VERSION/webkvm-$VERSION.tar.gz
    curl -fsSL -o /tmp/SHA256SUMS \

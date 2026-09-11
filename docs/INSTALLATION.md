@@ -51,7 +51,7 @@ What the installer does:
    compiles**: no Go/Node toolchain needed.
 4. Installs `webkvm.service`, data under `/opt/webkvm`.
 5. Asks about HTTPS and networking interactively, or uses defaults when piped
-   (`curl … | sudo bash` → non-interactive: SSL yes, NAT networking).
+   (`curl … | sudo bash` → non-interactive: SSL yes, shared-L2 bridge networking).
 6. Health-checks the service (`/api/health`) and prints the summary: URL,
    admin password, networks.
 
@@ -137,19 +137,28 @@ auth. In that case install with `WEBKVM_HTTPS=no` and point your vhost at
 
 ### 6. VM networking
 
+WebKVM v2.4+ uses **one model: real OS-level Linux bridges** (Proxmox-style).
+libvirt virtual networks (`default`, `virbr0`, NAT, macvtap/direct) are no
+longer created, listed or used. KVM attaches with
+`<interface type='bridge'><source bridge='vmbrX'/>` and Incus with
+`nictype=bridged parent=vmbrX`.
+
 Chosen with `NETWORK_MODE`:
 
-- **NAT (`nat`)** — VMs reach the internet through the host
-  (`192.168.122.0/24`, `virbr0`). Requires `dnsmasq` (installed automatically).
-- **Bridge macvlan `br0` (`bridge`)** — VMs get their own IP on the real LAN
-  (DHCP by default, or static with `BRIDGE_STATIC_IP/CIDR` + gateway + DNS).
-  The host's own address is never touched; the bridge is created with
-  `ip link add br0 type macvlan`.
-- **Both (`both`, interactive default)** — both networks available, pick per VM.
+- **Shared L2 bridge (`bridge`, default, recommended)** — VMs and containers
+  land on the real LAN through a physical Linux bridge (`vmbr0`/`br0`),
+  getting their IP from the router via DHCP (or static with
+  `BRIDGE_STATIC_IP/CIDR` + gateway + DNS). Reuses an existing host bridge
+  when present; otherwise creates one (macvlan slave) without touching the
+  host's own address.
+- **Isolated NAT (`nat`, opt-in)** — an isolated bridge (`vmbr1`) anchored to
+  a kernel `dummy0` interface, static `100.0.0.1/24`, with `dnsmasq` DHCP and
+  `MASQUERADE`, so its tenants reach the internet through the host's uplink.
+- **Both (`both`, opt-in)** — both bridges available; pick per VM.
 
-From the UI (**Networking**) you can create extra networks/bridges and per-VM
-nftables firewall rules. The installer wires this up through
-`scripts/setup-network.sh`.
+From the UI (**Networking**) you can create extra host bridges with an optional
+IP + DHCP, and per-VM nftables firewall rules. The installer wires this up
+through `scripts/setup-network.sh`.
 
 ### 7. Containers (LXC) — hybrid KVM/LXC
 

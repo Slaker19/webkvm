@@ -6,6 +6,8 @@
 > (abandonado upstream).
 >
 > Estado: acordado (2026-09-06). Ubicación: **v1.4 completo**.
+> **Nota histórica:** el plan se completó (v2.2.0 introdujo los contenedores
+> Incus/LXC); el estado actual es **v2.4.1** (ver `CHANGELOG.md`).
 
 ---
 

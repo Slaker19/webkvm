@@ -22,7 +22,7 @@ The installer asks:
 
 1. **How do you want to access WebKVM?** — `IP only (HTTP)` vs `With SSL — self-signed certificate (works for IP and domain names, recommended)`
 2. If you choose SSL, an **optional domain** — e.g. `webkvm.example.com` (empty = certificate for IP/hostname only; SAN includes LAN IP + 127.0.0.1 + webkvm + localhost + hostname.local [+domain])
-3. **VM networking** — `nat` (internet through the host, 192.168.122.0/24), `bridge` (macvlan br0 on your real LAN) or `both`
+3. **VM networking** — `bridge` (shared L2: VMs/containers on your real LAN via a Linux bridge `vmbr0`/`br0`, recommended), `nat` (isolated, internet via the host — `vmbr1`, `100.0.0.1/24`) or `both`
 
 **Supported families (detected by package manager):** Debian/Ubuntu & derivatives (`apt`), Fedora/RHEL & derivatives (`dnf`/`yum`), Arch & derivatives (`pacman`). Preflight checks `/dev/kvm`, RAM ≥ 2 GB, disk ≥ 5 GB, `amd64`.
 

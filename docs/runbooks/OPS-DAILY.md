@@ -112,7 +112,7 @@ checksum, `make install-systemd` (health check + auto-rollback), validar.
 ## 10. Release (solo mantenedores) — V12-OPS-01
 
 ```bash
-git tag v1.2.0 && git push origin v1.2.0
+git tag v2.4.1 && git push origin v2.4.1
 # GitHub Actions construye y publica dist/webkvm-<tag>.tar.gz + SHA256SUMS
 # Alternativa local:
 make release                      # artefactos locales

@@ -1,5 +1,11 @@
 # ANÁLISIS DE CÓDIGO — WebKVM
 
+> **Nota histórica:** auditoría puntual de 2026-09-05 sobre el SHA `51898b1`
+> (`v1.1.10`). El código ha evolucionado hasta **v2.4.1** (ver `CHANGELOG.md`,
+> `FIXES.md` y `CLAUDE.md`); los hallazgos aquí referencian un árbol antiguo y
+> muchos ya están corregidos. Los entornos de pruebas citados (`192.168.1.20`,
+> `webvm` 192.168.1.121) quedan obsoletos.
+
 Auditoría profunda del repositorio completo, con inventario para memoria futura
 y hallazgos con fix sugerido.
 

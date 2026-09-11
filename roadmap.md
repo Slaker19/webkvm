@@ -1,7 +1,11 @@
 # Roadmap WebKVM — v1.2.0 "Estabilización"
 
-> Estado de partida: `main` en `51898b1` + fixes de `FIXES.md` ya desplegados en
-> la VM de staging (`webvm` 192.168.1.121).
+> **Estado: histórico.** Este roadmap corresponde a la planificación v1.2.0
+> (2026-09-05, `main` en `51898b1`) y está **completado en su mayor parte**.
+> El estado actual es la release **v2.4.1** — ver `CHANGELOG.md`, `FIXES.md` y
+> `CLAUDE.md`. Las referencias a la VM de staging `webvm` (192.168.1.121) y al
+> box `192.168.1.20` quedan obsoletas; el entorno de pruebas actual está en
+> `CLAUDE.md` (build host → pve 192.168.1.2 → VM Arch 192.168.1.151).
 > Evidencia técnica: `ANALISIS-CODIGO.md`, `APPLIANCES-AUDIT.md`, `FIXES.md`.
 > Convención: cada ítem trae **Aceptación** (qué demuestra que está hecho),
 > **Ficheros** (dónde se toca) y **Gate** (cómo se verifica en la VM real).

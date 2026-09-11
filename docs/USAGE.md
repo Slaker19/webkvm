@@ -135,12 +135,18 @@ To mount an SMB3 share with credentials (e.g. for backups):
 
 ## 5. Networking and firewall
 
-### Virtual networks
+### Host bridges (v2.4+)
 
-- **NAT**: VMs reach the internet through the host (`192.168.122.0/24`).
-- **Bridge (macvlan `br0`)**: VMs get their own LAN IP (DHCP or static).
-- Extra networks with custom DHCP ranges (start/end, gateway, DNS) can be
-  created, and autostart toggled per network.
+WebKVM uses **real OS-level Linux bridges** (Proxmox-style); libvirt virtual
+networks (`default`, `virbr0`, …) are gone.
+
+- **Shared L2 `vmbr0`/`br0`** (default, recommended): VMs and containers land
+  on the real LAN and get their IP from the router (DHCP or static).
+- **Isolated NAT `vmbr1`** (opt-in): a Linux bridge on a kernel `dummy`
+  interface with `100.0.0.1/24`, `dnsmasq` DHCP and `MASQUERADE`.
+- Extra **host bridges** with an optional IP + custom DHCP range
+  (start/end, gateway, DNS) can be created from the **Networking** page, and
+  autostart toggled per bridge.
 
 ### Per-VM firewall
 
