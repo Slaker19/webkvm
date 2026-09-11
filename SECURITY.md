@@ -31,3 +31,15 @@ Si encuentras una vulnerabilidad, **no la publiques en issues públicos**.
 - Rate limiting de login con lockout y CIDRs de confianza configurables.
 - Validación y escape de entradas de cloud-init; reglas de firewall aplicadas
   con argumentos separados (sin shell).
+
+## Avisos conocidos (dependencias)
+
+Dependabot revisa `backend/go.mod` y `frontend/package.json`. Estado a
+2026-09-11:
+
+| ID | Paquete | Rango vulnerable | Parche | Notas |
+| -- | ------- | ---------------- | ------ | ----- |
+| [GHSA-64f3-v33m-w89f](https://github.com/advisories/GHSA-64f3-v33m-w89f) / CVE-2026-55621 | `github.com/lxc/incus/v6` | `<= 6.23.0` | **ninguno aún** | Bypass de restricción de proyecto al copiar volúmenes custom entre proyectos. `v6.23.0` es la última publicada; se actualizará en cuanto salga `v6.23.1+`. Impacto práctico bajo: WebKVM habla con el daemon Incus local (socket unix, proyecto `default`) y no expone copia de volúmenes entre proyectos. |
+
+Cuando upstream publique una versión parcheada: `go get
+github.com/lxc/incus/v6@latest`, `go mod tidy`, rebuild y re-ejecutar el QA.

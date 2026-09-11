@@ -1,5 +1,31 @@
 # FIXES — Correcciones aplicadas (2026-09-05)
 
+## v2.4.1 — Hardening tras QA exhaustivo (2026-09-11)
+
+Commit `c0c3611`, tag/release `v2.4.1`. Verificado con QA headless
+(Playwright) en la VM Arch: **112/112 checks**. Detalle en `CHANGELOG.md`.
+
+- **`safego.Recover`** en las 19 goroutines de fondo (backup, consolas,
+  eventos libvirt, jobs…): un pánico en segundo plano ya no tumba el proceso.
+  Capturó dos nil-derefs reales de la consola serial (ahora además con guards
+  nil-safe en `stream.Recv/Send/Finish/Free`).
+- **Clone/snapshot asíncronos**: `POST /api/vms/{id}/clone` y `/snapshots`
+  devuelven **202 + `{job}`** y el trabajo lento corre en background
+  (`api/jobs.go`, `GET /api/jobs/{id}`, `models.DownloadJob.Result`); cuotas/ACL
+  siguen síncronas. Frontend `api.waitJob()`; CLI espera el job.
+- **Estado incorrecto → 409** (antes 500): `forceoff` con la VM apagada,
+  `resume` sin pausa, `start` ya en marcha (sentinels en `libvirt`/`compute`).
+- **Renombrar VM** arreglado: `dom.Rename` (solo apagada; en marcha 409) +
+  `KVMBackend.UpdateDomain` pasa por `kvmErr`.
+- **Discos huérfanos al renombrar+borrar**: `DeleteVMDiskFiles` usa los
+  nombres reales de disco del dominio, no solo el nombre actual.
+- **`DeleteHostBridge`** borrable si no hay VMs adjuntas (guard por puertos
+  reales, no por `ListNetworks`); limpia dnsmasq + config + puerto dummy.
+- **Frontend `effect_update_depth_exceeded`**: la paginación de `DataTable`
+  calculaba `NaN` (`ceil(0/0)`) con `pageSize=0` y 0 filas, y el `$effect`
+  escribía `page=NaN` en bucle → rompía la navegación in-page. Corregido, y
+  `VmList` ya no corrompe la URL con `history.replaceState` al salir de la ruta.
+
 ## v1.4 — Fase 4.1: Pulido UX y Paridad KVM/LXC (2026-09-07)
 
 - **Selector de imágenes (nada de texto a mano)**: el modo contenedor de
