@@ -684,7 +684,9 @@
         {#if forward === 'bridge'}
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label for="net-cidr" class="block text-sm font-medium mb-1.5">CIDR (IP del bridge)</label>
+              <label for="net-cidr" class="block text-sm font-medium mb-1.5"
+                >CIDR (IP del bridge)</label
+              >
               <Input id="net-cidr" bind:value={cidr} placeholder="100.0.1.1/24 (vacío = sin IP)" />
             </div>
             <div class="flex items-end gap-2 pb-1">
@@ -700,77 +702,74 @@
             </div>
           </div>
           <p class="text-xs text-muted-foreground mt-1">
-            Se creará un bridge Linux compartido por KVM e Incus (IPs a sus huéspedes). Necesita CIDR para asignar IP + DHCP.
+            Se creará un bridge Linux compartido por KVM e Incus (IPs a sus huéspedes). Necesita
+            CIDR para asignar IP + DHCP.
           </p>
-            {#if hostBridges.length === 0}
-              <button
-                type="button"
-                onclick={() => (showBridgeCreate = !showBridgeCreate)}
-                class="mt-2 text-xs text-accent hover:underline"
-              >
-                {showBridgeCreate
-                  ? t('networks.hideBridgeCreator')
-                  : t('networks.createBridgeFirst')}
-              </button>
-              {#if showBridgeCreate}
-                <div class="mt-3 border border-border rounded-md p-3 space-y-3 bg-muted/30">
-                  {#if bridgeError}
-                    <Alert variant="error">{bridgeError}</Alert>
-                  {/if}
-                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label for="br-name" class="block text-xs font-medium mb-1"
-                        >{t('networks.bridgeName')}</label
-                      >
-                      <Input id="br-name" bind:value={bridgeName} placeholder="br0" />
-                    </div>
-                    <div>
-                      <label for="br-iface" class="block text-xs font-medium mb-1"
-                        >{t('networks.physicalInterface')}</label
-                      >
-                      <select id="br-iface" bind:value={bridgeInterface} class="input">
-                        <option value="">{t('networks.noneEmptyBridge')}</option>
-                        {#each hostInterfaces as iface}
-                          <option value={iface.name}
-                            >{iface.name}
-                            {iface.type !== 'other' ? `(${iface.type})` : ''} — {iface.state}</option
-                          >
-                        {/each}
-                      </select>
-                    </div>
-                  </div>
-                  <label
-                    class="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      bind:checked={bridgeMoveIP}
-                      class="mt-0.5 w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
-                    />
-                    <span>
-                      <span class="text-foreground font-medium"
-                        >{t('networks.moveIpLabel', {
-                          slave: bridgeInterface || t('networks.slaveInterface'),
-                          bridge: bridgeName || 'br0',
-                        })}</span
-                      >
-                      <br />
-                      {t('networks.moveIpRecommended2')}
-                    </span>
-                  </label>
-                  <div class="flex justify-end gap-2">
-                    <Button variant="outline" size="sm" onclick={() => (showBridgeCreate = false)}
-                      >{t('common.cancel')}</Button
+          {#if hostBridges.length === 0}
+            <button
+              type="button"
+              onclick={() => (showBridgeCreate = !showBridgeCreate)}
+              class="mt-2 text-xs text-accent hover:underline"
+            >
+              {showBridgeCreate ? t('networks.hideBridgeCreator') : t('networks.createBridgeFirst')}
+            </button>
+            {#if showBridgeCreate}
+              <div class="mt-3 border border-border rounded-md p-3 space-y-3 bg-muted/30">
+                {#if bridgeError}
+                  <Alert variant="error">{bridgeError}</Alert>
+                {/if}
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label for="br-name" class="block text-xs font-medium mb-1"
+                      >{t('networks.bridgeName')}</label
                     >
-                    <Button size="sm" onclick={createBridge} disabled={bridgeSaving || !bridgeName}>
-                      {#if bridgeSaving}<Spinner size="sm" color="text-white" />{:else}{t(
-                          'networks.createBridgeButton'
-                        )}{/if}
-                    </Button>
+                    <Input id="br-name" bind:value={bridgeName} placeholder="br0" />
+                  </div>
+                  <div>
+                    <label for="br-iface" class="block text-xs font-medium mb-1"
+                      >{t('networks.physicalInterface')}</label
+                    >
+                    <select id="br-iface" bind:value={bridgeInterface} class="input">
+                      <option value="">{t('networks.noneEmptyBridge')}</option>
+                      {#each hostInterfaces as iface}
+                        <option value={iface.name}
+                          >{iface.name}
+                          {iface.type !== 'other' ? `(${iface.type})` : ''} — {iface.state}</option
+                        >
+                      {/each}
+                    </select>
                   </div>
                 </div>
-              {/if}
+                <label class="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    bind:checked={bridgeMoveIP}
+                    class="mt-0.5 w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
+                  />
+                  <span>
+                    <span class="text-foreground font-medium"
+                      >{t('networks.moveIpLabel', {
+                        slave: bridgeInterface || t('networks.slaveInterface'),
+                        bridge: bridgeName || 'br0',
+                      })}</span
+                    >
+                    <br />
+                    {t('networks.moveIpRecommended2')}
+                  </span>
+                </label>
+                <div class="flex justify-end gap-2">
+                  <Button variant="outline" size="sm" onclick={() => (showBridgeCreate = false)}
+                    >{t('common.cancel')}</Button
+                  >
+                  <Button size="sm" onclick={createBridge} disabled={bridgeSaving || !bridgeName}>
+                    {#if bridgeSaving}<Spinner size="sm" color="text-white" />{:else}{t(
+                        'networks.createBridgeButton'
+                      )}{/if}
+                  </Button>
+                </div>
+              </div>
             {/if}
+          {/if}
         {:else if forward === 'direct'}
           <div>
             <label for="net-direct-iface" class="block text-sm font-medium mb-1.5"
