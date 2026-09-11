@@ -30,7 +30,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@internationalized/date": "^3.12.2",
-    "@lucide/svelte": "^1.37.0",
+    "@lucide/svelte": "^1.42.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tailwindcss/vite": "^4.3.3",
     "eslint": "^9.39.4",
