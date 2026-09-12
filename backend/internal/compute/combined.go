@@ -187,6 +187,23 @@ func (c *Combined) AttachUSBDevice(id, vendorID, productID string) error {
 func (c *Combined) DetachUSBDevice(id, vendorID, productID string) error {
 	return c.route(id).DetachUSBDevice(id, vendorID, productID)
 }
+func (c *Combined) AttachPCIDevice(id string, addresses []string) error {
+	return c.route(id).AttachPCIDevice(id, addresses)
+}
+func (c *Combined) DetachPCIDevice(id, address string) error {
+	return c.route(id).DetachPCIDevice(id, address)
+}
+func (c *Combined) AttachSharedFolder(id, hostPath, tag string, readOnly bool) error {
+	return c.route(id).AttachSharedFolder(id, hostPath, tag, readOnly)
+}
+func (c *Combined) DetachSharedFolder(id, tag string) error {
+	return c.route(id).DetachSharedFolder(id, tag)
+}
+
+// ListHostPCIDevices is intentionally NOT overridden here: it's a
+// host-level enumeration (not scoped to any one VM/instance), so it
+// delegates through the embedded Backend to the primary (KVM) backend —
+// same reasoning as ListHostUSBDevices above it.
 
 func (c *Combined) ListSnapshots(domainID string) ([]models.Snapshot, error) {
 	return c.route(domainID).ListSnapshots(domainID)

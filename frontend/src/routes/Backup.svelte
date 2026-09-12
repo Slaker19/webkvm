@@ -74,6 +74,10 @@
   // upload, re-read the archive and checksum it; on mismatch the job
   // fails and the corrupt remote copy is purged.
   let newTargetVerifyOnWrite = $state(false);
+  // Compression codec for KVM VM data archives: 'zstd' (default) or
+  // 'gzip'. ZstdLevel (1..22, 0 = codec default) only applies to zstd.
+  let newTargetCompression = $state('zstd');
+  let newTargetZstdLevel = $state(0);
   let newTargetVMFilter = $state('all');
   let newTargetVMIDs = $state([]);
   // V13-D-01: backup-by-tag policy — VMFilter="tags" selects every VM
@@ -292,6 +296,8 @@
       vm_ids: newTargetVMIDs,
       vm_tags: newTargetVMTags,
       enabled: newTargetEnabled,
+      compression: newTargetCompression,
+      zstd_level: newTargetCompression === 'zstd' ? newTargetZstdLevel || 0 : 0,
       retention: {
         keep_last: newTargetRetentionKeepLast || 0,
         keep_days: newTargetRetentionKeepDays || 0,
@@ -441,6 +447,8 @@
       ? target.known_hosts.join('\n')
       : target.known_hosts || '';
     newTargetVerifyOnWrite = !!target.verify_on_write;
+    newTargetCompression = target.compression || 'zstd';
+    newTargetZstdLevel = target.zstd_level || 0;
     newTargetVMFilter = target.vm_filter || 'all';
     newTargetVMIDs = Array.isArray(target.vm_ids) ? [...target.vm_ids] : [];
     newTargetVMTags = Array.isArray(target.vm_tags) ? [...target.vm_tags] : [];
@@ -478,6 +486,8 @@
     newTargetVMIDs = [];
     newTargetVMTags = [];
     newTargetEnabled = true;
+    newTargetCompression = 'zstd';
+    newTargetZstdLevel = 0;
     newTargetRetentionKeepLast = 0;
     newTargetRetentionKeepDays = 0;
     newTargetRetentionKeepDaily = 0;
@@ -516,6 +526,8 @@
       newTargetVMIDs = [];
       newTargetVMTags = [];
       newTargetEnabled = true;
+      newTargetCompression = 'zstd';
+      newTargetZstdLevel = 0;
       newTargetRetentionKeepLast = 0;
       newTargetRetentionKeepDays = 0;
       newTargetRetentionKeepDaily = 0;
@@ -763,7 +775,9 @@
   // fails for those, pushing every file into "ungrouped" instead of
   // grouping it into its run — same underlying issue as vmNameOf below.
   function runSuffixOf(filename) {
-    const m = filename.match(/^webkvm-.+-(\d{8}T\d{6}\.\d{9}Z-[0-9a-f]{6,12})-[^/]+\.tar\.(gz|zst)$/);
+    const m = filename.match(
+      /^webkvm-.+-(\d{8}T\d{6}\.\d{9}Z-[0-9a-f]{6,12})-[^/]+\.tar\.(gz|zst)$/
+    );
     return m ? m[1] : null;
   }
 
@@ -1920,6 +1934,40 @@
         />
       </div>
     {/if}
+
+    <div class="pt-1 border-t border-border space-y-3">
+      <div>
+        <span class="text-sm font-medium">{t('backup.compressionTitle')}</span>
+        <p class="text-xs text-muted-foreground">{t('backup.compressionDesc')}</p>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div class="space-y-1.5">
+          <Label for="target-compression">{t('backup.compression')}</Label>
+          <select
+            id="target-compression"
+            bind:value={newTargetCompression}
+            class="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm"
+          >
+            <option value="zstd">{t('backup.compressionZstd')}</option>
+            <option value="gzip">{t('backup.compressionGzip')}</option>
+          </select>
+        </div>
+        {#if newTargetCompression === 'zstd'}
+          <div class="space-y-1.5">
+            <Label for="target-zstd-level">{t('backup.zstdLevel')}</Label>
+            <Input
+              id="target-zstd-level"
+              type="number"
+              min="0"
+              max="22"
+              bind:value={newTargetZstdLevel}
+              placeholder={t('backup.zstdLevelDefault')}
+            />
+            <p class="text-[11px] text-muted-foreground">{t('backup.zstdLevelHint')}</p>
+          </div>
+        {/if}
+      </div>
+    </div>
 
     <div class="pt-1 border-t border-border space-y-3">
       <div>

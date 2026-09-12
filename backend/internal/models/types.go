@@ -13,14 +13,14 @@ const (
 )
 
 type VM struct {
-	ID   string  `json:"id"`
-	Name string  `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
 	// Type is the instance kind: "vm" (KVM or LXD virtual machine) or
 	// "container" (LXC). Added in v1.4 Fase 1 so the UI can render
 	// containers alongside VMs (unified model).
 	Type string `json:"type"`
 	// Hypervisor is the backend that owns this instance: "kvm" or "incus".
-	Hypervisor string `json:"hypervisor"`
+	Hypervisor string  `json:"hypervisor"`
 	State      VMState `json:"state"`
 	VCPUs      int     `json:"vcpus"`
 	RAMMB      int64   `json:"ram_mb"`
@@ -34,34 +34,42 @@ type VM struct {
 	Chipset    string  `json:"chipset,omitempty"`
 	SecureBoot bool    `json:"secure_boot"`
 	TPMEnabled bool    `json:"tpm_enabled"`
+	// TPMVersion is "1.2" or "2.0", read back from the domain's actual
+	// <tpm><backend version='...'/> when TPMEnabled. Empty when TPM is
+	// off.
+	TPMVersion string `json:"tpm_version,omitempty"`
+	// WatchdogEnabled reflects whether a <watchdog> device is present.
+	WatchdogEnabled bool `json:"watchdog_enabled"`
 	// Autostart mirrors libvirtd's autostart flag: when true,
 	// libvirtd starts the domain automatically on host boot.
 	// Surfaced here so the UI doesn't need a second round-trip
 	// to GET /vms/{id}/autostart after fetching the VM.
-	Autostart  bool        `json:"autostart"`
-	Firmware   string      `json:"firmware,omitempty"`
-	CPUMode    string      `json:"cpu_mode,omitempty"`
-	VideoModel string      `json:"video_model,omitempty"`
-	BootOrder  string      `json:"boot_order,omitempty"`
-	Privileged bool        `json:"privileged"`
-	Nesting    bool        `json:"nesting"`
-	Profiles   []string    `json:"profiles,omitempty"`
-	IP         string      `json:"ip,omitempty"`
+	Autostart  bool     `json:"autostart"`
+	Firmware   string   `json:"firmware,omitempty"`
+	CPUMode    string   `json:"cpu_mode,omitempty"`
+	VideoModel string   `json:"video_model,omitempty"`
+	BootOrder  string   `json:"boot_order,omitempty"`
+	Privileged bool     `json:"privileged"`
+	Nesting    bool     `json:"nesting"`
+	Profiles   []string `json:"profiles,omitempty"`
+	IP         string   `json:"ip,omitempty"`
 	// IPs lists every IPv4 the instance holds across its NICs (containers
 	// with several interfaces expose one per NIC). IP is the primary.
-	IPs []string `json:"ips,omitempty"`
-	Alias      string      `json:"alias,omitempty"`
-	Cover      string      `json:"cover,omitempty"`
-	Groups     []string    `json:"groups,omitempty"`
-	Tags       []string    `json:"tags,omitempty"`
+	IPs    []string `json:"ips,omitempty"`
+	Alias  string   `json:"alias,omitempty"`
+	Cover  string   `json:"cover,omitempty"`
+	Groups []string `json:"groups,omitempty"`
+	Tags   []string `json:"tags,omitempty"`
 	// ProvisionMethod describes how the guest is provisioned at first
 	// boot (PLAN-LXD 5.2): "cloud-init" (native LXD user-data or NoCloud
 	// ISO), "script", "seed-iso" or "" (none). Orthogonal to the
 	// hypervisor; drives the footer chip on the VM card.
-	ProvisionMethod string      `json:"provision_method,omitempty"`
-	Disks           []DiskInfo  `json:"disks,omitempty"`
-	Networks   []NetIface  `json:"networks,omitempty"`
-	USBDevices []USBDevice `json:"usb_devices,omitempty"`
+	ProvisionMethod string         `json:"provision_method,omitempty"`
+	Disks           []DiskInfo     `json:"disks,omitempty"`
+	Networks        []NetIface     `json:"networks,omitempty"`
+	USBDevices      []USBDevice    `json:"usb_devices,omitempty"`
+	PCIDevices      []PCIDevice    `json:"pci_devices,omitempty"`
+	SharedFolders   []SharedFolder `json:"shared_folders,omitempty"`
 }
 
 type CreateVMRequest struct {
@@ -73,24 +81,30 @@ type CreateVMRequest struct {
 	// "ubuntu:24.04" or "images:alpine/3.20" (<remote>:<alias>, where
 	// remote is one of the official LXD remotes). When set, the request
 	// is routed to the LXD backend — zero ISOs involved.
-	Image string `json:"image,omitempty"`
-	VCPUs int    `json:"vcpus"`
-	RAMMB int64  `json:"ram_mb"`
-	DiskGB           int64  `json:"disk_gb"`
-	ISO              string `json:"iso,omitempty"`
-	Network          string `json:"network,omitempty"`
-	StoragePool      string `json:"storage_pool,omitempty"`
-	OSVariant        string `json:"os_variant,omitempty"`
-	CPUMode          string `json:"cpu_mode,omitempty"`
-	CPUModel         string `json:"cpu_model,omitempty"`
-	VideoModel       string `json:"video_model,omitempty"`
-	NetworkModel     string `json:"network_model,omitempty"`
-	DiskBus          string `json:"disk_bus,omitempty"`
-	OSType           string `json:"os_type,omitempty"`
-	OSVersion        string `json:"os_version,omitempty"`
-	Chipset          string `json:"chipset,omitempty"`
-	SecureBoot       *bool  `json:"secure_boot,omitempty"`
-	TPMEnabled       *bool  `json:"tpm_enabled,omitempty"`
+	Image        string `json:"image,omitempty"`
+	VCPUs        int    `json:"vcpus"`
+	RAMMB        int64  `json:"ram_mb"`
+	DiskGB       int64  `json:"disk_gb"`
+	ISO          string `json:"iso,omitempty"`
+	Network      string `json:"network,omitempty"`
+	StoragePool  string `json:"storage_pool,omitempty"`
+	OSVariant    string `json:"os_variant,omitempty"`
+	CPUMode      string `json:"cpu_mode,omitempty"`
+	CPUModel     string `json:"cpu_model,omitempty"`
+	VideoModel   string `json:"video_model,omitempty"`
+	NetworkModel string `json:"network_model,omitempty"`
+	DiskBus      string `json:"disk_bus,omitempty"`
+	OSType       string `json:"os_type,omitempty"`
+	OSVersion    string `json:"os_version,omitempty"`
+	Chipset      string `json:"chipset,omitempty"`
+	SecureBoot   *bool  `json:"secure_boot,omitempty"`
+	TPMEnabled   *bool  `json:"tpm_enabled,omitempty"`
+	// TPMVersion is "1.2" or "2.0" (validated in CreateVM). Empty keeps
+	// the historical default (2.0/tpm-crb) when TPMEnabled is true.
+	TPMVersion string `json:"tpm_version,omitempty"`
+	// WatchdogEnabled adds an i6300esb watchdog device (action='reset')
+	// — works on both q35 and i440fx, no chipset restriction.
+	WatchdogEnabled  *bool  `json:"watchdog_enabled,omitempty"`
 	Firmware         string `json:"firmware,omitempty"`
 	DiskFormat       string `json:"disk_format,omitempty"`
 	VirtIOISO        string `json:"virtio_iso,omitempty"`
@@ -143,12 +157,18 @@ type UpdateVMRequest struct {
 	Chipset      *string `json:"chipset,omitempty"`
 	SecureBoot   *bool   `json:"secure_boot,omitempty"`
 	TPMEnabled   *bool   `json:"tpm_enabled,omitempty"`
-	Firmware     *string `json:"firmware,omitempty"`
-	BootOrder    *string `json:"boot_order,omitempty"`
-	Autostart    *bool   `json:"autostart,omitempty"`
-	Privileged   *bool   `json:"privileged,omitempty"`
-	Nesting      *bool   `json:"nesting,omitempty"`
-	Profiles     []string `json:"profiles,omitempty"`
+	// TPMVersion is "1.2" or "2.0" (validated in UpdateVM). nil leaves
+	// the current version unchanged; only meaningful together with
+	// TPMEnabled (or when TPM is already on).
+	TPMVersion *string `json:"tpm_version,omitempty"`
+	// WatchdogEnabled adds/removes an i6300esb watchdog device.
+	WatchdogEnabled *bool    `json:"watchdog_enabled,omitempty"`
+	Firmware        *string  `json:"firmware,omitempty"`
+	BootOrder       *string  `json:"boot_order,omitempty"`
+	Autostart       *bool    `json:"autostart,omitempty"`
+	Privileged      *bool    `json:"privileged,omitempty"`
+	Nesting         *bool    `json:"nesting,omitempty"`
+	Profiles        []string `json:"profiles,omitempty"`
 }
 
 type DiskInfo struct {
@@ -193,6 +213,78 @@ type USBDevice struct {
 	ProductID string `json:"product_id"` // e.g. "0xc52b"
 	Bus       string `json:"bus"`
 	Device    string `json:"device"`
+}
+
+// PCIDevice describes a PCI device enumerated on the host, available for
+// passthrough to a VM (admin only). Address is the standard lspci-style
+// "DDDD:BB:SS.F" (hex) identifier, used both as the sysfs directory name
+// (/sys/bus/pci/devices/<address>) and as the value AttachPCIRequest
+// expects.
+type PCIDevice struct {
+	Name        string `json:"name"`
+	Address     string `json:"address"` // e.g. "0000:01:00.0"
+	VendorID    string `json:"vendor_id"`
+	VendorName  string `json:"vendor_name,omitempty"`
+	ProductID   string `json:"product_id"`
+	ProductName string `json:"product_name,omitempty"`
+	IOMMUGroup  int    `json:"iommu_group"`
+	Driver      string `json:"driver,omitempty"`
+	VFIOBound   bool   `json:"vfio_bound"`
+	// BootVGA is true when this device is the host's own boot/console
+	// GPU (/sys/bus/pci/devices/<address>/boot_vga == "1"). Passthrough
+	// of this device is refused unconditionally, even for admins —
+	// detaching the host's own console GPU while it's running is a real,
+	// known way to hang the physical machine.
+	BootVGA bool `json:"boot_vga"`
+	// InUse is true when this device is already attached to a VM (found
+	// in the domain XML of some other domain).
+	InUse bool `json:"in_use"`
+}
+
+// PCIIOMMUGroup groups the host's PCI devices by IOMMU group — passthrough
+// normally requires handing over the WHOLE group at once, not a single
+// device within it, since every device in a group shares the same DMA
+// isolation boundary.
+type PCIIOMMUGroup struct {
+	Group   int         `json:"group"`
+	Devices []PCIDevice `json:"devices"`
+	// AllVFIOBound is true only when every device in the group is
+	// currently bound to vfio-pci — the UI uses this to gate the
+	// "attach whole group" action instead of letting a caller attach a
+	// group where the host is still using a device natively (e.g. the
+	// display side of a multi-function GPU still driven by its host
+	// driver), which would fail or destabilize the host.
+	AllVFIOBound bool `json:"all_vfio_bound"`
+}
+
+// AttachPCIRequest passes through one or more PCI devices — normally
+// every address in one IOMMU group at once (see PCIIOMMUGroup).
+type AttachPCIRequest struct {
+	Addresses []string `json:"addresses"`
+}
+
+// SharedFolder describes a host directory shared into a VM via 9p
+// (virtio-9p — chosen over virtiofs, which needs a separately-supervised
+// virtiofsd helper process this codebase has no equivalent of). The guest
+// mounts it explicitly:
+//
+//	mount -t 9p -o trans=virtio,version=9p2000.L <Tag> /mnt/<Tag>
+//
+// Admin-only (see Handler.validateSharedFolderPath) — unlike a single-file
+// disk source, this exposes an entire directory tree recursively.
+type SharedFolder struct {
+	HostPath string `json:"host_path"`
+	Tag      string `json:"tag"`
+	ReadOnly bool   `json:"read_only"`
+}
+
+// AttachSharedFolderRequest attaches a new 9p shared folder. HostPath must
+// resolve inside a known storage pool (see validateSharedFolderPath); Tag
+// is the identifier the guest mounts by and must be unique per VM.
+type AttachSharedFolderRequest struct {
+	HostPath string `json:"host_path"`
+	Tag      string `json:"tag"`
+	ReadOnly bool   `json:"read_only"`
 }
 
 type NetIface struct {
@@ -359,15 +451,29 @@ type Network struct {
 	DHCPEnd   string   `json:"dhcp_end,omitempty"`
 	Gateway   string   `json:"gateway,omitempty"`
 	DNS       []string `json:"dns,omitempty"` // DNS forwarders for dnsmasq
-	VLanAware bool     `json:"vlan_aware,omitempty"`
-	Slaves    []string `json:"slaves,omitempty"` // "direct" only: the bridge's real ports
-	Active    bool     `json:"active"`
-	Autostart bool     `json:"autostart"`
+	// MTU is the bridge's link MTU (0 = kernel/bridge default, 1500).
+	MTU int `json:"mtu,omitempty"`
+	// Reservations are fixed MAC→IP DHCP leases served by the bridge's
+	// dnsmasq (nat/isolated only, requires DHCP on).
+	Reservations []DHCPReservation `json:"reservations,omitempty"`
+	VLanAware    bool              `json:"vlan_aware,omitempty"`
+	Slaves       []string          `json:"slaves,omitempty"` // "direct" only: the bridge's real ports
+	Active       bool              `json:"active"`
+	Autostart    bool              `json:"autostart"`
 	// Protected is true for the host's primary bridge (the one holding
 	// its LAN IP) and for any bridge WebKVM did not create itself. The
 	// API refuses to delete these (and the UI greys out the delete
 	// button) so a stray click can't silently cut the host off the LAN.
 	Protected bool `json:"protected,omitempty"`
+}
+
+// DHCPReservation pins a MAC address to a fixed IP in the bridge's
+// dnsmasq (the equivalent of a Proxmox static DHCP mapping). Name is an
+// optional dnsmasq comment used to label the reservation.
+type DHCPReservation struct {
+	MAC  string `json:"mac"`
+	IP   string `json:"ip"`
+	Name string `json:"name,omitempty"`
 }
 
 type CreateNetworkRequest struct {
@@ -384,8 +490,16 @@ type CreateNetworkRequest struct {
 	DHCPStart string   `json:"dhcp_start,omitempty"`
 	DHCPEnd   string   `json:"dhcp_end,omitempty"`
 	DNS       []string `json:"dns,omitempty"`
-	VLanAware bool     `json:"vlan_aware,omitempty"` // "direct" only
-	Autostart *bool    `json:"autostart,omitempty"`
+	MTU       int      `json:"mtu,omitempty"`
+	// Reservations are fixed MAC→IP DHCP leases (nat/isolated + DHCP).
+	Reservations []DHCPReservation `json:"reservations,omitempty"`
+	// VLanAware is a pointer ("direct" only) so the API layer can tell
+	// "not specified" (nil, falls back to the network.vlan_aware_default
+	// setting) apart from an explicit false — a plain bool can't carry
+	// that distinction. Mirrors UpdateNetworkRequest.VLanAware, already
+	// a pointer for the same reason.
+	VLanAware *bool `json:"vlan_aware,omitempty"`
+	Autostart *bool `json:"autostart,omitempty"`
 }
 
 type UpdateNetworkRequest struct {
@@ -393,8 +507,12 @@ type UpdateNetworkRequest struct {
 	DHCPStart string   `json:"dhcp_start,omitempty"`
 	DHCPEnd   string   `json:"dhcp_end,omitempty"`
 	DNS       []string `json:"dns,omitempty"`
-	VLanAware *bool    `json:"vlan_aware,omitempty"` // "direct" only
-	Autostart *bool    `json:"autostart,omitempty"`
+	MTU       *int     `json:"mtu,omitempty"`
+	// Reservations replaces the whole set when non-nil. An empty slice
+	// clears every fixed lease.
+	Reservations []DHCPReservation `json:"reservations,omitempty"`
+	VLanAware    *bool             `json:"vlan_aware,omitempty"` // "direct" only
+	Autostart    *bool             `json:"autostart,omitempty"`
 }
 
 type HostInfo struct {
@@ -642,10 +760,22 @@ type User struct {
 	// VM/disk operations. Empty means "all pools". Admins are always
 	// exempt. This is the per-user pool visibility/ACL.
 	AllowedPools []string `json:"allowed_pools,omitempty"`
+	// AllowedNetworks restricts which networks/bridges this user may
+	// attach a VM/container NIC to. Empty means "all networks". Admins
+	// are always exempt. Mirrors AllowedPools exactly, for networks.
+	AllowedNetworks []string `json:"allowed_networks,omitempty"`
 	// AllowedTags (V13-D-01) grants access to any VM carrying one of
 	// these tags, in addition to owned VMs. Empty means "owned VMs only".
 	// Admins are always exempt. This turns tags into a real RBAC policy.
 	AllowedTags []string `json:"allowed_tags,omitempty"`
+	// SessionEpoch is bumped by an admin's "log out everywhere" action
+	// (POST /api/users/{username}/revoke-sessions). Every token issued
+	// before the bump carries the old epoch and is rejected by
+	// SessionEnforcer on its next request, forcing a fresh login —
+	// without needing a per-token revocation list. Never exposed via
+	// UserResponse or any request type; it's server-internal state,
+	// changed only through the dedicated endpoint.
+	SessionEpoch int `json:"session_epoch,omitempty"`
 }
 
 // UserResponse is the API-facing projection of User; it is what gets
@@ -661,6 +791,7 @@ type UserResponse struct {
 	LastLoginAt        string   `json:"last_login_at,omitempty"`
 	Quota              Quota    `json:"quota,omitempty"`
 	AllowedPools       []string `json:"allowed_pools,omitempty"`
+	AllowedNetworks    []string `json:"allowed_networks,omitempty"`
 	AllowedTags        []string `json:"allowed_tags,omitempty"`
 }
 
@@ -675,6 +806,7 @@ func (u *User) ToResponse() UserResponse {
 		LastLoginAt:        u.LastLoginAt,
 		Quota:              u.Quota,
 		AllowedPools:       u.AllowedPools,
+		AllowedNetworks:    u.AllowedNetworks,
 		AllowedTags:        u.AllowedTags,
 	}
 }
@@ -687,6 +819,9 @@ type CreateUserRequest struct {
 	Quota    Quota  `json:"quota,omitempty"`
 	// AllowedPools, when non-empty, restricts the user to these pools.
 	AllowedPools []string `json:"allowed_pools,omitempty"`
+	// AllowedNetworks, when non-empty, restricts the user to these
+	// networks/bridges. Mirrors AllowedPools exactly, for networks.
+	AllowedNetworks []string `json:"allowed_networks,omitempty"`
 	// AllowedTags, when non-empty, grants tag-based access (V13-D-01).
 	AllowedTags []string `json:"allowed_tags,omitempty"`
 	// MustChangePassword, when true, forces the new user to set their
@@ -705,6 +840,10 @@ type UpdateUserRequest struct {
 	// AllowedPools, when non-nil, replaces the user's pool allowlist
 	// (pass an empty slice to clear the restriction).
 	AllowedPools *[]string `json:"allowed_pools,omitempty"`
+	// AllowedNetworks, when non-nil, replaces the user's network
+	// allowlist (pass an empty slice to clear the restriction). Mirrors
+	// AllowedPools exactly, for networks.
+	AllowedNetworks *[]string `json:"allowed_networks,omitempty"`
 	// AllowedTags, when non-nil, replaces the user's tag allowlist
 	// (V13-D-01).
 	AllowedTags *[]string `json:"allowed_tags,omitempty"`

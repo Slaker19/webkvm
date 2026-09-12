@@ -20,20 +20,26 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"webkvm/internal/models"
 )
 
 // Record is the persisted state for one bridge WebKVM created via
 // POST /api/networks.
 type Record struct {
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"` // "nat" | "isolated" | "direct"
-	CIDR      string    `json:"cidr,omitempty"`
-	Interface string    `json:"interface,omitempty"`  // direct only
-	MovedIPv4 string    `json:"moved_ipv4,omitempty"` // direct only: CIDR moved off Interface at creation, to restore on delete
-	DHCPStart string    `json:"dhcp_start,omitempty"` // nat/isolated only, when DHCP is on
-	DHCPEnd   string    `json:"dhcp_end,omitempty"`   // nat/isolated only, when DHCP is on
-	DNS       []string  `json:"dns,omitempty"`        // nat/isolated only, when DHCP is on
-	CreatedAt time.Time `json:"created_at"`
+	Name      string   `json:"name"`
+	Kind      string   `json:"kind"` // "nat" | "isolated" | "direct"
+	CIDR      string   `json:"cidr,omitempty"`
+	Interface string   `json:"interface,omitempty"`  // direct only
+	MovedIPv4 string   `json:"moved_ipv4,omitempty"` // direct only: CIDR moved off Interface at creation, to restore on delete
+	DHCPStart string   `json:"dhcp_start,omitempty"` // nat/isolated only, when DHCP is on
+	DHCPEnd   string   `json:"dhcp_end,omitempty"`   // nat/isolated only, when DHCP is on
+	DNS       []string `json:"dns,omitempty"`        // nat/isolated only, when DHCP is on
+	MTU       int      `json:"mtu,omitempty"`        // bridge link MTU (0 = default)
+	// Reservations are fixed MAC→IP DHCP leases served by the bridge's
+	// dnsmasq (nat/isolated only, requires DHCP on).
+	Reservations []models.DHCPReservation `json:"reservations,omitempty"`
+	CreatedAt    time.Time                `json:"created_at"`
 }
 
 // Store is a small JSON-backed map, keyed by bridge name.

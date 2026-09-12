@@ -218,6 +218,19 @@ func (h *Handler) UpdateNetIface(w http.ResponseWriter, r *http.Request) {
 		}
 		req.MAC = &normalized
 	}
+	if req.Network != nil && *req.Network != "" {
+		if owner, role, _ := audit.FromRequest(r); role != models.RoleAdmin {
+			u, uerr := h.userStore.Get(owner)
+			if uerr != nil {
+				jsonErr(w, http.StatusUnauthorized, "user not found")
+				return
+			}
+			if err := assertNetworkAllowed(u, *req.Network); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
+		}
+	}
 	if err := h.compute.UpdateNetworkIface(id, mac, req); err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return

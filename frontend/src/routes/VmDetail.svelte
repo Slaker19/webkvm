@@ -188,6 +188,8 @@
   let eChipset = $state('q35');
   let eSecureBoot = $state(false);
   let eTPM = $state(false);
+  let eTPMVersion = $state('2.0');
+  let eWatchdog = $state(false);
   let eFirmware = $state('uefi');
   let eOSType = $state('');
   let eOSVersion = $state('');
@@ -297,6 +299,17 @@
   let pools = $state([]);
   let networks = $state([]);
   let isos = $state([]);
+  // Current user's network allowlist (null until loaded). Empty/absent or
+  // admin = every network; otherwise restricts the dropdowns below. Mirrors
+  // VmCreate.svelte's myAllowedNetworks/vmNetworks exactly.
+  let myAllowedNetworks = $state(null);
+  const vmNetworks = $derived.by(() => {
+    if (auth.role === 'admin') return networks;
+    if (myAllowedNetworks && myAllowedNetworks.length) {
+      return networks.filter((n) => myAllowedNetworks.includes(n.name));
+    }
+    return networks;
+  });
 
   // Which of the 4 tabs is showing. 'overview' bundles the spec/metrics/
   // serial-console/firewall/schedule cards that used to be freestanding
@@ -436,6 +449,10 @@
           .listISOs()
           .then((i) => (isos = i))
           .catch(() => {}),
+        api
+          .me()
+          .then((me) => (myAllowedNetworks = me?.allowed_networks || []))
+          .catch(() => (myAllowedNetworks = [])),
         api
           .getVMMeta(vmId)
           .then((m) => {
@@ -656,11 +673,13 @@
     eRamMB = vm.ram_mb;
     eCPUMode = vm.cpu_mode || 'host-passthrough';
     eVideoModel = vm.video_model || 'virtio';
-    eNetwork = vm.networks?.[0]?.network || networks[0]?.name || 'default';
+    eNetwork = vm.networks?.[0]?.network || vmNetworks[0]?.name || 'default';
     eNetworkModel = vm.networks?.[0]?.model || 'virtio';
     eChipset = vm.chipset || 'q35';
     eSecureBoot = vm.secure_boot;
     eTPM = vm.tpm_enabled;
+    eTPMVersion = vm.tpm_version || '2.0';
+    eWatchdog = vm.watchdog_enabled || false;
     eFirmware = vm.chipset === 'i440fx' ? 'seabios' : vm.firmware || 'seabios';
     if (eChipset === 'i440fx') {
       eSecureBoot = false;
@@ -692,7 +711,7 @@
       if (eRamMB !== vm.ram_mb) data.ram_mb = eRamMB;
       if (eCPUMode !== (vm.cpu_mode || 'host-passthrough')) data.cpu_mode = eCPUMode;
       if (eVideoModel !== (vm.video_model || 'virtio')) data.video_model = eVideoModel;
-      if (eNetwork !== (vm.networks?.[0]?.network || networks[0]?.name || 'default'))
+      if (eNetwork !== (vm.networks?.[0]?.network || vmNetworks[0]?.name || 'default'))
         data.network = eNetwork;
       if (eNetworkModel !== (vm.networks?.[0]?.model || 'virtio'))
         data.network_model = eNetworkModel;
@@ -702,6 +721,8 @@
       const effTPM = eFirmware === 'uefi' ? eTPM : false;
       if (effSecureBoot !== vm.secure_boot) data.secure_boot = effSecureBoot;
       if (effTPM !== vm.tpm_enabled) data.tpm_enabled = effTPM;
+      if (effTPM && eTPMVersion !== (vm.tpm_version || '2.0')) data.tpm_version = eTPMVersion;
+      if (eWatchdog !== (vm.watchdog_enabled || false)) data.watchdog_enabled = eWatchdog;
       if (eFirmware !== (vm.firmware || 'uefi')) data.firmware = eFirmware;
       if (eBootOrder !== (vm.boot_order || 'disk')) data.boot_order = eBootOrder;
       if (ePrivileged !== vm.privileged) data.privileged = ePrivileged;
@@ -1299,6 +1320,97 @@
     }
   }
 
+  // PCI passthrough (admin only, KVM only — VM must be shut off).
+  let hostPCIGroups = $state([]);
+  let hostPCIError = $state('');
+  async function loadHostPCIDevices() {
+    try {
+      hostPCIGroups = await api.listHostPCIDevices();
+      hostPCIError = '';
+    } catch (e) {
+      hostPCIGroups = [];
+      hostPCIError = e.message;
+    }
+  }
+  $effect(() => {
+    if (auth.isAdmin() && !isContainerVm) loadHostPCIDevices();
+  });
+  function pciGroupBlockReason(group) {
+    if (!group.all_vfio_bound) return t('vmDetail.pciNotAllBound');
+    if (group.devices.some((d) => d.boot_vga)) return t('vmDetail.pciBootVGA');
+    if (group.devices.some((d) => d.in_use)) return t('vmDetail.pciInUse');
+    return '';
+  }
+  async function attachPCIGroup(group) {
+    actionLoading = 'pci';
+    try {
+      await api.attachPCIDevices(
+        vmId,
+        group.devices.map((d) => d.address)
+      );
+      toast.success(t('vmDetail.pciDeviceAttached'));
+      await load();
+      await loadHostPCIDevices();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      actionLoading = '';
+    }
+  }
+  async function detachPCI(address) {
+    actionLoading = 'pci';
+    try {
+      await api.detachPCIDevice(vmId, address);
+      toast.success(t('vmDetail.pciDeviceDetached'));
+      await load();
+      await loadHostPCIDevices();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      actionLoading = '';
+    }
+  }
+
+  // 9p shared folders (admin only — VM must be shut off).
+  let newSharedFolderPath = $state('');
+  let newSharedFolderTag = $state('');
+  let newSharedFolderReadOnly = $state(false);
+  async function attachSharedFolder() {
+    actionLoading = 'sharedfolder';
+    try {
+      await api.attachSharedFolder(
+        vmId,
+        newSharedFolderPath,
+        newSharedFolderTag,
+        newSharedFolderReadOnly
+      );
+      toast.success(t('vmDetail.sharedFolderAttached'));
+      newSharedFolderPath = '';
+      newSharedFolderTag = '';
+      newSharedFolderReadOnly = false;
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      actionLoading = '';
+    }
+  }
+  async function detachSharedFolder(tag) {
+    actionLoading = 'sharedfolder';
+    try {
+      await api.detachSharedFolder(vmId, tag);
+      toast.success(t('vmDetail.sharedFolderDetached'));
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      actionLoading = '';
+    }
+  }
+  function sharedFolder9pMountCommand(tag) {
+    return `mount -t 9p -o trans=virtio,version=9p2000.L ${tag} /mnt/${tag}`;
+  }
+
   async function cloneVM() {
     if (!cName) return;
     actionLoading = 'clone';
@@ -1848,6 +1960,75 @@
           </BlockCard>
         {/snippet}
 
+        {#snippet sec_shared_folders()}
+          <BlockCard bid="sharedfolders" title={t('vmDetail.sharedFolders')}>
+            <div class="space-y-3">
+              <p class="text-xs text-muted-foreground">{t('vmDetail.sharedFoldersHint')}</p>
+              {#if !vm.shared_folders || vm.shared_folders.length === 0}
+                <p class="text-sm text-muted-foreground">
+                  {t('vmDetail.sharedFoldersNoneAttached')}
+                </p>
+              {:else}
+                <div class="space-y-2">
+                  {#each vm.shared_folders as f (f.tag)}
+                    <div class="rounded-md border border-border bg-background p-2 space-y-1">
+                      <div class="flex items-center justify-between">
+                        <div class="text-xs min-w-0">
+                          <div class="font-mono truncate">{f.host_path}</div>
+                          <div class="text-muted-foreground">
+                            {t('vmDetail.sharedFolderTag')}: <span class="font-mono">{f.tag}</span>
+                            {#if f.read_only}· {t('vmDetail.sharedFolderReadOnly')}{/if}
+                          </div>
+                        </div>
+                        <button
+                          onclick={() => detachSharedFolder(f.tag)}
+                          disabled={actionLoading === 'sharedfolder' || vm.state !== 'shutoff'}
+                          title={vm.state !== 'shutoff' ? t('vmDetail.sharedFolderRequiresShutoff') : ''}
+                          class="text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                          >{t('vmDetail.sharedFolderDetach')}</button
+                        >
+                      </div>
+                      <div class="text-[10px] font-mono text-muted-foreground truncate">
+                        {sharedFolder9pMountCommand(f.tag)}
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+              <div class="border-t border-border pt-3 space-y-2">
+                <div class="text-xs font-medium text-muted-foreground">
+                  {t('vmDetail.sharedFolderAdd')}
+                </div>
+                <Input
+                  bind:value={newSharedFolderPath}
+                  placeholder={t('vmDetail.sharedFolderHostPath')}
+                  class="!text-xs"
+                />
+                <Input
+                  bind:value={newSharedFolderTag}
+                  placeholder={t('vmDetail.sharedFolderTag')}
+                  class="!text-xs"
+                />
+                <label class="flex items-center gap-1.5 text-xs">
+                  <input type="checkbox" bind:checked={newSharedFolderReadOnly} />
+                  {t('vmDetail.sharedFolderReadOnly')}
+                </label>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onclick={attachSharedFolder}
+                  disabled={actionLoading === 'sharedfolder' ||
+                    vm.state !== 'shutoff' ||
+                    !newSharedFolderPath ||
+                    !newSharedFolderTag}
+                  title={vm.state !== 'shutoff' ? t('vmDetail.sharedFolderRequiresShutoff') : ''}
+                  >{t('vmDetail.sharedFolderAttach')}</Button
+                >
+              </div>
+            </div>
+          </BlockCard>
+        {/snippet}
+
         {#snippet sec_net()}
           <BlockCard bid="net" title={t('vmDetail.networkInterfaces')}>
             <div class="flex items-center justify-between mb-3">
@@ -1855,7 +2036,7 @@
                 size="xs"
                 variant="outline"
                 onclick={() => {
-                  aNetNetwork = networks[0]?.name || 'default';
+                  aNetNetwork = vmNetworks[0]?.name || 'default';
                   aNetModel = isContainerVm ? 'incus' : 'virtio';
                   showAddNet = true;
                 }}>+ {t('vmDetail.addInterface')}</Button
@@ -1955,6 +2136,94 @@
                           class="text-xs text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
                           >{t('vmDetail.usbAttach')}</button
                         >
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            </div>
+          </BlockCard>
+        {/snippet}
+
+        {#snippet sec_pci()}
+          <BlockCard bid="pci" title={t('vmDetail.pciDevices')}>
+            <div class="space-y-3">
+              <p class="text-xs text-muted-foreground">{t('vmDetail.pciHint')}</p>
+              <div>
+                <div class="text-xs font-medium text-muted-foreground mb-1.5">
+                  {t('vmDetail.pciAttached')}
+                </div>
+                {#if !vm.pci_devices || vm.pci_devices.length === 0}
+                  <p class="text-sm text-muted-foreground">{t('vmDetail.pciNoneAttached')}</p>
+                {:else}
+                  <div class="space-y-1.5">
+                    {#each vm.pci_devices as dev}
+                      <div
+                        class="flex items-center justify-between px-3 py-2 rounded-md border border-border bg-background"
+                      >
+                        <span class="text-xs font-mono text-muted-foreground">{dev.address}</span>
+                        <button
+                          onclick={() => detachPCI(dev.address)}
+                          disabled={actionLoading === 'pci' || vm.state !== 'shutoff'}
+                          title={vm.state !== 'shutoff' ? t('vmDetail.pciRequiresShutoff') : ''}
+                          class="text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >{t('vmDetail.pciDetach')}</button
+                        >
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+              <div>
+                <div class="flex items-center justify-between mb-1.5">
+                  <div class="text-xs font-medium text-muted-foreground">
+                    {t('vmDetail.pciAvailable')}
+                  </div>
+                  <button
+                    onclick={loadHostPCIDevices}
+                    class="text-xs text-accent hover:text-accent-hover"
+                    >{t('common.refresh')}</button
+                  >
+                </div>
+                {#if hostPCIError}
+                  <p class="text-sm text-destructive">{hostPCIError}</p>
+                {:else if hostPCIGroups.length === 0}
+                  <p class="text-sm text-muted-foreground">{t('vmDetail.pciNoneFound')}</p>
+                {:else}
+                  <div class="space-y-2">
+                    {#each hostPCIGroups as group (group.group)}
+                      {@const blockReason = pciGroupBlockReason(group)}
+                      <div class="rounded-md border border-border bg-background p-2">
+                        <div class="flex items-center justify-between mb-1">
+                          <span class="text-xs font-medium text-muted-foreground"
+                            >{t('vmDetail.pciIommuGroup', { group: group.group })}</span
+                          >
+                          <button
+                            onclick={() => attachPCIGroup(group)}
+                            disabled={actionLoading === 'pci' ||
+                              vm.state !== 'shutoff' ||
+                              !!blockReason}
+                            title={vm.state !== 'shutoff'
+                              ? t('vmDetail.pciRequiresShutoff')
+                              : blockReason}
+                            class="text-xs text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                            >{t('vmDetail.pciAttachGroup')}</button
+                          >
+                        </div>
+                        <div class="space-y-1">
+                          {#each group.devices as dev (dev.address)}
+                            <div class="flex items-center gap-2 min-w-0 text-xs">
+                              <span class="truncate">{dev.name}</span>
+                              <span class="font-mono text-muted-foreground">{dev.address}</span>
+                              {#if dev.boot_vga}
+                                <span class="text-destructive">{t('vmDetail.pciBootVGA')}</span>
+                              {/if}
+                              {#if dev.in_use}
+                                <span class="text-muted-foreground">{t('vmDetail.pciInUse')}</span>
+                              {/if}
+                            </div>
+                          {/each}
+                        </div>
                       </div>
                     {/each}
                   </div>
@@ -2309,11 +2578,17 @@
         </div>
         <div class={activeSection === 'disks' ? '' : 'hidden'}>
           {@render sec_disks()}
+          {#if auth.isAdmin() && !isContainerVm}
+            {@render sec_shared_folders()}
+          {/if}
         </div>
         <div class={activeSection === 'net' ? '' : 'hidden'}>
           {@render sec_net()}
           {#if auth.isAdmin()}
             {@render sec_usb()}
+            {#if !isContainerVm}
+              {@render sec_pci()}
+            {/if}
           {/if}
         </div>
         <div class={activeSection === 'snaps' ? '' : 'hidden'}>
@@ -2734,7 +3009,7 @@
             >{t('vmDetail.networkLabel')}</label
           >
           <select id="edit-net" bind:value={eNetwork} class="input">
-            {#each networks as net}<option value={net.name}>{networkLabel(net)}</option>{/each}
+            {#each vmNetworks as net}<option value={net.name}>{networkLabel(net)}</option>{/each}
           </select>
         </div>
         <div>
@@ -2793,8 +3068,26 @@
             />
             {t('vmDetail.tpm2')}
           </label>
+          <select
+            bind:value={eTPMVersion}
+            disabled={!eTPM}
+            class="input !py-1 !text-xs w-20 {!eTPM ? 'opacity-50' : ''}"
+          >
+            <option value="2.0">2.0</option>
+            <option value="1.2">1.2</option>
+          </select>
         </div>
       {/if}
+      <div class="flex gap-4">
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            bind:checked={eWatchdog}
+            class="rounded border-border bg-background text-accent focus:ring-accent"
+          />
+          {t('vmCreate.watchdog')}
+        </label>
+      </div>
       {#if !isContainerVm}
         <div>
           <label for="edit-boot" class="block text-sm font-medium mb-1.5"
@@ -3106,7 +3399,7 @@
           >{t('vmDetail.networkLabel')}</label
         >
         <select id="anet-net" bind:value={aNetNetwork} class="input">
-          {#each networks as net}<option value={net.name}>{networkLabel(net)}</option>{/each}
+          {#each vmNetworks as net}<option value={net.name}>{networkLabel(net)}</option>{/each}
         </select>
       </div>
       {#if !isContainerVm}
@@ -3383,7 +3676,7 @@
                       disabled={vm.state !== 'shutoff'}
                       class="input !text-xs"
                     >
-                      {#each networks as n}
+                      {#each vmNetworks as n}
                         <option value={n.name}>{n.name}</option>
                       {/each}
                     </select>

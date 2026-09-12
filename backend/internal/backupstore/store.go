@@ -82,6 +82,47 @@ type TargetOptions struct {
 	// Retention sets the automatic cleanup policy. Zero value (both
 	// fields 0) means "keep everything" (manual cleanup).
 	Retention RetentionPolicy
+	// Compression ("zstd"/"gzip") and ZstdLevel (1..22, 0 = default)
+	// select the archive codec for KVM VM data archives.
+	Compression string
+	ZstdLevel   int
+}
+
+// Compression codecs supported for VM data archives.
+const (
+	CompressionZstd = "zstd"
+	CompressionGzip = "gzip"
+)
+
+// normalizeCompression maps free-form input to a supported codec,
+// defaulting to zstd.
+func normalizeCompression(c string) string {
+	switch strings.ToLower(strings.TrimSpace(c)) {
+	case CompressionGzip:
+		return CompressionGzip
+	default:
+		return CompressionZstd
+	}
+}
+
+// normalizeZstdLevel clamps the codec level to the valid zstd range.
+// 0 means "codec default".
+func normalizeZstdLevel(n int) int {
+	if n < 0 {
+		return 0
+	}
+	if n > 22 {
+		return 22
+	}
+	return n
+}
+
+// archiveExt returns the filename extension for a compression choice.
+func archiveExt(compression string) string {
+	if normalizeCompression(compression) == CompressionGzip {
+		return ".tar.gz"
+	}
+	return ".tar.zst"
 }
 
 // TargetSecret is the credential material for a remote target,
@@ -168,8 +209,14 @@ type Target struct {
 	// Disabled (both zero) keeps everything (manual cleanup only),
 	// which is the current default.
 	Retention RetentionPolicy `json:"retention,omitempty"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	// Compression selects the archive codec for KVM VM data archives:
+	// "zstd" (default) or "gzip". Incus containers always export as
+	// tar.gz natively and ignore this. ZstdLevel (1..22, 0 = codec
+	// default) only applies when Compression is "zstd".
+	Compression string    `json:"compression,omitempty"`
+	ZstdLevel   int       `json:"zstd_level,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // RetentionPolicy controls automatic cleanup of old backup runs
@@ -825,6 +872,8 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
+	t.Compression = normalizeCompression(opts.Compression)
+	t.ZstdLevel = normalizeZstdLevel(opts.ZstdLevel)
 	if opts.KnownHosts != nil {
 		t.KnownHosts = append([]string(nil), (*opts.KnownHosts)...)
 	}
@@ -963,6 +1012,12 @@ func (s *Store) UpdateTarget(
 		}
 		if opts.Username != "" {
 			t.Username = opts.Username
+		}
+		if opts.Compression != "" {
+			t.Compression = normalizeCompression(opts.Compression)
+		}
+		if opts.ZstdLevel != 0 {
+			t.ZstdLevel = normalizeZstdLevel(opts.ZstdLevel)
 		}
 		// S3 connection fields (V13-BCK-01).
 		if opts.Bucket != "" {

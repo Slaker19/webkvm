@@ -41,7 +41,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	h.loginLimiter.RecordSuccess(r, req.Username)
 	h.userStore.MarkLogin(u.Username)
 
-	token, expiresAt, err := h.auth.GenerateTokenWithMustChange(u.Username, u.Role, u.MustChangePassword)
+	token, expiresAt, err := h.auth.GenerateTokenWithMustChange(u.Username, u.Role, u.MustChangePassword, u.SessionEpoch)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "failed to generate token")
 		return
@@ -118,8 +118,21 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusForbidden, "user is not active")
 		return
 	}
+	// Refresh is deliberately exempt from SessionEnforcer (an
+	// authenticated-but-not-yet-consulted user still needs a path to
+	// self-recover), but the epoch check itself must NOT be skipped
+	// here: unlike must-change-password, a revoked session that could
+	// still call refresh would just mint itself a fresh, now-matching
+	// token, silently undoing the admin's "log out everywhere". Reject
+	// explicitly instead — same 401 the enforcer would give this
+	// request further down the chain, forcing a real re-login through
+	// Login (which stamps the current epoch fresh).
+	if claims.SessionEpoch != u.SessionEpoch {
+		jsonErr(w, http.StatusUnauthorized, "session revoked, please log in again")
+		return
+	}
 
-	newToken, newExp, err := h.auth.GenerateTokenWithMustChange(u.Username, u.Role, u.MustChangePassword)
+	newToken, newExp, err := h.auth.GenerateTokenWithMustChange(u.Username, u.Role, u.MustChangePassword, u.SessionEpoch)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "failed to issue token")
 		return

@@ -178,6 +178,11 @@ type Backend interface {
 	AttachUSBDevice(id, vendorID, productID string) error
 	DetachUSBDevice(id, vendorID, productID string) error
 	ListHostUSBDevices() ([]models.USBDevice, error)
+	AttachPCIDevice(id string, addresses []string) error
+	DetachPCIDevice(id, address string) error
+	ListHostPCIDevices() ([]models.PCIIOMMUGroup, error)
+	AttachSharedFolder(id, hostPath, tag string, readOnly bool) error
+	DetachSharedFolder(id, tag string) error
 
 	// --- Snapshots ---
 	ListSnapshots(domainID string) ([]models.Snapshot, error)

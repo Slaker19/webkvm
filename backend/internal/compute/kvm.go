@@ -133,6 +133,21 @@ func (b *KVMBackend) DetachUSBDevice(id, vendorID, productID string) error {
 func (b *KVMBackend) ListHostUSBDevices() ([]models.USBDevice, error) {
 	return b.lv.ListHostUSBDevices()
 }
+func (b *KVMBackend) AttachPCIDevice(id string, addresses []string) error {
+	return b.lv.AttachPCIDevice(id, addresses)
+}
+func (b *KVMBackend) DetachPCIDevice(id, address string) error {
+	return b.lv.DetachPCIDevice(id, address)
+}
+func (b *KVMBackend) ListHostPCIDevices() ([]models.PCIIOMMUGroup, error) {
+	return b.lv.ListHostPCIDevices()
+}
+func (b *KVMBackend) AttachSharedFolder(id, hostPath, tag string, readOnly bool) error {
+	return b.lv.AttachSharedFolder(id, hostPath, tag, readOnly)
+}
+func (b *KVMBackend) DetachSharedFolder(id, tag string) error {
+	return b.lv.DetachSharedFolder(id, tag)
+}
 
 // --- Snapshots ---
 

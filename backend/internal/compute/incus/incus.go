@@ -500,7 +500,9 @@ func (b *IncusBackend) UpdateDomain(id string, req models.UpdateVMRequest) (mode
 		"Chipset": req.Chipset != nil, "SecureBoot": req.SecureBoot != nil,
 		"TPMEnabled": req.TPMEnabled != nil, "Firmware": req.Firmware != nil,
 		"NetworkModel": req.NetworkModel != nil, "Network": req.Network != nil,
-		"BootOrder": req.BootOrder != nil,
+		"BootOrder":       req.BootOrder != nil,
+		"TPMVersion":      req.TPMVersion != nil,
+		"WatchdogEnabled": req.WatchdogEnabled != nil,
 	} {
 		if v {
 			return models.VM{}, fmt.Errorf("field %s is not applicable to a container: %w", name, compute.ErrNotImplemented)
@@ -923,6 +925,21 @@ func (b *IncusBackend) DetachUSBDevice(id, vendorID, productID string) error {
 }
 func (b *IncusBackend) ListHostUSBDevices() ([]models.USBDevice, error) {
 	return nil, compute.ErrNotImplemented
+}
+func (b *IncusBackend) AttachPCIDevice(id string, addresses []string) error {
+	return compute.ErrNotImplemented
+}
+func (b *IncusBackend) DetachPCIDevice(id, address string) error {
+	return compute.ErrNotImplemented
+}
+func (b *IncusBackend) ListHostPCIDevices() ([]models.PCIIOMMUGroup, error) {
+	return nil, compute.ErrNotImplemented
+}
+func (b *IncusBackend) AttachSharedFolder(id, hostPath, tag string, readOnly bool) error {
+	return compute.ErrNotImplemented
+}
+func (b *IncusBackend) DetachSharedFolder(id, tag string) error {
+	return compute.ErrNotImplemented
 }
 
 // --- Snapshots ---

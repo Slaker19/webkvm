@@ -79,11 +79,12 @@ func NewRouter(
 	if globalRateLimiter != nil {
 		r.Use(globalRateLimiter.Middleware)
 	}
-	r.Use(auth.MustChangeEnforcer(
-		us.MustChangePassword,
-		// Paths the user is allowed to hit even with must_change=true.
+	r.Use(auth.SessionEnforcer(
+		us.SessionStatus,
+		// Paths the user is allowed to hit even with must_change=true or a
+		// revoked session epoch.
 		// /api/auth/* — so the frontend can call /me to detect the flag
-		// and /refresh to rotate jti after a password change.
+		// and /login or /refresh to establish a fresh, current-epoch token.
 		// /api/users/me/password — the actual recovery path.
 		// /api/health — used by load balancers; never requires auth.
 		"/api/auth/",
@@ -117,7 +118,7 @@ func NewRouter(
 		vmScheduler:  vmScheduler,
 		metricHist:   metricHist,
 		alerter:      alerter,
-		incusMetrics:   incusMetrics,
+		incusMetrics: incusMetrics,
 		StartedAt:    time.Now(),
 	}
 
@@ -175,6 +176,7 @@ func NewRouter(
 			r.Post("/", h.CreateUser)
 			r.Put("/{username}", h.UpdateUser)
 			r.Delete("/{username}", h.DeleteUser)
+			r.Post("/{username}/revoke-sessions", h.RevokeUserSessions)
 		})
 		// Self-service: any authenticated user can change their own
 		// password (and only their own — handler enforces username).
@@ -264,6 +266,21 @@ func NewRouter(
 				r.Use(auth.RequireRole(modelsRoleAdmin()))
 				r.Post("/usb", h.AttachUSBDevice)
 				r.Delete("/usb/{vendorId}/{productId}", h.DetachUSBDevice)
+			})
+
+			// PCI device passthrough: admin only, VM must be shut off
+			// (enforced in the libvirt layer).
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole(modelsRoleAdmin()))
+				r.Post("/pci", h.AttachPCIDevice)
+				r.Delete("/pci/{address}", h.DetachPCIDevice)
+			})
+
+			// 9p shared folders: admin only, VM must be shut off.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole(modelsRoleAdmin()))
+				r.Post("/shared-folders", h.AttachSharedFolder)
+				r.Delete("/shared-folders/{tag}", h.DetachSharedFolder)
 			})
 
 			// Read-only metadata for everyone authenticated (viewer
@@ -386,6 +403,7 @@ func NewRouter(
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireRole(modelsRoleAdmin()))
 			r.Get("/usb-devices", h.ListHostUSBDevices)
+			r.Get("/pci-devices", h.ListHostPCIDevices)
 		})
 	})
 

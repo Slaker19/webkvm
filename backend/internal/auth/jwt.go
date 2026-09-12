@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,6 +65,12 @@ type Claims struct {
 	Role               string `json:"role"`
 	MustChangePassword bool   `json:"mcp,omitempty"`
 	JTI                string `json:"jti,omitempty"`
+	// SessionEpoch is the account's session epoch at issuance time.
+	// omitempty keeps it absent (decodes as 0) on every token issued
+	// before this field existed, so deploying it never mass-logs-out
+	// pre-existing sessions. SessionEnforcer rejects a request whose
+	// token epoch no longer matches the account's current epoch.
+	SessionEpoch int `json:"epoch,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -151,18 +158,19 @@ func (m *Manager) GenerateToken(username, role string) (string, int64, error) {
 }
 
 // GenerateTokenWithMustChange is the canonical constructor for new
-// tokens: it stamps the user's current must_change_password flag
-// into the claims so a server restart with no in-memory state can
-// still decide. The middleware in api/router.go always consults the
-// live store too, so a stale claim can't keep a forced-rotation
-// user locked out.
-func (m *Manager) GenerateTokenWithMustChange(username, role string, mustChange bool) (string, int64, error) {
-	return m.GenerateTokenFull(username, role, m.newJTI(), mustChange)
+// tokens: it stamps the user's current must_change_password flag and
+// session epoch into the claims so a server restart with no in-memory
+// state can still decide. The middleware in api/router.go always
+// consults the live store too, so a stale claim can't keep a
+// forced-rotation (or forcibly logged-out) user in an inconsistent state.
+func (m *Manager) GenerateTokenWithMustChange(username, role string, mustChange bool, epoch int) (string, int64, error) {
+	return m.GenerateTokenFull(username, role, m.newJTI(), mustChange, epoch)
 }
 
 // GenerateTokenFull lets the caller pass jti (used by Refresh to
-// rotate jti) and the must_change flag (the value at issuance time).
-func (m *Manager) GenerateTokenFull(username, role, jti string, mustChange bool) (string, int64, error) {
+// rotate jti), the must_change flag, and the account's current session
+// epoch (the value at issuance time — see Claims.SessionEpoch).
+func (m *Manager) GenerateTokenFull(username, role, jti string, mustChange bool, epoch int) (string, int64, error) {
 	ttl := m.TokenTTL()
 	expiresAt := time.Now().Add(ttl)
 	claims := Claims{
@@ -170,6 +178,7 @@ func (m *Manager) GenerateTokenFull(username, role, jti string, mustChange bool)
 		Role:               role,
 		MustChangePassword: mustChange,
 		JTI:                jti,
+		SessionEpoch:       epoch,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -187,10 +196,10 @@ func (m *Manager) GenerateTokenFull(username, role, jti string, mustChange bool)
 }
 
 // GenerateTokenWithJTI is kept for backward compatibility — it
-// issues a token with mustChange=false. New code should call
-// GenerateTokenWithMustChange.
+// issues a token with mustChange=false and epoch 0. New code should call
+// GenerateTokenFull directly.
 func (m *Manager) GenerateTokenWithJTI(username, role, jti string) (string, int64, error) {
-	return m.GenerateTokenFull(username, role, jti, false)
+	return m.GenerateTokenFull(username, role, jti, false, 0)
 }
 
 func (m *Manager) ValidateToken(tokenStr string) (*Claims, error) {
@@ -368,6 +377,8 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 
 		r.Header.Set("X-User", claims.Username)
 		r.Header.Set("X-Role", claims.Role)
+		r.Header.Set(HeaderTokenEpoch, strconv.Itoa(claims.SessionEpoch))
+		r.Header.Set(HeaderTokenEpoch, strconv.Itoa(claims.SessionEpoch))
 		// V13-SEC-01 CSRF: a session authenticated via cookie must prove it
 		// initiated state-changing requests by echoing the CSRF cookie back
 		// as X-CSRF-Token (double-submit). SameSite=Lax already blocks the

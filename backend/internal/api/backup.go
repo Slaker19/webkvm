@@ -51,6 +51,10 @@ type backupTargetCreateRequest struct {
 	// on a checksum mismatch.
 	VerifyOnWrite bool                        `json:"verify_on_write"`
 	Retention     backupstore.RetentionPolicy `json:"retention"`
+	// Compression ("zstd"/"gzip") and ZstdLevel (1..22, 0=default)
+	// select the archive codec for KVM VM data archives.
+	Compression string `json:"compression"`
+	ZstdLevel   int    `json:"zstd_level"`
 }
 
 func (h *Handler) ListBackupTargets(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +93,8 @@ func (h *Handler) CreateBackupTarget(w http.ResponseWriter, r *http.Request) {
 			KnownHosts:    &req.KnownHosts,
 			VerifyOnWrite: &req.VerifyOnWrite,
 			Retention:     req.Retention,
+			Compression:   req.Compression,
+			ZstdLevel:     req.ZstdLevel,
 		})
 	if err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
@@ -140,6 +146,8 @@ func (h *Handler) UpdateBackupTarget(w http.ResponseWriter, r *http.Request) {
 		VerifyOnWrite *bool                        `json:"verify_on_write"`
 		ClearSecret   *bool                        `json:"clear_secret"`
 		Retention     *backupstore.RetentionPolicy `json:"retention"`
+		Compression   *string                      `json:"compression"`
+		ZstdLevel     *int                         `json:"zstd_level"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -162,7 +170,8 @@ func (h *Handler) UpdateBackupTarget(w http.ResponseWriter, r *http.Request) {
 	var opts *backupstore.TargetOptions
 	if req.Host != nil || req.Port != nil || req.Username != nil || req.Password != nil || req.SSHKeyPath != nil ||
 		req.Bucket != nil || req.Region != nil || req.Endpoint != nil || req.AccessKey != nil || req.SecretKey != nil ||
-		req.KnownHosts != nil || req.VerifyOnWrite != nil || req.Retention != nil || clearSecret || req.VMTags != nil {
+		req.KnownHosts != nil || req.VerifyOnWrite != nil || req.Retention != nil || clearSecret || req.VMTags != nil ||
+		req.Compression != nil || req.ZstdLevel != nil {
 		o := backupstore.TargetOptions{ClearSecret: clearSecret}
 		if req.Host != nil {
 			o.Host = *req.Host
@@ -200,6 +209,12 @@ func (h *Handler) UpdateBackupTarget(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.VMTags != nil {
 			o.VMTags = *req.VMTags
+		}
+		if req.Compression != nil {
+			o.Compression = *req.Compression
+		}
+		if req.ZstdLevel != nil {
+			o.ZstdLevel = *req.ZstdLevel
 		}
 		opts = &o
 	}
@@ -782,6 +797,12 @@ func (h *Handler) RestoreAsVM(w http.ResponseWriter, r *http.Request) {
 		if err := assertPoolAllowed(u, req.Pool); err != nil {
 			jsonErr(w, http.StatusForbidden, err.Error())
 			return
+		}
+		if req.Network != "" {
+			if err := assertNetworkAllowed(u, req.Network); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
 		}
 		if err := h.checkQuota(owner, 1, int64(vcpus), int64(ram), diskGB); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())

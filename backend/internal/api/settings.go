@@ -73,8 +73,12 @@ func (h *Handler) SetSettings(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, "save failed: "+err.Error())
 		return
 	}
+	// Validation failures are returned as 200 with a per-field `failed` map:
+	// the values were rejected atomically (all-or-nothing) and the UI renders
+	// the reason under each offending field. A 4xx here would hide the
+	// structured payload from the client's error path.
 	if len(failed) > 0 {
-		jsonResp(w, http.StatusBadRequest, SettingsSetResponse{Failed: failed})
+		jsonResp(w, http.StatusOK, SettingsSetResponse{Failed: failed})
 		return
 	}
 	if h.audit != nil {

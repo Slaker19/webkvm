@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"webkvm/internal/audit"
 	"webkvm/internal/compute"
 	"webkvm/internal/models"
 
@@ -17,6 +18,22 @@ func (h *Handler) ListNetworks(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Scope the list to the caller's AllowedNetworks, mirroring ListPools'
+	// AllowedPools scoping exactly. Admins and unrestricted users see
+	// everything.
+	if user, role, _ := audit.FromRequest(r); role != models.RoleAdmin && user != "" {
+		if u, uerr := h.userStore.Get(user); uerr == nil {
+			if set, all := networkAllowSet(u); !all {
+				filtered := nets[:0]
+				for _, n := range nets {
+					if set[n.Name] {
+						filtered = append(filtered, n)
+					}
+				}
+				nets = filtered
+			}
+		}
 	}
 	jsonResp(w, http.StatusOK, nets)
 }
@@ -30,6 +47,12 @@ func (h *Handler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" {
 		jsonErr(w, http.StatusBadRequest, "name is required")
 		return
+	}
+	// VLanAware left unspecified falls back to the operator's configured
+	// default (Settings -> Network) instead of silently always false.
+	if req.VLanAware == nil && h.settings != nil {
+		def := h.settings.GetBool("network.vlan_aware_default")
+		req.VLanAware = &def
 	}
 	net, err := h.compute.CreateNetwork(req)
 	if err != nil {

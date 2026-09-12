@@ -64,6 +64,28 @@ func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// RevokeUserSessions forces every token currently held by `username` to be
+// rejected on its next request (see models.User.SessionEpoch and
+// auth.SessionEnforcer) — a real "log out everywhere" for another user,
+// as opposed to auth.Manager.Revoke, which can only invalidate a token
+// the caller already holds. Self-targeting is refused by the store (an
+// epoch counter can't distinguish "this browser tab" from "my other
+// sessions" — see user.Store.BumpSessionEpoch).
+func (h *Handler) RevokeUserSessions(w http.ResponseWriter, r *http.Request) {
+	username := chi.URLParam(r, "username")
+	caller, _, _ := audit.FromRequest(r)
+	epoch, err := h.userStore.BumpSessionEpoch(username, caller)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	user, role, ip := audit.FromRequest(r)
+	h.audit.Log(audit.Entry{
+		User: user, Role: role, IP: ip, Action: "user.revoke_sessions", Resource: username,
+	})
+	jsonResp(w, http.StatusOK, map[string]interface{}{"status": "revoked", "session_epoch": epoch})
+}
+
 // ChangeMyPassword lets the authenticated user change their own password.
 func (h *Handler) ChangeMyPassword(w http.ResponseWriter, r *http.Request) {
 	caller, _, _ := audit.FromRequest(r)

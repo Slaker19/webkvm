@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"webkvm/internal/models"
@@ -97,10 +98,12 @@ func networkView(name string) models.Network {
 
 	var kind, iface, dhcpStart, dhcpEnd string
 	var dns []string
+	var reservations []models.DHCPReservation
 	if netStoreVar != nil {
 		if rec, ok := netStoreVar.Get(name); ok {
 			kind, iface = rec.Kind, rec.Interface
 			dhcpStart, dhcpEnd, dns = rec.DHCPStart, rec.DHCPEnd, rec.DNS
+			reservations = rec.Reservations
 		} else {
 			kind, iface = inferKind(name, realSlaves)
 		}
@@ -115,22 +118,24 @@ func networkView(name string) models.Network {
 
 	cidr := bridgeIPv4(name)
 	return models.Network{
-		Name:      name,
-		Kind:      kind,
-		Forward:   kind, // deprecated alias, kept for old clients
-		Bridge:    name,
-		Interface: iface,
-		CIDR:      cidr,
-		DHCP:      dnsmasqUnitExists(name),
-		DHCPStart: dhcpStart,
-		DHCPEnd:   dhcpEnd,
-		Gateway:   gatewayFromCIDR(cidr),
-		DNS:       dns,
-		VLanAware: vlanAware,
-		Slaves:    realSlaves,
-		Active:    true,
-		Autostart: true,
-		Protected: IsManagedBridge(name),
+		Name:         name,
+		Kind:         kind,
+		Forward:      kind, // deprecated alias, kept for old clients
+		Bridge:       name,
+		Interface:    iface,
+		CIDR:         cidr,
+		DHCP:         dnsmasqUnitExists(name),
+		DHCPStart:    dhcpStart,
+		DHCPEnd:      dhcpEnd,
+		Gateway:      gatewayFromCIDR(cidr),
+		DNS:          dns,
+		MTU:          bridgeMTU(name),
+		Reservations: reservations,
+		VLanAware:    vlanAware,
+		Slaves:       realSlaves,
+		Active:       true,
+		Autostart:    true,
+		Protected:    IsManagedBridge(name),
 	}
 }
 
@@ -266,7 +271,8 @@ func (c *Connector) createDirectNetwork(name string, req models.CreateNetworkReq
 		return models.Network{}, fmt.Errorf("%q is already a port of another bridge; remove it from there first", iface)
 	}
 
-	moved, err := createDirectBridge(name, iface, req.VLanAware)
+	vlanAware := req.VLanAware != nil && *req.VLanAware
+	moved, err := createDirectBridge(name, iface, vlanAware)
 	if err != nil {
 		return models.Network{}, err
 	}
@@ -312,9 +318,21 @@ func (c *Connector) createIsolatedOrNATNetwork(name, kind string, req models.Cre
 		return models.Network{}, fmt.Errorf("assign %s to %q: %v (%s)", req.CIDR, name, err, strings.TrimSpace(string(out)))
 	}
 
+	// MTU first (validation is independent of DHCP), so a bad value
+	// fails before any dnsmasq unit is written.
+	if err := applyBridgeMTU(name, req.MTU); err != nil {
+		teardown()
+		return models.Network{}, err
+	}
+
 	dhcp := req.DHCP != nil && *req.DHCP
 	var dhcpStart, dhcpEnd string
 	var dns []string
+	var reservations []models.DHCPReservation
+	if len(req.Reservations) > 0 && !dhcp {
+		teardown()
+		return models.Network{}, fmt.Errorf("DHCP reservations require DHCP to be enabled")
+	}
 	if dhcp {
 		if err := validDNSList(req.DNS); err != nil {
 			teardown()
@@ -325,7 +343,12 @@ func (c *Connector) createIsolatedOrNATNetwork(name, kind string, req models.Cre
 			teardown()
 			return models.Network{}, err
 		}
-		if err := configureBridgeDHCP(name, req.CIDR, start, end, req.DNS); err != nil {
+		reservations, err = normalizeReservations(req.CIDR, req.Reservations)
+		if err != nil {
+			teardown()
+			return models.Network{}, err
+		}
+		if err := configureBridgeDHCP(name, req.CIDR, start, end, req.DNS, reservations); err != nil {
 			teardown()
 			return models.Network{}, err
 		}
@@ -333,9 +356,10 @@ func (c *Connector) createIsolatedOrNATNetwork(name, kind string, req models.Cre
 	}
 
 	if netStoreVar != nil {
-		rec := netstore.Record{Name: name, Kind: kind, CIDR: req.CIDR}
+		rec := netstore.Record{Name: name, Kind: kind, CIDR: req.CIDR, MTU: req.MTU}
 		if dhcp {
 			rec.DHCPStart, rec.DHCPEnd, rec.DNS = dhcpStart, dhcpEnd, dns
+			rec.Reservations = reservations
 		}
 		_ = netStoreVar.Save(rec)
 	}
@@ -430,17 +454,134 @@ func resolveDHCPRange(cidr, start, end string) (string, string, error) {
 	return start, end, nil
 }
 
+// normalizeReservations validates fixed MAC→IP leases (valid MAC, IPv4
+// inside the bridge CIDR, no duplicate MAC or IP) and returns them
+// normalized (lowercase MAC, canonical IP).
+func normalizeReservations(cidr string, in []models.DHCPReservation) ([]models.DHCPReservation, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CIDR %q", cidr)
+	}
+	out := make([]models.DHCPReservation, 0, len(in))
+	seenMAC := map[string]bool{}
+	seenIP := map[string]bool{}
+	for i, r := range in {
+		mac := strings.ToLower(strings.TrimSpace(r.MAC))
+		if _, err := net.ParseMAC(mac); err != nil {
+			return nil, fmt.Errorf("reservation %d: invalid MAC %q", i+1, r.MAC)
+		}
+		ip := net.ParseIP(strings.TrimSpace(r.IP)).To4()
+		if ip == nil {
+			return nil, fmt.Errorf("reservation %d: invalid IPv4 %q", i+1, r.IP)
+		}
+		if !ipnet.Contains(ip) {
+			return nil, fmt.Errorf("reservation %d: %s is outside %s", i+1, r.IP, cidr)
+		}
+		if seenMAC[mac] {
+			return nil, fmt.Errorf("reservation %d: duplicate MAC %s", i+1, mac)
+		}
+		if seenIP[ip.String()] {
+			return nil, fmt.Errorf("reservation %d: duplicate IP %s", i+1, ip.String())
+		}
+		seenMAC[mac] = true
+		seenIP[ip.String()] = true
+		out = append(out, models.DHCPReservation{
+			MAC:  mac,
+			IP:   ip.String(),
+			Name: strings.TrimSpace(r.Name),
+		})
+	}
+	return out, nil
+}
+
+// dhcpHostLines renders the dnsmasq "dhcp-host=" lines for fixed leases.
+// An optional name is sanitized to dnsmasq's hostname charset.
+func dhcpHostLines(reservations []models.DHCPReservation) (string, error) {
+	if len(reservations) == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	for _, r := range reservations {
+		if _, err := net.ParseMAC(r.MAC); err != nil {
+			return "", fmt.Errorf("invalid reservation MAC %q", r.MAC)
+		}
+		if net.ParseIP(r.IP) == nil {
+			return "", fmt.Errorf("invalid reservation IP %q", r.IP)
+		}
+		if r.Name != "" {
+			fmt.Fprintf(&b, "dhcp-host=%s,%s,%s\n", r.MAC, r.IP, sanitizeDnsmasqName(r.Name))
+		} else {
+			fmt.Fprintf(&b, "dhcp-host=%s,%s\n", r.MAC, r.IP)
+		}
+	}
+	return b.String(), nil
+}
+
+// sanitizeDnsmasqName reduces a label to dnsmasq's accepted hostname
+// charset ([A-Za-z0-9-], max 63) so an arbitrary reservation name can
+// never break the generated config.
+func sanitizeDnsmasqName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
+		if b.Len() >= 63 {
+			break
+		}
+	}
+	return b.String()
+}
+
+// applyBridgeMTU sets the bridge's link MTU. mtu <= 0 means "leave the
+// kernel/bridge default". Rejects values outside the sane Ethernet
+// range (576 IPv4 minimum .. 9216 jumbo) before touching the kernel.
+func applyBridgeMTU(br string, mtu int) error {
+	if mtu <= 0 {
+		return nil
+	}
+	if mtu < 576 || mtu > 9216 {
+		return fmt.Errorf("MTU %d out of range (576..9216)", mtu)
+	}
+	if out, err := exec.Command("ip", "link", "set", "dev", br, "mtu", strconv.Itoa(mtu)).CombinedOutput(); err != nil {
+		return fmt.Errorf("set MTU %d on %s: %v (%s)", mtu, br, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// bridgeMTU reads a bridge's current link MTU from sysfs (0 if unknown).
+func bridgeMTU(br string) int {
+	data, err := os.ReadFile("/sys/class/net/" + br + "/mtu")
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // configureBridgeDHCP writes a self-contained dnsmasq config + systemd unit
 // for a shared bridge (the same pattern setup-network.sh uses for vmbr1),
 // using the given (already-resolved) DHCP range and DNS server list (dns
 // falls back to 1.1.1.1 when empty, preserving the previous default).
-func configureBridgeDHCP(br, cidr, start, end string, dns []string) error {
+func configureBridgeDHCP(br, cidr, start, end string, dns []string, reservations []models.DHCPReservation) error {
 	if start == "" || end == "" {
 		return fmt.Errorf("cannot derive a DHCP range from CIDR %q", cidr)
 	}
 	dnsList := dns
 	if len(dnsList) == 0 {
 		dnsList = []string{"1.1.1.1"}
+	}
+	hostLines, err := dhcpHostLines(reservations)
+	if err != nil {
+		return err
 	}
 	confDir := "/etc/webkvm"
 	_ = os.MkdirAll(confDir, 0755)
@@ -454,7 +595,7 @@ dhcp-range=%s,%s,255.255.255.0,12h
 dhcp-option=option:router,%s
 dhcp-option=option:dns-server,%s
 dhcp-leasefile=%s
-`, br, br, strings.SplitN(cidr, "/", 2)[0], start, end, strings.SplitN(cidr, "/", 2)[0], strings.Join(dnsList, ","), leaseFilePath(br))
+%s`, br, br, strings.SplitN(cidr, "/", 2)[0], start, end, strings.SplitN(cidr, "/", 2)[0], strings.Join(dnsList, ","), leaseFilePath(br), hostLines)
 	if err := os.WriteFile(confPath, []byte(conf), 0644); err != nil {
 		return fmt.Errorf("write dnsmasq config for %q: %w", br, err)
 	}
@@ -599,45 +740,92 @@ func (c *Connector) UpdateNetwork(name string, req models.UpdateNetworkRequest) 
 			return models.Network{}, fmt.Errorf("set vlan_filtering: %v: %s", err, strings.TrimSpace(string(out)))
 		}
 	}
-	if req.DHCP != nil {
-		cidr := bridgeIPv4(name)
-		if *req.DHCP {
-			if cidr == "" {
-				return models.Network{}, fmt.Errorf("bridge %q has no IP; assign one before enabling DHCP", name)
+	// Link MTU (independent of DHCP).
+	if req.MTU != nil {
+		if err := applyBridgeMTU(name, *req.MTU); err != nil {
+			return models.Network{}, err
+		}
+		if netStoreVar != nil {
+			rec, ok := netStoreVar.Get(name)
+			if !ok {
+				kind, iface := inferKind(name, readBridgeSlaves(name))
+				rec = netstore.Record{Name: name, Kind: kind, Interface: iface}
 			}
-			if err := validDNSList(req.DNS); err != nil {
-				return models.Network{}, err
-			}
-			start, end, err := resolveDHCPRange(cidr, req.DHCPStart, req.DHCPEnd)
-			if err != nil {
-				return models.Network{}, err
-			}
-			if err := configureBridgeDHCP(name, cidr, start, end, req.DNS); err != nil {
-				return models.Network{}, err
-			}
-			if netStoreVar != nil {
-				rec, ok := netStoreVar.Get(name) // preserve Kind/Interface/MovedIPv4 if already tracked
-				if !ok {
-					// Not a bridge WebKVM created via the API (e.g. the
-					// installer's own vmbr1) — infer its kind rather than
-					// persisting an empty one, or networkView() would stop
-					// falling back to inferKind() for it from now on.
-					kind, iface := inferKind(name, readBridgeSlaves(name))
-					rec = netstore.Record{Name: name, Kind: kind, Interface: iface}
-				}
-				rec.Name = name
-				rec.CIDR = cidr
-				rec.DHCPStart, rec.DHCPEnd, rec.DNS = start, end, req.DNS
+			rec.MTU = *req.MTU
+			_ = netStoreVar.Save(rec)
+		}
+	}
+
+	// Effective current state drives partial updates (e.g. editing only
+	// the reservations while DHCP stays on).
+	var cur netstore.Record
+	hasCur := false
+	if netStoreVar != nil {
+		cur, hasCur = netStoreVar.Get(name)
+	}
+	dhcpOn := dnsmasqUnitExists(name) || (hasCur && cur.DHCPStart != "")
+
+	turnOn := req.DHCP != nil && *req.DHCP
+	turnOff := req.DHCP != nil && !*req.DHCP
+	editOnly := req.DHCP == nil && req.Reservations != nil
+
+	if turnOff {
+		removeDnsmasqUnit(name)
+		if netStoreVar != nil {
+			if rec, ok := netStoreVar.Get(name); ok {
+				rec.DHCPStart, rec.DHCPEnd, rec.DNS, rec.Reservations = "", "", nil, nil
 				_ = netStoreVar.Save(rec)
 			}
-		} else {
-			removeDnsmasqUnit(name)
-			if netStoreVar != nil {
-				if rec, ok := netStoreVar.Get(name); ok {
-					rec.DHCPStart, rec.DHCPEnd, rec.DNS = "", "", nil
-					_ = netStoreVar.Save(rec)
-				}
+		}
+		return networkView(name), nil
+	}
+
+	if turnOn || (editOnly && dhcpOn) {
+		cidr := bridgeIPv4(name)
+		if cidr == "" {
+			return models.Network{}, fmt.Errorf("bridge %q has no IP; assign one before enabling DHCP", name)
+		}
+		dns := req.DNS
+		if dns == nil && hasCur {
+			dns = cur.DNS
+		}
+		if err := validDNSList(dns); err != nil {
+			return models.Network{}, err
+		}
+		start, end := req.DHCPStart, req.DHCPEnd
+		if start == "" && end == "" && hasCur {
+			start, end = cur.DHCPStart, cur.DHCPEnd
+		}
+		start, end, err := resolveDHCPRange(cidr, start, end)
+		if err != nil {
+			return models.Network{}, err
+		}
+		resIn := req.Reservations
+		if resIn == nil && hasCur {
+			resIn = cur.Reservations
+		}
+		reservations, err := normalizeReservations(cidr, resIn)
+		if err != nil {
+			return models.Network{}, err
+		}
+		if err := configureBridgeDHCP(name, cidr, start, end, dns, reservations); err != nil {
+			return models.Network{}, err
+		}
+		if netStoreVar != nil {
+			rec := cur
+			if !hasCur {
+				// Not a bridge WebKVM created via the API (e.g. the
+				// installer's own vmbr1) — infer its kind rather than
+				// persisting an empty one, or networkView() would stop
+				// falling back to inferKind() for it from now on.
+				kind, iface := inferKind(name, readBridgeSlaves(name))
+				rec = netstore.Record{Name: name, Kind: kind, Interface: iface}
 			}
+			rec.Name = name
+			rec.CIDR = cidr
+			rec.DHCPStart, rec.DHCPEnd, rec.DNS = start, end, dns
+			rec.Reservations = reservations
+			_ = netStoreVar.Save(rec)
 		}
 	}
 	return networkView(name), nil

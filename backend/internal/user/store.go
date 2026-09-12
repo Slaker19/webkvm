@@ -124,6 +124,47 @@ func (s *Store) MustChangePassword(username string) (bool, error) {
 	return u.MustChangePassword, nil
 }
 
+// SessionStatus is the per-request check auth.SessionEnforcer uses: it
+// answers both "must this user change their password" and "what session
+// epoch are they currently on" from the single map lookup MustChangePassword
+// already did, so wiring in the epoch check adds no extra store hit.
+func (s *Store) SessionStatus(username string) (mustChange bool, epoch int, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	u, ok := s.users[username]
+	if !ok {
+		return false, 0, fmt.Errorf("user not found")
+	}
+	return u.MustChangePassword, u.SessionEpoch, nil
+}
+
+// BumpSessionEpoch increments username's session epoch, invalidating every
+// token issued before the call (they carry the old epoch and are rejected
+// by auth.SessionEnforcer on their next request) without needing a
+// per-token revocation list. Returns the new epoch.
+//
+// Self-targeting is refused, mirroring Delete's "cannot delete your own
+// account" guard: a session epoch is a single per-account counter with no
+// concept of "this browser tab" vs "my other sessions" — bumping your own
+// epoch would immediately log out the very request that asked for it.
+func (s *Store) BumpSessionEpoch(username, callerUsername string) (int, error) {
+	if username == callerUsername {
+		return 0, fmt.Errorf("cannot revoke your own sessions")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[username]
+	if !ok {
+		return 0, fmt.Errorf("user not found")
+	}
+	u.SessionEpoch++
+	if err := s.save(); err != nil {
+		u.SessionEpoch--
+		return 0, err
+	}
+	return u.SessionEpoch, nil
+}
+
 // Create hashes the password with bcrypt, validates the role, and
 // persists the new user.
 func (s *Store) Create(req models.CreateUserRequest) (*models.User, error) {
@@ -164,6 +205,7 @@ func (s *Store) Create(req models.CreateUserRequest) (*models.User, error) {
 		Active:             true,
 		Quota:              req.Quota,
 		AllowedPools:       req.AllowedPools,
+		AllowedNetworks:    req.AllowedNetworks,
 		AllowedTags:        req.AllowedTags,
 		MustChangePassword: req.MustChangePassword,
 	}
@@ -248,6 +290,9 @@ func (s *Store) Update(username string, req models.UpdateUserRequest) (*models.U
 		// Non-nil replaces the allowlist; an empty slice clears it so
 		// the user may use every pool again.
 		u.AllowedPools = *req.AllowedPools
+	}
+	if req.AllowedNetworks != nil {
+		u.AllowedNetworks = *req.AllowedNetworks
 	}
 	if req.AllowedTags != nil {
 		u.AllowedTags = *req.AllowedTags

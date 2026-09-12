@@ -26,10 +26,18 @@
   let kind = $state('isolated');
   let directInterface = $state('');
   let vlanAware = $state(false);
+  // Seeded from Settings -> Network -> "New bridges VLAN-aware by
+  // default" so the create-network checkbox reflects the operator's
+  // configured default instead of always starting unchecked.
+  let vlanAwareDefault = $state(false);
   let dhcp = $state(true);
   let dhcpStart = $state('');
   let dhcpEnd = $state('');
   let dnsText = $state('');
+  // MTU 0 = kernel/bridge default. Reservations = fixed MAC→IP DHCP
+  // leases ({ mac, ip, name }), only meaningful when DHCP is on.
+  let mtu = $state(0);
+  let reservations = $state([]);
   let autostart = $state(true);
   let saving = $state(false);
   let toggling = $state({});
@@ -52,7 +60,16 @@
     loading: false,
   });
 
-  onMount(() => load());
+  onMount(() => {
+    load();
+    api
+      .getSettings()
+      .then((s) => {
+        vlanAwareDefault = !!s?.values?.['network.vlan_aware_default'];
+        vlanAware = vlanAwareDefault;
+      })
+      .catch(() => {}); // non-fatal: the create form just keeps its plain default
+  });
 
   $effect(() => {
     if (preview && dhcp) {
@@ -102,16 +119,38 @@
     return (list || []).join(', ');
   }
 
+  // Fixed leases: trim, lowercase MACs and drop empty rows so a blank
+  // "add" row never reaches the API.
+  function cleanReservations() {
+    return reservations
+      .map((r) => ({
+        mac: (r.mac || '').trim().toLowerCase(),
+        ip: (r.ip || '').trim(),
+        name: (r.name || '').trim(),
+      }))
+      .filter((r) => r.mac && r.ip);
+  }
+
+  function addReservation() {
+    reservations = [...reservations, { mac: '', ip: '', name: '' }];
+  }
+
+  function removeReservation(i) {
+    reservations = reservations.filter((_, idx) => idx !== i);
+  }
+
   function resetForm() {
     name = '';
     cidr = '192.168.100.0/24';
     kind = 'isolated';
     directInterface = '';
-    vlanAware = false;
+    vlanAware = vlanAwareDefault;
     dhcp = true;
     dhcpStart = '';
     dhcpEnd = '';
     dnsText = '';
+    mtu = 0;
+    reservations = [];
     autostart = true;
     editingNet = null;
     showCreate = false;
@@ -127,6 +166,10 @@
     dhcpStart = net.dhcp_start || '';
     dhcpEnd = net.dhcp_end || '';
     dnsText = formatDNSList(net.dns);
+    mtu = net.mtu || 0;
+    reservations = Array.isArray(net.reservations)
+      ? net.reservations.map((r) => ({ mac: r.mac || '', ip: r.ip || '', name: r.name || '' }))
+      : [];
     autostart = !!net.autostart;
     showCreate = true;
   }
@@ -236,6 +279,8 @@
         payload.dhcp_end = dhcpEnd || preview?.dhcpEnd || '';
       }
       if (dnsText) payload.dns = parseDNSList(dnsText);
+      if (Number(mtu)) payload.mtu = Number(mtu);
+      if (dhcp) payload.reservations = cleanReservations();
     }
     try {
       const created = await api.createNetwork(payload);
@@ -265,6 +310,10 @@
       payload.dhcp_end = dhcpEnd || preview?.dhcpEnd || '';
     }
     payload.dns = parseDNSList(dnsText);
+    payload.mtu = Number(mtu) || 0;
+    // Always send the (possibly empty) set so clearing reservations is
+    // possible; the backend replaces the whole list.
+    payload.reservations = dhcp ? cleanReservations() : [];
     try {
       await api.updateNetwork(editingNet, payload);
       resetForm();
@@ -544,8 +593,88 @@
             <Input id="net-dns" bind:value={dnsText} placeholder="1.1.1.1, 8.8.8.8" />
             <p class="text-xs text-muted-foreground mt-1">{t('networks.dnsHelp')}</p>
           </div>
+
+          <div class="pt-2 border-t border-border">
+            <div class="flex items-start justify-between gap-3 mb-2">
+              <div>
+                <span class="text-sm font-medium">{t('networks.reservationsTitle')}</span>
+                <p class="text-xs text-muted-foreground">{t('networks.reservationsDesc')}</p>
+              </div>
+              <Button size="sm" variant="outline" type="button" onclick={addReservation}>
+                {t('networks.addReservation')}
+              </Button>
+            </div>
+            {#if reservations.length === 0}
+              <p class="text-xs text-muted-foreground">{t('networks.noReservations')}</p>
+            {:else}
+              <div class="space-y-2">
+                {#each reservations as r, i (i)}
+                  <div class="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_auto] gap-2 items-end">
+                    <div>
+                      <label class="block text-[11px] text-muted-foreground mb-1" for="res-mac-{i}"
+                        >{t('networks.resMac')}</label
+                      >
+                      <Input
+                        id="res-mac-{i}"
+                        bind:value={r.mac}
+                        placeholder="52:54:00:aa:bb:cc"
+                        class="font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-[11px] text-muted-foreground mb-1" for="res-ip-{i}"
+                        >{t('networks.resIp')}</label
+                      >
+                      <Input
+                        id="res-ip-{i}"
+                        bind:value={r.ip}
+                        placeholder={preview?.dhcpStart || '192.168.100.50'}
+                        class="tnum"
+                      />
+                    </div>
+                    <div>
+                      <label class="block text-[11px] text-muted-foreground mb-1" for="res-name-{i}"
+                        >{t('networks.resName')}</label
+                      >
+                      <Input
+                        id="res-name-{i}"
+                        bind:value={r.name}
+                        placeholder={t('networks.resNameOptional')}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onclick={() => removeReservation(i)}
+                      class="text-muted-foreground hover:text-destructive transition-colors p-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded"
+                      title={t('common.delete')}
+                      aria-label={t('common.delete')}
+                    >
+                      <Icon name="trash" size={14} />
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
         {/if}
       {/if}
+
+      <div>
+        <label for="net-mtu" class="block text-sm font-medium mb-1.5">
+          {t('networks.mtu')}
+          <span class="text-xs text-muted-foreground ml-1">{t('networks.mtuOptional')}</span>
+        </label>
+        <Input
+          id="net-mtu"
+          type="number"
+          min="576"
+          max="9216"
+          bind:value={mtu}
+          placeholder="1500"
+          class="tnum"
+        />
+        <p class="text-xs text-muted-foreground mt-1">{t('networks.mtuHelp')}</p>
+      </div>
 
       <div class="flex items-center gap-2 pt-2 border-t border-border">
         <input

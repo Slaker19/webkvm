@@ -5,19 +5,19 @@
    *
    * The parent (Settings.svelte) hands us the field list and the
    * combined `values ∪ editing` map; we render each field with a
-   * type-aware editor. Field-level "live" / "restart" badges sit
-   * under the input on the right.
-   *
-   * Layout:
-   *   - Single column for narrow screens, two columns (label
-   *     | input) from `sm:` up.
-   *   - Label has a `?` icon for a tooltip with the long
-   *     description (no more inline helper text that pushes
-   *     the input around).
+   * type-aware editor. Under each input we show:
+   *   - the i18n "live" / "restart required" badge,
+   *   - a "modified" marker when the field has an unsaved edit,
+   *   - and, when the value differs from its stock default, a
+   *     one-click "reset to default" affordance.
+   * Server-side validation failures arrive as `errors` (keyed by
+   * field key) and are rendered inline in red.
    */
   import { Input } from '$lib/components/ui/input';
+  import Icon from '$lib/components/Icon.svelte';
+  import { t } from '$lib/i18n.svelte.js';
 
-  let { fields, values, editing, onChange } = $props();
+  let { fields, values, editing, errors = {}, onChange } = $props();
 
   function currentValue(f) {
     if (editing[f.key] !== undefined) return editing[f.key];
@@ -30,6 +30,28 @@
     if (v == null) return '';
     if (f.type === 'list') return Array.isArray(v) ? v.join(', ') : '';
     return String(v);
+  }
+
+  // Loose equality that treats lists structurally and numeric strings
+  // like their number (the int editor round-trips through a string).
+  function sameValue(a, b) {
+    if (Array.isArray(a) || Array.isArray(b)) {
+      return JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+    }
+    if (a == null && b == null) return true;
+    return a === b || String(a) === String(b);
+  }
+
+  function isPending(f) {
+    return editing[f.key] !== undefined;
+  }
+
+  function isModified(f) {
+    return !sameValue(currentValue(f), f.default);
+  }
+
+  function resetField(f) {
+    onChange(f.key, f.default);
   }
 
   function handleChange(f, raw) {
@@ -57,7 +79,11 @@
 
 <div class="border border-border rounded-lg bg-card divide-y divide-border max-w-3xl">
   {#each fields as f (f.key)}
-    <div class="grid grid-cols-1 sm:grid-cols-[200px_1fr] gap-2 sm:gap-4 px-4 py-3">
+    <div
+      class="grid grid-cols-1 sm:grid-cols-[200px_1fr] gap-2 sm:gap-4 px-4 py-3 {errors[f.key]
+        ? 'bg-destructive/5'
+        : ''}"
+    >
       <div class="flex items-center gap-1.5">
         <label for={f.key} class="text-sm font-medium">{f.label}</label>
         {#if f.description}
@@ -67,6 +93,17 @@
           >
             ?
           </span>
+        {/if}
+        {#if isModified(f)}
+          <button
+            type="button"
+            title={t('settings.resetToDefault')}
+            aria-label={t('settings.resetToDefault')}
+            onclick={() => resetField(f)}
+            class="text-muted-foreground hover:text-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded"
+          >
+            <Icon name="resetDefault" size={13} />
+          </button>
         {/if}
       </div>
       <div class="flex flex-col gap-1.5">
@@ -128,13 +165,19 @@
             oninput={(e) => handleChange(f, e.currentTarget.value)}
           />
         {/if}
-        <div class="text-[11px] text-muted-foreground">
+        <div class="flex items-center gap-2 text-[11px] text-muted-foreground">
           {#if f.hot_reload}
-            <span class="text-success">live</span>
+            <span class="text-success">{t('settings.badgeLive')}</span>
           {:else}
-            <span class="text-warning">restart required</span>
+            <span class="text-warning">{t('settings.badgeRestart')}</span>
+          {/if}
+          {#if isPending(f)}
+            <span class="text-accent">• {t('settings.modified')}</span>
           {/if}
         </div>
+        {#if errors[f.key]}
+          <p class="text-[11px] text-destructive">{errors[f.key]}</p>
+        {/if}
       </div>
     </div>
   {/each}

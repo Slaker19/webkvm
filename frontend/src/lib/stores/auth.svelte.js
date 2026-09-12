@@ -429,6 +429,8 @@ export const api = {
   updateUser: (username, data) =>
     request(`/users/${username}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteUser: (username) => request(`/users/${username}`, { method: 'DELETE' }),
+  revokeUserSessions: (username) =>
+    request(`/users/${username}/revoke-sessions`, { method: 'POST' }),
 
   // --- networks ---
   listNetworks: () => request('/networks'),
@@ -449,6 +451,7 @@ export const api = {
   getHostStats: () => request('/host/stats'),
   listHostInterfaces: () => request('/host/interfaces'),
   listHostUSBDevices: () => request('/host/usb-devices'),
+  listHostPCIDevices: () => request('/host/pci-devices'),
 
   // --- graphics ---
   getGraphics: (id) => request(`/vms/${id}/graphics`),
@@ -482,6 +485,17 @@ export const api = {
     request(`/vms/${vmId}/usb/${encodeURIComponent(vendorId)}/${encodeURIComponent(productId)}`, {
       method: 'DELETE',
     }),
+  attachPCIDevices: (vmId, addresses) =>
+    request(`/vms/${vmId}/pci`, { method: 'POST', body: JSON.stringify({ addresses }) }),
+  detachPCIDevice: (vmId, address) =>
+    request(`/vms/${vmId}/pci/${encodeURIComponent(address)}`, { method: 'DELETE' }),
+  attachSharedFolder: (vmId, hostPath, tag, readOnly) =>
+    request(`/vms/${vmId}/shared-folders`, {
+      method: 'POST',
+      body: JSON.stringify({ host_path: hostPath, tag, read_only: readOnly }),
+    }),
+  detachSharedFolder: (vmId, tag) =>
+    request(`/vms/${vmId}/shared-folders/${encodeURIComponent(tag)}`, { method: 'DELETE' }),
 
   // --- net ifaces ---
   listNetIfaces: (vmId) => request(`/vms/${vmId}/networks`),

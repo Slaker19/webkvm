@@ -1,7 +1,7 @@
 {
   "name": "webkvm-frontend",
   "private": true,
-  "version": "2.5.1",
+  "version": "2.4.2",
   "type": "module",
   "engines": {
     "node": ">=20"

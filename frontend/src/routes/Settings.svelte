@@ -27,9 +27,12 @@
   let values = $state({});
   let pendingRestart = $state([]);
   let editing = $state({});
+  let errors = $state({});
   let loading = $state(true);
   let saving = $state(false);
   let restarting = $state(false);
+  let confirmingReset = $state(false);
+  let resetting = $state(false);
   let activeTab = $state('server');
 
   onMount(async () => {
@@ -71,6 +74,12 @@
 
   function setEdit(key, value) {
     editing = { ...editing, [key]: value };
+    // Clear this field's server-side error as soon as the user touches it.
+    if (errors[key]) {
+      const next = { ...errors };
+      delete next[key];
+      errors = next;
+    }
   }
 
   async function save() {
@@ -79,9 +88,12 @@
     try {
       const result = await api.setSettings(editing);
       if (result.failed && Object.keys(result.failed).length > 0) {
+        // Per-field reasons are rendered inline under each offending input.
+        errors = result.failed;
         toast.error(t('settings.valuesRejected'));
         return;
       }
+      errors = {};
       // Refresh from server.
       const g = await api.getSettings();
       values = g.values;
@@ -126,6 +138,25 @@
 
   function discard() {
     editing = {};
+    errors = {};
+  }
+
+  async function resetAll() {
+    resetting = true;
+    try {
+      await api.resetSettings();
+      const g = await api.getSettings();
+      values = g.values;
+      pendingRestart = g.pending_restart || [];
+      editing = {};
+      errors = {};
+      confirmingReset = false;
+      toast.success(t('settings.resetAllDone'));
+    } catch (err) {
+      toast.error(t('settings.resetAllFailed', { error: err.message }));
+    } finally {
+      resetting = false;
+    }
   }
 
   async function applyAndRestart() {
@@ -160,6 +191,10 @@
         <Button onclick={save} disabled={saving}>
           {saving ? t('settings.saving') : t('settings.saveChanges')}
         </Button>
+      {:else}
+        <Button variant="outline" onclick={() => (confirmingReset = true)} disabled={loading}>
+          {t('settings.resetAll')}
+        </Button>
       {/if}
     {/snippet}
   </PageHeader>
@@ -169,6 +204,23 @@
   {:else if !schema}
     <p class="text-sm text-destructive">{t('settings.loadFailed')}</p>
   {:else}
+    {#if confirmingReset}
+      <div
+        class="mb-4 border border-destructive/40 bg-destructive/10 rounded-lg p-4 flex items-center gap-4"
+      >
+        <div class="flex-1">
+          <p class="text-sm font-medium">{t('settings.resetAllTitle')}</p>
+          <p class="text-xs text-muted-foreground mt-0.5">{t('settings.resetAllDesc')}</p>
+        </div>
+        <Button variant="outline" onclick={() => (confirmingReset = false)} disabled={resetting}
+          >{t('common.cancel')}</Button
+        >
+        <Button variant="destructive" onclick={resetAll} disabled={resetting}
+          >{t('settings.resetAll')}</Button
+        >
+      </div>
+    {/if}
+
     {#if pendingRestart.length > 0}
       <div
         class="mb-4 border border-warning/40 bg-warning/10 rounded-lg p-4 flex items-center gap-4"
@@ -206,7 +258,7 @@
     {#if activeTab === 'notifications'}
       <NotificationsTab />
     {:else}
-      <SettingsTab fields={activeFields} {values} {editing} onChange={setEdit} />
+      <SettingsTab fields={activeFields} {values} {editing} {errors} onChange={setEdit} />
     {/if}
   {/if}
 </div>

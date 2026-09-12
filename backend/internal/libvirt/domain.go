@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -239,6 +240,50 @@ func (c *Connector) ExportSnapshots(domainID string) ([]backupstore.SnapshotBack
 	return result, nil
 }
 
+// tpmBackendVersionRE reads the version back off an existing
+// <tpm><backend type='emulator' version='...'/></tpm> — used both when
+// reporting a domain's current TPM version and, in UpdateDomain, when only
+// the version changes and the model/backend need regenerating together.
+var tpmBackendVersionRE = regexp.MustCompile(`<backend\s+type=['"]emulator['"]\s+version=['"]([^'"]+)['"]`)
+
+// tpmBlockRE/tpmBlockWithTrailingWSRE match a domain's whole <tpm>...</tpm>
+// element, used both to replace it (version change) and to remove it
+// (disable). MUST carry the (?s) flag: Go's regexp "." does not match a
+// newline by default, and the real element libvirt reports always spans
+// several lines (e.g. "<tpm model='tpm-tis'>\n  <backend .../>\n</tpm>") —
+// confirmed live: without (?s) neither MatchString nor ReplaceAllString
+// ever matched the real multi-line XML at all, so a version change or a
+// "disable TPM" request silently did nothing.
+var (
+	tpmBlockRE               = regexp.MustCompile(`(?s)<tpm\b[^>]*>.*?</tpm>`)
+	tpmBlockWithTrailingWSRE = regexp.MustCompile(`(?s)<tpm\b[^>]*>.*?</tpm>\s*`)
+)
+
+// watchdogI6300esbRE matches only OUR explicit watchdog device, never the
+// <watchdog model='itco'> libvirt auto-injects into every q35 domain's XML
+// regardless of request (the ICH9 southbridge's intrinsic TCO watchdog —
+// confirmed live: it appears even on a domain that never asked for any
+// watchdog at all). Two <watchdog> elements coexist fine in the same
+// domain (confirmed live: libvirt accepts it and QEMU boots with both).
+//
+// Must match BOTH shapes the element can take: self-closing right after
+// CreateDomain writes it fresh (<watchdog .../>), and open/close with an
+// <address> child once libvirt assigns it a PCI address — confirmed live
+// this happens on the very first define/start, even while the domain is
+// shut off again afterward (the persistent config keeps the assigned
+// address). (?s) so "." spans the newline before that child.
+var watchdogI6300esbRE = regexp.MustCompile(`(?s)<watchdog\b[^>]*model=['"]i6300esb['"][^>]*(?:/>|>.*?</watchdog>)\s*`)
+
+// tpmModelAndVersion maps the requested TPM version ("1.2"/"2.0", or nil
+// for the historical default) to the libvirt <tpm model='...'> value and
+// the <backend version='...'> it pairs with.
+func tpmModelAndVersion(reqVersion *string) (model, version string) {
+	if reqVersion != nil && *reqVersion == "1.2" {
+		return "tpm-tis", "1.2"
+	}
+	return "tpm-crb", "2.0"
+}
+
 func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) {
 	if err := c.ensureConnected(); err != nil {
 		return models.VM{}, err
@@ -450,16 +495,29 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 	}
 
 	if chipset == "q35" && tpmEnabled {
-		devicesExtra += `<tpm model='tpm-crb'>
-      <backend type='emulator' version='2.0'/>
+		tpmVersion := "2.0"
+		tpmModel := "tpm-crb"
+		if req.TPMVersion == "1.2" {
+			tpmVersion = "1.2"
+			tpmModel = "tpm-tis"
+		}
+		devicesExtra += fmt.Sprintf(`<tpm model='%s'>
+      <backend type='emulator' version='%s'/>
     </tpm>
-    `
+    `, tpmModel, tpmVersion)
 	}
 
 	devicesExtra += `<rng model='virtio'>
       <backend model='random'>/dev/urandom</backend>
     </rng>
     `
+
+	// Watchdog: no chipset restriction (unlike TPM/SecureBoot, which are
+	// UEFI/q35-only) — i6300esb works on both q35 and i440fx.
+	if req.WatchdogEnabled != nil && *req.WatchdogEnabled {
+		devicesExtra += `<watchdog model='i6300esb' action='reset'/>
+    `
+	}
 
 	diskDriverAttrs := diskDriverXMLAttrs(diskFormat, req.DiskCacheIO, req.DiskDiscard)
 
@@ -1009,14 +1067,43 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 	}
 	if req.TPMEnabled != nil {
 		if *req.TPMEnabled {
+			model, version := tpmModelAndVersion(req.TPMVersion)
+			tpmXML := fmt.Sprintf(`<tpm model='%s'>
+      <backend type='emulator' version='%s'/>
+    </tpm>`, model, version)
 			if !strings.Contains(xmlDesc, "<tpm") {
-				tpmXML := `<tpm model='tpm-crb'>
-      <backend type='emulator' version='2.0'/>
-    </tpm>`
 				xmlDesc = strings.Replace(xmlDesc, "</devices>", "    "+tpmXML+"\n  </devices>", 1)
+			} else {
+				// Already has a TPM — replace it wholesale so a version
+				// change (or a no-op re-enable) always reflects the
+				// requested version.
+				xmlDesc = tpmBlockRE.ReplaceAllString(xmlDesc, tpmXML)
 			}
 		} else {
-			xmlDesc = regexp.MustCompile(`<tpm\b[^>]*>.*?</tpm>\s*`).ReplaceAllString(xmlDesc, "")
+			xmlDesc = tpmBlockWithTrailingWSRE.ReplaceAllString(xmlDesc, "")
+		}
+	} else if req.TPMVersion != nil && strings.Contains(xmlDesc, "<tpm") {
+		// TPM already on; only its version is changing.
+		model, version := tpmModelAndVersion(req.TPMVersion)
+		tpmXML := fmt.Sprintf(`<tpm model='%s'>
+      <backend type='emulator' version='%s'/>
+    </tpm>`, model, version)
+		xmlDesc = tpmBlockRE.ReplaceAllString(xmlDesc, tpmXML)
+	}
+	if req.WatchdogEnabled != nil {
+		if *req.WatchdogEnabled {
+			if !watchdogI6300esbRE.MatchString(xmlDesc) {
+				xmlDesc = strings.Replace(xmlDesc, "</devices>", "    <watchdog model='i6300esb' action='reset'/>\n  </devices>", 1)
+			}
+		} else {
+			// Only ever strip OUR explicit i6300esb device — never any
+			// <watchdog>, since q35 domains always carry an intrinsic
+			// <watchdog model='itco'> that libvirt itself auto-injects
+			// (the ICH9 southbridge's built-in TCO watchdog) whether or
+			// not this field was ever touched; blindly matching any
+			// <watchdog> here would strip that chipset-intrinsic entry
+			// too on every "disable" request.
+			xmlDesc = watchdogI6300esbRE.ReplaceAllString(xmlDesc, "")
 		}
 	}
 	if req.OSType != nil || req.OSVersion != nil {
@@ -1115,6 +1202,13 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 
 	secureBoot := strings.Contains(xmlDesc, "secure='yes'") || strings.Contains(xmlDesc, `secure="yes"`)
 	tpmEnabled := strings.Contains(xmlDesc, "<tpm")
+	tpmVersion := ""
+	if tpmEnabled {
+		if m := tpmBackendVersionRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
+			tpmVersion = m[1]
+		}
+	}
+	watchdogEnabled := watchdogI6300esbRE.MatchString(xmlDesc)
 
 	firmware := "seabios"
 	if strings.Contains(xmlDesc, "<loader") {
@@ -1138,22 +1232,24 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 	}
 
 	vm := models.VM{
-		ID:         uuidStr,
-		Name:       name,
-		Type:       "vm",
-		Hypervisor: "kvm",
-		State:      vmState,
-		VCPUs:      int(info.NrVirtCpu),
-		RAMMB:      int64(info.MaxMem) / 1024,
-		UptimeSec:  uptime,
-		CPUUsage:   calculateCPUUsage(dom, info),
-		RAMUsedMB:  int64(info.Memory) / 1024,
-		OSIcon:     detectOSIcon(name, xmlDesc),
-		OSType:     detectOSType(name, xmlDesc),
-		OSVersion:  detectOSVersion(xmlDesc),
-		Chipset:    chipset,
-		SecureBoot: secureBoot,
-		TPMEnabled: tpmEnabled,
+		ID:              uuidStr,
+		Name:            name,
+		Type:            "vm",
+		Hypervisor:      "kvm",
+		State:           vmState,
+		VCPUs:           int(info.NrVirtCpu),
+		RAMMB:           int64(info.MaxMem) / 1024,
+		UptimeSec:       uptime,
+		CPUUsage:        calculateCPUUsage(dom, info),
+		RAMUsedMB:       int64(info.Memory) / 1024,
+		OSIcon:          detectOSIcon(name, xmlDesc),
+		OSType:          detectOSType(name, xmlDesc),
+		OSVersion:       detectOSVersion(xmlDesc),
+		Chipset:         chipset,
+		SecureBoot:      secureBoot,
+		TPMEnabled:      tpmEnabled,
+		TPMVersion:      tpmVersion,
+		WatchdogEnabled: watchdogEnabled,
 		// Autostart: queried separately because libvirt's
 		// GetAutostart returns an error for transient states
 		// (e.g. the domain is being shut off). Default to false
@@ -1175,6 +1271,8 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 	vm.Disks = c.parseDisks(xmlDesc)
 	vm.Networks = parseNetworks(xmlDesc)
 	vm.USBDevices = parseUSBHostdevs(xmlDesc)
+	vm.PCIDevices = parsePCIHostdevs(xmlDesc)
+	vm.SharedFolders = parseSharedFolders(xmlDesc)
 
 	// Fallback: extractDiskSize silently returns 0 for disks that
 	// don't have a <capacity unit=...> child (LVM, zvols, OVA imports
@@ -2156,6 +2254,399 @@ func (c *Connector) DetachUSBDevice(id, vendorID, productID string) error {
 	return dom.DetachDeviceFlags(usbHostdevXML(vendorID, productID), flags)
 }
 
+// --- PCI passthrough ---
+//
+// Unlike USB (managed='yes', hotplug in/out of a running VM), PCI
+// passthrough here always requires the VM to be shut off first — see
+// AttachPCIDevice/DetachPCIDevice. Two reasons, both explained there.
+
+var (
+	pciDomainRE   = regexp.MustCompile(`<domain>(\d+)</domain>`)
+	pciBusRE      = regexp.MustCompile(`<bus>(\d+)</bus>`)
+	pciSlotRE     = regexp.MustCompile(`<slot>(\d+)</slot>`)
+	pciFunctionRE = regexp.MustCompile(`<function>(\d+)</function>`)
+	pciIOMMURE    = regexp.MustCompile(`<iommuGroup number='(\d+)'`)
+	pciDriverRE   = regexp.MustCompile(`<driver>\s*<name>([^<]+)</name>`)
+	// PCI hostdev address as it appears in a domain's own XML (the format
+	// AttachDeviceFlags/DetachDeviceFlags XML uses), e.g.
+	// <address domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>.
+	pciDomainAttrHexRE = regexp.MustCompile(`domain=['"]0x([0-9a-fA-F]+)['"]`)
+	pciBusAttrHexRE    = regexp.MustCompile(`bus=['"]0x([0-9a-fA-F]+)['"]`)
+	pciSlotAttrHexRE   = regexp.MustCompile(`slot=['"]0x([0-9a-fA-F]+)['"]`)
+	pciFuncAttrHexRE   = regexp.MustCompile(`function=['"]0x([0-9a-fA-F]+)['"]`)
+)
+
+// pciAddress renders the standard lspci-style "DDDD:BB:SS.F" (hex) form
+// from the decimal domain/bus/slot/function values libvirt's PCI nodedev
+// XML reports them in. This is both the sysfs directory name
+// (/sys/bus/pci/devices/<address>) and the value the API/UI use to
+// identify a device.
+func pciAddress(domain, bus, slot, function int) string {
+	return fmt.Sprintf("%04x:%02x:%02x.%d", domain, bus, slot, function)
+}
+
+// parsePCIAddressHex splits a "DDDD:BB:SS.F" address into the 0x-prefixed
+// hex components pciHostdevXML needs.
+func parsePCIAddressHex(addr string) (domain, bus, slot, function string, err error) {
+	parts := strings.SplitN(addr, ":", 3)
+	if len(parts) != 3 {
+		return "", "", "", "", fmt.Errorf("invalid PCI address %q", addr)
+	}
+	slotFn := strings.SplitN(parts[2], ".", 2)
+	if len(slotFn) != 2 {
+		return "", "", "", "", fmt.Errorf("invalid PCI address %q", addr)
+	}
+	return "0x" + parts[0], "0x" + parts[1], "0x" + slotFn[0], "0x" + slotFn[1], nil
+}
+
+func pciSysfsDir(addr string) string {
+	return filepath.Join("/sys/bus/pci/devices", addr)
+}
+
+// pciBootVGA reports whether addr is the host's own boot/console GPU.
+// Passthrough of this device is refused unconditionally — see PCIDevice.BootVGA.
+func pciBootVGA(addr string) bool {
+	b, err := os.ReadFile(filepath.Join(pciSysfsDir(addr), "boot_vga"))
+	return err == nil && strings.TrimSpace(string(b)) == "1"
+}
+
+// pciDriverName reads the kernel driver currently bound to addr straight
+// from sysfs (readlink .../driver), used as a fallback for hosts/libvirt
+// versions whose PCI nodedev XML omits the optional <driver><name> element.
+func pciDriverName(addr string) string {
+	target, err := os.Readlink(filepath.Join(pciSysfsDir(addr), "driver"))
+	if err != nil {
+		return ""
+	}
+	return filepath.Base(target)
+}
+
+// ListHostPCIDevices enumerates PCI devices on the host available for
+// passthrough, grouped by IOMMU group (see PCIIOMMUGroup) since a group
+// normally must be passed through as a whole. Returns a clear error
+// instead of a silently empty list when IOMMU itself is off host-wide —
+// distinguishing "no devices" from "passthrough isn't usable on this host
+// at all" matters here far more than for USB.
+func (c *Connector) ListHostPCIDevices() ([]models.PCIIOMMUGroup, error) {
+	entries, err := os.ReadDir("/sys/kernel/iommu_groups")
+	if err != nil || len(entries) == 0 {
+		return nil, fmt.Errorf("IOMMU is not enabled on this host (no groups under /sys/kernel/iommu_groups) — PCI passthrough requires intel_iommu=on or amd_iommu=on on the kernel command line, and VT-d/AMD-Vi enabled in the BIOS")
+	}
+	if err := c.ensureConnected(); err != nil {
+		return nil, err
+	}
+	devs, err := c.conn.ListAllNodeDevices(libvirt.CONNECT_LIST_NODE_DEVICES_CAP_PCI_DEV)
+	if err != nil {
+		slog.Warn("list_host_pci_devices_unavailable", "err", err)
+		return []models.PCIIOMMUGroup{}, nil
+	}
+	inUse := c.pciAddressesInUse()
+	byGroup := map[int][]models.PCIDevice{}
+	for i := range devs {
+		xmlDesc, err := devs[i].GetXMLDesc(0)
+		name, _ := devs[i].GetName()
+		devs[i].Free()
+		if err != nil {
+			continue
+		}
+		domain, bus, slot, function := -1, -1, -1, -1
+		if m := pciDomainRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
+			domain, _ = strconv.Atoi(m[1])
+		}
+		if m := pciBusRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
+			bus, _ = strconv.Atoi(m[1])
+		}
+		if m := pciSlotRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
+			slot, _ = strconv.Atoi(m[1])
+		}
+		if m := pciFunctionRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
+			function, _ = strconv.Atoi(m[1])
+		}
+		if domain < 0 || bus < 0 || slot < 0 || function < 0 {
+			continue
+		}
+		addr := pciAddress(domain, bus, slot, function)
+		group := -1
+		if m := pciIOMMURE.FindStringSubmatch(xmlDesc); len(m) > 1 {
+			group, _ = strconv.Atoi(m[1])
+		}
+		vendorID, vendorName := usbMatch(usbVendorRE, xmlDesc)
+		productID, productName := usbMatch(usbProductRE, xmlDesc)
+		driver := ""
+		if m := pciDriverRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
+			driver = m[1]
+		} else {
+			driver = pciDriverName(addr)
+		}
+		dev := models.PCIDevice{
+			Name:        strings.TrimSpace(name),
+			Address:     addr,
+			VendorID:    vendorID,
+			VendorName:  vendorName,
+			ProductID:   productID,
+			ProductName: productName,
+			IOMMUGroup:  group,
+			Driver:      driver,
+			VFIOBound:   driver == "vfio-pci",
+			BootVGA:     pciBootVGA(addr),
+			InUse:       inUse[addr],
+		}
+		byGroup[group] = append(byGroup[group], dev)
+	}
+	out := make([]models.PCIIOMMUGroup, 0, len(byGroup))
+	for group, devices := range byGroup {
+		allBound := true
+		for _, d := range devices {
+			if !d.VFIOBound {
+				allBound = false
+				break
+			}
+		}
+		out = append(out, models.PCIIOMMUGroup{Group: group, Devices: devices, AllVFIOBound: allBound})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Group < out[j].Group })
+	return out, nil
+}
+
+// pciAddressesInUse scans every domain's XML for PCI hostdevs already
+// passed through, so ListHostPCIDevices can flag them (mirrors how
+// assertMACUnique scans every domain for a conflicting MAC).
+func (c *Connector) pciAddressesInUse() map[string]bool {
+	out := map[string]bool{}
+	if err := c.ensureConnected(); err != nil {
+		return out
+	}
+	doms, err := c.conn.ListAllDomains(0)
+	if err != nil {
+		return out
+	}
+	defer func() {
+		for i := range doms {
+			doms[i].Free()
+		}
+	}()
+	for i := range doms {
+		xmlDesc, err := doms[i].GetXMLDesc(0)
+		if err != nil {
+			continue
+		}
+		for _, d := range parsePCIHostdevs(xmlDesc) {
+			out[d.Address] = true
+		}
+	}
+	return out
+}
+
+var pciHostdevBlockRE = regexp.MustCompile(`(?s)<hostdev\b[^>]*type=['"]pci['"][^>]*>.*?</hostdev>`)
+
+// parsePCIHostdevs extracts the PCI devices already passed through to a
+// domain from its XML, so the UI can offer a "Detach" action. Addresses
+// here are the hex address attrs a domain's own <hostdev> uses, distinct
+// from the decimal tags a host PCI nodedev's XML uses (see
+// ListHostPCIDevices) — hence the separate *AttrHexRE patterns.
+func parsePCIHostdevs(xmlDesc string) []models.PCIDevice {
+	blocks := pciHostdevBlockRE.FindAllString(xmlDesc, -1)
+	out := make([]models.PCIDevice, 0, len(blocks))
+	for _, b := range blocks {
+		dm := pciDomainAttrHexRE.FindStringSubmatch(b)
+		bm := pciBusAttrHexRE.FindStringSubmatch(b)
+		sm := pciSlotAttrHexRE.FindStringSubmatch(b)
+		fm := pciFuncAttrHexRE.FindStringSubmatch(b)
+		if len(dm) < 2 || len(bm) < 2 || len(sm) < 2 || len(fm) < 2 {
+			continue
+		}
+		domain, _ := strconv.ParseInt(dm[1], 16, 32)
+		bus, _ := strconv.ParseInt(bm[1], 16, 32)
+		slot, _ := strconv.ParseInt(sm[1], 16, 32)
+		function, _ := strconv.ParseInt(fm[1], 16, 32)
+		out = append(out, models.PCIDevice{Address: pciAddress(int(domain), int(bus), int(slot), int(function))})
+	}
+	return out
+}
+
+func pciHostdevXML(addr string) (string, error) {
+	domain, bus, slot, function, err := parsePCIAddressHex(addr)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`<hostdev mode='subsystem' type='pci' managed='yes'>
+  <source>
+    <address domain='%s' bus='%s' slot='%s' function='%s'/>
+  </source>
+</hostdev>`, domain, bus, slot, function), nil
+}
+
+// AttachPCIDevice passes one or more host PCI devices through to a VM —
+// normally every address in one IOMMU group at once (see
+// models.PCIIOMMUGroup). Unlike USB, this requires the VM to already be
+// DOMAIN_SHUTOFF: (1) a running q35 domain may have no spare
+// pcie-root-port for hotplug — this codebase's controller XML declares a
+// fixed set, and whether libvirt can add one on the fly here is
+// unverified; (2) hot-unplugging a device out from under its guest driver
+// (especially a GPU) is notoriously unreliable. A single simple,
+// conservative rule beats per-device-type casework in a first version.
+//
+// The host's own boot/console GPU (BootVGA) is refused unconditionally,
+// even for admins — see models.PCIDevice.BootVGA.
+func (c *Connector) AttachPCIDevice(id string, addresses []string) error {
+	if len(addresses) == 0 {
+		return fmt.Errorf("no PCI addresses given")
+	}
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return err
+	}
+	defer dom.Free()
+
+	state, _, err := dom.GetState()
+	if err != nil {
+		return err
+	}
+	if state != libvirt.DOMAIN_SHUTOFF {
+		return fmt.Errorf("VM must be shut off to attach a PCI device")
+	}
+	for _, addr := range addresses {
+		if pciBootVGA(addr) {
+			return fmt.Errorf("refusing to pass through %s: it is the host's own boot/console GPU", addr)
+		}
+	}
+	for _, addr := range addresses {
+		hostdevXML, err := pciHostdevXML(addr)
+		if err != nil {
+			return err
+		}
+		if err := dom.AttachDeviceFlags(hostdevXML, libvirt.DOMAIN_DEVICE_MODIFY_CONFIG); err != nil {
+			return fmt.Errorf("attach %s: %w", addr, err)
+		}
+	}
+	return nil
+}
+
+// DetachPCIDevice removes a previously passed-through PCI device from a
+// VM. Requires DOMAIN_SHUTOFF — see AttachPCIDevice.
+func (c *Connector) DetachPCIDevice(id, address string) error {
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return err
+	}
+	defer dom.Free()
+
+	state, _, err := dom.GetState()
+	if err != nil {
+		return err
+	}
+	if state != libvirt.DOMAIN_SHUTOFF {
+		return fmt.Errorf("VM must be shut off to detach a PCI device")
+	}
+	hostdevXML, err := pciHostdevXML(address)
+	if err != nil {
+		return err
+	}
+	return dom.DetachDeviceFlags(hostdevXML, libvirt.DOMAIN_DEVICE_MODIFY_CONFIG)
+}
+
+// --- 9p shared folders ---
+//
+// virtiofs was considered and rejected: it needs a separately-supervised
+// virtiofsd helper process per share (a process-supervision class this
+// codebase doesn't have anywhere else) plus <memoryBacking> the domain XML
+// here never sets. 9p needs neither.
+
+var (
+	filesystemBlockRE = regexp.MustCompile(`(?s)<filesystem\b[^>]*>.*?</filesystem>`)
+	fsSourceDirRE     = regexp.MustCompile(`<source\s+dir=['"]([^'"]+)['"]`)
+	fsTargetDirRE     = regexp.MustCompile(`<target\s+dir=['"]([^'"]+)['"]`)
+	fsReadonlyRE      = regexp.MustCompile(`<readonly\s*/>`)
+)
+
+// parseSharedFolders extracts the 9p shared folders already attached to a
+// domain from its XML, so the UI can offer a "Detach" action.
+func parseSharedFolders(xmlDesc string) []models.SharedFolder {
+	blocks := filesystemBlockRE.FindAllString(xmlDesc, -1)
+	out := make([]models.SharedFolder, 0, len(blocks))
+	for _, b := range blocks {
+		sm := fsSourceDirRE.FindStringSubmatch(b)
+		tm := fsTargetDirRE.FindStringSubmatch(b)
+		if len(sm) < 2 || len(tm) < 2 {
+			continue
+		}
+		out = append(out, models.SharedFolder{
+			HostPath: sm[1],
+			Tag:      tm[1],
+			ReadOnly: fsReadonlyRE.MatchString(b),
+		})
+	}
+	return out
+}
+
+func sharedFolderXML(hostPath, tag string, readOnly bool) string {
+	ro := ""
+	if readOnly {
+		ro = "\n  <readonly/>"
+	}
+	return fmt.Sprintf(`<filesystem type='mount' accessmode='mapped'>
+  <driver type='path'/>
+  <source dir='%s'/>
+  <target dir='%s'/>%s
+</filesystem>`, xmlEscape(hostPath), xmlEscape(tag), ro)
+}
+
+// AttachSharedFolder adds a 9p shared folder to a VM. Like PCI passthrough
+// (and unlike USB), this requires the VM to already be DOMAIN_SHUTOFF:
+// hot-plug support for <filesystem> devices is unverified on the
+// libvirt/QEMU versions this codebase targets, so a clean "shut off first"
+// requirement beats risking an unpredictable live-attach result.
+func (c *Connector) AttachSharedFolder(id, hostPath, tag string, readOnly bool) error {
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return err
+	}
+	defer dom.Free()
+
+	state, _, err := dom.GetState()
+	if err != nil {
+		return err
+	}
+	if state != libvirt.DOMAIN_SHUTOFF {
+		return fmt.Errorf("VM must be shut off to attach a shared folder")
+	}
+	return dom.AttachDeviceFlags(sharedFolderXML(hostPath, tag, readOnly), libvirt.DOMAIN_DEVICE_MODIFY_CONFIG)
+}
+
+// DetachSharedFolder removes a previously attached 9p shared folder,
+// identified by its guest-visible tag. Requires DOMAIN_SHUTOFF — see
+// AttachSharedFolder.
+func (c *Connector) DetachSharedFolder(id, tag string) error {
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return err
+	}
+	defer dom.Free()
+
+	state, _, err := dom.GetState()
+	if err != nil {
+		return err
+	}
+	if state != libvirt.DOMAIN_SHUTOFF {
+		return fmt.Errorf("VM must be shut off to detach a shared folder")
+	}
+	xmlDesc, err := dom.GetXMLDesc(0)
+	if err != nil {
+		return fmt.Errorf("get xml: %w", err)
+	}
+	var target string
+	for _, b := range filesystemBlockRE.FindAllString(xmlDesc, -1) {
+		if tm := fsTargetDirRE.FindStringSubmatch(b); len(tm) > 1 && tm[1] == tag {
+			target = b
+			break
+		}
+	}
+	if target == "" {
+		return fmt.Errorf("shared folder with tag '%s' not found", tag)
+	}
+	return dom.DetachDeviceFlags(target, libvirt.DOMAIN_DEVICE_MODIFY_CONFIG)
+}
+
 func (c *Connector) UpdateDiskSource(id, target, source string) error {
 	dom, err := c.lookupDomain(id)
 	if err != nil {
@@ -2246,6 +2737,33 @@ func (c *Connector) AttachNetworkIface(id string, req models.AttachNetRequest) e
 	return dom.AttachDeviceFlags(ifaceXML, flags)
 }
 
+// findInterfaceBlockByMAC returns the single <interface>...</interface>
+// block whose <mac address='...'/> matches mac, or "" if none does.
+//
+// A domain can have several <interface> elements. A naive regex of the
+// shape `<interface\b[^>]*>[\s\S]*?<mac\b[^>]*address='MAC'[^>]*/>[\s\S]*?</interface>`
+// is unsafe here: when the target MAC belongs to the 2nd (or later)
+// interface, the lazy [\s\S]*? before the <mac> happily spans across the
+// FIRST interface's own opening AND closing tags (regexes don't track XML
+// nesting), so the match ends up starting at the first interface's '<interface'
+// and ending at the SECOND interface's '</interface>' — a string containing
+// two top-level <interface> elements concatenated, which
+// AttachDeviceFlags/DetachDeviceFlags/UpdateDeviceFlags then reject with a
+// real libvirt parse error ("Extra content at the end of the document").
+// Splitting into non-overlapping single-interface blocks first (the same
+// safe technique parseNetworks already uses) and then filtering by MAC
+// avoids this entirely.
+func findInterfaceBlockByMAC(xmlDesc, mac string) string {
+	blockRe := regexp.MustCompile(`<interface\b[^>]*>[\s\S]*?</interface>`)
+	macRe := regexp.MustCompile(`<mac\b[^>]*address='` + regexp.QuoteMeta(mac) + `'[^>]*/>`)
+	for _, block := range blockRe.FindAllString(xmlDesc, -1) {
+		if macRe.MatchString(block) {
+			return block
+		}
+	}
+	return ""
+}
+
 func (c *Connector) DetachNetworkIface(id, mac string) error {
 	dom, err := c.lookupDomain(id)
 	if err != nil {
@@ -2258,8 +2776,7 @@ func (c *Connector) DetachNetworkIface(id, mac string) error {
 		return fmt.Errorf("get xml: %w", err)
 	}
 
-	ifaceRe := regexp.MustCompile(`<interface\b[^>]*>[\s\S]*?<mac\b[^>]*address='` + regexp.QuoteMeta(mac) + `'[^>]*/>[\s\S]*?</interface>`)
-	ifaceXML := ifaceRe.FindString(xmlDesc)
+	ifaceXML := findInterfaceBlockByMAC(xmlDesc, mac)
 	if ifaceXML == "" {
 		return fmt.Errorf("network interface with mac '%s' not found", mac)
 	}
@@ -2302,8 +2819,7 @@ func (c *Connector) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIf
 	if err != nil {
 		return fmt.Errorf("get xml: %w", err)
 	}
-	ifaceRe := regexp.MustCompile(`<interface\b[^>]*>[\s\S]*?<mac\b[^>]*address='` + regexp.QuoteMeta(oldMAC) + `'[^>]*/>[\s\S]*?</interface>`)
-	ifaceXML := ifaceRe.FindString(xmlDesc)
+	ifaceXML := findInterfaceBlockByMAC(xmlDesc, oldMAC)
 	if ifaceXML == "" {
 		return fmt.Errorf("network interface with mac '%s' not found", oldMAC)
 	}

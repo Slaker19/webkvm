@@ -133,6 +133,12 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusForbidden, err.Error())
 			return
 		}
+		if req.Network != "" {
+			if err := assertNetworkAllowed(u, req.Network); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
+		}
 		if err := h.checkQuota(o, 1, int64(src.VCPUs), src.RAMMB, diskGB); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return

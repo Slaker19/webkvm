@@ -36,7 +36,7 @@ import (
 
 // Set by -ldflags at build time. Defaults are used for `go run`.
 var (
-	Version   = "dev"
+	Version   = "2.4.2"
 	BuildTime = "unknown"
 )
 
@@ -160,7 +160,28 @@ func main() {
 	// --- Settings store: MUST be initialized before anything that
 	// reads from it. Phase 1.7-bis wired 12 of the 30+ schema fields
 	// to live code paths, so the order below matters.
-	settingsStore, err := configstore.New(cfg.DataDir, configstore.DefaultSchema())
+	//
+	// server.incus_enabled needs special handling other restart-required
+	// settings don't: unlike server.bind_addr (whose schema default
+	// already matches config.Config's own default, so the two silently
+	// agree until an operator picks a value in the UI), Incus has been
+	// env-var-only until now. If we let a fresh install of THIS schema
+	// seed the key with a fixed `false` default, an existing install
+	// that has always run with WEBKVM_INCUS_ENABLED=true would lose its
+	// containers the moment it upgrades — the settings store bakes its
+	// default into config.json on first load, silently overriding the
+	// env var from then on. Patching the schema's own Default from
+	// cfg.IncusEnabled BEFORE the store is created means the store's
+	// first-ever value for this key is whatever the env var already
+	// said; only once an operator explicitly changes it in the UI does
+	// the stored value (correctly) start overriding the env var.
+	schema := configstore.DefaultSchema()
+	for i := range schema.Fields {
+		if schema.Fields[i].Key == "server.incus_enabled" {
+			schema.Fields[i].Default = cfg.IncusEnabled
+		}
+	}
+	settingsStore, err := configstore.New(cfg.DataDir, schema)
 	if err != nil {
 		logger.Error("configstore_init_failed", "err", err)
 		os.Exit(1)
@@ -191,6 +212,10 @@ func main() {
 	if v := settingsStore.GetString("server.public_host"); v != "" {
 		cfg.PublicHost = v
 	}
+	// The store's value is authoritative from here on (its Default was
+	// already seeded from cfg.IncusEnabled above on first ever load, so
+	// this is never a silent downgrade of an existing env-var setup).
+	cfg.IncusEnabled = settingsStore.GetBool("server.incus_enabled")
 
 	// TLS: serve HTTPS directly with a self-signed cert and/or automatic
 	// Let's Encrypt. Wired from the same settings store as bind_addr/port

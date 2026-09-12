@@ -44,6 +44,9 @@
   // Current user's pool allowlist (null until loaded). Used to hide
   // pools this user may not use (per-user ACL). Admins see all pools.
   let myAllowedPools = $state(null);
+  // Current user's network allowlist (null until loaded). Same shape and
+  // semantics as myAllowedPools, for the NIC's network selector.
+  let myAllowedNetworks = $state(null);
   // Current user's quota (0/absent dimensions = unlimited). Drives the
   // vCPU/RAM capacity bars below; admins are quota-exempt so those come
   // back empty and the bars simply don't render.
@@ -64,6 +67,15 @@
     return base;
   });
   let networks = $state([]);
+  // Networks visible to the current user for the VM's NIC. Mirrors vmPools
+  // exactly (empty/absent allowlist or admin = every network).
+  const vmNetworks = $derived.by(() => {
+    if (auth.role === 'admin') return networks;
+    if (myAllowedNetworks && myAllowedNetworks.length) {
+      return networks.filter((n) => myAllowedNetworks.includes(n.name));
+    }
+    return networks;
+  });
   let isos = $state([]);
   let loadingData = $state(true);
 
@@ -88,6 +100,8 @@
   let firmware = $state('uefi');
   let secureBoot = $state(false);
   let tpmEnabled = $state(false);
+  let tpmVersion = $state('2.0');
+  let watchdogEnabled = $state(false);
   let networkModel = $state('virtio');
 
   // v1.4 Fase 5: advanced options (boot order, Incus security/profiles,
@@ -364,10 +378,17 @@
       try {
         const me = await api.me();
         myAllowedPools = me?.allowed_pools || [];
+        myAllowedNetworks = me?.allowed_networks || [];
         myQuota = me?.quota || null;
       } catch {
         myAllowedPools = [];
+        myAllowedNetworks = [];
         myQuota = null;
+      }
+      // Re-run preselection scoped to what this user may actually use, so a
+      // restricted user isn't left defaulted onto a disallowed bridge.
+      if (myAllowedNetworks && myAllowedNetworks.length && !myAllowedNetworks.includes(network)) {
+        network = preselectNetwork(vmNetworks);
       }
       const diskPools = vmPools;
       const preferredDiskPool = diskPools.find((p) => p.name === 'webkvm-disks');
@@ -449,6 +470,8 @@
             firmware,
             secure_boot: chipset === 'q35' ? secureBoot : false,
             tpm_enabled: chipset === 'q35' ? tpmEnabled : false,
+            tpm_version: chipset === 'q35' && tpmEnabled ? tpmVersion : undefined,
+            watchdog_enabled: watchdogEnabled,
             disk_gb: useExistingDisk ? undefined : diskSize,
             disk_bus: diskBus,
             disk_format: useExistingDisk ? undefined : diskFormat,
@@ -648,7 +671,7 @@
             </SettingRow>
             <SettingRow label={t('vmDetail.networkLabel')} helper={t('vmCreate.networkHelper')}>
               <select bind:value={network} class="input max-w-xs">
-                {#each networks as net}
+                {#each vmNetworks as net}
                   <option value={net.name}>{networkLabel(net)}</option>
                 {/each}
               </select>
@@ -728,22 +751,48 @@
                 </button>
               </SettingRow>
               <SettingRow label={t('vmCreate.tpm')} helper={t('vmCreate.tpmHelper')}>
-                <button
-                  type="button"
-                  onclick={() => (tpmEnabled = !tpmEnabled)}
-                  class="relative w-9 h-5 rounded-full transition-colors {tpmEnabled
-                    ? 'bg-accent'
-                    : 'bg-muted'}"
-                  aria-label={t('vmCreate.toggleTpm')}
-                >
-                  <span
-                    class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {tpmEnabled
-                      ? 'translate-x-4'
-                      : ''}"
-                  ></span>
-                </button>
+                <div class="flex items-center gap-2">
+                  <select
+                    bind:value={tpmVersion}
+                    disabled={!tpmEnabled}
+                    class="input !py-1 !text-xs w-20 {!tpmEnabled ? 'opacity-50' : ''}"
+                  >
+                    <option value="2.0">2.0</option>
+                    <option value="1.2">1.2</option>
+                  </select>
+                  <button
+                    type="button"
+                    onclick={() => (tpmEnabled = !tpmEnabled)}
+                    class="relative w-9 h-5 rounded-full transition-colors {tpmEnabled
+                      ? 'bg-accent'
+                      : 'bg-muted'}"
+                    aria-label={t('vmCreate.toggleTpm')}
+                  >
+                    <span
+                      class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {tpmEnabled
+                        ? 'translate-x-4'
+                        : ''}"
+                    ></span>
+                  </button>
+                </div>
               </SettingRow>
             {/if}
+            <SettingRow label={t('vmCreate.watchdog')} helper={t('vmCreate.watchdogHelper')}>
+              <button
+                type="button"
+                onclick={() => (watchdogEnabled = !watchdogEnabled)}
+                class="relative w-9 h-5 rounded-full transition-colors {watchdogEnabled
+                  ? 'bg-accent'
+                  : 'bg-muted'}"
+                aria-label={t('vmCreate.toggleWatchdog')}
+              >
+                <span
+                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform {watchdogEnabled
+                    ? 'translate-x-4'
+                    : ''}"
+                ></span>
+              </button>
+            </SettingRow>
           </div>
         {/if}
 
@@ -1049,7 +1098,7 @@
             </SettingRow>
             <SettingRow label={t('vmDetail.networkLabel')} helper={t('vmCreate.networkHelper')}>
               <select bind:value={network} class="input max-w-xs">
-                {#each networks as net}
+                {#each vmNetworks as net}
                   <option value={net.name}>{networkLabel(net)}</option>
                 {/each}
               </select>

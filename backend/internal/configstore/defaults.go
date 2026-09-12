@@ -15,6 +15,7 @@ package configstore
 func DefaultSchema() Schema {
 	oneTo100 := 1.0
 	maxPort := float64(65535)
+	zero := 0.0
 	return Schema{Fields: []Field{
 		// --- Server ---------------------------------------------------------
 		{
@@ -79,6 +80,7 @@ func DefaultSchema() Schema {
 			Description: "Token refill rate of the global per-IP rate limiter. Default 50. Applies to client buckets immediately.",
 			Type:        FieldInt,
 			Default:     50,
+			Min:         &oneTo100,
 			HotReload:   true,
 		},
 		{
@@ -88,6 +90,7 @@ func DefaultSchema() Schema {
 			Description: "Bucket capacity of the global per-IP rate limiter (peak requests an IP may send in a short burst). Default 100. Applies to client buckets immediately.",
 			Type:        FieldInt,
 			Default:     100,
+			Min:         &oneTo100,
 			HotReload:   true,
 		},
 		{
@@ -116,6 +119,14 @@ func DefaultSchema() Schema {
 			Type:        FieldString,
 			Default:     "",
 			Placeholder: "webkvm.example.com",
+		},
+		{
+			Key:         "server.incus_enabled",
+			Section:     "Server",
+			Label:       "Enable Incus containers",
+			Description: "Optional container backend (LXC via Incus), alongside KVM VMs. Requires the Incus daemon to be reachable. Restart required to apply. The default is seeded from the WEBKVM_INCUS_ENABLED env var the first time this setting is created, so an existing install using that env var isn't silently disabled on upgrade — from then on this value is authoritative and the env var is ignored.",
+			Type:        FieldBool,
+			Default:     false, // placeholder; cmd/server/main.go patches this to cfg.IncusEnabled before configstore.New
 		},
 
 		// --- Auth -----------------------------------------------------------
@@ -164,9 +175,36 @@ func DefaultSchema() Schema {
 			Key:         "network.vlan_aware_default",
 			Section:     "Network",
 			Label:       "New bridges VLAN-aware by default",
-			Description: "When on, Linux bridges created via the UI start with vlan_filtering=1. Requires kernel >= 4.3. Restart required to apply.",
+			Description: "When on, Linux bridges created via the UI start with vlan_filtering=1 unless the create request says otherwise. Requires kernel >= 4.3. Applies to the next bridge you create, no restart needed.",
 			Type:        FieldBool,
 			Default:     false,
+			HotReload:   true,
+		},
+		// --- Backup ---------------------------------------------------------
+		// Re-added (Phase 1.7-bis-backup had removed the 3 old backup
+		// settings as unused, but cmd/server/main.go never stopped reading
+		// these 2 particular keys — they were consumed via a closure
+		// re-evaluated on every real backup run, so no operator could ever
+		// actually turn them on since the schema never exposed them).
+		// Both are read live per backup run, not just at startup.
+		{
+			Key:         "backup.max_file_size_mb",
+			Section:     "Backup",
+			Label:       "Max backup file size (MB)",
+			Description: "Skip any single VM disk larger than this during a backup run (0 = no limit). Applies to the next backup run, no restart needed.",
+			Type:        FieldInt,
+			Default:     0,
+			Min:         &zero,
+			HotReload:   true,
+		},
+		{
+			Key:         "backup.verify_on_write",
+			Section:     "Backup",
+			Label:       "Verify backups after writing",
+			Description: "Re-read and checksum every backup archive right after it's written, failing the job on a mismatch. Applies to the next backup run, no restart needed.",
+			Type:        FieldBool,
+			Default:     false,
+			HotReload:   true,
 		},
 	}}
 }

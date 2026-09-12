@@ -42,9 +42,9 @@ const (
 	FieldString   FieldType = "string"
 	FieldDuration FieldType = "duration"
 	FieldEnum     FieldType = "enum"
-	FieldList     FieldType = "list"     // []string
-	FieldSecret   FieldType = "secret"   // string, never returned in plain text
-	FieldJSON     FieldType = "json"     // raw JSON object/array
+	FieldList     FieldType = "list"   // []string
+	FieldSecret   FieldType = "secret" // string, never returned in plain text
+	FieldJSON     FieldType = "json"   // raw JSON object/array
 )
 
 // Field is a single configurable setting.
@@ -55,11 +55,11 @@ type Field struct {
 	Description string      `json:"description"`
 	Type        FieldType   `json:"type"`
 	Default     interface{} `json:"default"`
-	Enum        []string    `json:"enum,omitempty"`    // for FieldEnum
-	HotReload   bool        `json:"hot_reload"`        // applies without restart
+	Enum        []string    `json:"enum,omitempty"`     // for FieldEnum
+	HotReload   bool        `json:"hot_reload"`         // applies without restart
 	Advanced    bool        `json:"advanced,omitempty"` // collapsed by default in UI
-	Min         *float64    `json:"min,omitempty"`     // for FieldInt
-	Max         *float64    `json:"max,omitempty"`     // for FieldInt
+	Min         *float64    `json:"min,omitempty"`      // for FieldInt
+	Max         *float64    `json:"max,omitempty"`      // for FieldInt
 	Placeholder string      `json:"placeholder,omitempty"`
 }
 
@@ -350,6 +350,13 @@ func (s *Store) SetMany(in Set) (applied []string, failed map[string]string, err
 		s.values[k] = coerce(f, v)
 		applied = append(applied, k)
 	}
+	// Cross-field checks (only once per-field types/format pass), using the
+	// effective value (incoming change if present, else stored).
+	if len(failed) == 0 {
+		for k, msg := range s.validateCrossField(in) {
+			failed[k] = msg
+		}
+	}
 	if len(failed) > 0 {
 		// Rollback.
 		s.values = backup
@@ -443,6 +450,12 @@ func validateValue(f Field, v interface{}) string {
 		case []interface{}, []string:
 		default:
 			return "expected list of strings"
+		}
+	}
+	// Server-side semantic checks (CIDR lists, hosts, …).
+	if fn := fieldValidators[f.Key]; fn != nil {
+		if msg := fn(f, v); msg != "" {
+			return msg
 		}
 	}
 	return ""

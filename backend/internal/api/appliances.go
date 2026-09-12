@@ -237,6 +237,12 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 				jsonErr(w, http.StatusForbidden, err.Error())
 				return
 			}
+			if req.Network != "" {
+				if err := assertNetworkAllowed(u, req.Network); err != nil {
+					jsonErr(w, http.StatusForbidden, err.Error())
+					return
+				}
+			}
 		}
 	}
 

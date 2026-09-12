@@ -336,8 +336,15 @@ func (r *Runner) runJob(ctx context.Context, tgt Target, job Job, scheduleID str
 		// never left behind and never restored. Only remote types need it
 		// (a local target's "upload" is a same-path write that always
 		// matches itself).
+		//
+		// verify_on_write can be requested per-target (tgt.VerifyOnWrite)
+		// or as a global policy (Settings -> Backup -> "Verify backups
+		// after writing", backup.verify_on_write) that applies to every
+		// remote target regardless of its own setting — an admin-wide
+		// safety net, not just a per-target default.
+		verifyOnWrite := tgt.VerifyOnWrite || r.config().VerifyOnWrite
 		if err == nil && (tgt.Type == TargetSFTP || tgt.Type == TargetS3) &&
-			tgt.VerifyOnWrite && len(files) > 0 {
+			verifyOnWrite && len(files) > 0 {
 			primary := primaryOf(files)
 			if primary != "" {
 				report(94, "verifying", map[string]any{"file": primary})
@@ -608,8 +615,10 @@ func (r *Runner) writeBackup(tgt Target, destDir string, onProgress ...func(int,
 		name := sanitizeVMName(vm.ID)
 		// Containers have no local disk files to tar up: the per-VM
 		// archive IS the native LXD export (tar.gz), streamed straight
-		// from the daemon. KVM VMs keep the historical tar.zst.
-		ext := ".tar.zst"
+		// from the daemon. KVM VMs use the target's configured codec
+		// (zstd by default, gzip opt-in) and its extension.
+		compression := normalizeCompression(tgt.Compression)
+		ext := archiveExt(compression)
 		if vm.Hypervisor == "incus" {
 			ext = ".tar.gz"
 		}
@@ -751,7 +760,8 @@ func (r *Runner) writeBackup(tgt Target, destDir string, onProgress ...func(int,
 			}
 		}
 		res, werr := ProduceVMArchive(ctx, vmBackup, ProducerOpts{
-			Compression:   "zstd",
+			Compression:   compression,
+			ZstdLevel:     tgt.ZstdLevel,
 			DiskSizeLimit: maxSize,
 		}, out)
 		cerr := f.Close()

@@ -112,6 +112,221 @@ export const FIREWALL_TEMPLATES = [
       ],
     }),
   },
+  {
+    id: 'database',
+    labelKey: 'firewall.tplDatabase',
+    descKey: 'firewall.tplDatabaseDesc',
+    build: () => ({
+      input: [],
+      forwards: [
+        {
+          id: uid('fwd'),
+          name: 'PostgreSQL → VM',
+          proto: 'tcp',
+          host_port: 5432,
+          guest_ip: GUEST_IP,
+          guest_port: 5432,
+        },
+        {
+          id: uid('fwd'),
+          name: 'MySQL/MariaDB → VM',
+          proto: 'tcp',
+          host_port: 3306,
+          guest_ip: GUEST_IP,
+          guest_port: 3306,
+        },
+      ],
+    }),
+  },
+  {
+    id: 'mail',
+    labelKey: 'firewall.tplMail',
+    descKey: 'firewall.tplMailDesc',
+    build: () => ({
+      input: [
+        { id: uid('in'), name: 'SMTP', proto: 'tcp', port: 25, src: '', action: 'allow' },
+        { id: uid('in'), name: 'Submission', proto: 'tcp', port: 587, src: '', action: 'allow' },
+        { id: uid('in'), name: 'IMAPS', proto: 'tcp', port: 993, src: '', action: 'allow' },
+      ],
+      forwards: [
+        {
+          id: uid('fwd'),
+          name: 'SMTP → VM',
+          proto: 'tcp',
+          host_port: 25,
+          guest_ip: GUEST_IP,
+          guest_port: 25,
+        },
+        {
+          id: uid('fwd'),
+          name: 'Submission → VM',
+          proto: 'tcp',
+          host_port: 587,
+          guest_ip: GUEST_IP,
+          guest_port: 587,
+        },
+        {
+          id: uid('fwd'),
+          name: 'IMAPS → VM',
+          proto: 'tcp',
+          host_port: 993,
+          guest_ip: GUEST_IP,
+          guest_port: 993,
+        },
+      ],
+    }),
+  },
+  {
+    id: 'dns',
+    labelKey: 'firewall.tplDns',
+    descKey: 'firewall.tplDnsDesc',
+    build: () => ({
+      input: [
+        { id: uid('in'), name: 'DNS (TCP)', proto: 'tcp', port: 53, src: '', action: 'allow' },
+        { id: uid('in'), name: 'DNS (UDP)', proto: 'udp', port: 53, src: '', action: 'allow' },
+      ],
+      forwards: [
+        {
+          id: uid('fwd'),
+          name: 'DNS TCP → VM',
+          proto: 'tcp',
+          host_port: 53,
+          guest_ip: GUEST_IP,
+          guest_port: 53,
+        },
+        {
+          id: uid('fwd'),
+          name: 'DNS UDP → VM',
+          proto: 'udp',
+          host_port: 53,
+          guest_ip: GUEST_IP,
+          guest_port: 53,
+        },
+      ],
+    }),
+  },
+  {
+    id: 'monitoring',
+    labelKey: 'firewall.tplMonitoring',
+    descKey: 'firewall.tplMonitoringDesc',
+    build: () => ({
+      input: [
+        { id: uid('in'), name: 'Grafana', proto: 'tcp', port: 3000, src: '', action: 'allow' },
+        { id: uid('in'), name: 'Prometheus', proto: 'tcp', port: 9090, src: '', action: 'allow' },
+      ],
+      forwards: [
+        {
+          id: uid('fwd'),
+          name: 'Grafana → VM',
+          proto: 'tcp',
+          host_port: 3000,
+          guest_ip: GUEST_IP,
+          guest_port: 3000,
+        },
+        {
+          id: uid('fwd'),
+          name: 'Prometheus → VM',
+          proto: 'tcp',
+          host_port: 9090,
+          guest_ip: GUEST_IP,
+          guest_port: 9090,
+        },
+      ],
+    }),
+  },
+  {
+    id: 'remote-desktop',
+    labelKey: 'firewall.tplRemoteDesktop',
+    descKey: 'firewall.tplRemoteDesktopDesc',
+    build: () => ({
+      input: [],
+      forwards: [
+        {
+          id: uid('fwd'),
+          name: 'RDP → VM',
+          proto: 'tcp',
+          host_port: 3389,
+          guest_ip: GUEST_IP,
+          guest_port: 3389,
+        },
+        {
+          id: uid('fwd'),
+          name: 'VNC → VM',
+          proto: 'tcp',
+          host_port: 5900,
+          guest_ip: GUEST_IP,
+          guest_port: 5900,
+        },
+      ],
+    }),
+  },
+  {
+    id: 'minecraft',
+    labelKey: 'firewall.tplMinecraft',
+    descKey: 'firewall.tplMinecraftDesc',
+    build: () => ({
+      input: [
+        { id: uid('in'), name: 'Minecraft', proto: 'tcp', port: 25565, src: '', action: 'allow' },
+      ],
+      forwards: [
+        {
+          id: uid('fwd'),
+          name: 'Minecraft → VM',
+          proto: 'tcp',
+          host_port: 25565,
+          guest_ip: GUEST_IP,
+          guest_port: 25565,
+        },
+      ],
+    }),
+  },
+  {
+    id: 'home-assistant',
+    labelKey: 'firewall.tplHomeAssistant',
+    descKey: 'firewall.tplHomeAssistantDesc',
+    build: () => ({
+      input: [
+        {
+          id: uid('in'),
+          name: 'Home Assistant',
+          proto: 'tcp',
+          port: 8123,
+          src: '',
+          action: 'allow',
+        },
+      ],
+      forwards: [
+        {
+          id: uid('fwd'),
+          name: 'Home Assistant → VM',
+          proto: 'tcp',
+          host_port: 8123,
+          guest_ip: GUEST_IP,
+          guest_port: 8123,
+        },
+      ],
+    }),
+  },
+  {
+    id: 'openvpn',
+    labelKey: 'firewall.tplOpenVpn',
+    descKey: 'firewall.tplOpenVpnDesc',
+    build: () => ({
+      input: [
+        { id: uid('in'), name: 'OpenVPN', proto: 'udp', port: 1194, src: '', action: 'allow' },
+      ],
+      forwards: [
+        {
+          id: uid('fwd'),
+          name: 'OpenVPN → VM',
+          proto: 'udp',
+          host_port: 1194,
+          guest_ip: GUEST_IP,
+          guest_port: 1194,
+        },
+      ],
+    }),
+  },
 ];
 
 export function buildTemplate(id) {

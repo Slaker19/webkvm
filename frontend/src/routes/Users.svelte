@@ -35,6 +35,7 @@
   // temporary credential, not the user's real one.
   let newMustChangePassword = $state(true);
   let newAllowedPools = $state([]);
+  let newAllowedNetworks = $state([]);
   let newAllowedTags = $state([]);
   let newQMaxVMs = $state(0);
   let newQMaxVCPUs = $state(0);
@@ -58,6 +59,9 @@
   let pools = $state([]);
   // Per-user pool allowlist (empty = all pools; operators only).
   let editAllowedPools = $state([]);
+  // Available networks + per-user network allowlist — same shape as pools.
+  let networks = $state([]);
+  let editAllowedNetworks = $state([]);
 
   let confirmState = $state({
     open: false,
@@ -89,6 +93,7 @@
     if (auth.isAdmin()) {
       load();
       loadPools();
+      loadNetworks();
     }
   });
 
@@ -114,6 +119,16 @@
     }
   }
 
+  async function loadNetworks() {
+    try {
+      const data = await api.listNetworks();
+      const arr = Array.isArray(data) ? data : (data?.networks ?? []);
+      networks = arr.map((n) => n?.name ?? n).filter(Boolean);
+    } catch {
+      networks = [];
+    }
+  }
+
   function askConfirm(opts) {
     confirmState = { ...opts, open: true, loading: false };
   }
@@ -126,6 +141,7 @@
     newEmail = '';
     newMustChangePassword = true;
     newAllowedPools = [];
+    newAllowedNetworks = [];
     newAllowedTags = [];
     newQMaxVMs = 0;
     newQMaxVCPUs = 0;
@@ -174,6 +190,7 @@
         email: newEmail,
         must_change_password: newMustChangePassword,
         allowed_pools: newAllowedPools,
+        allowed_networks: newAllowedNetworks,
         allowed_tags: newAllowedTags,
         quota: {
           max_vms: newQMaxVMs || 0,
@@ -208,6 +225,7 @@
     const rows = Object.entries(pq).map(([pool, gb]) => ({ pool, gb }));
     editQPoolRows = rows.length ? rows : [{ pool: '', gb: 0 }];
     editAllowedPools = u.allowed_pools ? [...u.allowed_pools] : [];
+    editAllowedNetworks = u.allowed_networks ? [...u.allowed_networks] : [];
     // V13-D-01: tag allowlist (RBAC). Loaded eagerly for the editor.
     editAllowedTags = u.allowed_tags ? [...u.allowed_tags] : [];
     loadAllTags();
@@ -259,6 +277,8 @@
     // Per-user pool allowlist (empty = all pools). Sent as an array so
     // a cleared selection resets to "all pools".
     data.allowed_pools = editAllowedPools;
+    // Per-user network allowlist — same "empty = all networks" contract.
+    data.allowed_networks = editAllowedNetworks;
     // V13-D-01: tag allowlist (empty = no tag grants).
     data.allowed_tags = editAllowedTags;
     userSaving = true;
@@ -272,6 +292,26 @@
     } finally {
       userSaving = false;
     }
+  }
+
+  function revokeSessions(username) {
+    if (username === auth.user) return; // guarded in the UI too; button is hidden for self
+    askConfirm({
+      title: t('users.revokeSessionsConfirm', { name: username }),
+      description: t('users.revokeSessionsConfirmDesc'),
+      confirmLabel: t('users.revokeSessions'),
+      onConfirm: async () => {
+        confirmState.loading = true;
+        try {
+          await api.revokeUserSessions(username);
+          confirmState.open = false;
+          toast.success(t('users.revokeSessionsDone', { name: username }));
+        } catch (e) {
+          toast.error(e.message);
+          confirmState.loading = false;
+        }
+      },
+    });
   }
 
   function deleteUser(username) {
@@ -456,6 +496,11 @@
         {t('users.allowedPoolsSummary', { pools: row.allowed_pools.join(', ') })}
       </div>
     {/if}
+    {#if row.allowed_networks && row.allowed_networks.length && row.role !== 'admin'}
+      <div class="text-[10px] text-muted-foreground">
+        {t('users.allowedNetworksSummary', { networks: row.allowed_networks.join(', ') })}
+      </div>
+    {/if}
   </div>
 {/snippet}
 
@@ -604,6 +649,27 @@
           <p class="text-[10px] text-muted-foreground mt-1">{t('users.allowedPoolsHint')}</p>
         {:else}
           <p class="text-[10px] text-muted-foreground">{t('users.allowedPoolsLoading')}</p>
+        {/if}
+      </div>
+      <!-- Per-user network allowlist (visibility/ACL) -->
+      <div class="border-t border-border pt-2">
+        <div class="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">
+          {t('users.allowedNetworksTitle')}
+        </div>
+        {#if newRole === 'admin'}
+          <p class="text-[10px] text-muted-foreground">{t('users.allowedNetworksAdmin')}</p>
+        {:else if networks.length}
+          <div class="flex flex-wrap gap-x-3 gap-y-1">
+            {#each networks as n (n)}
+              <label class="flex items-center gap-1 text-xs text-muted-foreground">
+                <input type="checkbox" bind:group={newAllowedNetworks} value={n} class="rounded" />
+                {n}
+              </label>
+            {/each}
+          </div>
+          <p class="text-[10px] text-muted-foreground mt-1">{t('users.allowedNetworksHint')}</p>
+        {:else}
+          <p class="text-[10px] text-muted-foreground">{t('users.allowedNetworksLoading')}</p>
         {/if}
       </div>
       <!-- V13-D-01: tag allowlist (RBAC policy) -->
@@ -835,6 +901,27 @@
           <p class="text-[10px] text-muted-foreground">{t('users.allowedPoolsLoading')}</p>
         {/if}
       </div>
+      <!-- Per-user network allowlist (visibility/ACL) -->
+      <div class="border-t border-border pt-2">
+        <div class="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">
+          {t('users.allowedNetworksTitle')}
+        </div>
+        {#if editRole === 'admin'}
+          <p class="text-[10px] text-muted-foreground">{t('users.allowedNetworksAdmin')}</p>
+        {:else if networks.length}
+          <div class="flex flex-wrap gap-x-3 gap-y-1">
+            {#each networks as n (n)}
+              <label class="flex items-center gap-1 text-xs text-muted-foreground">
+                <input type="checkbox" bind:group={editAllowedNetworks} value={n} class="rounded" />
+                {n}
+              </label>
+            {/each}
+          </div>
+          <p class="text-[10px] text-muted-foreground mt-1">{t('users.allowedNetworksHint')}</p>
+        {:else}
+          <p class="text-[10px] text-muted-foreground">{t('users.allowedNetworksLoading')}</p>
+        {/if}
+      </div>
       <!-- V13-D-01: tag allowlist (RBAC policy) -->
       <div class="border-t border-border pt-2">
         <div class="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">
@@ -965,6 +1052,11 @@
       </div>
     </div>
     <Dialog.Footer>
+      {#if editing !== auth.user}
+        <Button variant="outline" onclick={() => revokeSessions(editing)}
+          >{t('users.revokeSessions')}</Button
+        >
+      {/if}
       <Button variant="outline" onclick={() => (editing = null)}>{t('common.cancel')}</Button>
       <Button onclick={saveEdit} disabled={userSaving}>{t('common.save')}</Button>
     </Dialog.Footer>

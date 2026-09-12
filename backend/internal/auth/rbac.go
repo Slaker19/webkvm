@@ -16,6 +16,12 @@ import (
 const (
 	HeaderUser = "X-User"
 	HeaderRole = "X-Role"
+	// HeaderTokenEpoch carries the session epoch (Claims.SessionEpoch)
+	// the validated JWT was issued with. Set by Middleware itself right
+	// after JWT validation, so it can never be a value the client
+	// supplied — same trust model as X-User/X-Role. SessionEnforcer
+	// compares it against the account's current epoch.
+	HeaderTokenEpoch = "X-Token-Epoch"
 )
 
 // RequireRole rejects any request whose JWT role is not in `allowed`.

@@ -88,6 +88,10 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.TPMVersion != "" && !validTPMVersions[req.TPMVersion] {
+		jsonErr(w, http.StatusBadRequest, "tpm_version must be \"1.2\" or \"2.0\"")
+		return
+	}
 	if req.RAMMB <= 0 {
 		req.RAMMB = 2048
 	}
@@ -132,6 +136,19 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := h.checkDiskQuota(owner, map[string]int64{pool: req.DiskGB}); err != nil {
 				jsonErr(w, http.StatusConflict, err.Error())
+				return
+			}
+		}
+		// Network ACL: a restricted user can only land the VM's NIC on
+		// an allowed bridge. An empty req.Network falls back to the
+		// host's primary bridge (internal/libvirt's unexported
+		// mainBridge()) — that fallback isn't checked here since there
+		// is no API-layer equivalent of h.defaultPool() for networks
+		// yet; a low-risk, documented gap, since the create form always
+		// preselects a concrete network.
+		if req.Network != "" {
+			if err := assertNetworkAllowed(u, req.Network); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
 				return
 			}
 		}
@@ -214,6 +231,10 @@ func (h *Handler) UpdateVM(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
+	}
+	if req.TPMVersion != nil && !validTPMVersions[*req.TPMVersion] {
+		jsonErr(w, http.StatusBadRequest, "tpm_version must be \"1.2\" or \"2.0\"")
+		return
 	}
 
 	// Quota: growing vCPU/RAM on a VM counts against its owner.
@@ -618,6 +639,9 @@ func (h *Handler) UpdateDisk(w http.ResponseWriter, r *http.Request) {
 // validDiskBuses is the same set the "Add Disk" dialog offers.
 var validDiskBuses = map[string]bool{"virtio": true, "sata": true, "scsi": true, "ide": true}
 
+// validTPMVersions is the set of TPM versions the VM create/edit forms offer.
+var validTPMVersions = map[string]bool{"1.2": true, "2.0": true}
+
 // ChangeDiskBus switches an existing disk/cdrom to a different bus.
 // Bus can't be changed in place (it's baked into the device's target
 // naming and address), so this detaches and reattaches the same
@@ -667,6 +691,17 @@ func (h *Handler) CreateNetIface(w http.ResponseWriter, r *http.Request) {
 	if req.Network == "" {
 		jsonErr(w, http.StatusBadRequest, "network is required")
 		return
+	}
+	if owner, role, _ := audit.FromRequest(r); role != models.RoleAdmin {
+		u, uerr := h.userStore.Get(owner)
+		if uerr != nil {
+			jsonErr(w, http.StatusUnauthorized, "user not found")
+			return
+		}
+		if err := assertNetworkAllowed(u, req.Network); err != nil {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
 	}
 	if err := h.compute.AttachNetworkIface(id, req); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -739,6 +774,12 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 		if err := assertPoolAllowed(u, clonePool); err != nil {
 			jsonErr(w, http.StatusForbidden, err.Error())
 			return
+		}
+		if req.Network != "" {
+			if err := assertNetworkAllowed(u, req.Network); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
 		}
 		if err := h.checkDiskQuota(owner, map[string]int64{clonePool: diskGB}); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
