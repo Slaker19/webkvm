@@ -85,7 +85,11 @@ func (c *Connector) ListNetworks() ([]models.Network, error) {
 
 // networkView builds the API-facing Network for one existing bridge,
 // using its netStore record when WebKVM created it, or best-effort
-// inference from kernel state otherwise.
+// inference from kernel state otherwise. name is always either a real
+// bridge name freshly enumerated from the kernel (ListNetworks ->
+// listLinuxBridges) or one that already passed isLinuxBridge/
+// validBridgeName in the caller (Start/Stop/Update/DeleteNetwork,
+// CreateNetwork) — both reject "."/".." as well as '/'.
 func networkView(name string) models.Network {
 	slaves := readBridgeSlaves(name)
 	dummy := dummyNameFor(name)
@@ -112,7 +116,7 @@ func networkView(name string) models.Network {
 	}
 
 	vlanAware := false
-	if data, err := os.ReadFile("/sys/class/net/" + name + "/bridge/vlan_filtering"); err == nil {
+	if data, err := os.ReadFile("/sys/class/net/" + name + "/bridge/vlan_filtering"); err == nil { // lgtm[go/path-injection] - name validated, see func comment
 		vlanAware = strings.TrimSpace(string(data)) == "1"
 	}
 
@@ -168,9 +172,10 @@ func inferKind(name string, realSlaves []string) (kind, iface string) {
 }
 
 // dnsmasqUnitExists reports whether the per-bridge dnsmasq DHCP unit
-// (configureBridgeDHCP) is present for this bridge.
+// (configureBridgeDHCP) is present for this bridge. br is always
+// pre-validated in both callers (networkView, UpdateNetwork).
 func dnsmasqUnitExists(br string) bool {
-	_, err := os.Stat("/etc/webkvm/" + br + "-dnsmasq.conf")
+	_, err := os.Stat("/etc/webkvm/" + br + "-dnsmasq.conf") // lgtm[go/path-injection] - br validated, see func comment
 	return err == nil
 }
 
@@ -178,7 +183,12 @@ func dnsmasqUnitExists(br string) bool {
 // Linux bridge: no slashes/whitespace, no virtual/NAT prefixes, and no
 // collision with an existing interface that is not itself a bridge.
 func validBridgeName(name string) bool {
-	if name == "" || strings.ContainsAny(name, "/ \t\n\r\\") || name == "lo" {
+	// "." and ".." contain none of the blocked characters above but are
+	// real path-traversal payloads once concatenated into a sysfs path
+	// (e.g. "/sys/class/net/" + ".." resolves to "/sys/class", escaping
+	// the intended directory) — CodeQL go/path-injection correctly
+	// flagged every sysfs-path build using a name this function allowed.
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/ \t\n\r\\") || name == "lo" {
 		return false
 	}
 	for _, p := range []string{"virbr", "lxdbr", "lxcbr", "incusbr", "docker", "br-"} {
@@ -224,7 +234,10 @@ func resolveKind(req models.CreateNetworkRequest) string {
 // share the same kernel constraints as bridge names (IFNAMSIZ-1, no
 // slashes/whitespace).
 func validIfaceName(name string) bool {
-	return name != "" && !strings.ContainsAny(name, "/ \t\n\r\\") && len(name) <= 15
+	// See validBridgeName above: "." and ".." must be rejected explicitly,
+	// they contain none of the blocked characters but escape the intended
+	// sysfs directory once concatenated into a path.
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/ \t\n\r\\") && len(name) <= 15
 }
 
 // CreateNetwork creates a REAL Linux bridge at the OS level (Proxmox-
@@ -261,13 +274,13 @@ func (c *Connector) createDirectNetwork(name string, req models.CreateNetworkReq
 	if !validIfaceName(iface) {
 		return models.Network{}, fmt.Errorf("invalid interface name %q", iface)
 	}
-	if _, err := os.Stat("/sys/class/net/" + iface); err != nil {
+	if _, err := os.Stat("/sys/class/net/" + iface); err != nil { // lgtm[go/path-injection] - iface validated by validIfaceName above
 		return models.Network{}, fmt.Errorf("interface %q not found", iface)
 	}
 	if isLinuxBridge(iface) {
 		return models.Network{}, fmt.Errorf("%q is itself a bridge; you can only enslave a non-bridge interface", iface)
 	}
-	if _, err := os.Stat("/sys/class/net/" + iface + "/brport"); err == nil {
+	if _, err := os.Stat("/sys/class/net/" + iface + "/brport"); err == nil { // lgtm[go/path-injection] - iface validated by validIfaceName above
 		return models.Network{}, fmt.Errorf("%q is already a port of another bridge; remove it from there first", iface)
 	}
 
@@ -391,17 +404,21 @@ var firewallReapply func() error
 func SetFirewallReapply(fn func() error) { firewallReapply = fn }
 
 // removeDnsmasqUnit stops and removes the per-bridge dnsmasq DHCP unit
-// (if configureBridgeDHCP ever created one for this bridge).
+// (if configureBridgeDHCP ever created one for this bridge). br is
+// always a name that already passed isLinuxBridge or validBridgeName in
+// every caller (DeleteNetwork, UpdateNetwork, createIsolatedOrNATNetwork
+// rollback) — both now reject "."/".." in addition to '/', so it cannot
+// escape these fixed directories.
 func removeDnsmasqUnit(br string) {
-	svcPath := "/etc/systemd/system/webkvm-" + br + "-dnsmasq.service"
+	svcPath := "/etc/systemd/system/webkvm-" + br + "-dnsmasq.service" // lgtm[go/path-injection] - br validated by every caller, see func comment
 	if _, err := os.Stat(svcPath); err != nil {
 		return
 	}
 	exec.Command("systemctl", "stop", "webkvm-"+br+"-dnsmasq.service").Run()
 	exec.Command("systemctl", "disable", "webkvm-"+br+"-dnsmasq.service").Run()
-	os.Remove(svcPath)
-	os.Remove("/etc/webkvm/" + br + "-dnsmasq.conf")
-	os.Remove(leaseFilePath(br))
+	os.Remove(svcPath)                               // lgtm[go/path-injection] - br validated by every caller, see func comment
+	os.Remove("/etc/webkvm/" + br + "-dnsmasq.conf") // lgtm[go/path-injection] - br validated by every caller, see func comment
+	os.Remove(leaseFilePath(br))                     // lgtm[go/path-injection] - br validated by every caller, see func comment
 	exec.Command("systemctl", "daemon-reload").Run()
 }
 
@@ -555,8 +572,9 @@ func applyBridgeMTU(br string, mtu int) error {
 }
 
 // bridgeMTU reads a bridge's current link MTU from sysfs (0 if unknown).
+// br is always pre-validated — see networkView's comment, its only caller.
 func bridgeMTU(br string) int {
-	data, err := os.ReadFile("/sys/class/net/" + br + "/mtu")
+	data, err := os.ReadFile("/sys/class/net/" + br + "/mtu") // lgtm[go/path-injection] - br validated, see func comment
 	if err != nil {
 		return 0
 	}
@@ -570,7 +588,9 @@ func bridgeMTU(br string) int {
 // configureBridgeDHCP writes a self-contained dnsmasq config + systemd unit
 // for a shared bridge (the same pattern setup-network.sh uses for vmbr1),
 // using the given (already-resolved) DHCP range and DNS server list (dns
-// falls back to 1.1.1.1 when empty, preserving the previous default).
+// falls back to 1.1.1.1 when empty, preserving the previous default). br
+// is always pre-validated in both callers (CreateNetwork -> validBridgeName,
+// UpdateNetwork -> isLinuxBridge).
 func configureBridgeDHCP(br, cidr, start, end string, dns []string, reservations []models.DHCPReservation) error {
 	if start == "" || end == "" {
 		return fmt.Errorf("cannot derive a DHCP range from CIDR %q", cidr)
@@ -585,7 +605,7 @@ func configureBridgeDHCP(br, cidr, start, end string, dns []string, reservations
 	}
 	confDir := "/etc/webkvm"
 	_ = os.MkdirAll(confDir, 0755)
-	confPath := fmt.Sprintf("%s/%s-dnsmasq.conf", confDir, br)
+	confPath := fmt.Sprintf("%s/%s-dnsmasq.conf", confDir, br) // lgtm[go/path-injection] - br validated, see func comment
 	conf := fmt.Sprintf(`# webkvm %s DHCP (shared KVM+Incus bridge)
 interface=%s
 bind-interfaces
@@ -599,7 +619,7 @@ dhcp-leasefile=%s
 	if err := os.WriteFile(confPath, []byte(conf), 0644); err != nil {
 		return fmt.Errorf("write dnsmasq config for %q: %w", br, err)
 	}
-	svcPath := "/etc/systemd/system/webkvm-" + br + "-dnsmasq.service"
+	svcPath := "/etc/systemd/system/webkvm-" + br + "-dnsmasq.service" // lgtm[go/path-injection] - br validated, see func comment
 	unit := fmt.Sprintf(`[Unit]
 Description=webkvm dnsmasq for %s (shared bridge DHCP)
 After=network-online.target

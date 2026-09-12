@@ -2285,17 +2285,30 @@ func pciAddress(domain, bus, slot, function int) string {
 	return fmt.Sprintf("%04x:%02x:%02x.%d", domain, bus, slot, function)
 }
 
+// pciAddressRE is the exact shape pciAddress() generates ("DDDD:BB:SS.F",
+// all hex, function a single nibble 0-7 per the PCI spec). Addresses in
+// AttachPCIRequest/the DetachPCIDevice URL param come straight from the
+// caller (admin-only, but still HTTP input) and are used to build a real
+// filesystem path in pciSysfsDir before any other check runs — so this
+// validation must happen first, not just inside parsePCIAddressHex's
+// weaker split-based parsing (which only checked colon/dot COUNT, not
+// that each segment was actually hex, so e.g. "../../etc:sh:ad.o" used
+// to parse "successfully" into garbage instead of being rejected).
+var pciAddressRE = regexp.MustCompile(`^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$`)
+
+func validPCIAddress(addr string) bool {
+	return pciAddressRE.MatchString(addr)
+}
+
 // parsePCIAddressHex splits a "DDDD:BB:SS.F" address into the 0x-prefixed
-// hex components pciHostdevXML needs.
+// hex components pciHostdevXML needs. Rejects anything not matching
+// pciAddressRE — see validPCIAddress.
 func parsePCIAddressHex(addr string) (domain, bus, slot, function string, err error) {
+	if !validPCIAddress(addr) {
+		return "", "", "", "", fmt.Errorf("invalid PCI address %q", addr)
+	}
 	parts := strings.SplitN(addr, ":", 3)
-	if len(parts) != 3 {
-		return "", "", "", "", fmt.Errorf("invalid PCI address %q", addr)
-	}
 	slotFn := strings.SplitN(parts[2], ".", 2)
-	if len(slotFn) != 2 {
-		return "", "", "", "", fmt.Errorf("invalid PCI address %q", addr)
-	}
 	return "0x" + parts[0], "0x" + parts[1], "0x" + slotFn[0], "0x" + slotFn[1], nil
 }
 
@@ -2304,9 +2317,13 @@ func pciSysfsDir(addr string) string {
 }
 
 // pciBootVGA reports whether addr is the host's own boot/console GPU.
-// Passthrough of this device is refused unconditionally — see PCIDevice.BootVGA.
+// Passthrough of this device is refused unconditionally — see
+// PCIDevice.BootVGA. Callers with caller-supplied addr (AttachPCIDevice)
+// MUST validate with validPCIAddress before calling this — it does not
+// re-validate itself, since ListHostPCIDevices' own callers always pass
+// an addr it built internally from parsed integers, never raw input.
 func pciBootVGA(addr string) bool {
-	b, err := os.ReadFile(filepath.Join(pciSysfsDir(addr), "boot_vga"))
+	b, err := os.ReadFile(filepath.Join(pciSysfsDir(addr), "boot_vga")) // lgtm[go/path-injection] - addr validated by every untrusted-input caller, see func comment
 	return err == nil && strings.TrimSpace(string(b)) == "1"
 }
 
@@ -2504,6 +2521,14 @@ func (c *Connector) AttachPCIDevice(id string, addresses []string) error {
 	}
 	if state != libvirt.DOMAIN_SHUTOFF {
 		return fmt.Errorf("VM must be shut off to attach a PCI device")
+	}
+	// Validate every address's shape BEFORE any of them touch the
+	// filesystem (pciBootVGA) or get built into hostdev XML — addresses
+	// here come straight from the request body.
+	for _, addr := range addresses {
+		if !validPCIAddress(addr) {
+			return fmt.Errorf("invalid PCI address %q", addr)
+		}
 	}
 	for _, addr := range addresses {
 		if pciBootVGA(addr) {

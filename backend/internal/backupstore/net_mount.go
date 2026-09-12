@@ -19,8 +19,11 @@ import (
 // non-root, or anywhere in targets.json.
 const backupCredentialsDir = "/etc/webkvm"
 
+// backupCredentialsPath builds the root-only credentials file path for a
+// self-managed SMB backup target. targetID is always newID()-generated
+// by Store.CreateTarget, never user-supplied text.
 func backupCredentialsPath(targetID string) string {
-	return filepath.Join(backupCredentialsDir, "backup-smb-creds-"+targetID)
+	return filepath.Join(backupCredentialsDir, "backup-smb-creds-"+targetID) // lgtm[go/path-injection] - targetID always internally generated, see func comment
 }
 
 // mountUnitName asks systemd itself for the exact unit name a mount at
@@ -55,9 +58,11 @@ func writeMountUnit(unitName, unitContent string) error {
 // mountNFSTarget mounts an NFS export at mountpoint via a systemd
 // .mount unit. NFS has no per-connection credentials to carry (access
 // control is the remote server's own doing — its exports file plus
-// Unix permissions), so there's no secrets file here.
+// Unix permissions), so there's no secrets file here. mountpoint is
+// always validated by ValidateTargetPath in the only caller
+// (Store.CreateTarget), before this function ever runs.
 func mountNFSTarget(host, remoteDir, mountpoint string) error {
-	if err := os.MkdirAll(mountpoint, 0755); err != nil {
+	if err := os.MkdirAll(mountpoint, 0755); err != nil { // lgtm[go/path-injection] - mountpoint validated, see func comment
 		return fmt.Errorf("create mountpoint: %w", err)
 	}
 	unitName, err := mountUnitName(mountpoint)
@@ -81,9 +86,11 @@ WantedBy=multi-user.target
 // mountSMBTarget mounts a CIFS share at mountpoint via a systemd .mount
 // unit. With a username, credentials go in a root-only file (never a
 // command line or targets.json); with no username, it's an anonymous
-// guest mount.
+// guest mount. mountpoint is always validated by ValidateTargetPath in
+// the only caller (Store.CreateTarget); targetID is always
+// newID()-generated there too, never user input.
 func mountSMBTarget(targetID, host, share, mountpoint, user, pass string) error {
-	if err := os.MkdirAll(mountpoint, 0755); err != nil {
+	if err := os.MkdirAll(mountpoint, 0755); err != nil { // lgtm[go/path-injection] - mountpoint validated, see func comment
 		return fmt.Errorf("create mountpoint: %w", err)
 	}
 	share = strings.TrimPrefix(share, "/")

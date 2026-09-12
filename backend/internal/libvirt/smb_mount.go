@@ -30,8 +30,12 @@ import (
 // which works fine since there's no auth to carry.
 const smbCredentialsDir = "/etc/webkvm"
 
+// smbCredentialsPath builds the root-only credentials file path for a
+// self-managed SMB pool mount. poolName is validated by validPoolName in
+// CreateStoragePool (storage.go) before this is ever reached — it cannot
+// contain '/', '.', or '..'.
 func smbCredentialsPath(poolName string) string {
-	return filepath.Join(smbCredentialsDir, "smb-creds-"+poolName)
+	return filepath.Join(smbCredentialsDir, "smb-creds-"+poolName) // lgtm[go/path-injection] - poolName validated, see func comment
 }
 
 // smbMountUnitName asks systemd itself for the exact unit name a mount
@@ -49,9 +53,11 @@ func smbMountUnitName(mountpoint string) (string, error) {
 // mountSMBShare mounts an authenticated CIFS share at mountpoint via a
 // systemd .mount unit and a root-only credentials file. Rolls back
 // (removes the credentials file / unit file it already wrote) on any
-// failure so a failed attempt never leaves an orphan behind.
+// failure so a failed attempt never leaves an orphan behind. poolName
+// is validated by validPoolName and mountpoint by validatePoolPath,
+// both in the request path before CreateStoragePool ever calls this.
 func mountSMBShare(poolName, host, shareDir, mountpoint, user, pass string) error {
-	if err := os.MkdirAll(mountpoint, 0755); err != nil {
+	if err := os.MkdirAll(mountpoint, 0755); err != nil { // lgtm[go/path-injection] - mountpoint validated, see func comment
 		return fmt.Errorf("create mountpoint: %w", err)
 	}
 	if err := os.MkdirAll(smbCredentialsDir, 0755); err != nil {
@@ -59,7 +65,7 @@ func mountSMBShare(poolName, host, shareDir, mountpoint, user, pass string) erro
 	}
 	credPath := smbCredentialsPath(poolName)
 	credContent := fmt.Sprintf("username=%s\npassword=%s\n", user, pass)
-	if err := os.WriteFile(credPath, []byte(credContent), 0600); err != nil {
+	if err := os.WriteFile(credPath, []byte(credContent), 0600); err != nil { // lgtm[go/path-injection] - credPath validated, see smbCredentialsPath's comment
 		return fmt.Errorf("write credentials: %w", err)
 	}
 
@@ -68,7 +74,7 @@ func mountSMBShare(poolName, host, shareDir, mountpoint, user, pass string) erro
 		os.Remove(credPath)
 		return err
 	}
-	unitPath := filepath.Join("/etc/systemd/system", unitName)
+	unitPath := filepath.Join("/etc/systemd/system", unitName) // lgtm[go/path-injection] - unitName is systemd-escape's own output, see smbMountUnitName's comment
 	share := strings.TrimPrefix(shareDir, "/")
 	unitContent := fmt.Sprintf(`[Unit]
 Description=WebKVM SMB mount for pool %s
@@ -113,7 +119,7 @@ func unmountSMBShare(poolName, mountpoint string) error {
 	if err != nil {
 		return err
 	}
-	unitPath := filepath.Join("/etc/systemd/system", unitName)
+	unitPath := filepath.Join("/etc/systemd/system", unitName) // lgtm[go/path-injection] - unitName is systemd-escape's own output, see smbMountUnitName's comment
 	if _, err := os.Stat(unitPath); os.IsNotExist(err) {
 		return nil // not one of ours
 	}
@@ -132,6 +138,6 @@ func isSelfManagedSMBMount(mountpoint string) bool {
 	if err != nil {
 		return false
 	}
-	_, err = os.Stat(filepath.Join("/etc/systemd/system", unitName))
+	_, err = os.Stat(filepath.Join("/etc/systemd/system", unitName)) // lgtm[go/path-injection] - unitName is systemd-escape's own output, see smbMountUnitName's comment
 	return err == nil
 }

@@ -52,7 +52,26 @@ func (c *Connector) ListStoragePools() ([]models.StoragePool, error) {
 	return result, nil
 }
 
+// validPoolName rejects a pool name that isn't a safe single identifier
+// — same reasoning as validBridgeName in internal/libvirt/network.go.
+// Without this, req.Name flowed unvalidated all the way into
+// smbCredentialsPath's filepath.Join(smbCredentialsDir, "smb-creds-"+name)
+// for a self-managed authenticated SMB pool: a name like
+// "../../root/.ssh/authorized_keys" would let CreateStoragePool write an
+// admin-supplied file to an arbitrary path outside smbCredentialsDir
+// (filepath.Join collapses ".." segments) — a real path/file-write
+// injection, not just a CodeQL false positive like most of the other
+// go/path-injection alerts in this codebase.
+var poolNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+
+func validPoolName(name string) bool {
+	return name != "." && name != ".." && poolNameRE.MatchString(name)
+}
+
 func (c *Connector) CreateStoragePool(ctx context.Context, req models.CreatePoolRequest) (models.StoragePool, error) {
+	if !validPoolName(req.Name) {
+		return models.StoragePool{}, fmt.Errorf("invalid pool name %q — use letters, digits, '_', '-' or '.', starting with a letter or digit", req.Name)
+	}
 	if err := c.ensureConnected(); err != nil {
 		return models.StoragePool{}, err
 	}
@@ -77,7 +96,6 @@ func (c *Connector) CreateStoragePool(ctx context.Context, req models.CreatePool
 		}
 		poolType = "dir"
 	}
-
 
 	// Sanitize the path/name. xmlEscape handles the rest.
 	xmlStr, err := buildPoolXML(poolType, req)

@@ -206,9 +206,12 @@ func listPhysicalInterfaces() []string {
 }
 
 // readBridgeSlaves lists the port names attached to a Linux bridge
-// (the entries in /sys/class/net/<bridge>/brif/).
+// (the entries in /sys/class/net/<bridge>/brif/). name is always either
+// a real bridge name freshly enumerated from the kernel, or one already
+// validated by isLinuxBridge/validBridgeName in the caller (same
+// invariant as networkView in network.go).
 func readBridgeSlaves(name string) []string {
-	entries, err := os.ReadDir("/sys/class/net/" + name + "/brif")
+	entries, err := os.ReadDir("/sys/class/net/" + name + "/brif") // lgtm[go/path-injection] - name validated, see func comment
 	if err != nil {
 		return nil
 	}
