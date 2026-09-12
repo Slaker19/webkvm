@@ -63,6 +63,75 @@ if [[ "${PURGE_NETWORKS:-0}" == 1 ]]; then
       echo "  - removed $f"
     fi
   done
+
+  # ── v2.4+ network model: the installer's own isolated NAT bridge
+  # (vmbr1) and its dummy carrier (dummy0) — see
+  # scripts/setup-network.sh's ensure_vmbr1_nat/apply_nat_vmbr1. This
+  # is a SEPARATE thing from the legacy br0/macvlan cleanup above: the
+  # networking rewrite that introduced vmbr0/vmbr1 (v2.4.0) never got a
+  # matching update here, so PURGE_NETWORKS=1 silently left vmbr1,
+  # dummy0, their dnsmasq unit and persistence files behind on every
+  # v2.4+ install (confirmed live: reproduced on a real test VM).
+  #
+  # vmbr0/br0 (the PRIMARY bridge, whichever holds the host's own LAN
+  # IP) is NEVER touched here — same rule as the API's DeleteNetwork:
+  # removing it without a replacement cuts the host off its own network.
+  VM1_BR="vmbr1"
+  VM1_DUMMY="dummy0"
+  MANAGED_MARKER="# Managed by webkvm"
+  if [ -d "/sys/class/net/${VM1_BR}/bridge" ] || [ -f "/etc/systemd/system/webkvm-${VM1_BR}-dnsmasq.service" ]; then
+    echo "  - removing isolated NAT bridge ${VM1_BR} (installer-managed)"
+    systemctl disable --now "webkvm-${VM1_BR}-dnsmasq.service" 2>/dev/null || true
+    rm -f "/etc/systemd/system/webkvm-${VM1_BR}-dnsmasq.service" "/etc/webkvm/${VM1_BR}-dnsmasq.conf"
+    # NAT rule — mirror of apply_nat_vmbr1(), in reverse.
+    if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+      firewall-cmd --permanent --zone=internal --remove-interface="${VM1_BR}" >/dev/null 2>&1 || true
+      firewall-cmd --permanent --zone=internal --remove-masquerade >/dev/null 2>&1 || true
+      firewall-cmd --reload >/dev/null 2>&1 || true
+      echo "  - firewalld: ${VM1_BR}/masquerade removed from internal zone"
+    fi
+    if command -v ufw >/dev/null 2>&1 && grep -qF "webkvm ${VM1_BR} masquerade" /etc/ufw/before.rules 2>/dev/null; then
+      echo "  ! ufw: a webkvm NAT rule for ${VM1_BR} is still in /etc/ufw/before.rules"
+      echo "    (marked '# webkvm ${VM1_BR} masquerade') — editing firewall rule files"
+      echo "    automatically is too risky here; remove that block by hand and run"
+      echo "    'ufw reload' if you want it gone."
+    fi
+    if command -v iptables >/dev/null 2>&1; then
+      uplink="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)"
+      if [ -n "${uplink}" ]; then
+        iptables -t nat -D POSTROUTING -s "100.0.0.0/24" -o "${uplink}" -j MASQUERADE 2>/dev/null || true
+      fi
+      iptables -D FORWARD -i "${VM1_BR}" -j ACCEPT 2>/dev/null || true
+      iptables -D FORWARD -o "${VM1_BR}" -j ACCEPT 2>/dev/null || true
+    fi
+    # Persistence: netplan / nmcli / systemd-networkd (only whichever one
+    # setup-network.sh actually used — the others are simply absent).
+    for f in "/etc/netplan/zz-webkvm-${VM1_BR}.yaml" "/etc/systemd/system/webkvm-${VM1_DUMMY}.service"; do
+      if [ -f "$f" ] && grep -qF "${MANAGED_MARKER}" "$f" 2>/dev/null; then
+        rm -f "$f"
+        echo "  - removed $f"
+      fi
+    done
+    systemctl disable "webkvm-${VM1_DUMMY}.service" 2>/dev/null || true
+    if command -v nmcli >/dev/null 2>&1; then
+      nmcli con delete "${VM1_BR}" >/dev/null 2>&1 && echo "  - nmcli: ${VM1_BR} connection removed"
+      nmcli con delete "${VM1_BR}-${VM1_DUMMY}" >/dev/null 2>&1 || true
+    fi
+    for f in "/etc/systemd/network/${VM1_DUMMY}.netdev" "/etc/systemd/network/${VM1_BR}.netdev" \
+             "/etc/systemd/network/${VM1_DUMMY}.network" "/etc/systemd/network/${VM1_BR}.network"; do
+      if [ -f "$f" ] && grep -qF "${MANAGED_MARKER}" "$f" 2>/dev/null; then
+        rm -f "$f"
+        echo "  - removed $f"
+      fi
+    done
+    # Live interfaces last, once persistence is gone (so nothing recreates them on reboot).
+    ip link set "${VM1_DUMMY}" nomaster 2>/dev/null || true
+    ip link del "${VM1_DUMMY}" 2>/dev/null || true
+    ip link set "${VM1_BR}" down 2>/dev/null || true
+    ip link del "${VM1_BR}" 2>/dev/null || true
+    echo "  - bridge ${VM1_BR} and ${VM1_DUMMY} removed"
+  fi
+
   systemctl daemon-reload 2>/dev/null || true
   # firewall port opened by installer
   if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then

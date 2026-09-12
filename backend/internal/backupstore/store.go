@@ -54,6 +54,12 @@ type TargetOptions struct {
 	Password    string // stored in the secrets file, never serialized
 	SSHKeyPath  string // optional absolute path to an SSH private key on the host
 	ClearSecret bool   // when true, removes the stored secret (explicit clear)
+	// SourceDir, for TargetNFS/TargetSMB, is the REMOTE export path
+	// (NFS) or share name (SMB) on Host — Path stays the local
+	// mountpoint. When Host is set for these types, WebKVM mounts the
+	// share itself (see net_mount.go) rather than assuming the
+	// operator already mounted it via fstab/systemd.
+	SourceDir string
 	// S3 (TargetS3).
 	Bucket    string // required for s3 targets
 	Region    string // required when Endpoint is empty (native AWS)
@@ -103,10 +109,16 @@ type Target struct {
 	// do the work. For SFTP it is the remote directory. For S3 it is the
 	// object-key prefix (optional; empty = bucket root).
 	Path string `json:"path"`
-	// Host/Port/Username are only meaningful for TargetSFTP.
+	// Host/Port/Username are meaningful for TargetSFTP, and Host/Username
+	// (no Port) for TargetNFS/TargetSMB when WebKVM mounts the share
+	// itself (see net_mount.go) rather than assuming a pre-existing
+	// fstab/systemd mount.
 	Host     string `json:"host,omitempty"`
 	Port     int    `json:"port,omitempty"`
 	Username string `json:"username,omitempty"`
+	// SourceDir, for TargetNFS/TargetSMB with Host set, is the remote
+	// export path (NFS) or share name (SMB) that got mounted at Path.
+	SourceDir string `json:"source_dir,omitempty"`
 	// Bucket/Region/Endpoint are only meaningful for TargetS3.
 	// Region is required for native AWS (Endpoint empty); compatible
 	// stores (MinIO/R2/B2) may set Endpoint and leave Region empty.
@@ -715,9 +727,25 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 		if opts.AccessKey == "" || opts.SecretKey == "" {
 			return Target{}, errors.New("access key and secret key are required for s3 targets")
 		}
-	case TargetLocal, TargetNFS, TargetSMB:
+	case TargetLocal:
 		if err := ValidateTargetPath(path, s.dataDir); err != nil {
 			return Target{}, err
+		}
+	case TargetNFS, TargetSMB:
+		if err := ValidateTargetPath(path, s.dataDir); err != nil {
+			return Target{}, err
+		}
+		// Host set = WebKVM mounts the share itself (net_mount.go).
+		// Host empty = the legacy assumption that the operator already
+		// has it mounted via fstab/systemd — kept for backward
+		// compatibility with targets set up before this existed.
+		if opts.Host != "" {
+			if opts.SourceDir == "" {
+				return Target{}, fmt.Errorf("%s targets require a source directory/share when host is set", ttype)
+			}
+			if ttype == TargetSMB && (opts.Username != "") != (opts.Password != "") {
+				return Target{}, errors.New("smb auth requires both username and password")
+			}
 		}
 	case "":
 		ttype = TargetLocal
@@ -737,14 +765,42 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 	if filter == "tags" && len(opts.VMTags) == 0 {
 		return Target{}, errors.New("vm_filter=tags requires at least one vm_tag")
 	}
+
+	// Self-managed NFS/SMB mount, done OUTSIDE the store lock: a slow or
+	// unreachable remote server must not block every other backup
+	// operation while systemd attempts the mount. The ID is generated
+	// here (rather than after acquiring the lock, as elsewhere) only so
+	// the SMB credentials file / systemd unit have a stable name;
+	// name-uniqueness is still re-checked under the lock below, and a
+	// late collision unwinds the mount.
+	var selfManagedID string
+	if (ttype == TargetNFS || ttype == TargetSMB) && opts.Host != "" {
+		selfManagedID = newID("t")
+		var mountErr error
+		if ttype == TargetNFS {
+			mountErr = mountNFSTarget(opts.Host, opts.SourceDir, path)
+		} else {
+			mountErr = mountSMBTarget(selfManagedID, opts.Host, opts.SourceDir, path, opts.Username, opts.Password)
+		}
+		if mountErr != nil {
+			return Target{}, fmt.Errorf("%s mount: %w", ttype, mountErr)
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.targets {
 		if t.Name == name {
+			if selfManagedID != "" {
+				_ = unmountTarget(selfManagedID, path)
+			}
 			return Target{}, fmt.Errorf("target %q already exists", name)
 		}
 	}
-	id := newID("t")
+	id := selfManagedID
+	if id == "" {
+		id = newID("t")
+	}
 	port := opts.Port
 	if port == 0 {
 		port = 22
@@ -761,6 +817,7 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 		Host:      opts.Host,
 		Port:      port,
 		Username:  opts.Username,
+		SourceDir: opts.SourceDir,
 		Bucket:    opts.Bucket,
 		Region:    opts.Region,
 		Endpoint:  opts.Endpoint,
@@ -773,6 +830,14 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 	}
 	if opts.VerifyOnWrite != nil {
 		t.VerifyOnWrite = *opts.VerifyOnWrite
+	}
+	// unwindMount cleans up a self-managed NFS/SMB mount on any failure
+	// path from here on, so a broken create never leaves an orphaned
+	// mount/credentials-file/systemd-unit behind.
+	unwindMount := func() {
+		if selfManagedID != "" {
+			_ = unmountTarget(selfManagedID, path)
+		}
 	}
 	s.targets[id] = t
 	switch ttype {
@@ -790,14 +855,34 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 			delete(s.targets, id)
 			return Target{}, err
 		}
+	case TargetSMB:
+		if opts.Username != "" {
+			// The live credential the mount actually uses lives in the
+			// root-only file net_mount.go wrote; this copy in the
+			// secrets store just keeps this target consistent with how
+			// every other credentialed target type is represented.
+			s.secrets[id] = TargetSecret{Password: opts.Password}
+			if err := s.saveSecrets(); err != nil {
+				delete(s.targets, id)
+				unwindMount()
+				return Target{}, err
+			}
+		}
+		if err := os.MkdirAll(path, 0o755); err != nil { // lgtm[go/path-injection] - path validated via ValidateTargetPath above
+			delete(s.targets, id)
+			unwindMount()
+			return Target{}, fmt.Errorf("create path: %w", err)
+		}
 	default:
 		if err := os.MkdirAll(path, 0o755); err != nil { // lgtm[go/path-injection] - path validated via ValidateTargetPath above
 			delete(s.targets, id)
+			unwindMount()
 			return Target{}, fmt.Errorf("create path: %w", err)
 		}
 	}
 	if err := s.saveTargets(); err != nil {
 		delete(s.targets, id)
+		unwindMount()
 		return Target{}, err
 	}
 	return *t, nil
@@ -971,8 +1056,18 @@ func (s *Store) DeleteTarget(id string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.targets[id]; !ok {
+	t, ok := s.targets[id]
+	if !ok {
 		return nil
+	}
+	// Tear down a self-managed NFS/SMB mount (net_mount.go) alongside
+	// the target itself, the same way DeletePool does for storage
+	// pools. A no-op for a plain local target, or an nfs/smb target the
+	// operator mounted by hand before this feature existed.
+	if (t.Type == TargetNFS || t.Type == TargetSMB) && isSelfManagedMount(t.Path) {
+		if err := unmountTarget(id, t.Path); err != nil {
+			slog.Warn("backup_target_unmount_failed", "target", id, "err", err)
+		}
 	}
 	delete(s.targets, id)
 	delete(s.secrets, id)

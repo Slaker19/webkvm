@@ -335,7 +335,7 @@
           {#each protectedPorts as port (port)}
             <span
               class="px-2 py-0.5 rounded-md bg-muted/50 text-xs font-mono border border-border"
-              title="Always open">:{port}</span
+              title={t('firewall.protectedPortTooltip')}>:{port}</span
             >
           {/each}
         </div>

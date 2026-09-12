@@ -182,6 +182,19 @@ async function request(path, opts = {}) {
       });
     }
     if (res.status === 403) {
+      // A missing/mismatched CSRF cookie is unrecoverable without a
+      // fresh login: /auth/refresh itself requires the very same
+      // double-submit pairing to succeed, so retrying through it would
+      // 403 again for the same reason (no header/cookie combination we
+      // could resend would suddenly start matching). Rather than
+      // surfacing this raw backend string wherever the failing call
+      // happens to render it (e.g. a terminal panel), treat it like an
+      // expired session: clear local state and bounce to /login, same
+      // as the 401 path above.
+      if (data.error === 'invalid csrf token') {
+        auth.onUnauthorized('session_expired');
+        throw new ApiError('Session expired', 403, 'unauthorized');
+      }
       throw new ApiError(data.error || 'Forbidden', 403, 'forbidden');
     }
     throw new ApiError(
@@ -271,6 +284,11 @@ export const api = {
   // --- storage ---
   listPools: () => request('/storage/pools'),
   createPool: (data) => request('/storage/pools', { method: 'POST', body: JSON.stringify(data) }),
+  // browseRemote lists the subfolders of an NFS export or SMB share —
+  // shared by the storage pool AND backup target forms (see
+  // RemoteFolderBrowser.svelte).
+  browseRemote: (data) =>
+    request('/storage/browse-remote', { method: 'POST', body: JSON.stringify(data) }),
   // updatePool calls PUT /api/storage/pools/{name} to rotate
   // credentials on a CIFS pool or to drive the cifs-needs-reauth
   // recovery path after a libvirtd reinstall. The backend
@@ -420,6 +438,11 @@ export const api = {
   deleteNetwork: (id) => request(`/networks/${id}`, { method: 'DELETE' }),
   startNetwork: (id) => request(`/networks/${id}/start`, { method: 'POST' }),
   stopNetwork: (id) => request(`/networks/${id}/stop`, { method: 'POST' }),
+  listNetworkLeases: (id) => request(`/networks/${id}/leases`),
+  releaseNetworkLease: (id, mac, ip) =>
+    request(`/networks/${id}/leases/${encodeURIComponent(mac)}?ip=${encodeURIComponent(ip)}`, {
+      method: 'DELETE',
+    }),
 
   // --- host ---
   getHostInfo: () => request('/host'),

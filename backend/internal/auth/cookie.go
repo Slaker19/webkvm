@@ -58,11 +58,19 @@ func ClearSessionCookie(w http.ResponseWriter, secure bool) {
 	})
 }
 
-// SetCSRFCookie writes the non-HttpOnly CSRF cookie.
-func SetCSRFCookie(w http.ResponseWriter, value string, secure bool) {
+// SetCSRFCookie writes the non-HttpOnly CSRF cookie. maxAge must match
+// the session cookie's own MaxAge (the caller's TokenTTL) — leaving it
+// unset made this a browser SESSION cookie while the JWT session cookie
+// is long-lived, so closing and reopening the browser silently dropped
+// the CSRF cookie while the login itself was still valid: the SPA would
+// restore a logged-in UI from the surviving session cookie but with an
+// empty csrfState, and the very first mutating request (e.g. opening a
+// VM/host terminal ticket) failed with "invalid csrf token" until the
+// user logged out and back in.
+func SetCSRFCookie(w http.ResponseWriter, value string, secure bool, maxAge int) {
 	http.SetCookie(w, &http.Cookie{
 		Name: CSRFCookieName, Value: value, Path: "/",
-		HttpOnly: false, Secure: secure, SameSite: http.SameSiteLaxMode,
+		HttpOnly: false, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: maxAge,
 	})
 }
 

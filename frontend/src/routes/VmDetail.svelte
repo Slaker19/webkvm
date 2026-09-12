@@ -1876,10 +1876,10 @@
                         >{iface.model}</span
                       >
                       <span class="text-sm">{networkLabelFor(iface.network, networks)}</span>
-                      {#if vm.state === 'running' && vmIps(vm).length}
+                      {#if vm.state === 'running' && iface.ips?.length}
                         <span
                           class="text-xs px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent font-mono"
-                          >{vmIps(vm).join(', ')}</span
+                          >{iface.ips.join(', ')}</span
                         >
                       {/if}
                     </div>
@@ -2289,7 +2289,7 @@
 
         {#snippet sec_serial()}
           <div id="vm-serial-block">
-            <BlockCard bid="serial" title="Consola serial">
+            <BlockCard bid="serial" title={t('vmDetail.serialConsoleTitle')}>
               <TerminalPanel mode="vm" {vmId} />
             </BlockCard>
           </div>
@@ -2422,12 +2422,12 @@
             {/if}
             <Button variant="outline" onclick={gotoSerial} class="w-full">
               <Terminal class="w-4 h-4 mr-1.5" />
-              Serial Console
+              {t('vmDetail.serialConsole')}
             </Button>
             {#if appInfo}
               <Button variant="outline" onclick={showAppCredentials} class="w-full">
                 <KeyRound class="w-4 h-4 mr-1.5" />
-                Credenciales de la app
+                {t('vmDetail.appCredentials')}
               </Button>
             {/if}
             {#if auth.isAdmin() && !isContainerVm}
@@ -2435,12 +2435,10 @@
                 variant="outline"
                 onclick={resetPassword}
                 disabled={busy || (vm && vm.state !== 'running')}
-                title={vm && vm.state !== 'running'
-                  ? 'The VM must be running with qemu-guest-agent to reset its password'
-                  : ''}
+                title={vm && vm.state !== 'running' ? t('vmDetail.resetPasswordHint') : ''}
                 class="w-full"
               >
-                Reset Password
+                {t('vmDetail.resetPassword')}
               </Button>
             {/if}
             <Button
@@ -2484,22 +2482,24 @@
                   'vmDetail.exportingShort'
                 )}{:else}<Download class="w-4 h-4 mr-1.5" />{t('vmDetail.exportBackup')}{/if}
             </Button>
-            <div class="grid grid-cols-2 gap-2">
-              <Button
-                variant="outline"
-                class="w-full justify-center"
-                onclick={() => downloadConsoleFile('rdp')}
-              >
-                RDP
-              </Button>
-              <Button
-                variant="outline"
-                class="w-full justify-center"
-                onclick={() => downloadConsoleFile('spice')}
-              >
-                SPICE
-              </Button>
-            </div>
+            {#if !isContainerVm}
+              <div class="grid grid-cols-2 gap-2">
+                <Button
+                  variant="outline"
+                  class="w-full justify-center"
+                  onclick={() => downloadConsoleFile('rdp')}
+                >
+                  RDP
+                </Button>
+                <Button
+                  variant="outline"
+                  class="w-full justify-center"
+                  onclick={() => downloadConsoleFile('spice')}
+                >
+                  SPICE
+                </Button>
+              </div>
+            {/if}
             <!-- Autostart toggle: lives at the bottom of the
 						     Actions card so it doesn't compete with the
 						     primary action (Open Console). The Switch's
@@ -3109,14 +3109,16 @@
           {#each networks as net}<option value={net.name}>{networkLabel(net)}</option>{/each}
         </select>
       </div>
-      <div>
-        <label for="anet-model" class="block text-sm font-medium mb-1.5"
-          >{t('vmDetail.model')}</label
-        >
-        <select id="anet-model" bind:value={aNetModel} class="input">
-          {#each networkModels as m}<option value={m.value}>{m.label}</option>{/each}
-        </select>
-      </div>
+      {#if !isContainerVm}
+        <div>
+          <label for="anet-model" class="block text-sm font-medium mb-1.5"
+            >{t('vmDetail.model')}</label
+          >
+          <select id="anet-model" bind:value={aNetModel} class="input">
+            {#each networkModels as m}<option value={m.value}>{m.label}</option>{/each}
+          </select>
+        </div>
+      {/if}
     </div>
     <Dialog.Footer class="gap-2">
       <Button

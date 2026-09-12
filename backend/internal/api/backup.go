@@ -34,6 +34,10 @@ type backupTargetCreateRequest struct {
 	Username   string   `json:"username"`
 	Password   string   `json:"password"`
 	SSHKeyPath string   `json:"ssh_key_path"`
+	// SourceDir is the remote NFS export path or SMB share name, for
+	// nfs/smb targets where Host is set (WebKVM mounts the share
+	// itself — see backupstore/net_mount.go).
+	SourceDir string `json:"source_dir"`
 	// S3 (TargetS3, V13-BCK-06).
 	Bucket    string `json:"bucket"`
 	Region    string `json:"region"`
@@ -76,6 +80,7 @@ func (h *Handler) CreateBackupTarget(w http.ResponseWriter, r *http.Request) {
 			Username:      req.Username,
 			Password:      req.Password,
 			SSHKeyPath:    req.SSHKeyPath,
+			SourceDir:     req.SourceDir,
 			Bucket:        req.Bucket,
 			Region:        req.Region,
 			Endpoint:      req.Endpoint,

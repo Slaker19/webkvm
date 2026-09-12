@@ -26,7 +26,10 @@ func TestValidatePasswordStrengthPolicy(t *testing.T) {
 		pw    string
 		valid bool
 	}{
-		{"11 chars, insuficiente", "abcDEFG1$23", false},
+		{"7 chars, insuficiente", "aB3$xyz", false},
+		{"8 chars, 3 clases", "aB3$xyzq", true},
+		{"8 chars, 1 clase", "abcdefgh", false},
+		{"11 chars, 4 clases", "abcDEFG1$23", true},
 		{"12 chars, 4 clases", "xkU7!mQa$2Zp", true},
 		{"12 chars, 1 clase", "abcdefghijkl", false},
 		{"12 chars, 2 clases (solo minus+dig)", "abcdefgh1234", false},

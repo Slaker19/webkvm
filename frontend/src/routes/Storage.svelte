@@ -14,6 +14,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+  import RemoteFolderBrowser from '$lib/components/RemoteFolderBrowser.svelte';
   import ErrorModal from '$lib/components/ErrorModal.svelte';
   import * as Dialog from '$lib/components/ui/dialog';
   import { navigate } from '$lib/router.svelte.js';
@@ -49,6 +50,20 @@
   let poolName = $state('');
   let poolPath = $state('');
   let poolPurpose = $state('disk');
+  // 'dir' = plain local directory; 'netfs' = remote NFS/SMB share,
+  // mounted by libvirt's own netfs pool driver (no manual fstab entry).
+  let poolKind = $state('dir');
+  let poolSourceFormat = $state('nfs');
+  let poolSourceHost = $state('');
+  let poolSourceDir = $state('');
+  let poolSourceUsername = $state('');
+  let poolSourcePassword = $state('');
+  // Appends a subfolder chosen via RemoteFolderBrowser onto the
+  // existing export path / share name (no shared utils.js exists in
+  // this frontend for a one-off path-join helper).
+  function joinPath(base, sub) {
+    return sub ? base.replace(/\/+$/, '') + '/' + sub : base;
+  }
   // V12-FE-02: in-flight mutation flags (double-click guards).
   let poolCreating = $state(false);
   let volCreating = $state(false);
@@ -130,6 +145,18 @@
     confirmState = { ...opts, open: true, loading: false };
   }
 
+  function resetPoolForm() {
+    poolName = '';
+    poolPath = '';
+    poolPurpose = 'disk';
+    poolKind = 'dir';
+    poolSourceFormat = 'nfs';
+    poolSourceHost = '';
+    poolSourceDir = '';
+    poolSourceUsername = '';
+    poolSourcePassword = '';
+  }
+
   async function createPool() {
     if (poolCreating) return;
     if (!auth.isAdmin()) {
@@ -137,18 +164,34 @@
       return;
     }
     if (!poolName || !poolPath) return;
+    const body = {
+      name: poolName,
+      path: poolPath,
+      purpose: poolPurpose,
+      type: poolKind,
+    };
+    if (poolKind === 'netfs') {
+      if (!poolSourceHost || !poolSourceDir) {
+        toast.error(t('storage.netfsRequireSource'));
+        return;
+      }
+      if ((poolSourceUsername !== '') !== (poolSourcePassword !== '')) {
+        toast.error(t('storage.cifsAuthRequired'));
+        return;
+      }
+      body.source_host = poolSourceHost;
+      body.source_dir = poolSourceDir;
+      body.source_format = poolSourceFormat;
+      if (poolSourceFormat === 'cifs' && poolSourceUsername) {
+        body.source_username = poolSourceUsername;
+        body.source_password = poolSourcePassword;
+      }
+    }
     poolCreating = true;
     try {
-      await api.createPool({
-        name: poolName,
-        path: poolPath,
-        purpose: poolPurpose,
-        type: 'dir',
-      });
+      await api.createPool(body);
       const createdName = poolName;
-      poolName = '';
-      poolPath = '';
-      poolPurpose = 'disk';
+      resetPoolForm();
       showCreatePool = false;
       toast.success(t('storage.poolCreated', { name: createdName }));
       await load();
@@ -493,8 +536,33 @@
   // ISO-purpose pool is meant for boot media, not blank/uploaded disks.
   const selectedPoolIsISO = $derived(pools.find((p) => p.name === selectedPool)?.purpose === 'iso');
 
-  const totalCapacity = $derived(pools.reduce((sum, p) => sum + (p.capacity || 0), 0));
-  const totalAllocated = $derived(pools.reduce((sum, p) => sum + (p.allocated || 0), 0));
+  // For a "dir" libvirt pool, Capacity/Allocated/Available all come from
+  // statvfs() on the pool's underlying FILESYSTEM — none of them are
+  // pool-specific. Confirmed live with `virsh pool-info` directly (no
+  // WebKVM code involved): an entirely EMPTY pool reported the exact
+  // same Allocation as another pool on the same disk that actually has
+  // several GB of real qcow2 files, both matching the disk's real
+  // (whole-filesystem) used bytes. So two pools sharing one disk (the
+  // common case: an ISO pool and a disk pool both under the same
+  // DATA_DIR) report IDENTICAL numbers for all three fields, and a naive
+  // sum of either double-counts that one physical disk. Dedupe by
+  // device_id for both aggregates (falls back to per-pool if it's
+  // missing, e.g. a stat() failure — safer to risk not deduping an
+  // unknown device than to wrongly merge two pools that aren't actually
+  // on the same disk).
+  function sumDedupedByDevice(list, field) {
+    const seenDevices = new Set();
+    let sum = 0;
+    for (const p of list) {
+      const key = p.device_id || `pool:${p.name}`;
+      if (seenDevices.has(key)) continue;
+      seenDevices.add(key);
+      sum += p[field] || 0;
+    }
+    return sum;
+  }
+  const totalCapacity = $derived(sumDedupedByDevice(pools, 'capacity'));
+  const totalAllocated = $derived(sumDedupedByDevice(pools, 'allocated'));
 
   $effect(() => {
     // Whenever we see a new snapshot_of_vm_id, fetch the VM name
@@ -575,14 +643,58 @@
               <option value="disk">{t('storage.vdi')}</option>
               <option value="iso">{t('storage.iso')}</option>
             </select>
+            <select bind:value={poolKind} class="input w-40">
+              <option value="dir">{t('storage.localDir')}</option>
+              <option value="netfs">{t('storage.netfs')}</option>
+            </select>
           </div>
-          <p class="text-xs text-muted-foreground">{t('storage.dirHint')}</p>
-          <div class="flex flex-wrap gap-2">
-            <Input
-              bind:value={poolPath}
-              placeholder="/path/to/pool (or an NFS/SMB mountpoint)"
-              class="flex-1 min-w-[200px]"
+
+          {#if poolKind === 'dir'}
+            <p class="text-xs text-muted-foreground">{t('storage.dirHint')}</p>
+            <div class="flex flex-wrap gap-2">
+              <Input
+                bind:value={poolPath}
+                placeholder="/path/to/pool"
+                class="flex-1 min-w-[200px]"
+              />
+            </div>
+          {:else}
+            <p class="text-xs text-muted-foreground">{t('storage.netfsHelp')}</p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <select bind:value={poolSourceFormat} class="input">
+                <option value="nfs">NFS</option>
+                <option value="cifs">SMB / CIFS</option>
+              </select>
+              <Input bind:value={poolSourceHost} placeholder={t('storage.serverPlaceholder')} />
+              <Input bind:value={poolSourceDir} placeholder={t('storage.exportPathPlaceholder')} />
+              <Input bind:value={poolPath} placeholder="/mnt/pool (local mount point)" />
+            </div>
+            <RemoteFolderBrowser
+              format={poolSourceFormat}
+              host={poolSourceHost}
+              sourceDir={poolSourceDir}
+              username={poolSourceUsername}
+              password={poolSourcePassword}
+              onSelect={(sub) => (poolSourceDir = joinPath(poolSourceDir, sub))}
             />
+            {#if poolSourceFormat === 'cifs'}
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <Input
+                  bind:value={poolSourceUsername}
+                  placeholder={t('storage.usernamePlaceholder')}
+                  autocomplete="off"
+                />
+                <Input
+                  bind:value={poolSourcePassword}
+                  type="password"
+                  placeholder={t('storage.passwordPlaceholder')}
+                  autocomplete="new-password"
+                />
+              </div>
+            {/if}
+          {/if}
+
+          <div>
             <Button disabled={poolCreating} onclick={createPool}>
               {#if poolCreating}<Spinner size="sm" />{:else}{t('common.create')}{/if}
             </Button>
@@ -590,13 +702,13 @@
         </div>
       {/if}
 
-      <div class="space-y-1.5">
+      <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
         <!-- Every pool is usable for both volumes and ISOs — "purpose"
              below is just an informational badge, not a restriction
              on what you can store in the pool. -->
         {#each pools as p (p.name)}
           <div
-            class="flex items-center justify-between px-3 py-2 rounded-md border cursor-pointer transition-colors {selectedPool ===
+            class="relative flex flex-col gap-2 p-3.5 rounded-lg border cursor-pointer transition-colors {selectedPool ===
             p.name
               ? 'border-accent/50 bg-accent/5'
               : 'border-border bg-background hover:bg-muted/30'}"
@@ -610,68 +722,73 @@
             role="button"
             tabindex="0"
           >
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2">
-                <span class="text-sm font-medium {selectedPool === p.name ? 'text-accent' : ''}"
-                  >{p.name}</span
-                >
-                {#if p.purpose === 'iso'}
-                  <span
-                    class="text-[10px] px-1.5 py-0.5 rounded border border-warning/30 bg-warning/10 text-warning uppercase tracking-wide"
-                    >ISO</span
-                  >
-                {:else}
-                  <span
-                    class="text-[10px] px-1.5 py-0.5 rounded border border-accent/30 bg-accent/10 text-accent uppercase tracking-wide"
-                    >VDI</span
-                  >
-                {/if}
+            {#if auth.role === 'admin'}
+              <button
+                onclick={(e) => {
+                  e.stopPropagation();
+                  deletePool(p.name);
+                }}
+                class="absolute top-2 right-2 p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                aria-label={`${t('common.delete')} ${p.name}`}
+              >
+                <Icon name="trash" size={14} />
+              </button>
+            {/if}
+            <div class="flex items-center gap-2 pr-7 min-w-0">
+              <div
+                class="w-8 h-8 rounded-md shrink-0 flex items-center justify-center {p.purpose ===
+                'iso'
+                  ? 'bg-warning/10 text-warning'
+                  : 'bg-accent/10 text-accent'}"
+              >
+                <Icon name="hardDrive" size={16} />
               </div>
-              {#if auth.role === 'admin'}
-                <p class="text-xs text-muted-foreground font-mono mt-0.5 truncate">{p.path}</p>
-              {/if}
-              {#if p.capacity > 0}
-                <div class="mt-1.5 max-w-[300px]">
-                  <ProgressBar value={(p.allocated / p.capacity) * 100} size="sm" />
-                  <div
-                    class="flex items-center justify-between text-[10px] text-muted-foreground tnum mt-0.5"
-                  >
-                    <span>{formatBytes(p.allocated)} {t('storage.usedSpace')}</span>
-                    <span>{formatBytes(p.capacity)}</span>
-                  </div>
-                </div>
+              <span
+                class="text-sm font-medium truncate {selectedPool === p.name ? 'text-accent' : ''}"
+                >{p.name}</span
+              >
+              {#if p.purpose === 'iso'}
+                <span
+                  class="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-warning/30 bg-warning/10 text-warning uppercase tracking-wide"
+                  >ISO</span
+                >
+              {:else}
+                <span
+                  class="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-accent/30 bg-accent/10 text-accent uppercase tracking-wide"
+                  >VDI</span
+                >
               {/if}
             </div>
-            {#if auth.role === 'admin' || auth.role === 'operator'}
-              <div class="flex items-center gap-1 shrink-0">
-                {#if auth.role === 'admin'}
-                  <button
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      deletePool(p.name);
-                    }}
-                    class="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                    aria-label={`${t('common.delete')} ${p.name}`}
-                  >
-                    <Icon name="trash" size={16} />
-                  </button>
-                {/if}
+            {#if auth.role === 'admin'}
+              <p class="text-xs text-muted-foreground font-mono truncate">{p.path}</p>
+            {/if}
+            {#if p.capacity > 0}
+              <div>
+                <ProgressBar value={(p.allocated / p.capacity) * 100} size="sm" />
+                <div
+                  class="flex items-center justify-between text-[10px] text-muted-foreground tnum mt-0.5"
+                >
+                  <span>{formatBytes(p.allocated)} {t('storage.usedSpace')}</span>
+                  <span>{formatBytes(p.capacity)}</span>
+                </div>
               </div>
             {/if}
           </div>
         {/each}
         {#if pools.length === 0}
-          <EmptyState
-            icon="disk"
-            title={t('storage.noPools')}
-            description={t('storage.noPoolsHint')}
-          >
-            {#snippet action()}
-              <Button size="sm" onclick={() => (showCreatePool = true)}>
-                {t('storage.createPool')}
-              </Button>
-            {/snippet}
-          </EmptyState>
+          <div class="sm:col-span-2 xl:col-span-3">
+            <EmptyState
+              icon="disk"
+              title={t('storage.noPools')}
+              description={t('storage.noPoolsHint')}
+            >
+              {#snippet action()}
+                <Button size="sm" onclick={() => (showCreatePool = true)}>
+                  {t('storage.createPool')}
+                </Button>
+              {/snippet}
+            </EmptyState>
+          </div>
         {/if}
       </div>
     </div>

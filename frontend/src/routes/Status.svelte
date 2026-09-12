@@ -380,6 +380,119 @@
       />
     </div>
 
+    <!-- Aggregate disk + load/uptime -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+      <StatCard
+        label={t('status.diskTitle')}
+        status={status.disk.used_pct > 90
+          ? 'crashed'
+          : status.disk.used_pct > 75
+            ? 'paused'
+            : 'running'}
+        value={`${fmtBytes(status.disk.used_bytes)} / ${fmtBytes(status.disk.total_bytes)}`}
+        hint={`${status.disk.used_pct.toFixed(1)}%`}
+      />
+      <StatCard
+        label={t('status.loadTitle')}
+        status="running"
+        value={`${status.load.load1.toFixed(2)} ${status.load.load5.toFixed(2)} ${status.load.load15.toFixed(2)}`}
+        hint={t('status.hostUptime', { uptime: fmtUptime(status.host_uptime_sec) })}
+      />
+    </div>
+
+    <!-- System services -->
+    <div class="border border-border rounded-lg bg-card p-5 mb-4">
+      <h2 class="text-sm font-semibold mb-3">{t('status.servicesTitle')}</h2>
+      <div class="space-y-2">
+        {#each status.services as svc}
+          <div
+            class="flex items-center justify-between text-sm border-b border-border/50 pb-2 last:border-0 last:pb-0"
+          >
+            <div class="min-w-0">
+              <div class="font-medium truncate">
+                {svc.key === 'libvirt'
+                  ? t('status.serviceLibvirt')
+                  : svc.key === 'incus'
+                    ? t('status.serviceIncus')
+                    : svc.key.startsWith('dnsmasq:')
+                      ? t('status.servicesDnsmasqBridge', { bridge: svc.key.slice(8) })
+                      : svc.unit}
+              </div>
+              <div class="text-xs text-muted-foreground truncate">
+                {svc.description || svc.unit}
+              </div>
+            </div>
+            <span
+              class="shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium {!svc.found
+                ? 'bg-muted text-muted-foreground'
+                : svc.active
+                  ? 'bg-success/10 text-success'
+                  : 'bg-destructive/10 text-destructive'}"
+            >
+              <span
+                class="w-1.5 h-1.5 rounded-full {!svc.found
+                  ? 'bg-muted-foreground'
+                  : svc.active
+                    ? 'bg-success'
+                    : 'bg-destructive'}"
+              ></span>
+              {!svc.found
+                ? t('status.serviceNotFound')
+                : svc.active
+                  ? t('status.serviceRunning')
+                  : t('status.serviceStopped')}
+            </span>
+          </div>
+        {:else}
+          <p class="text-sm text-muted-foreground">{t('status.noServices')}</p>
+        {/each}
+      </div>
+    </div>
+
+    <!-- Hypervisor platform -->
+    <div class="border border-border rounded-lg bg-card p-5 mb-4">
+      <h2 class="text-sm font-semibold mb-3">{t('status.platformTitle')}</h2>
+      <dl class="text-sm space-y-1.5">
+        <div class="flex justify-between gap-2">
+          <dt class="text-muted-foreground shrink-0">{t('status.platformKernel')}</dt>
+          <dd class="font-mono truncate text-right">{status.platform.kernel || '—'}</dd>
+        </div>
+        <div class="flex justify-between gap-2">
+          <dt class="text-muted-foreground shrink-0">{t('status.platformQemu')}</dt>
+          <dd class="font-mono truncate text-right">{status.platform.qemu_version || '—'}</dd>
+        </div>
+        <div class="flex justify-between gap-2">
+          <dt class="text-muted-foreground shrink-0">{t('status.platformLibvirt')}</dt>
+          <dd class="font-mono truncate text-right">{status.platform.libvirt_version || '—'}</dd>
+        </div>
+        {#if status.platform.incus_enabled}
+          <div class="flex justify-between gap-2">
+            <dt class="text-muted-foreground shrink-0">{t('status.platformIncus')}</dt>
+            <dd class="font-mono truncate text-right">{status.platform.incus_version || '—'}</dd>
+          </div>
+        {/if}
+        <div class="flex justify-between gap-2">
+          <dt class="text-muted-foreground shrink-0">{t('status.platformNested')}</dt>
+          <dd class="text-right">
+            {status.platform.nested_virt.supported
+              ? t('status.platformEnabled')
+              : t('status.platformDisabled')}
+            {#if status.platform.nested_virt.vendor && status.platform.nested_virt.vendor !== 'unknown'}
+              <span class="text-muted-foreground">({status.platform.nested_virt.vendor})</span>
+            {/if}
+          </dd>
+        </div>
+        <div class="flex justify-between gap-2">
+          <dt class="text-muted-foreground shrink-0">{t('status.platformIommu')}</dt>
+          <dd class="text-right">
+            {status.platform.iommu.enabled
+              ? t('status.platformGroups', { n: status.platform.iommu.groups })
+              : t('status.platformDisabled')}
+          </dd>
+        </div>
+      </dl>
+    </div>
+
     <!-- Storage pools -->
     <div class="border border-border rounded-lg bg-card p-5 mb-4">
       <h2 class="text-sm font-semibold mb-3">{t('status.storagePools')}</h2>

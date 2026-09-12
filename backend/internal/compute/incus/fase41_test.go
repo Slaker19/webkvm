@@ -180,6 +180,38 @@ func TestIncusBackendAttachNetworkIface(t *testing.T) {
 	}
 }
 
+// TestIncusBackendAttachNetworkIfaceWithoutPriorCloudInit reproduces the
+// reported bug: a container created without any cloud-init fields filled
+// in (initialContainer() has no user.network-config key at all) never got
+// its second NIC configured for DHCP, because AttachNetworkIface used to
+// only regenerate user.network-config when the key already existed. The
+// interface showed up in the UI (attached at the Incus device level) but
+// never received an IP, unlike a KVM VM where the guest OS auto-DHCPs any
+// hot-attached NIC on its own.
+func TestIncusBackendAttachNetworkIfaceWithoutPriorCloudInit(t *testing.T) {
+	real := findAnyPhysicalBridge()
+	if real == "" {
+		t.Skip("no Linux bridge on the host; attach resolution requires one")
+	}
+	ct := initialContainer()
+	if v, ok := ct.Config["user.network-config"]; ok {
+		t.Fatalf("test fixture must start with no user.network-config, got %q", v)
+	}
+	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": ct}, nil)
+	b, _ := NewIncusBackend(sock)
+	if err := b.AttachNetworkIface("ct1", models.AttachNetRequest{Network: real}); err != nil {
+		t.Fatal(err)
+	}
+	inst, _, err := b.client.GetInstance("ct1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nc := inst.Config["user.network-config"]
+	if !strings.Contains(nc, "eth0:") || !strings.Contains(nc, "eth1:") {
+		t.Fatalf("user.network-config must declare both eth0 and eth1 even without prior cloud-init, got: %q", nc)
+	}
+}
+
 func TestIncusBackendAttachUsesResolvedBridge(t *testing.T) {
 	real := findAnyPhysicalBridge()
 	if real == "" {

@@ -130,7 +130,7 @@ func withStubbedBackup(t *testing.T, stdout string, err error) {
 	t.Helper()
 	orig := backupRunner
 	origRoot := isRoot
-	backupRunner = func(ctx context.Context) ([]byte, error) {
+	backupRunner = func(ctx context.Context, mount string) ([]byte, error) {
 		return []byte(stdout), err
 	}
 	isRoot = func() bool { return true }

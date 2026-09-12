@@ -369,8 +369,12 @@ func (h *Handler) DeletePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Guard: refuse to delete a pool whose volumes are attached to VMs.
+	// An inactive pool ("not active", not just "not found") can't have
+	// any live attachments either — a netfs pool whose remote mount
+	// failed or dropped is a real state, and an admin must still be
+	// able to delete it to clean up, or they'd be stuck forever.
 	vols, err := h.compute.ListStorageVolumes(name)
-	if err != nil && !strings.Contains(err.Error(), "not found") {
+	if err != nil && !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "not active") {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

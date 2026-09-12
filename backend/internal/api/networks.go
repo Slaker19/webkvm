@@ -1,8 +1,10 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"webkvm/internal/compute"
 	"webkvm/internal/models"
@@ -70,6 +72,14 @@ func (h *Handler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.compute.DeleteNetwork(id); err != nil {
+		// A bridge still carrying a live VM/container tap is an expected,
+		// caller-actionable guard (detach the interface first), not a
+		// server failure — matches the 409-for-state-conflicts pattern
+		// vmActionErr already uses for VM lifecycle ops.
+		if errors.Is(err, compute.ErrNetworkInUse) {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -97,4 +107,48 @@ func (h *Handler) StopNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit.Log(auditFor(r, "network.stop", id, nil))
 	jsonResp(w, http.StatusOK, net)
+}
+
+func (h *Handler) ListNetworkLeases(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	leases, err := h.compute.NetworkLeases(id)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jsonResp(w, http.StatusOK, leases)
+}
+
+func (h *Handler) ReleaseNetworkLease(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	// chi keeps the raw (still percent-encoded) path segment whenever the
+	// request's RawPath differs from Path — true here since a MAC's ':'
+	// gets escaped to %3A by the client but doesn't need re-escaping in a
+	// path segment, so URLParam alone would hand back "%3A" literally.
+	// Same fix already applied to the equivalent VM interface route
+	// (vms.go's DetachNetworkIface).
+	mac, err := url.PathUnescape(chi.URLParam(r, "mac"))
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid mac parameter")
+		return
+	}
+	ip := r.URL.Query().Get("ip")
+	if ip == "" {
+		jsonErr(w, http.StatusBadRequest, "ip query parameter is required")
+		return
+	}
+	if err := h.compute.ReleaseNetworkLease(id, ip, mac); err != nil {
+		// dhcp_release itself can't distinguish "released" from "sent a
+		// packet for an address nobody had leased" (it exits 0 either
+		// way), so the libvirt layer checks the leasefile first — a
+		// clean 404 here, not a 200 masking a no-op.
+		if errors.Is(err, compute.ErrLeaseNotFound) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.audit.Log(auditFor(r, "network.lease.release", id, map[string]any{"ip": ip, "mac": mac}))
+	jsonResp(w, http.StatusOK, map[string]string{"status": "released"})
 }

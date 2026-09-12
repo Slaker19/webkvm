@@ -30,6 +30,9 @@ type Record struct {
 	CIDR      string    `json:"cidr,omitempty"`
 	Interface string    `json:"interface,omitempty"`  // direct only
 	MovedIPv4 string    `json:"moved_ipv4,omitempty"` // direct only: CIDR moved off Interface at creation, to restore on delete
+	DHCPStart string    `json:"dhcp_start,omitempty"` // nat/isolated only, when DHCP is on
+	DHCPEnd   string    `json:"dhcp_end,omitempty"`   // nat/isolated only, when DHCP is on
+	DNS       []string  `json:"dns,omitempty"`        // nat/isolated only, when DHCP is on
 	CreatedAt time.Time `json:"created_at"`
 }
 

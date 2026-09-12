@@ -56,7 +56,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	// V13-SEC-01: session rides an HttpOnly cookie; the CSRF value is a
 	// second, JS-readable cookie (double-submit) + echoed in the JSON.
 	auth.SetSessionCookie(w, token, h.auth.SecureCookies(), int(h.auth.TokenTTL().Seconds()))
-	auth.SetCSRFCookie(w, csrf, h.auth.SecureCookies())
+	auth.SetCSRFCookie(w, csrf, h.auth.SecureCookies(), int(h.auth.TokenTTL().Seconds()))
 
 	_, _, ip := audit.FromRequest(r)
 	h.audit.Log(audit.Entry{
@@ -134,7 +134,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	auth.SetSessionCookie(w, newToken, h.auth.SecureCookies(), int(h.auth.TokenTTL().Seconds()))
 	if csrf != "" {
-		auth.SetCSRFCookie(w, csrf, h.auth.SecureCookies())
+		auth.SetCSRFCookie(w, csrf, h.auth.SecureCookies(), int(h.auth.TokenTTL().Seconds()))
 	}
 
 	jsonResp(w, http.StatusOK, models.LoginResponse{

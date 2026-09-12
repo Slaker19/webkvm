@@ -3,6 +3,7 @@ package compute
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 
 	"webkvm/internal/backupstore"
@@ -216,7 +217,15 @@ func (b *KVMBackend) CreateNetwork(req models.CreateNetworkRequest) (models.Netw
 func (b *KVMBackend) UpdateNetwork(name string, req models.UpdateNetworkRequest) (models.Network, error) {
 	return b.lv.UpdateNetwork(name, req)
 }
-func (b *KVMBackend) DeleteNetwork(id string) error { return b.lv.DeleteNetwork(id) }
+func (b *KVMBackend) DeleteNetwork(id string) error {
+	if err := b.lv.DeleteNetwork(id); err != nil {
+		if errors.Is(err, libvirt.ErrNetworkInUse) {
+			return fmt.Errorf("%w: %v", ErrNetworkInUse, err)
+		}
+		return err
+	}
+	return nil
+}
 func (b *KVMBackend) StartNetwork(name string) (models.Network, error) {
 	return b.lv.StartNetwork(name)
 }
@@ -225,6 +234,18 @@ func (b *KVMBackend) StopNetwork(name string) (models.Network, error) {
 }
 func (b *KVMBackend) CheckVLANSupport(networkName string) (models.VlanSupport, error) {
 	return b.lv.CheckVLANSupport(networkName)
+}
+func (b *KVMBackend) NetworkLeases(name string) ([]models.DHCPLease, error) {
+	return b.lv.NetworkLeases(name)
+}
+func (b *KVMBackend) ReleaseNetworkLease(br, ip, mac string) error {
+	if err := b.lv.ReleaseNetworkLease(br, ip, mac); err != nil {
+		if errors.Is(err, libvirt.ErrLeaseNotFound) {
+			return fmt.Errorf("%w: %v", ErrLeaseNotFound, err)
+		}
+		return err
+	}
+	return nil
 }
 
 // --- Console / cloud-init / metadata ---

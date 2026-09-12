@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -208,6 +209,11 @@ func (b *IncusBackend) ListDomains() ([]models.VM, error) {
 		// include it). Acceptable for the homelab context.
 		if st, _, err := b.client.GetInstanceState(instances[i].Name); err == nil {
 			vm.IP = instanceIP(st); vm.IPs = instanceIPs(st)
+			vm.UptimeSec = instanceUptimeSec(st)
+			macIPs := instanceIfaceIPs(st)
+			for j := range vm.Networks {
+				vm.Networks[j].IPs = macIPs[strings.ToLower(vm.Networks[j].MAC)]
+			}
 		}
 		out = append(out, vm)
 	}
@@ -223,8 +229,53 @@ func (b *IncusBackend) GetDomain(id string) (models.VM, error) {
 	// Surface the container's IP from the live instance state (eth0 IPv4).
 	if st, _, err := b.client.GetInstanceState(id); err == nil {
 		vm.IP = instanceIP(st); vm.IPs = instanceIPs(st)
+		vm.UptimeSec = instanceUptimeSec(st)
+		macIPs := instanceIfaceIPs(st)
+		for j := range vm.Networks {
+			vm.Networks[j].IPs = macIPs[strings.ToLower(vm.Networks[j].MAC)]
+		}
 	}
 	return vm, nil
+}
+
+// instanceUptimeSec derives a running container's uptime from Incus's own
+// process-start timestamp — previously never set for containers at all
+// (only KVM VMs computed one, from libvirt), so a running container's
+// Overview tab always showed "—" for uptime regardless of how long it had
+// actually been up.
+func instanceUptimeSec(st *api.InstanceState) int64 {
+	if st == nil || st.StartedAt.IsZero() {
+		return 0
+	}
+	if up := time.Since(st.StartedAt); up > 0 {
+		return int64(up.Seconds())
+	}
+	return 0
+}
+
+// instanceIfaceIPs maps each NIC's own MAC (lowercased) to its own IPv4
+// addresses — st.Network is already keyed by interface name with a Hwaddr
+// per entry, but that per-interface association was previously discarded:
+// every interface exposed the SAME instanceIPs() flat list regardless of
+// which NIC it actually belonged to, so a container with more than one NIC
+// showed the identical combined IP list on every row in the UI.
+func instanceIfaceIPs(st *api.InstanceState) map[string][]string {
+	out := map[string][]string{}
+	if st == nil {
+		return out
+	}
+	for _, net := range st.Network {
+		mac := strings.ToLower(net.Hwaddr)
+		if mac == "" {
+			continue
+		}
+		for _, a := range net.Addresses {
+			if a.Family == "inet" && a.Address != "" {
+				out[mac] = append(out[mac], a.Address)
+			}
+		}
+	}
+	return out
 }
 
 // instanceIPs extracts every IPv4 (eth0 first, then any interface except lo)
@@ -404,10 +455,15 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 		for k, v := range cloudKeys {
 			config[k] = v
 		}
-		// Derive the netplan from the actual NIC devices (currently just
-		// eth0) so the guest is configured exactly for what is attached.
-		config["user.network-config"] = lxdNetworkConfig(devices)
 	}
+	// Always derive the netplan from the actual NIC devices (currently
+	// just eth0), whether or not the operator filled in cloud-init.
+	// Without this, a container created with the cloud-init fields left
+	// blank never gets a user.network-config key at all; a later NIC
+	// attach then has nothing to regenerate (see the same guard removed
+	// in AttachNetworkIface/DetachNetworkIface below), so a second NIC
+	// never gets DHCPed in the guest and looks like it never got an IP.
+	config["user.network-config"] = lxdNetworkConfig(devices)
 	post := api.InstancesPost{
 		Name: req.Name,
 		Type: api.InstanceTypeContainer,
@@ -650,12 +706,15 @@ func (b *IncusBackend) AttachNetworkIface(id string, req models.AttachNetRequest
 		"name":    nicName,
 	}
 	// The guest only configures the NICs declared in its netplan
-	// (user.network-config). Regenerate it so the newly attached NIC
-	// gets DHCP on the next cloud-init/netplan run — otherwise the new
-	// interface would sit in the guest without an IP and look broken.
-	if inst.Config["user.network-config"] != "" {
-		inst.Config["user.network-config"] = lxdNetworkConfig(inst.Devices)
-	}
+	// (user.network-config). Regenerate it unconditionally — including
+	// when the container never had cloud-init network config to begin
+	// with (created without filling in the cloud-init fields) — so the
+	// newly attached NIC gets DHCP on the next cloud-init/netplan run.
+	// Previously this only ran when the key was already non-empty,
+	// which meant a container created without cloud-init could never
+	// get its second+ NIC configured: the interface showed up in the
+	// UI but never received an IP.
+	inst.Config["user.network-config"] = lxdNetworkConfig(inst.Devices)
 	op, err := b.client.UpdateInstance(id, api.InstancePut{
 		Config:      inst.Config,
 		Devices:     inst.Devices,
@@ -665,7 +724,99 @@ func (b *IncusBackend) AttachNetworkIface(id string, req models.AttachNetRequest
 	if err != nil {
 		return err
 	}
-	return waitOperation(op)
+	if err := waitOperation(op); err != nil {
+		return err
+	}
+	// Regenerating user.network-config (above) only helps guests that
+	// actually run cloud-init — plenty of stock container images
+	// (confirmed live: Debian's own container images) have no cloud-init
+	// at all and instead rely on a systemd-networkd unit that Incus/the
+	// image seeds ONLY for the primary NIC at creation time, or ship no
+	// per-interface config at all. For those, a hot-attached NIC would
+	// otherwise sit up at the link layer with no IP forever. Best-effort,
+	// never fails the attach itself.
+	b.afterAttachConfigureGuestNetwork(id, nicName)
+	return nil
+}
+
+// afterAttachConfigureGuestNetwork nudges a RUNNING container's guest OS
+// into actually using a newly attached NIC, covering the case
+// user.network-config regeneration cannot reach (see AttachNetworkIface):
+// a guest with no cloud-init, or one that only re-applies cloud-init on
+// reboot. It (1) requests a DHCP lease on the interface immediately via
+// whichever DHCP client the guest has (isc-dhcp-client's dhclient or
+// busybox's udhcpc cover the large majority of Debian/Ubuntu/Alpine
+// container images), so the IP appears right away without a reboot, and
+// (2) if the guest is recognizably using systemd-networkd (it already has
+// at least one unit under /etc/systemd/network/, e.g. the one seeding
+// eth0), adds a matching unit for the new interface so the IP also
+// survives a restart. Every step is best-effort: a stopped container, a
+// guest with neither DHCP client, or a push/exec failure are all silently
+// skipped rather than surfaced — the NIC attach itself already succeeded,
+// and the operator can always finish configuring the guest by hand.
+func (b *IncusBackend) afterAttachConfigureGuestNetwork(id, nicName string) {
+	state, _, err := b.client.GetInstanceState(id)
+	if err != nil || state.Status != "Running" {
+		return
+	}
+	dhcpScript := fmt.Sprintf(
+		`ip link set %s up 2>/dev/null; `+
+			`if command -v dhclient >/dev/null 2>&1; then dhclient -1 %s; `+
+			`elif command -v udhcpc >/dev/null 2>&1; then udhcpc -i %s -n -q -t 3; fi`,
+		nicName, nicName, nicName,
+	)
+	if _, err := b.runInGuest(id, []string{"sh", "-c", dhcpScript}); err != nil {
+		slog.Debug("incus_attach_guest_dhcp_kick_failed", "instance", id, "nic", nicName, "err", err)
+	}
+	if b.guestUsesNetworkd(id) {
+		unit := fmt.Sprintf("[Match]\nName=%s\n\n[Network]\nDHCP=true\n", nicName)
+		err := b.client.CreateInstanceFile(id, "/etc/systemd/network/"+nicName+".network", incus.InstanceFileArgs{
+			Content: strings.NewReader(unit),
+			Mode:    0644,
+			Type:    "file",
+		})
+		if err != nil {
+			slog.Debug("incus_attach_networkd_unit_push_failed", "instance", id, "nic", nicName, "err", err)
+			return
+		}
+		if _, err := b.runInGuest(id, []string{"networkctl", "reload"}); err != nil {
+			slog.Debug("incus_attach_networkd_reload_failed", "instance", id, "nic", nicName, "err", err)
+		}
+	}
+}
+
+// runInGuest runs a non-interactive command inside a running instance,
+// waits for it to finish, and returns its exit code. Note that a
+// non-zero exit code is NOT a Go error here — Incus reports the exec
+// OPERATION itself as "Success" as soon as the process exits, regardless
+// of what it exited with (verified against a real instance: `exec
+// ["false"]` still completes as status Success, with the actual exit
+// code tucked away in the operation's `metadata.return` field) — so
+// callers that care about success/failure of the command itself must
+// check the returned exit code, not just the error.
+func (b *IncusBackend) runInGuest(id string, cmd []string) (exitCode int, err error) {
+	op, err := b.client.ExecInstance(id, api.InstanceExecPost{Command: cmd}, nil)
+	if err != nil {
+		return -1, err
+	}
+	if err := waitOperation(op); err != nil {
+		return -1, err
+	}
+	if rc, ok := op.Get().Metadata["return"].(float64); ok {
+		return int(rc), nil
+	}
+	return -1, nil
+}
+
+// guestUsesNetworkd reports whether the guest already manages at least one
+// interface via systemd-networkd, by checking for any existing per-interface
+// unit under /etc/systemd/network/. A guest with none is left alone — it's
+// either using cloud-init/netplan (already handled) or some other network
+// stack (NetworkManager, ifupdown, busybox init) this codebase does not
+// try to guess at.
+func (b *IncusBackend) guestUsesNetworkd(id string) bool {
+	rc, err := b.runInGuest(id, []string{"sh", "-c", "ls /etc/systemd/network/*.network >/dev/null 2>&1"})
+	return err == nil && rc == 0
 }
 
 func (b *IncusBackend) DetachNetworkIface(id, mac string) error {
@@ -678,10 +829,9 @@ func (b *IncusBackend) DetachNetworkIface(id, mac string) error {
 		return fmt.Errorf("no network interface with MAC %s", mac)
 	}
 	delete(inst.Devices, devName)
-	// Drop the removed NIC from the guest's netplan config too.
-	if inst.Config["user.network-config"] != "" {
-		inst.Config["user.network-config"] = lxdNetworkConfig(inst.Devices)
-	}
+	// Drop the removed NIC from the guest's netplan config too, same
+	// unconditional regeneration as AttachNetworkIface above.
+	inst.Config["user.network-config"] = lxdNetworkConfig(inst.Devices)
 	op, err := b.client.UpdateInstance(id, api.InstancePut{
 		Config:      inst.Config,
 		Devices:     inst.Devices,
@@ -691,7 +841,17 @@ func (b *IncusBackend) DetachNetworkIface(id, mac string) error {
 	if err != nil {
 		return err
 	}
-	return waitOperation(op)
+	if err := waitOperation(op); err != nil {
+		return err
+	}
+	// Best-effort symmetric cleanup of the per-interface systemd-networkd
+	// unit afterAttachConfigureGuestNetwork may have pushed for this NIC —
+	// otherwise it lingers referencing a device that no longer exists.
+	// Never fails the detach itself.
+	if state, _, err := b.client.GetInstanceState(id); err == nil && state.Status == "Running" {
+		_, _ = b.runInGuest(id, []string{"rm", "-f", "/etc/systemd/network/" + devName + ".network"})
+	}
+	return nil
 }
 
 func (b *IncusBackend) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIfaceRequest) error {
@@ -850,6 +1010,12 @@ func (b *IncusBackend) StopNetwork(name string) (models.Network, error) {
 }
 func (b *IncusBackend) CheckVLANSupport(networkName string) (models.VlanSupport, error) {
 	return models.VlanSupport{}, compute.ErrNotImplemented
+}
+func (b *IncusBackend) NetworkLeases(name string) ([]models.DHCPLease, error) {
+	return nil, compute.ErrNotImplemented
+}
+func (b *IncusBackend) ReleaseNetworkLease(br, ip, mac string) error {
+	return compute.ErrNotImplemented
 }
 
 // --- Console / cloud-init / metadata ---

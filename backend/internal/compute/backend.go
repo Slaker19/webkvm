@@ -45,6 +45,18 @@ var (
 	// requires shared Layer-2 (Proxmox-style): KVM and Incus must land on
 	// the real LAN, never on an intermediate NAT/virtual bridge.
 	ErrNoPhysicalBridge = errors.New("no physical bridge found on host; please configure a Linux bridge (vmbr0 or br0) attached to your physical NIC")
+	// ErrNetworkInUse is returned when a bridge still has a live
+	// VM/container interface attached — the caller must detach it (or
+	// stop/delete the instance) before the bridge itself can be deleted.
+	// Handlers map it to HTTP 409, not 500: this is an expected, caller-
+	// actionable guard, not an unexpected server failure.
+	ErrNetworkInUse = errors.New("network is in use")
+	// ErrLeaseNotFound is returned by ReleaseNetworkLease when the given
+	// (ip, mac) pair isn't in the bridge's current lease table — dhcp_release
+	// itself can't tell a real release apart from a no-op (it just fires a
+	// UDP packet and exits 0 either way), so the libvirt layer checks the
+	// leasefile first. Handlers map it to HTTP 404.
+	ErrLeaseNotFound = errors.New("lease not found")
 )
 
 // ExportBackupOptions controls a backup export stream.
@@ -204,6 +216,8 @@ type Backend interface {
 	StartNetwork(name string) (models.Network, error)
 	StopNetwork(name string) (models.Network, error)
 	CheckVLANSupport(networkName string) (models.VlanSupport, error)
+	NetworkLeases(name string) ([]models.DHCPLease, error)
+	ReleaseNetworkLease(br, ip, mac string) error
 
 	// --- Console / cloud-init / metadata ---
 	OpenSerialConsole(id string) (ConsoleStream, error)

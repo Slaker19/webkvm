@@ -16,6 +16,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
+  import RemoteFolderBrowser from '$lib/components/RemoteFolderBrowser.svelte';
   import * as Dialog from '$lib/components/ui/dialog';
   import { Loader2 } from '@lucide/svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -53,6 +54,13 @@
   let newTargetUsername = $state('');
   let newTargetPassword = $state('');
   let newTargetSSHKeyPath = $state('');
+  // NFS/SMB: remote export path (NFS) or share name (SMB). When Host is
+  // also set, WebKVM mounts the share itself (see backupstore/net_mount.go)
+  // instead of assuming it's already mounted via fstab/systemd.
+  let newTargetSourceDir = $state('');
+  function joinPath(base, sub) {
+    return sub ? base.replace(/\/+$/, '') + '/' + sub : base;
+  }
   // S3 (TargetS3, V13-BCK-06)
   let newTargetEndpoint = $state('');
   let newTargetBucket = $state('');
@@ -176,6 +184,17 @@
             await load();
           }
         }
+      } else {
+        // The tracked job vanished from the list entirely (e.g. a
+        // server restart lost it, or its target was deleted mid-run) —
+        // without this, the poller would loop forever waiting for an
+        // id that will never reappear, and the Jobs tab would look
+        // permanently stuck.
+        finishTask('job:' + activeBackup.jobId, 'error', t('backup.backupFailed'), 0);
+        activeBackup = null;
+        stopJobsPoller();
+        toast.error(t('backup.backupFailed'));
+        await load();
       }
     }
     if (activeRestore) {
@@ -206,6 +225,14 @@
           stopJobsPoller();
           toast.error(errMsg || t('backup.restoreFailed'));
         }
+      } else {
+        // Same rationale as the activeBackup branch above: a vanished
+        // job must not leave the poller running forever.
+        finishTask('job:' + activeRestore.jobId, 'error', t('backup.restoreFailed'), 0);
+        activeRestore = null;
+        restoreLoading = false;
+        stopJobsPoller();
+        toast.error(t('backup.restoreFailed'));
       }
     }
   }
@@ -285,6 +312,18 @@
         .filter(Boolean);
       if (known.length) body.known_hosts = known;
       body.verify_on_write = newTargetVerifyOnWrite;
+    } else if (newTargetType === 'nfs' || newTargetType === 'smb') {
+      // Host+source_dir set = WebKVM mounts the share itself. Leaving
+      // both empty keeps the legacy behaviour (path already mounted by
+      // the operator via fstab/systemd).
+      if (newTargetHost.trim()) {
+        body.host = newTargetHost.trim();
+        body.source_dir = newTargetSourceDir.trim();
+        if (newTargetType === 'smb' && newTargetUsername.trim()) {
+          body.username = newTargetUsername.trim();
+          if (newTargetPassword) body.password = newTargetPassword;
+        }
+      }
     } else if (newTargetType === 's3') {
       // Path is the optional object-key prefix.
       body.endpoint = newTargetEndpoint.trim();
@@ -388,6 +427,7 @@
     newTargetHost = target.host || '';
     newTargetPort = target.port || 22;
     newTargetUsername = target.username || '';
+    newTargetSourceDir = target.source_dir || '';
     // Secrets never come back from the API — leave blank so the
     // backend keeps the stored value (V13-BCK-06).
     newTargetPassword = '';
@@ -426,6 +466,7 @@
     newTargetUsername = '';
     newTargetPassword = '';
     newTargetSSHKeyPath = '';
+    newTargetSourceDir = '';
     newTargetEndpoint = '';
     newTargetBucket = '';
     newTargetRegion = '';
@@ -463,6 +504,7 @@
       newTargetUsername = '';
       newTargetPassword = '';
       newTargetSSHKeyPath = '';
+      newTargetSourceDir = '';
       newTargetEndpoint = '';
       newTargetBucket = '';
       newTargetRegion = '';
@@ -715,11 +757,13 @@
 
   // runSuffixOf extracts the "<ts26>-<randHex>" run identifier from
   // a backup filename (webkvm-<host>-<ts>-<rand>-<name>.tar.zst).
-  // Returns null for legacy / unparseable names.
+  // Returns null for legacy / unparseable names. The hostname segment
+  // must be matched greedily (`.+`, not `[^-]+`): a real hostname can
+  // contain hyphens (e.g. "wk-arch"), and a no-hyphen match silently
+  // fails for those, pushing every file into "ungrouped" instead of
+  // grouping it into its run — same underlying issue as vmNameOf below.
   function runSuffixOf(filename) {
-    const m = filename.match(
-      /^webkvm-[^-]+-(\d{8}T\d{6}\.\d{9}Z-[0-9a-f]{6,12})-[^/]+\.tar\.(gz|zst)$/
-    );
+    const m = filename.match(/^webkvm-.+-(\d{8}T\d{6}\.\d{9}Z-[0-9a-f]{6,12})-[^/]+\.tar\.(gz|zst)$/);
     return m ? m[1] : null;
   }
 
@@ -896,9 +940,13 @@
   // filename. The runner names per-VM archives with the VM's UUID,
   // so the extracted value is typically a UUID.
   function vmNameOf(filename) {
-    const m = filename.match(
-      /^webkvm-[^-]+-\d{8}T\d{6}\.\d{9}Z-[0-9a-f]{6,12}-(.+)\.tar\.(gz|zst)$/
-    );
+    // The hostname segment must be matched greedily (`.+`, not `[^-]+`):
+    // a real hostname can contain hyphens (e.g. "wk-arch"), and a
+    // non-greedy/no-hyphen match silently fails for those, returning
+    // null for every VM in the job — which then produces duplicate
+    // `null` keys in the Jobs tab's keyed each block below and crashes
+    // the whole tab with Svelte's each_key_duplicate error.
+    const m = filename.match(/^webkvm-.+-\d{8}T\d{6}\.\d{9}Z-[0-9a-f]{6,12}-(.+)\.tar\.(gz|zst)$/);
     return m ? m[1] : null;
   }
 
@@ -1041,12 +1089,18 @@
     return targets.find((x) => x.id === id)?.name || id;
   }
 
-  // jobVms lists the VM names (or ids) backed up by a job, from the
-  // job's non-config archives.
+  // jobVms lists the VMs backed up by a job, from the job's non-config
+  // archives. Each entry keeps the archive filename as a stable, always
+  // unique key alongside the display name — two VMs can share a display
+  // name (or, if a filename fails to parse, displayVmName can return
+  // null for more than one entry), and keying the Jobs tab's each block
+  // by the name itself would then hit Svelte's fatal
+  // each_key_duplicate error and blank out the whole tab.
   function jobVms(job) {
     return (job.filenames || [])
       .filter((fn) => !fn.includes('-config'))
-      .map((fn) => displayVmName(fn));
+      .map((fn) => ({ key: fn, name: displayVmName(fn) }))
+      .filter((v) => v.name);
   }
 </script>
 
@@ -1475,7 +1529,7 @@
               </div>
               {#if jobVms(j).length > 0}
                 <div class="flex flex-wrap gap-1 mt-1.5">
-                  {#each jobVms(j) as vmName (vmName)}
+                  {#each jobVms(j) as vm (vm.key)}
                     <span
                       class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-medium"
                     >
@@ -1492,7 +1546,7 @@
                           y2="21"
                         /><line x1="12" y1="17" x2="12" y2="21" /></svg
                       >
-                      {vmName}
+                      {vm.name}
                     </span>
                   {/each}
                 </div>
@@ -1597,6 +1651,59 @@
           {/if}
         </p>
       </div>
+    {/if}
+    {#if newTargetType === 'nfs' || newTargetType === 'smb'}
+      <p class="text-xs text-muted-foreground">{t('backup.netfsHint')}</p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label class="text-sm font-medium block mb-1" for="add-tgt-net-host"
+            >{t('backup.host')}
+            <span class="font-normal text-muted-foreground">({t('backup.optional')})</span></label
+          >
+          <Input id="add-tgt-net-host" bind:value={newTargetHost} placeholder="192.168.1.2" />
+        </div>
+        <div>
+          <label class="text-sm font-medium block mb-1" for="add-tgt-net-dir">
+            {newTargetType === 'nfs' ? t('backup.exportPath') : t('backup.shareName')}
+          </label>
+          <Input
+            id="add-tgt-net-dir"
+            bind:value={newTargetSourceDir}
+            placeholder={newTargetType === 'nfs' ? '/export/backups' : 'backups'}
+          />
+        </div>
+      </div>
+      <RemoteFolderBrowser
+        format={newTargetType === 'nfs' ? 'nfs' : 'cifs'}
+        host={newTargetHost}
+        sourceDir={newTargetSourceDir}
+        username={newTargetUsername}
+        password={newTargetPassword}
+        onSelect={(sub) => (newTargetSourceDir = joinPath(newTargetSourceDir, sub))}
+      />
+      {#if newTargetType === 'smb'}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="text-sm font-medium block mb-1" for="add-tgt-net-user"
+              >{t('backup.username')}
+              <span class="font-normal text-muted-foreground">({t('backup.optional')})</span></label
+            >
+            <Input id="add-tgt-net-user" bind:value={newTargetUsername} autocomplete="off" />
+          </div>
+          <div>
+            <label class="text-sm font-medium block mb-1" for="add-tgt-net-pass"
+              >{t('backup.password')}</label
+            >
+            <Input
+              id="add-tgt-net-pass"
+              bind:value={newTargetPassword}
+              type="password"
+              placeholder={editingTarget ? '••••••••' : ''}
+              autocomplete="new-password"
+            />
+          </div>
+        </div>
+      {/if}
     {/if}
     {#if newTargetType === 's3'}
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">

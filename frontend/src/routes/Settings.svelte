@@ -151,7 +151,7 @@
 </script>
 
 <div class="p-4 sm:p-6 max-w-4xl">
-  <PageHeader title={t('settings.title')} subtitle={t('settings.subtitle', { n: sections.length })}>
+  <PageHeader title={t('settings.title')} subtitle={t('settings.subtitle', { n: tabs.length })}>
     {#snippet actions()}
       {#if isDirty}
         <Button variant="outline" onclick={discard} disabled={saving}

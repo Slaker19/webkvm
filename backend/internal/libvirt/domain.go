@@ -1210,17 +1210,31 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 	}
 
 	if state == libvirt.DOMAIN_RUNNING {
+		// macIPs collects each interface's OWN IPv4s, keyed by MAC
+		// (lowercased) — libvirt already reports addresses grouped by
+		// interface (iface.Hwaddr), but that association was previously
+		// thrown away in favor of one flat vm.IPs list shared by every
+		// NIC. With more than one interface, every row in the Network
+		// Interfaces tab then displayed the SAME combined IP list instead
+		// of its own.
+		macIPs := map[string][]string{}
+		seen := map[string]bool{}
 		collect := func(src libvirt.DomainInterfaceAddressesSource) {
 			ifaces, err := dom.ListAllInterfaceAddresses(src)
 			if err != nil {
 				return
 			}
-			seen := map[string]bool{}
 			for _, iface := range ifaces {
+				mac := strings.ToLower(iface.Hwaddr)
 				for _, a := range iface.Addrs {
-					if a.Type == libvirt.IP_ADDR_TYPE_IPV4 && !seen[a.Addr] && !strings.HasPrefix(a.Addr, "127.") {
-						seen[a.Addr] = true
-						vm.IPs = append(vm.IPs, a.Addr)
+					if a.Type == libvirt.IP_ADDR_TYPE_IPV4 && !strings.HasPrefix(a.Addr, "127.") {
+						if mac != "" {
+							macIPs[mac] = append(macIPs[mac], a.Addr)
+						}
+						if !seen[a.Addr] {
+							seen[a.Addr] = true
+							vm.IPs = append(vm.IPs, a.Addr)
+						}
 					}
 				}
 			}
@@ -1237,6 +1251,9 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 		}
 		if len(vm.IPs) > 0 {
 			vm.IP = vm.IPs[0]
+		}
+		for i := range vm.Networks {
+			vm.Networks[i].IPs = macIPs[strings.ToLower(vm.Networks[i].MAC)]
 		}
 	}
 

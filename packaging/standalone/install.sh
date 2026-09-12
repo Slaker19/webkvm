@@ -210,12 +210,38 @@ preflight() {
 }
 
 # ── Package management ─────────────────────────────────────────────────
-pkg_available() { # package provided by this distro?
+# pkg_installed reports whether $1 is CURRENTLY INSTALLED — used only as
+# the skip-if-already-there optimization in pkg_install.
+pkg_installed() {
   local p="$1"
   case "${PKG}" in
     apt)    dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' ;;
-    dnf)    "${YUM_BIN:-dnf}" -q "$p" >/dev/null 2>&1 ;;
+    dnf)    rpm -q "$p" >/dev/null 2>&1 ;;
     pacman) pacman -Q "$p" >/dev/null 2>&1 ;;
+  esac
+}
+# pkg_available reports whether $1 CAN BE INSTALLED — already installed,
+# or present in a configured repo. Used by install_incus() to decide
+# whether Incus can be installed at all.
+#
+# This used to be conflated with pkg_installed(): the apt/pacman
+# branches checked "is it installed?" (dpkg-query / pacman -Q), and the
+# dnf branch (`dnf -q "$p"`) was not even valid dnf syntax (missing
+# subcommand — it always fails, exit 2, regardless of the package).
+# Net effect: on a fresh machine (nothing installed yet) this always
+# reported "not available" for every package on every distro, so Incus
+# was never auto-installed even where it genuinely exists in the repos
+# (confirmed on Debian 13: `apt-cache show incus` succeeds, yet the old
+# check always said no) — and on dnf specifically, EVERY runtime
+# package always took the slow path in pkg_install (no early skip),
+# since `dnf -q "$p"` can never return success.
+pkg_available() {
+  local p="$1"
+  pkg_installed "$p" && return 0
+  case "${PKG}" in
+    apt)    apt-cache show "$p" >/dev/null 2>&1 ;;
+    dnf)    "${YUM_BIN:-dnf}" -q list "$p" >/dev/null 2>&1 ;;
+    pacman) pacman -Si "$p" >/dev/null 2>&1 ;;
   esac
 }
 pkg_install() {
@@ -223,7 +249,7 @@ pkg_install() {
   # so a failed transaction is retried a couple of times before aborting.
   local failed=0 attempts="${WEBKVM_PKG_RETRIES:-3}" retry_delay="${WEBKVM_PKG_RETRY_DELAY:-4}"
   for p in "$@"; do
-    pkg_available "$p" && continue
+    pkg_installed "$p" && continue
     local ok=0
     for attempt in $(seq 1 "${attempts}"); do
       if case "${PKG}" in
@@ -276,21 +302,46 @@ pkg_update() {
 setup_package_map() {
   case "${PKG}" in
     apt)
-      RUNTIME_PACKAGES=(ca-certificates curl openssl xorriso dnsmasq-base libvirt-daemon-system libvirt-clients libvirt-daemon-driver-qemu qemu-system-x86 qemu-utils ovmf swtpm swtpm-tools virtinst bridge-utils python3 iproute2 procps util-linux tar zstd)
+      # dnsmasq-utils (separate from dnsmasq-base): provides dhcp_release,
+      # used by the API to release a DHCP lease on a nat/isolated network
+      # (a real DHCPRELEASE — editing the leasefile by hand is not a safe
+      # substitute, dnsmasq's in-memory lease table is authoritative).
+      # nfs-common/cifs-utils: provide mount.nfs/mount.cifs, which
+      # libvirt's own netfs storage-pool driver shells out to when
+      # creating an NFS/SMB pool from the Storage page — without them,
+      # pool creation fails at the mount(8) step with a libvirt error.
+      # smbclient: the smbclient CLI, used by the storage/backup "browse
+      # folders" feature to list SMB subdirectories without mounting —
+      # separate from cifs-utils, which only provides mount.cifs.
+      RUNTIME_PACKAGES=(ca-certificates curl openssl xorriso dnsmasq-base dnsmasq-utils libvirt-daemon-system libvirt-clients libvirt-daemon-driver-qemu qemu-system-x86 qemu-utils ovmf swtpm swtpm-tools virtinst bridge-utils python3 iproute2 procps util-linux tar zstd nfs-common cifs-utils smbclient)
       ;;
     dnf)
-      RUNTIME_PACKAGES=(ca-certificates curl openssl xorriso dnsmasq libvirt-daemon-kvm libvirt-client qemu-kvm qemu-img edk2-ovmf swtpm-tools virt-install bridge-utils python3 iproute procps-ng util-linux tar zstd)
+      # dnsmasq-utils: same rationale as the apt branch above — provides
+      # dhcp_release, not bundled in the base dnsmasq package on Fedora/RHEL.
+      # nfs-utils/cifs-utils: same rationale as apt's nfs-common/cifs-utils
+      # above — mount.nfs/mount.cifs for libvirt's netfs pool driver.
+      # samba-client: Fedora/RHEL's package name for the smbclient CLI
+      # (same "browse folders" rationale as apt's smbclient above).
+      RUNTIME_PACKAGES=(ca-certificates curl openssl xorriso dnsmasq dnsmasq-utils libvirt-daemon-kvm libvirt-client qemu-kvm qemu-img edk2-ovmf swtpm-tools virt-install bridge-utils python3 iproute procps-ng util-linux tar zstd nfs-utils cifs-utils samba-client)
       ;;
     pacman)
       # Arch: bridge-utils was dropped (brctl replaced by `ip` from iproute2, already listed);
       # the setup-network bridge uses `ip link add ... type macvlan` and never needs brctl.
       # dnsmasq is required for the libvirt default NAT network (otherwise
       # "could not find dnsmasq in $PATH" and VMs never get an IP).
+      # No separate dnsmasq-utils package here: Arch's own "dnsmasq"
+      # package already bundles dhcp_release (confirmed:
+      # /usr/bin/dhcp_release via `pacman -Ql dnsmasq`).
       # libisoburn (not "xorriso" — no such package on Arch, it's only a
       # "provides" satisfied by libisoburn): pacman resolves provides for
       # -S so "xorriso" would install fine here, but uninstall.sh's -R
       # needs the real, installed package name, so both lists must agree.
-      RUNTIME_PACKAGES=(ca-certificates curl openssl libisoburn libvirt qemu-full qemu-img swtpm edk2-ovmf python iproute2 procps-ng util-linux tar zstd virt-install dnsmasq)
+      # nfs-utils/cifs-utils: mount.nfs/mount.cifs for libvirt's netfs
+      # pool driver, same rationale as the apt/dnf branches above.
+      # smbclient: verified live against the Arch test VM (`pacman -Si
+      # smbclient` → package "smbclient" 2:4.24.7-1, repo extra) — the
+      # CLI used by the storage/backup "browse folders" feature.
+      RUNTIME_PACKAGES=(ca-certificates curl openssl libisoburn libvirt qemu-full qemu-img swtpm edk2-ovmf python iproute2 procps-ng util-linux tar zstd virt-install dnsmasq nfs-utils cifs-utils smbclient)
       ;;
   esac
 }
@@ -738,7 +789,19 @@ INSTALL_SUCCEEDED=1
 rm -f -- "${HEALTH_FILE}"
 
 # ── Summary ────────────────────────────────────────────────────────────
-lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+# The LAN IP for the "Web UI" URL below MUST be the address reachable
+# from other machines, not just any local address. `hostname -I` (the
+# old approach here) returns every address the kernel knows about in
+# unspecified order — on a host with Docker or libvirt's default NAT
+# network active (both very common), it can return docker0's or
+# virbr0's address FIRST, printing an unreachable-from-outside URL
+# (confirmed live on two different distros: 192.168.122.1 on one,
+# 172.17.0.1 on another — neither was the real LAN IP the installer had
+# just configured on vmbr0/br0 a moment earlier). Use the same
+# reliable technique already used above for the certificate's SAN: the
+# source address of the route actually used to reach the internet.
+lan_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' || true)"
+[ -n "${lan_ip}" ] || lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 [ -n "${lan_ip}" ] || lan_ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)"
 echo ""
 bold "=== webkvm installed successfully ==="

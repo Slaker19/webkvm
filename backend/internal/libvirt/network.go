@@ -1,6 +1,7 @@
 package libvirt
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -11,6 +12,14 @@ import (
 	"webkvm/internal/models"
 	"webkvm/internal/netstore"
 )
+
+// ErrNetworkInUse is returned by DeleteNetwork when the bridge still has
+// a live VM/container tap attached. It is a sentinel (rather than just a
+// formatted string) so the compute/api layers above can map it to a
+// caller-actionable HTTP 409 instead of a generic 500 — this package
+// can't import "compute" (compute already imports libvirt) so the
+// sentinel has to originate here and get translated upward.
+var ErrNetworkInUse = errors.New("network is in use")
 
 // WebKVM uses ONE network model: real OS-level Linux bridges (vmbr0,
 // vmbr1, … — Proxmox-style). libvirt virtual networks (virbr0, etc.)
@@ -86,10 +95,12 @@ func networkView(name string) models.Network {
 		}
 	}
 
-	var kind, iface string
+	var kind, iface, dhcpStart, dhcpEnd string
+	var dns []string
 	if netStoreVar != nil {
 		if rec, ok := netStoreVar.Get(name); ok {
 			kind, iface = rec.Kind, rec.Interface
+			dhcpStart, dhcpEnd, dns = rec.DHCPStart, rec.DHCPEnd, rec.DNS
 		} else {
 			kind, iface = inferKind(name, realSlaves)
 		}
@@ -102,20 +113,37 @@ func networkView(name string) models.Network {
 		vlanAware = strings.TrimSpace(string(data)) == "1"
 	}
 
+	cidr := bridgeIPv4(name)
 	return models.Network{
 		Name:      name,
 		Kind:      kind,
 		Forward:   kind, // deprecated alias, kept for old clients
 		Bridge:    name,
 		Interface: iface,
-		CIDR:      bridgeIPv4(name),
+		CIDR:      cidr,
 		DHCP:      dnsmasqUnitExists(name),
+		DHCPStart: dhcpStart,
+		DHCPEnd:   dhcpEnd,
+		Gateway:   gatewayFromCIDR(cidr),
+		DNS:       dns,
 		VLanAware: vlanAware,
 		Slaves:    realSlaves,
 		Active:    true,
 		Autostart: true,
 		Protected: IsManagedBridge(name),
 	}
+}
+
+// gatewayFromCIDR returns the bare network address of cidr (e.g.
+// "192.168.100.0/24" -> "192.168.100.0") — the same expression already
+// used for the dnsmasq "option:router" value in configureBridgeDHCP, so
+// this reports exactly what's actually advertised over DHCP rather than
+// re-deriving a different convention.
+func gatewayFromCIDR(cidr string) string {
+	if cidr == "" {
+		return ""
+	}
+	return strings.SplitN(cidr, "/", 2)[0]
 }
 
 // inferKind best-effort classifies a bridge WebKVM has no netStore
@@ -285,20 +313,31 @@ func (c *Connector) createIsolatedOrNATNetwork(name, kind string, req models.Cre
 	}
 
 	dhcp := req.DHCP != nil && *req.DHCP
+	var dhcpStart, dhcpEnd string
+	var dns []string
 	if dhcp {
+		if err := validDNSList(req.DNS); err != nil {
+			teardown()
+			return models.Network{}, err
+		}
 		start, end, err := resolveDHCPRange(req.CIDR, req.DHCPStart, req.DHCPEnd)
 		if err != nil {
 			teardown()
 			return models.Network{}, err
 		}
-		if err := configureBridgeDHCP(name, req.CIDR, start, end); err != nil {
+		if err := configureBridgeDHCP(name, req.CIDR, start, end, req.DNS); err != nil {
 			teardown()
 			return models.Network{}, err
 		}
+		dhcpStart, dhcpEnd, dns = start, end, req.DNS
 	}
 
 	if netStoreVar != nil {
-		_ = netStoreVar.Save(netstore.Record{Name: name, Kind: kind, CIDR: req.CIDR})
+		rec := netstore.Record{Name: name, Kind: kind, CIDR: req.CIDR}
+		if dhcp {
+			rec.DHCPStart, rec.DHCPEnd, rec.DNS = dhcpStart, dhcpEnd, dns
+		}
+		_ = netStoreVar.Save(rec)
 	}
 
 	if kind == "nat" {
@@ -338,7 +377,21 @@ func removeDnsmasqUnit(br string) {
 	exec.Command("systemctl", "disable", "webkvm-"+br+"-dnsmasq.service").Run()
 	os.Remove(svcPath)
 	os.Remove("/etc/webkvm/" + br + "-dnsmasq.conf")
+	os.Remove(leaseFilePath(br))
 	exec.Command("systemctl", "daemon-reload").Run()
+}
+
+// validDNSList reports whether every entry in dns is a parseable IP
+// address, rejecting the request before anything is written to disk or
+// dnsmasq is (re)started — same fail-fast style as resolveDHCPRange.
+func validDNSList(dns []string) error {
+	for _, d := range dns {
+		d = strings.TrimSpace(d)
+		if d == "" || net.ParseIP(d) == nil {
+			return fmt.Errorf("invalid DNS server %q", d)
+		}
+	}
+	return nil
 }
 
 // resolveDHCPRange returns the DHCP range to use: the caller-chosen
@@ -379,10 +432,15 @@ func resolveDHCPRange(cidr, start, end string) (string, string, error) {
 
 // configureBridgeDHCP writes a self-contained dnsmasq config + systemd unit
 // for a shared bridge (the same pattern setup-network.sh uses for vmbr1),
-// using the given (already-resolved) DHCP range.
-func configureBridgeDHCP(br, cidr, start, end string) error {
+// using the given (already-resolved) DHCP range and DNS server list (dns
+// falls back to 1.1.1.1 when empty, preserving the previous default).
+func configureBridgeDHCP(br, cidr, start, end string, dns []string) error {
 	if start == "" || end == "" {
 		return fmt.Errorf("cannot derive a DHCP range from CIDR %q", cidr)
+	}
+	dnsList := dns
+	if len(dnsList) == 0 {
+		dnsList = []string{"1.1.1.1"}
 	}
 	confDir := "/etc/webkvm"
 	_ = os.MkdirAll(confDir, 0755)
@@ -394,8 +452,9 @@ except-interface=lo
 listen-address=%s
 dhcp-range=%s,%s,255.255.255.0,12h
 dhcp-option=option:router,%s
-dhcp-option=option:dns-server,1.1.1.1
-`, br, br, strings.SplitN(cidr, "/", 2)[0], start, end, strings.SplitN(cidr, "/", 2)[0])
+dhcp-option=option:dns-server,%s
+dhcp-leasefile=%s
+`, br, br, strings.SplitN(cidr, "/", 2)[0], start, end, strings.SplitN(cidr, "/", 2)[0], strings.Join(dnsList, ","), leaseFilePath(br))
 	if err := os.WriteFile(confPath, []byte(conf), 0644); err != nil {
 		return fmt.Errorf("write dnsmasq config for %q: %w", br, err)
 	}
@@ -490,7 +549,7 @@ func (c *Connector) DeleteNetwork(id string) error {
 		}
 		// A real VM/container tap (vnet*, an Incus veth, …): never
 		// auto-release it, or a running guest silently loses its NIC.
-		return fmt.Errorf("bridge %q has a VM/container interface (%s) attached; detach it first", id, s)
+		return fmt.Errorf("bridge %q has a VM/container interface (%s) attached; detach it first: %w", id, s, ErrNetworkInUse)
 	}
 
 	removeDnsmasqUnit(id)
@@ -546,15 +605,39 @@ func (c *Connector) UpdateNetwork(name string, req models.UpdateNetworkRequest) 
 			if cidr == "" {
 				return models.Network{}, fmt.Errorf("bridge %q has no IP; assign one before enabling DHCP", name)
 			}
+			if err := validDNSList(req.DNS); err != nil {
+				return models.Network{}, err
+			}
 			start, end, err := resolveDHCPRange(cidr, req.DHCPStart, req.DHCPEnd)
 			if err != nil {
 				return models.Network{}, err
 			}
-			if err := configureBridgeDHCP(name, cidr, start, end); err != nil {
+			if err := configureBridgeDHCP(name, cidr, start, end, req.DNS); err != nil {
 				return models.Network{}, err
+			}
+			if netStoreVar != nil {
+				rec, ok := netStoreVar.Get(name) // preserve Kind/Interface/MovedIPv4 if already tracked
+				if !ok {
+					// Not a bridge WebKVM created via the API (e.g. the
+					// installer's own vmbr1) — infer its kind rather than
+					// persisting an empty one, or networkView() would stop
+					// falling back to inferKind() for it from now on.
+					kind, iface := inferKind(name, readBridgeSlaves(name))
+					rec = netstore.Record{Name: name, Kind: kind, Interface: iface}
+				}
+				rec.Name = name
+				rec.CIDR = cidr
+				rec.DHCPStart, rec.DHCPEnd, rec.DNS = start, end, req.DNS
+				_ = netStoreVar.Save(rec)
 			}
 		} else {
 			removeDnsmasqUnit(name)
+			if netStoreVar != nil {
+				if rec, ok := netStoreVar.Get(name); ok {
+					rec.DHCPStart, rec.DHCPEnd, rec.DNS = "", "", nil
+					_ = netStoreVar.Save(rec)
+				}
+			}
 		}
 	}
 	return networkView(name), nil

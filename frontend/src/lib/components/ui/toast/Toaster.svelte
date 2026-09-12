@@ -2,7 +2,16 @@
   import { getToasts, dismiss } from '$lib/stores/toast.svelte.js';
   import { fly } from 'svelte/transition';
 
-  const toasts = getToasts();
+  // getToasts() returns the store's current array by value: a plain
+  // `const toasts = getToasts()` captured that array ONCE at mount and
+  // never saw a toast again, because toast.svelte.js's add()/dismiss()
+  // REASSIGN the module-level $state variable to a brand new array
+  // (`_toasts = [...]`) rather than mutating it in place — so this
+  // component's snapshot never advanced past `[]`. $derived re-reads it
+  // reactively (through the read of the $state var inside getToasts())
+  // every time the store reassigns, so every toast.* call actually
+  // renders.
+  const toasts = $derived(getToasts());
 
   const typeStyles = {
     success: 'border-success/30 bg-success/10 text-foreground',

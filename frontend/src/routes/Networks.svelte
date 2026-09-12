@@ -33,6 +33,12 @@
   let autostart = $state(true);
   let saving = $state(false);
   let toggling = $state({});
+  let leasesByNetwork = $state({}); // { [networkName]: DHCPLease[] }
+  let viewingLeasesFor = $state(null); // network name, or null
+  let leases = $state([]);
+  let loadingLeases = $state(false);
+
+  let totalLeases = $derived(Object.values(leasesByNetwork).reduce((sum, l) => sum + l.length, 0));
 
   let preview = $derived.by(() => computeCIDRPreview(cidr));
 
@@ -130,6 +136,7 @@
     error = '';
     try {
       networks = await api.listNetworks();
+      await loadAllLeases();
     } catch (e) {
       error = e.message;
     } finally {
@@ -143,6 +150,53 @@
     } catch {
       hostInterfaces = [];
     }
+  }
+
+  async function loadAllLeases() {
+    const eligible = networks.filter((n) => n.kind !== 'direct' && n.dhcp);
+    const results = await Promise.all(
+      eligible.map((n) => api.listNetworkLeases(n.name).catch(() => []))
+    );
+    const next = {};
+    eligible.forEach((n, i) => {
+      next[n.name] = results[i];
+    });
+    leasesByNetwork = next;
+  }
+
+  async function viewLeases(net) {
+    viewingLeasesFor = net.name;
+    loadingLeases = true;
+    try {
+      leases = await api.listNetworkLeases(net.name);
+    } catch (e) {
+      toast.error(e.message, { duration: 0 });
+      leases = [];
+    } finally {
+      loadingLeases = false;
+    }
+  }
+
+  function releaseLease(lease) {
+    askConfirm({
+      title: t('networks.releaseLeaseTitle', { ip: lease.ip }),
+      description: t('networks.releaseLeaseDesc'),
+      confirmLabel: t('networks.release'),
+      onConfirm: async () => {
+        confirmState.loading = true;
+        try {
+          await api.releaseNetworkLease(viewingLeasesFor, lease.mac, lease.ip);
+          confirmState.open = false;
+          toast.success(t('networks.releaseLeaseToast', { ip: lease.ip }));
+          await viewLeases({ name: viewingLeasesFor });
+          await loadAllLeases();
+        } catch (e) {
+          toast.error(e.message, { duration: 0 });
+        } finally {
+          confirmState.loading = false;
+        }
+      },
+    });
   }
 
   async function create() {
@@ -304,21 +358,21 @@
   </PageHeader>
 
   {#if !loading && networks.length > 0}
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+    <div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
       <StatCard label={t('networks.title')} value={String(networks.length)} />
       <StatCard
-        label={t('networks.activeBadge')}
-        status="running"
-        value={String(networks.filter((n) => n.active).length)}
+        label={t('networks.nat')}
+        value={String(networks.filter((n) => n.kind === 'nat').length)}
       />
       <StatCard
-        label={t('networks.autostartBadge')}
-        value={String(networks.filter((n) => n.autostart).length)}
+        label={t('networks.isolated')}
+        value={String(networks.filter((n) => n.kind === 'isolated').length)}
       />
       <StatCard
         label={t('networks.direct')}
         value={String(networks.filter((n) => n.kind === 'direct').length)}
       />
+      <StatCard label={t('networks.activeLeasesBadge')} value={String(totalLeases)} />
     </div>
   {/if}
 
@@ -482,16 +536,14 @@
               />
             </div>
           </div>
-          {#if !editingNet}
-            <div>
-              <label for="net-dns" class="block text-sm font-medium mb-1.5">
-                {t('networks.dnsForwarders')}
-                <span class="text-xs text-muted-foreground ml-1">{t('networks.dnsOptional')}</span>
-              </label>
-              <Input id="net-dns" bind:value={dnsText} placeholder="1.1.1.1, 8.8.8.8" />
-              <p class="text-xs text-muted-foreground mt-1">{t('networks.dnsHelp')}</p>
-            </div>
-          {/if}
+          <div>
+            <label for="net-dns" class="block text-sm font-medium mb-1.5">
+              {t('networks.dnsForwarders')}
+              <span class="text-xs text-muted-foreground ml-1">{t('networks.dnsOptional')}</span>
+            </label>
+            <Input id="net-dns" bind:value={dnsText} placeholder="1.1.1.1, 8.8.8.8" />
+            <p class="text-xs text-muted-foreground mt-1">{t('networks.dnsHelp')}</p>
+          </div>
         {/if}
       {/if}
 
@@ -547,17 +599,46 @@
     <div id="networks-table-anchor"></div>
     <DataTable
       columns={[
-        { key: 'name', label: t('networks.name'), render: nameCell },
+        { key: 'name', label: t('networks.name'), width: 'minmax(180px, 1fr)', render: nameCell },
         { key: 'kind', label: t('networks.forwardMode'), width: '110px', render: kindCell },
         { key: 'cidr', label: 'CIDR', width: '170px', render: cidrCell },
         { key: 'gateway', label: t('networks.gatewayCol'), width: '150px', render: gatewayCell },
         { key: 'dhcp', label: 'DHCP', width: '130px', render: dhcpCell },
-        { key: 'actions', label: '', align: 'right', width: 'auto', render: actionsCell },
+        { key: 'actions', label: '', align: 'right', width: '160px', render: actionsCell },
       ]}
       rows={networks}
       rowKey="name"
       emptyMessage={t('networks.noNetworks')}
     />
+  {/if}
+
+  {#if viewingLeasesFor}
+    <div class="border border-border rounded-lg bg-card p-5 mt-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+          {t('networks.leasesFor', { name: viewingLeasesFor })}
+        </h2>
+        <Button variant="outline" onclick={() => (viewingLeasesFor = null)}>
+          {t('common.close')}
+        </Button>
+      </div>
+      {#if loadingLeases}
+        <div class="flex items-center justify-center py-12"><Spinner size="lg" /></div>
+      {:else}
+        <DataTable
+          columns={[
+            { key: 'hostname', label: t('networks.leaseHostname'), render: leaseHostnameCell },
+            { key: 'ip', label: t('networks.leaseIP'), render: leaseIPCell },
+            { key: 'mac', label: t('networks.leaseMAC'), render: leaseMACCell },
+            { key: 'expiry', label: t('networks.leaseExpiry'), render: leaseExpiryCell },
+            { key: 'actions', label: '', align: 'right', render: leaseActionsCell },
+          ]}
+          rows={leases}
+          rowKey="mac"
+          emptyMessage={t('networks.noLeases')}
+        />
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -704,6 +785,16 @@
         {/if}
       </button>
     {/if}
+    {#if row.kind !== 'direct' && row.dhcp}
+      <button
+        onclick={() => viewLeases(row)}
+        class="p-1.5 rounded-md text-muted-foreground hover:text-accent hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        aria-label={`${t('networks.viewLeases')} ${row.name}`}
+        title={t('networks.viewLeases')}
+      >
+        <Icon name="users" size={16} />
+      </button>
+    {/if}
     <button
       onclick={() => startEdit(row)}
       class="p-1.5 rounded-md text-muted-foreground hover:text-accent hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
@@ -723,6 +814,33 @@
       <Icon name="trash" size={16} />
     </button>
   </div>
+{/snippet}
+
+{#snippet leaseHostnameCell(row)}
+  <span class="text-sm">{row.hostname || '—'}</span>
+{/snippet}
+
+{#snippet leaseIPCell(row)}
+  <span class="font-mono text-xs tnum">{row.ip}</span>
+{/snippet}
+
+{#snippet leaseMACCell(row)}
+  <span class="font-mono text-xs tnum text-muted-foreground">{row.mac}</span>
+{/snippet}
+
+{#snippet leaseExpiryCell(row)}
+  <span class="text-xs tnum">{new Date(row.expiry).toLocaleString()}</span>
+{/snippet}
+
+{#snippet leaseActionsCell(row)}
+  <button
+    onclick={() => releaseLease(row)}
+    class="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+    aria-label={`${t('networks.release')} ${row.ip}`}
+    title={t('networks.release')}
+  >
+    <Icon name="trash" size={16} />
+  </button>
 {/snippet}
 
 <ConfirmDialog

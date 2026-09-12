@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -18,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"webkvm/internal/backupstore"
+	"webkvm/internal/compute"
 	"webkvm/internal/logging"
 	"webkvm/internal/safego"
 )
@@ -28,11 +31,70 @@ type SystemInfo struct {
 	Libvirt     LibvirtInfo    `json:"libvirt"`
 	Host        HostInfo       `json:"host"`
 	BuildTime   string         `json:"build_time"`
-	UptimeSec   int64          `json:"uptime_sec"`
+	UptimeSec   int64          `json:"uptime_sec"` // backend process uptime (unchanged meaning)
 	StartTime   string         `json:"start_time"`
 	Pools       []PoolDiskInfo `json:"pools"`
 	Latest      string         `json:"latest_version"`
 	UpdateAvail bool           `json:"update_available"`
+
+	Disk          DiskInfo      `json:"disk"`            // aggregate host disk (DATA_DIR statfs)
+	Load          LoadAvg       `json:"load"`             // /proc/loadavg
+	HostUptimeSec int64         `json:"host_uptime_sec"`  // /proc/uptime — real host OS uptime, distinct from UptimeSec above
+	Services      []ServiceInfo `json:"services"`
+	Platform      PlatformInfo  `json:"platform"`
+}
+
+// DiskInfo is the aggregate host-disk stat (statfs on DATA_DIR — the
+// same call GetHostStats already makes for a different response shape).
+type DiskInfo struct {
+	TotalBytes uint64  `json:"total_bytes"`
+	UsedBytes  uint64  `json:"used_bytes"`
+	FreeBytes  uint64  `json:"free_bytes"`
+	UsedPct    float64 `json:"used_pct"`
+}
+
+// LoadAvg is /proc/loadavg's first three fields.
+type LoadAvg struct {
+	Load1  float64 `json:"load1"`
+	Load5  float64 `json:"load5"`
+	Load15 float64 `json:"load15"`
+}
+
+// ServiceInfo is one row in the "System Services" list.
+type ServiceInfo struct {
+	// Unit is the resolved systemd unit name actually present on this
+	// host (e.g. "libvirtd.service" OR "virtqemud.service").
+	Unit string `json:"unit"`
+	// Key is a stable machine key for i18n lookup on the frontend,
+	// independent of which real unit backs it (e.g. "libvirt", "incus",
+	// "dnsmasq:<bridge>").
+	Key         string `json:"key"`
+	Description string `json:"description"` // systemd's own unit description
+	Active      bool   `json:"active"`       // ActiveState == "active"
+	State       string `json:"state"`        // raw ActiveState: active/inactive/failed/unknown
+	Found       bool   `json:"found"`        // false if the unit doesn't exist on this host at all
+}
+
+// PlatformInfo is the hypervisor-platform card.
+type PlatformInfo struct {
+	Kernel         string         `json:"kernel"`
+	QEMUVersion    string         `json:"qemu_version,omitempty"`
+	LibvirtVersion string         `json:"libvirt_version,omitempty"`
+	IncusVersion   string         `json:"incus_version,omitempty"` // omitted entirely when !IncusEnabled
+	IncusEnabled   bool           `json:"incus_enabled"`
+	NestedVirt     NestedVirtInfo `json:"nested_virt"`
+	IOMMU          IOMMUInfo      `json:"iommu"`
+}
+
+type NestedVirtInfo struct {
+	Supported bool   `json:"supported"`
+	Vendor    string `json:"vendor"` // "intel" | "amd" | "unknown"
+	Detail    string `json:"detail,omitempty"`
+}
+
+type IOMMUInfo struct {
+	Enabled bool `json:"enabled"`
+	Groups  int  `json:"groups"`
 }
 
 type BackendInfo struct {
@@ -111,7 +173,143 @@ func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 		si.UpdateAvail = isNewer(latest, h.cfg.Version)
 	}
 
+	// Aggregate host disk (same statfs GetHostStats already does on DataDir).
+	var dstat syscall.Statfs_t
+	if err := syscall.Statfs(h.cfg.DataDir, &dstat); err == nil {
+		total := dstat.Blocks * uint64(dstat.Bsize)
+		free := dstat.Bavail * uint64(dstat.Bsize)
+		used := total - free
+		pct := 0.0
+		if total > 0 {
+			pct = float64(used) * 100 / float64(total)
+		}
+		si.Disk = DiskInfo{TotalBytes: total, UsedBytes: used, FreeBytes: free, UsedPct: pct}
+	}
+
+	si.Load = readLoadAvg()
+	si.HostUptimeSec = readHostUptimeSec()
+	si.Services = h.collectServiceStatuses(r.Context())
+	si.Platform = h.collectPlatformInfo()
+
 	jsonResp(w, http.StatusOK, si)
+}
+
+// readLoadAvg parses /proc/loadavg's first three fields.
+func readLoadAvg() LoadAvg {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return LoadAvg{}
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 3 {
+		return LoadAvg{}
+	}
+	l1, _ := strconv.ParseFloat(fields[0], 64)
+	l5, _ := strconv.ParseFloat(fields[1], 64)
+	l15, _ := strconv.ParseFloat(fields[2], 64)
+	return LoadAvg{Load1: l1, Load5: l5, Load15: l15}
+}
+
+// readHostUptimeSec parses /proc/uptime (first field, seconds, float) —
+// the real host OS uptime, not this backend process's own uptime.
+func readHostUptimeSec() int64 {
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 1 {
+		return 0
+	}
+	secs, _ := strconv.ParseFloat(fields[0], 64)
+	return int64(secs)
+}
+
+// readNestedVirt inspects the KVM module's "nested" parameter, trying
+// both Intel and AMD module names (whichever is loaded for this host's
+// CPU vendor). Returns Supported=false with a Detail string when
+// undetectable (e.g. module not loaded) rather than erroring the whole
+// status endpoint.
+func readNestedVirt() NestedVirtInfo {
+	vendor := "unknown"
+	if cpuinfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		s := string(cpuinfo)
+		if strings.Contains(s, "GenuineIntel") {
+			vendor = "intel"
+		} else if strings.Contains(s, "AuthenticAMD") {
+			vendor = "amd"
+		}
+	}
+	modParam := map[string]string{
+		"intel": "/sys/module/kvm_intel/parameters/nested",
+		"amd":   "/sys/module/kvm_amd/parameters/nested",
+	}[vendor]
+	if modParam == "" {
+		return NestedVirtInfo{Vendor: vendor, Detail: "unknown CPU vendor; cannot locate the KVM module parameter"}
+	}
+	data, err := os.ReadFile(modParam)
+	if err != nil {
+		return NestedVirtInfo{Vendor: vendor, Detail: "kvm_" + vendor + " module not loaded (or nested virtualization unsupported)"}
+	}
+	val := strings.TrimSpace(string(data))
+	supported := val == "1" || strings.EqualFold(val, "Y")
+	return NestedVirtInfo{Supported: supported, Vendor: vendor}
+}
+
+// readIOMMU counts entries under /sys/kernel/iommu_groups. An empty or
+// unreadable directory means IOMMU/VFIO is off (either unsupported by
+// the hardware, or supported but not activated via
+// intel_iommu=on/amd_iommu=on on the kernel command line — this can't
+// distinguish those two cases without parsing dmesg, which isn't worth
+// the fragility for a status page).
+func readIOMMU() IOMMUInfo {
+	entries, err := os.ReadDir("/sys/kernel/iommu_groups")
+	if err != nil {
+		return IOMMUInfo{}
+	}
+	return IOMMUInfo{Enabled: len(entries) > 0, Groups: len(entries)}
+}
+
+// collectPlatformInfo reads QEMU/libvirt versions off the same
+// *libvirt.Connect host.go's GetHostInfo already uses, but NOT the same
+// field mapping: for the QEMU driver, conn.GetVersion() returns the
+// version of the running HYPERVISOR (QEMU), while conn.GetLibVersion()
+// returns the libvirt library's own version — confirmed live against
+// `virsh version` ("Using library: 12.7.0" / "Running hypervisor: QEMU
+// 11.1.1"), where host.go's older code mislabels the former as
+// LibvirtVersion. The capabilities-XML <qemu><version> extraction is
+// kept only as a fallback for when GetVersion() itself fails.
+func (h *Handler) collectPlatformInfo() PlatformInfo {
+	p := PlatformInfo{Kernel: readKernel(), IncusEnabled: h.cfg.IncusEnabled}
+	if conn := h.lv.Get(); conn != nil {
+		if libVer, err := conn.GetLibVersion(); err == nil {
+			p.LibvirtVersion = fmt.Sprintf("%d.%d.%d", libVer/1000000, (libVer/1000)%1000, libVer%1000)
+		}
+		if hvVer, err := conn.GetVersion(); err == nil {
+			p.QEMUVersion = fmt.Sprintf("%d.%d.%d", hvVer/1000000, (hvVer/1000)%1000, hvVer%1000)
+		} else if out, err := conn.GetCapabilities(); err == nil {
+			if v := extractQEMUVersion(out); v != "" {
+				p.QEMUVersion = v
+			}
+		}
+	}
+	if p.IncusEnabled {
+		if combined, ok := h.compute.(*compute.Combined); ok {
+			if sec := combined.Secondary(); sec != nil {
+				if vr, ok := sec.(interface{ ServerInfo() (string, error) }); ok {
+					if v, err := vr.ServerInfo(); err == nil {
+						p.IncusVersion = v
+					}
+					// err != nil (daemon down): leave IncusVersion empty; the
+					// services list independently reports the incus.service
+					// state, so a stopped daemon is still visible.
+				}
+			}
+		}
+	}
+	p.NestedVirt = readNestedVirt()
+	p.IOMMU = readIOMMU()
+	return p
 }
 
 // SystemCert serves the backend's TLS certificate so the user can download
@@ -238,9 +436,61 @@ var journalctlRunner = func(ctx context.Context, lines int) ([]byte, error) {
 var backupScriptPath = "/usr/local/bin/webkvm-backup.sh"
 
 // backupRunner wraps exec.CommandContext so tests can replace it
-// without actually shelling out.
-var backupRunner = func(ctx context.Context) ([]byte, error) {
-	return exec.CommandContext(ctx, backupScriptPath).CombinedOutput()
+// without actually shelling out. mount overrides the script's
+// BACKUP_MOUNT env var (see backupMountCandidate); an empty mount
+// leaves the script's own default ("/mnt/webkvm-backup") in place,
+// so its own `mountpoint -q` preflight check remains the single
+// source of truth for "is this share actually usable".
+var backupRunner = func(ctx context.Context, mount string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, backupScriptPath)
+	if mount != "" {
+		cmd.Env = append(os.Environ(), "BACKUP_MOUNT="+mount)
+	}
+	return cmd.CombinedOutput()
+}
+
+// isMountpoint reports whether path is currently a real mountpoint,
+// via the same `mountpoint` binary scripts/webkvm-backup.sh already
+// requires — never guesses from path conventions alone.
+func isMountpoint(path string) bool {
+	if path == "" {
+		return false
+	}
+	return exec.Command("mountpoint", "-q", path).Run() == nil
+}
+
+// backupMountCandidate picks where the host-config quick-backup
+// (scripts/webkvm-backup.sh) should write, so the feature works
+// without requiring its own dedicated /etc/fstab entry when the
+// operator has already set up an NFS/SMB storage pool or backup
+// target. Preference order: the feature's original manually-mounted
+// convention (so an existing fstab-based setup keeps working exactly
+// as before); the first backup target (NFS/SMB) whose path is
+// currently mounted, since backup targets are the natural home for
+// this kind of file; then the first storage pool whose path is
+// currently mounted. Returns "" if none qualify.
+func (h *Handler) backupMountCandidate() string {
+	const legacy = "/mnt/webkvm-backup"
+	if isMountpoint(legacy) {
+		return legacy
+	}
+	if h.backupStore != nil {
+		for _, t := range h.backupStore.ListTargets() {
+			if (t.Type == backupstore.TargetSMB || t.Type == backupstore.TargetNFS) && isMountpoint(t.Path) {
+				return t.Path
+			}
+		}
+	}
+	if h.lv != nil {
+		if pools, err := h.lv.ListStoragePools(); err == nil {
+			for _, p := range pools {
+				if isMountpoint(p.Path) {
+					return p.Path
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // SystemBackup snapshots /opt/webkvm to the configured SMB share
@@ -259,7 +509,7 @@ func (h *Handler) SystemBackup(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
 
-	out, err := backupRunner(ctx)
+	out, err := backupRunner(ctx, h.backupMountCandidate())
 	if err != nil {
 		// The script always prints something on stderr; include
 		// the last 1KB so the operator can see why without
@@ -298,31 +548,43 @@ func (h *Handler) SystemBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 // SystemListBackups returns the metadata of recent backups in the
-// SMB share for this host. It only lists, never deletes, so it's
-// safe to call from the UI on every page load. If the share
-// isn't mounted, returns an empty list and a `mounted: false`
-// flag instead of an error (the UI can then hide the restore UI).
+// SMB/NFS share for this host (see backupMountCandidate for how that
+// share is chosen). It only lists, never deletes, so it's safe to
+// call from the UI on every page load. If no share is mounted,
+// returns an empty list and a `mounted: false` flag instead of an
+// error (the UI can then hide the restore UI).
 func (h *Handler) SystemListBackups(w http.ResponseWriter, r *http.Request) {
 	host, _ := os.Hostname()
 	if i := strings.IndexByte(host, '.'); i >= 0 {
 		host = host[:i]
 	}
-	dir := "/mnt/webkvm-backup/webkvm-" + host
 	out := struct {
 		Mounted bool         `json:"mounted"`
 		Host    string       `json:"host"`
 		Dir     string       `json:"dir"`
 		Backups []BackupInfo `json:"backups"`
-	}{Host: host, Dir: dir}
+	}{Host: host}
 
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		// Most common case: share not mounted. Return empty.
-		out.Mounted = false
+	mount := h.backupMountCandidate()
+	if mount == "" {
 		jsonResp(w, http.StatusOK, out)
 		return
 	}
+	// The share itself being mounted is "mounted: true" even before
+	// this host has ever written into its per-host subdirectory —
+	// otherwise the UI would keep reporting "not mounted" forever on
+	// a freshly-configured destination that simply hasn't had its
+	// first backup run yet.
 	out.Mounted = true
+	dir := mount + "/webkvm-" + host
+	out.Dir = dir
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// Real mount, but this host's subdirectory doesn't exist yet.
+		jsonResp(w, http.StatusOK, out)
+		return
+	}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".tar.gz") {
 			continue

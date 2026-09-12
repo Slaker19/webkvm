@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 type VMState string
 
 const (
@@ -199,6 +201,11 @@ type NetIface struct {
 	Model   string `json:"model"`
 	Type    string `json:"type"` // network, bridge
 	Source  string `json:"source,omitempty"`
+	// IPs holds only THIS interface's own IPv4 addresses (matched by
+	// MAC). Previously every interface row in the UI displayed the
+	// VM/container's whole IP list (VM.IPs) instead of its own — with
+	// more than one NIC, every row showed the same combined list.
+	IPs []string `json:"ips,omitempty"`
 }
 
 type AttachNetRequest struct {
@@ -241,6 +248,15 @@ type StoragePool struct {
 	Available int64  `json:"available"`
 	State     string `json:"state"`
 	Autostart bool   `json:"autostart"`
+	// DeviceID identifies the underlying block device/filesystem this
+	// pool's directory lives on (the stat(2) st_dev of Path). A "dir"
+	// pool's Capacity/Available from libvirt are the FULL underlying
+	// filesystem's, not pool-specific — two pools on the same disk (the
+	// common case: an ISO pool and a disk pool both under the same
+	// DATA_DIR) report the identical Capacity, so summing it across
+	// pools double-counts the same physical disk. Callers aggregating
+	// totals across pools must dedupe by DeviceID first.
+	DeviceID uint64 `json:"device_id,omitempty"`
 }
 
 type CreatePoolRequest struct {
@@ -673,6 +689,10 @@ type CreateUserRequest struct {
 	AllowedPools []string `json:"allowed_pools,omitempty"`
 	// AllowedTags, when non-empty, grants tag-based access (V13-D-01).
 	AllowedTags []string `json:"allowed_tags,omitempty"`
+	// MustChangePassword, when true, forces the new user to set their
+	// own password on first login (the admin-chosen one becomes a
+	// one-time temporary credential).
+	MustChangePassword bool `json:"must_change_password,omitempty"`
 }
 
 type UpdateUserRequest struct {
@@ -718,4 +738,14 @@ type DownloadJob struct {
 	// Result carries the job's payload on success (e.g. the cloned VM
 	// or the created snapshot) for consumers that poll the job.
 	Result any `json:"result,omitempty"`
+}
+
+// DHCPLease is one active lease from a "nat"/"isolated" network's
+// per-bridge dnsmasq leasefile. "direct" networks get addresses from
+// the LAN's own DHCP and have no lease file WebKVM controls.
+type DHCPLease struct {
+	MAC      string    `json:"mac"`
+	IP       string    `json:"ip"`
+	Hostname string    `json:"hostname,omitempty"` // "" when dnsmasq recorded "*"
+	Expiry   time.Time `json:"expiry"`
 }

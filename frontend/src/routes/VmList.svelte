@@ -1565,12 +1565,17 @@ apt-get update -y
           </div>
           <div class="p-3 space-y-2">
             <div class="flex items-center justify-between gap-2">
-              <div class="font-medium text-sm truncate min-w-0">{vm.alias || vm.name}</div>
-              <div class="flex items-center gap-1 shrink-0">
+              <div class="font-medium text-sm truncate min-w-0" title={vm.alias || vm.name}>
+                {vm.alias || vm.name}
+              </div>
+              <div class="flex items-center gap-1 min-w-0">
                 {#if vm.state === 'running' && vmIps(vm).length}
-                  <span class="font-mono text-[10px] text-accent">{vmIps(vm).join(', ')}</span>
+                  <span
+                    class="font-mono text-[10px] text-accent truncate max-w-[140px]"
+                    title={vmIps(vm).join(', ')}>{vmIps(vm).join(', ')}</span
+                  >
                 {/if}
-                <div class="relative">
+                <div class="relative shrink-0">
                   <button
                     type="button"
                     aria-label={t('vms.quickActions')}

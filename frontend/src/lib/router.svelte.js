@@ -37,6 +37,14 @@
 import { browser } from './utils/browser.js';
 
 const ROUTES = [
+  // App.svelte renders <Login/> directly whenever auth.status !== 'in',
+  // independent of route.name — this entry exists only so a #/login?...
+  // hash resolves through the normal match branch (which parses and
+  // keeps the query string) instead of the "no match" 404 fallback
+  // below (which discards it). Without it, Login.svelte's
+  // getRoute()?.query?.reason was always undefined — the "your session
+  // expired" banner never actually rendered, for any reason.
+  { pattern: 'login', name: 'login' },
   { pattern: '', name: 'vms' },
   { pattern: 'vms', name: 'vms' },
   { pattern: 'vms/new', name: 'vms-new' },

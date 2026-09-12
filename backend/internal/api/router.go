@@ -354,6 +354,7 @@ func NewRouter(
 			r.Post("/pools", h.CreatePool)
 			r.Put("/pools/{name}", h.UpdatePool)
 			r.Delete("/pools/{name}", h.DeletePool)
+			r.Post("/browse-remote", h.BrowseRemote)
 			r.Delete("/volumes/{pool}/{name}", h.DeleteVolume)
 			r.Delete("/isos/{pool}/{name}", h.DeleteISO)
 			r.Patch("/isos/{pool}/{name}", h.RenameISO)
@@ -362,12 +363,14 @@ func NewRouter(
 
 	r.Route("/api/networks", func(r chi.Router) {
 		r.Get("/", h.ListNetworks)
+		r.Get("/{id}/leases", h.ListNetworkLeases)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAtLeast("operator"))
 			r.Post("/", h.CreateNetwork)
 			r.Put("/{id}", h.UpdateNetwork)
 			r.Post("/{id}/start", h.StartNetwork)
 			r.Post("/{id}/stop", h.StopNetwork)
+			r.Delete("/{id}/leases/{mac}", h.ReleaseNetworkLease)
 		})
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireRole(modelsRoleAdmin()))

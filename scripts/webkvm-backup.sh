@@ -25,7 +25,7 @@ set -euo pipefail
 # --- Config (env-overridable) -----------------------------------------
 DATA_DIR="${DATA_DIR:-/opt/webkvm}"
 BACKUP_MOUNT="${BACKUP_MOUNT:-/mnt/webkvm-backup}"
-HOST_TAG="${HOST_TAG:-$(hostname -s 2>/dev/null || hostname || echo unknown)}"
+HOST_TAG="${HOST_TAG:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n 2>/dev/null || echo unknown)}"
 BACKUP_DIR="${BACKUP_MOUNT}/webkvm-${HOST_TAG}"
 
 # --- Preflight --------------------------------------------------------

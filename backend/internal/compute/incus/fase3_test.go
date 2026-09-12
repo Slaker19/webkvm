@@ -382,6 +382,41 @@ func TestIncusBackendCreateDomain(t *testing.T) {
 	}
 }
 
+// TestIncusBackendCreateDomainWithoutCloudInit ensures a container created
+// with the cloud-init fields left blank still gets a user.network-config
+// key covering its NICs (eth0), same as one created with cloud-init. Without
+// this, a later AttachNetworkIface call has no existing network-config to
+// regenerate from and a second NIC never gets DHCPed in the guest — see
+// TestIncusBackendAttachNetworkIfaceWithoutPriorCloudInit.
+func TestIncusBackendCreateDomainWithoutCloudInit(t *testing.T) {
+	real := findAnyPhysicalBridge()
+	if real == "" {
+		t.Skip("no physical Linux bridge on the host; container creation requires shared L2")
+	}
+	sock, fake := newFakeLXD3(t, nil, nil)
+	b, err := NewIncusBackend(sock)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if _, err := b.CreateDomain(models.CreateVMRequest{
+		Name: "web2", Image: "ubuntu:24.04", VCPUs: 1, RAMMB: 1024, DiskGB: 10,
+	}); err != nil {
+		t.Fatalf("create container: %v", err)
+	}
+	fake.mu.Lock()
+	post := fake.lastCreate
+	fake.mu.Unlock()
+	if post == nil {
+		t.Fatal("no create request captured")
+	}
+	if post.Config["user.user-data"] != "" {
+		t.Errorf("user.user-data should be empty with no cloud-init request, got %q", post.Config["user.user-data"])
+	}
+	if nc := post.Config["user.network-config"]; nc == "" || !strings.Contains(nc, "eth0:") {
+		t.Errorf("user.network-config must still be set for eth0 even without cloud-init, got: %q", nc)
+	}
+}
+
 // TestIncusBackendCreateDomainNoImage: creating a container without an
 // image is a clean validation error, not a 501.
 func TestIncusBackendCreateDomainNoImage(t *testing.T) {

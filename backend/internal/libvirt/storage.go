@@ -9,11 +9,26 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"webkvm/internal/models"
 
 	"libvirt.org/go/libvirt"
 )
+
+// deviceIDOf returns the stat(2) st_dev for path — the identifier
+// storagePoolToModel uses to let callers tell "same underlying disk"
+// pools apart from genuinely separate ones. 0 (the zero value, hence
+// omitempty on the model field) on any stat failure: never fatal to the
+// pool listing itself, just loses the double-counting protection for
+// that one pool.
+func deviceIDOf(path string) uint64 {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0
+	}
+	return uint64(st.Dev)
+}
 
 func (c *Connector) ListStoragePools() ([]models.StoragePool, error) {
 	if err := c.ensureConnected(); err != nil {
@@ -47,35 +62,54 @@ func (c *Connector) CreateStoragePool(ctx context.Context, req models.CreatePool
 		poolType = "dir"
 	}
 
-	// WebKVM no longer mounts remote shares: NFS/SMB mounts must be
-	// set up on the host (via /etc/fstab or a systemd mount unit)
-	// and point at a local mountpoint. A legacy "netfs" request is
-	// accepted as a plain directory pool over that mountpoint,
-	// ignoring source/credentials (which webkvm used to manage
-	// through libvirt secrets).
-	if poolType == "netfs" {
+	// netfs (NFS/anonymous-CIFS) pools: libvirt's own netfs pool driver
+	// mounts the share itself, no manual /etc/fstab or systemd mount
+	// unit required — this works fine since there's no auth to carry.
+	// An AUTHENTICATED CIFS pool is different: libvirt's netfs driver
+	// has no supported way to carry CIFS credentials at all (its <auth>
+	// element only accepts "chap"/iscsi and "ceph" — see smb_mount.go),
+	// so WebKVM mounts it itself via a systemd .mount unit and then
+	// defines a plain "dir" pool on top of the already-mounted path.
+	selfManagedSMB := poolType == "netfs" && strings.EqualFold(req.SourceFormat, "cifs") && req.SourceUsername != ""
+	if selfManagedSMB {
+		if err := mountSMBShare(req.Name, req.SourceHost, req.SourceDir, req.Path, req.SourceUsername, req.SourcePassword); err != nil {
+			return models.StoragePool{}, fmt.Errorf("smb mount: %w", err)
+		}
 		poolType = "dir"
 	}
+
 
 	// Sanitize the path/name. xmlEscape handles the rest.
 	xmlStr, err := buildPoolXML(poolType, req)
 	if err != nil {
+		if selfManagedSMB {
+			_ = unmountSMBShare(req.Name, req.Path)
+		}
 		return models.StoragePool{}, err
 	}
 
 	pool, err := c.conn.StoragePoolDefineXML(xmlStr, 0)
 	if err != nil {
+		if selfManagedSMB {
+			_ = unmountSMBShare(req.Name, req.Path)
+		}
 		return models.StoragePool{}, fmt.Errorf("define pool: %w", err)
 	}
 	defer pool.Free()
 
 	if err := pool.Build(0); err != nil {
 		pool.Undefine()
+		if selfManagedSMB {
+			_ = unmountSMBShare(req.Name, req.Path)
+		}
 		return models.StoragePool{}, fmt.Errorf("build pool: %w", err)
 	}
 
 	if err := pool.Create(0); err != nil {
 		pool.Undefine()
+		if selfManagedSMB {
+			_ = unmountSMBShare(req.Name, req.Path)
+		}
 		return models.StoragePool{}, fmt.Errorf("create pool: %w", err)
 	}
 
@@ -730,6 +764,7 @@ func (c *Connector) storagePoolToModel(pool *libvirt.StoragePool) (models.Storag
 		Available: int64(info.Available),
 		State:     state,
 		Autostart: autostart,
+		DeviceID:  deviceIDOf(pPath),
 	}, nil
 }
 
@@ -818,6 +853,11 @@ func (c *Connector) DeletePool(name string) error {
 	}
 	defer pool.Free()
 
+	// Captured before Destroy/Undefine — the pool's own live state may
+	// not be queryable afterward.
+	xmlDesc, _ := pool.GetXMLDesc(0)
+	poolPath := extractPoolPath(xmlDesc)
+
 	info, err := pool.GetInfo()
 	if err == nil && info.State == libvirt.STORAGE_POOL_RUNNING {
 		pool.Destroy()
@@ -838,9 +878,20 @@ func (c *Connector) DeletePool(name string) error {
 		}
 	}
 
+	// If this pool's directory is actually a self-managed SMB mount
+	// (see smb_mount.go — libvirt's netfs driver can't carry CIFS
+	// credentials, so an authenticated SMB pool is a plain "dir" pool
+	// over our own systemd .mount unit), tear that mount down too.
+	if poolPath != "" && isSelfManagedSMBMount(poolPath) {
+		if err := unmountSMBShare(name, poolPath); err != nil {
+			slog.Warn("smb_unmount_failed", "pool", name, "err", err)
+		}
+	}
+
 	// Clean up the libvirt secret and the on-disk mapping if this
-	// pool had CIFS auth. unsetCIFSSecret is idempotent; safe to
-	// call even when no secret exists for the pool.
+	// pool had CIFS auth via the (legacy, netfs-native) mechanism.
+	// unsetCIFSSecret is idempotent; safe to call even when no secret
+	// exists for the pool.
 	_ = unsetCIFSSecret(context.Background(), c, name)
 	return nil
 }

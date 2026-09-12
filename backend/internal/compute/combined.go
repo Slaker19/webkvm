@@ -33,6 +33,11 @@ func NewCombined(primary, secondary Backend) *Combined {
 	return &Combined{Backend: primary, secondary: secondary, owners: map[string]Backend{}}
 }
 
+// Secondary exposes the optional secondary (Incus) backend, or nil —
+// used by status/platform reporting to query the engine version
+// without adding a ServerInfo() method to the Backend interface itself.
+func (c *Combined) Secondary() Backend { return c.secondary }
+
 // remember caches which backend owns an instance.
 func (c *Combined) remember(id string, b Backend) {
 	if b == nil {

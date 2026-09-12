@@ -156,15 +156,16 @@ func (s *Store) Create(req models.CreateUserRequest) (*models.User, error) {
 	}
 
 	u := &models.User{
-		Username:     req.Username,
-		PasswordHash: string(hash),
-		Role:         role,
-		Email:        req.Email,
-		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
-		Active:       true,
-		Quota:        req.Quota,
-		AllowedPools: req.AllowedPools,
-		AllowedTags:  req.AllowedTags,
+		Username:           req.Username,
+		PasswordHash:       string(hash),
+		Role:               role,
+		Email:              req.Email,
+		CreatedAt:          time.Now().UTC().Format(time.RFC3339),
+		Active:             true,
+		Quota:              req.Quota,
+		AllowedPools:       req.AllowedPools,
+		AllowedTags:        req.AllowedTags,
+		MustChangePassword: req.MustChangePassword,
 	}
 	s.users[req.Username] = u
 	if err := s.save(); err != nil {
@@ -470,8 +471,11 @@ func (s *Store) assertAtLeastOneAdminLocked(exclude string, role string) error {
 // password a human sets — user self-service change, admin create, admin
 // reset — flows through here (the guest's OS password is a separate
 // concern in the VM console). Policy:
-//   - minimum 12 characters (grandfathered: existing hashes are never
-//     re-validated until their next change),
+//   - minimum 8 characters (grandfathered: existing hashes are never
+//     re-validated until their next change) — matches the frontend's
+//     own "Password (min 8)" hint, which used to be flatly wrong: this
+//     gate silently required 12, so a password the UI itself suggested
+//     was acceptable would still get rejected server-side.
 //   - if shorter than 16, at least 3 of 4 character classes must be
 //     present (lower, upper, digit, symbol),
 //   - must not be an exact (case-insensitive) member of the embedded
@@ -502,8 +506,8 @@ func (s *Store) clearInitialAdminPasswordFilesLocked(username string) {
 }
 
 func validatePasswordStrength(pw string) error {
-	if len(pw) < 12 {
-		return errors.New("password must be at least 12 characters (16+ releases the complexity requirement)")
+	if len(pw) < 8 {
+		return errors.New("password must be at least 8 characters (16+ releases the complexity requirement)")
 	}
 	if len(pw) > 128 {
 		return errors.New("password must be at most 128 characters")

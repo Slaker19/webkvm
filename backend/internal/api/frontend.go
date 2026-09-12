@@ -41,7 +41,21 @@ func frontendHandler() http.Handler {
 				return
 			}
 		}
-		// SPA fallback: any unknown path returns index.html.
+		// assets/* is always a specific, content-hashed build output
+		// (Vite's cache-busting) — never a client-side route. A miss here
+		// means the browser is holding an older bundle across a backend
+		// update/redeploy (e.g. a tab left open, or update-in-place) and
+		// is asking for a chunk that no longer exists: that must be a
+		// real 404 so the failed dynamic import()/module load surfaces
+		// as a clear network error, not a silent "200 OK" of HTML that
+		// the browser then fails to parse as JS with no visible cause.
+		if strings.HasPrefix(upath, "assets/") {
+			http.NotFound(w, r)
+			return
+		}
+		// SPA fallback: any other unknown path returns index.html, so
+		// client-side routing (e.g. a hard refresh on /vms/abc-123)
+		// still works.
 		serveIndex(distFS, w, r)
 	})
 }
