@@ -38,8 +38,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	incus "github.com/lxc/incus/v6/client"
-	"github.com/lxc/incus/v6/shared/api"
+	incus "github.com/lxc/incus/v7/client"
+	"github.com/lxc/incus/v7/shared/api"
 	"github.com/gorilla/websocket"
 	"github.com/klauspost/compress/zstd"
 

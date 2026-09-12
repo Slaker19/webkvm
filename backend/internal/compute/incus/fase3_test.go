@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v7/shared/api"
 
 	"webkvm/internal/compute"
 	"webkvm/internal/models"

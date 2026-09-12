@@ -8,8 +8,8 @@ import (
 	"webkvm/internal/events"
 	"webkvm/internal/models"
 
-	incus "github.com/lxc/incus/v6/client"
-	"github.com/lxc/incus/v6/shared/api"
+	incus "github.com/lxc/incus/v7/client"
+	"github.com/lxc/incus/v7/shared/api"
 )
 
 // ringBuffer is a fixed-size circular buffer of MetricsSample. When full,
