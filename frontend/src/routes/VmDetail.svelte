@@ -1983,7 +1983,9 @@
                         <button
                           onclick={() => detachSharedFolder(f.tag)}
                           disabled={actionLoading === 'sharedfolder' || vm.state !== 'shutoff'}
-                          title={vm.state !== 'shutoff' ? t('vmDetail.sharedFolderRequiresShutoff') : ''}
+                          title={vm.state !== 'shutoff'
+                            ? t('vmDetail.sharedFolderRequiresShutoff')
+                            : ''}
                           class="text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                           >{t('vmDetail.sharedFolderDetach')}</button
                         >

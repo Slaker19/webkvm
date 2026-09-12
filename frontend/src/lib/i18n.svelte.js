@@ -2005,7 +2005,8 @@ const messages = {
       tpmHelper: 'TPM emulado (requiere swtpm en el host)',
       toggleTpm: 'Alternar TPM',
       watchdog: 'Watchdog',
-      watchdogHelper: 'Reinicia la VM si el sistema operativo invitado deja de responder (i6300esb)',
+      watchdogHelper:
+        'Reinicia la VM si el sistema operativo invitado deja de responder (i6300esb)',
       toggleWatchdog: 'Alternar watchdog',
       hardware: 'Hardware',
       vcpusHelper: 'Núcleos de CPU virtuales',
@@ -3615,7 +3616,7 @@ const messages = {
       toggleTpm: 'Alterna TPM',
       watchdog: 'Watchdog',
       watchdogHelper:
-        "Reinicia la VM si el sistema operatiu convidat deixa de respondre (i6300esb)",
+        'Reinicia la VM si el sistema operatiu convidat deixa de respondre (i6300esb)',
       toggleWatchdog: 'Alterna el watchdog',
       hardware: 'Hardware',
       vcpusHelper: 'Nuclis de CPU virtuals',

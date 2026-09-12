@@ -23,6 +23,7 @@ jobs:
   backend:
     name: Backend (lint + test)
     runs-on: ubuntu-latest
+    needs: frontend
     defaults:
       run:
         working-directory: backend
@@ -41,8 +42,19 @@ jobs:
       - name: Install libvirt dev headers
         run: sudo apt-get update && sudo apt-get install -y libvirt-dev pkg-config
 
-      - name: Create embed dist directory
-        run: mkdir -p internal/frontend/dist && touch internal/frontend/dist/.gitkeep
+      # //go:embed all:dist needs a real, non-empty frontend build — not
+      # just a placeholder file. A bare `.gitkeep` satisfies the compiler
+      # but leaves internal/frontend/dist with no index.html, so any test
+      # exercising the SPA fallback (frontend_test.go) always 500s in CI
+      # while passing locally (developers always run a real `npm run
+      # build` first). Reuse the frontend job's own build instead of
+      # duplicating it here — this is exactly the artifact it already
+      # uploads.
+      - name: Download frontend build
+        uses: actions/download-artifact@v7
+        with:
+          name: frontend-dist
+          path: backend/internal/frontend/dist
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9.3.0

@@ -81,10 +81,18 @@
   {#if open}
     <div class="mt-2 border border-border rounded-lg p-2 bg-background max-w-md">
       <div class="flex items-center gap-2 text-xs text-muted-foreground mb-2">
-        <Button size="sm" variant="ghost" type="button" onclick={up} disabled={segments.length === 0 || loading}>
+        <Button
+          size="sm"
+          variant="ghost"
+          type="button"
+          onclick={up}
+          disabled={segments.length === 0 || loading}
+        >
           ..
         </Button>
-        <span class="truncate font-mono">/{sourceDir}{currentSubpath ? '/' + currentSubpath : ''}</span>
+        <span class="truncate font-mono"
+          >/{sourceDir}{currentSubpath ? '/' + currentSubpath : ''}</span
+        >
       </div>
 
       {#if loading}
