@@ -1,0 +1,1083 @@
+// V13-SEC-01: the session JWT lives in an HttpOnly cookie (never in JS).
+// The SPA tracks only the *session status* ('checking'|'in'|'out') plus
+// the non-secret identity, re-validated via /auth/me on every load. The
+// CSRF value is the double-submit token echoed back as X-CSRF-Token on
+// state-changing requests.
+import { SvelteURLSearchParams } from 'svelte/reactivity';
+import { isMediaRef } from '../utils/mediaRef.js';
+const STATUS = { CHECKING: 'checking', IN: 'in', OUT: 'out' };
+
+let statusState = $state(STATUS.CHECKING);
+let userState = $state(localStorage.getItem('user') || '');
+let roleState = $state(localStorage.getItem('role') || '');
+let mustChangeState = $state(localStorage.getItem('must_change') === '1');
+let csrfState = $state('');
+let avatarState = $state(localStorage.getItem('avatar') || '');
+let loggingOut = false;
+
+function readCSRFCookie() {
+  if (typeof document === 'undefined') return '';
+  const m = /(?:^|; )webkvm_csrf=([^;]+)/.exec(document.cookie);
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
+// Imported lazily to avoid a circular dep at module-load
+// time (auth store ↔ router both want to be importable
+// from the other; routing only ever fires on 401, so
+// dynamic import keeps the top-level graph a DAG).
+async function redirectToLogin(reason) {
+  try {
+    const { navigate } = await import('../router.svelte.js');
+    navigate('/login', { query: reason ? { reason } : null });
+  } catch {
+    // If the router fails to load, fall back to a hard
+    // navigation so the user is not stuck on a broken
+    // page with a dead session.
+    location.href = '/login' + (reason ? '?reason=' + reason : '');
+  }
+}
+
+function clearSessionState() {
+  userState = '';
+  roleState = '';
+  mustChangeState = false;
+  csrfState = '';
+  avatarState = '';
+  localStorage.removeItem('user');
+  localStorage.removeItem('role');
+  localStorage.removeItem('must_change');
+  localStorage.removeItem('avatar');
+}
+
+export const auth = {
+  get status() {
+    return statusState;
+  },
+  get user() {
+    return userState;
+  },
+  get role() {
+    return roleState;
+  },
+  get isLoggedIn() {
+    return statusState === STATUS.IN;
+  },
+  get mustChangePassword() {
+    return mustChangeState;
+  },
+  get avatar() {
+    return avatarState;
+  },
+
+  // Called after the user picks a new profile picture, so the header
+  // updates without a reload.
+  setAvatar(url) {
+    avatarState = isMediaRef(url) ? url : '';
+    if (avatarState) localStorage.setItem('avatar', avatarState);
+    else localStorage.removeItem('avatar');
+  },
+
+  setSession(u, r, mustChange = false, csrf = '') {
+    userState = u;
+    roleState = r || '';
+    mustChangeState = !!mustChange;
+    csrfState = csrf || readCSRFCookie();
+    statusState = STATUS.IN;
+    localStorage.setItem('user', u);
+    localStorage.setItem('role', r || '');
+    localStorage.setItem('must_change', mustChange ? '1' : '0');
+  },
+
+  setMustChange(v) {
+    mustChangeState = !!v;
+    localStorage.setItem('must_change', v ? '1' : '0');
+  },
+
+  // Called on every app load: re-validate the cookie session.
+  async bootstrap() {
+    statusState = STATUS.CHECKING;
+    try {
+      const u = await api.me();
+      auth.setSession(u.username, u.role, u.must_change_password, readCSRFCookie());
+      auth.setAvatar(u.avatar);
+      return true;
+    } catch {
+      // request() already called onUnauthorized() on 401 (status -> out).
+      if (statusState !== STATUS.OUT) statusState = STATUS.OUT;
+      clearSessionState();
+      statusState = STATUS.OUT;
+      return false;
+    }
+  },
+
+  // Expired/invalid session: clear local state and bounce to /login.
+  // The "session expired" banner is only meaningful when there WAS a
+  // session: a signed-in user whose requests start failing, or a reload
+  // with a remembered identity whose cookie has since lapsed. A first
+  // visit (bootstrap /auth/me → 401 with nothing remembered), stragglers
+  // after a deliberate logout, or anything while already signed out go
+  // to /login silently.
+  onUnauthorized(reason = 'session_expired') {
+    const hadSession =
+      !loggingOut &&
+      (statusState === STATUS.IN || (statusState === STATUS.CHECKING && !!userState));
+    clearSessionState();
+    statusState = STATUS.OUT;
+    redirectToLogin(hadSession ? reason : null);
+  },
+
+  // Server-side logout clears the HttpOnly cookie (fire-and-forget; the
+  // server ignores failures), then we reset the local state. While it is
+  // in flight, polls/SSE racing the cookie removal can 401; `loggingOut`
+  // keeps those from turning a normal logout into "session expired".
+  logout() {
+    if (statusState === STATUS.IN) {
+      loggingOut = true;
+      api
+        .logoutApi()
+        .catch(() => {
+          /* cookie may already be gone */
+        })
+        .finally(() => {
+          clearSessionState();
+          statusState = STATUS.OUT;
+          // Let late responses from the old session settle first.
+          setTimeout(() => {
+            loggingOut = false;
+          }, 1000);
+        });
+    } else {
+      clearSessionState();
+      statusState = STATUS.OUT;
+    }
+  },
+
+  isAdmin() {
+    return roleState === 'admin';
+  },
+  canMutate() {
+    return roleState === 'admin' || roleState === 'operator';
+  },
+};
+
+const BASE = '/api';
+
+export class ApiError extends Error {
+  // `data` carries the parsed error body. Some failures are not just a
+  // message: a 409 on media delete also reports *what* still uses the
+  // image, and the caller can only warn the user properly if that
+  // survives the throw. It was previously passed at the 429 call site
+  // and silently dropped here.
+  constructor(message, status, code, data = null) {
+    super(message);
+    this.status = status;
+    this.code = code;
+    this.data = data;
+  }
+}
+
+const UNSAFE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
+
+// `credentialCheck: true` (or a predicate over the JSON body) marks
+// endpoints whose 401 means "the password or code you just typed is
+// wrong" (login, 2FA step, 2FA disable), not
+// "your session is gone". Those must surface as an ordinary error the
+// form can show — routing them through onUnauthorized() made a typo'd
+// password log the user out / show "session expired".
+// `skipAuthRedirect: true` is for /auth/logout, whose 401 just means the
+// cookie was already gone.
+async function request(path, opts = {}) {
+  const { credentialCheck = false, skipAuthRedirect = false, ...fetchOpts } = opts;
+  const method = (fetchOpts.method || 'GET').toUpperCase();
+  const headers = { 'Content-Type': 'application/json', ...fetchOpts.headers };
+  // V13-SEC-01: cookie session + double-submit CSRF on mutations.
+  if (UNSAFE_METHODS.includes(method) && csrfState) headers['X-CSRF-Token'] = csrfState;
+
+  const res = await fetch(`${BASE}${path}`, {
+    ...fetchOpts,
+    method,
+    headers,
+    credentials: 'include',
+  });
+
+  if (res.status === 401 && (credentialCheck || skipAuthRedirect)) {
+    const body = await res
+      .clone()
+      .json()
+      .catch(() => ({}));
+    const isCredential =
+      typeof credentialCheck === 'function' ? credentialCheck(body) : credentialCheck;
+    if (isCredential || skipAuthRedirect) {
+      throw new ApiError(
+        body?.error || 'Unauthorized',
+        401,
+        isCredential ? 'invalid_credentials' : 'unauthorized',
+        body
+      );
+    }
+  }
+
+  if (res.status === 401) {
+    auth.onUnauthorized();
+    // The previous behaviour was to throw a generic
+    // "Unauthorized" toast and leave the user on the page
+    // — fine for deliberate logout, terrible for an
+    // expired session: the operator clicks "Restore" and
+    // the page silently does nothing. The v6 release
+    // surfaced this when an admin's JWT expired between
+    // refresh and the first API call. Redirect to /login
+    // with a `reason=session_expired` so the login page
+    // can show "Tu sesión expiró" instead of the silent
+    // failure.
+    throw new ApiError('Session expired', 401, 'unauthorized');
+  }
+
+  const text = await res.text().catch(() => '');
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new ApiError(text || `HTTP ${res.status}: empty response`, res.status, 'invalid_json');
+  }
+  if (!res.ok) {
+    if (res.status === 429) {
+      // surface Retry-After if present
+      const retry = res.headers.get('Retry-After');
+      throw new ApiError(data.error || 'Too many requests', 429, 'rate_limited', {
+        retryAfter: retry,
+      });
+    }
+    if (res.status === 403) {
+      // A missing/mismatched CSRF cookie is unrecoverable without a
+      // fresh login: /auth/refresh itself requires the very same
+      // double-submit pairing to succeed, so retrying through it would
+      // 403 again for the same reason (no header/cookie combination we
+      // could resend would suddenly start matching). Rather than
+      // surfacing this raw backend string wherever the failing call
+      // happens to render it (e.g. a terminal panel), treat it like an
+      // expired session: clear local state and bounce to /login, same
+      // as the 401 path above.
+      if (data.error === 'invalid csrf token') {
+        auth.onUnauthorized('session_expired');
+        throw new ApiError('Session expired', 403, 'unauthorized');
+      }
+      throw new ApiError(data.error || 'Forbidden', 403, 'forbidden');
+    }
+    throw new ApiError(
+      data.message || data.error || `Request failed (${res.status})`,
+      res.status,
+      'request_failed',
+      data
+    );
+  }
+  return data;
+}
+
+export const api = {
+  // --- auth ---
+  login: (username, password) =>
+    request('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+      credentialCheck: true,
+    }),
+  login2FA: (mfa_token, code) =>
+    request('/auth/login/2fa', {
+      method: 'POST',
+      body: JSON.stringify({ mfa_token, code }),
+      credentialCheck: true,
+    }),
+  setup2FA: () => request('/auth/2fa/setup', { method: 'POST' }),
+  enable2FA: (secret, code, backup_codes) =>
+    request('/auth/2fa/enable', {
+      method: 'POST',
+      body: JSON.stringify({ secret, code, backup_codes }),
+    }),
+  disable2FA: (password) =>
+    request('/auth/2fa/disable', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+      // This route sits behind the session middleware, so a 401 can also
+      // be a genuinely expired session; only the handler's wrong-password
+      // answer is a form error.
+      credentialCheck: (body) => body?.error === 'contraseña incorrecta',
+    }),
+  logoutApi: () => request('/auth/logout', { method: 'POST', skipAuthRedirect: true }),
+  refresh: () => request('/auth/refresh', { method: 'POST' }),
+  me: () => request('/auth/me'),
+  changeMyPassword: (old_password, new_password) =>
+    request('/users/me/password', {
+      method: 'PUT',
+      body: JSON.stringify({ old_password, new_password }),
+    }),
+
+  // --- VMs ---
+  listVMs: () => request('/vms'),
+  getVM: (id) => request(`/vms/${id}`),
+  listIncusProfiles: () => request('/vms/incus-profiles'),
+  listIncusImages: () => request('/vms/incus-images'),
+  createVM: (data) => request('/vms', { method: 'POST', body: JSON.stringify(data) }),
+  updateVM: (id, data) => request(`/vms/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteVM: (id, withDisks = false) =>
+    request(`/vms/${id}${withDisks ? '?disks=true' : ''}`, { method: 'DELETE' }),
+  startVM: (id) => request(`/vms/${id}/start`, { method: 'POST' }),
+  shutdownVM: (id) => request(`/vms/${id}/shutdown`, { method: 'POST' }),
+  forceOffVM: (id) => request(`/vms/${id}/forceoff`, { method: 'POST' }),
+  rebootVM: (id) => request(`/vms/${id}/reboot`, { method: 'POST' }),
+  suspendVM: (id) => request(`/vms/${id}/suspend`, { method: 'POST' }),
+  resetVMPassword: (id) => request(`/vms/${id}/reset-password`, { method: 'POST' }),
+  resumeVM: (id) => request(`/vms/${id}/resume`, { method: 'POST' }),
+  // Autostart toggles libvirtd's per-VM autostart flag (not the
+  // host's "auto-start VMs at boot" master switch, which is
+  // controlled separately by systemd/libvirtd config). The flag
+  // is also returned as a field on the VM object so the UI can
+  // initialize the switch without a second round-trip; this
+  // setter is the only way to change it.
+  setVMAutostart: (id, enabled) =>
+    request(`/vms/${id}/autostart`, { method: 'POST', body: JSON.stringify({ enabled }) }),
+  listSnapshots: (vmId) => request(`/vms/${vmId}/snapshots`),
+  createSnapshot: (vmId, data) =>
+    request(`/vms/${vmId}/snapshots`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteSnapshot: (vmId, sid) => request(`/vms/${vmId}/snapshots/${sid}`, { method: 'DELETE' }),
+  revertSnapshot: (vmId, sid) =>
+    request(`/vms/${vmId}/snapshots/${sid}/revert`, { method: 'POST' }),
+  getVMFirewall: (vmId) => request(`/vms/${vmId}/firewall`),
+  setVMFirewall: (vmId, data) =>
+    request(`/vms/${vmId}/firewall`, { method: 'PUT', body: JSON.stringify(data) }),
+  makeVMTemplate: (vmId) => request(`/vms/${vmId}/make-template`, { method: 'POST' }),
+  unsetVMTemplate: (vmId) => request(`/vms/${vmId}/unset-template`, { method: 'POST' }),
+  listTemplates: () => request('/templates'),
+  instantiateTemplate: (id, data) =>
+    request(`/templates/${id}/instantiate`, { method: 'POST', body: JSON.stringify(data) }),
+  listAppliances: () => request('/appliances'),
+  deployAppliance: (id, data) =>
+    request(`/appliances/${id}/deploy`, { method: 'POST', body: JSON.stringify(data) }),
+  createAppliance: (data) => request('/appliances', { method: 'POST', body: JSON.stringify(data) }),
+  updateAppliance: (id, data) =>
+    request(`/appliances/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteAppliance: (id) => request(`/appliances/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getApplianceProvision: (id) => request(`/appliances/${encodeURIComponent(id)}/provision`),
+  listHelperScripts: () => request('/helper-scripts'),
+  // Re-imports the upstream catalog: several hundred outbound requests,
+  // so the caller must show progress rather than assume it is quick.
+  refreshHelperScripts: () => request('/helper-scripts/refresh', { method: 'POST' }),
+  getHelperScriptProvision: (slug) =>
+    request(`/helper-scripts/${encodeURIComponent(slug)}/provision`),
+  getConsoleTicket: (vmId) =>
+    request(`/vms/${encodeURIComponent(vmId)}/console-ticket`, { method: 'POST' }),
+  getVNCTicket: (vmId) =>
+    request(`/vms/${encodeURIComponent(vmId)}/vnc-ticket`, { method: 'POST' }),
+  createVNCTicket: (vmId) =>
+    request(`/vms/${encodeURIComponent(vmId)}/vnc-ticket`, { method: 'POST' }),
+  getHostTerminalTicket: () => request('/host/terminal-ticket', { method: 'POST' }),
+  getEventsTicket: () => request('/events/ticket', { method: 'POST' }),
+  getVMSchedule: (vmId) => request(`/vms/${vmId}/schedule`),
+  setVMSchedule: (vmId, data) =>
+    request(`/vms/${vmId}/schedule`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  // --- media pool (avatars, logos, favicons, VM covers) ---
+  listMedia: () => request('/media'),
+  uploadMedia: (file, onProgress) => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      formData.append('file', file);
+
+      if (onProgress) {
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            onProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        });
+      }
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(JSON.parse(xhr.responseText || '{}'));
+        } else if (xhr.status === 401) {
+          auth.onUnauthorized();
+          reject(new ApiError('Unauthorized', 401, 'unauthorized'));
+        } else {
+          let msg = 'Upload failed';
+          try {
+            const j = JSON.parse(xhr.responseText);
+            if (j.error) msg = j.error;
+          } catch {
+            /* ignore */
+          }
+          reject(new ApiError(msg, xhr.status, 'upload_failed'));
+        }
+      });
+      xhr.addEventListener('error', () => reject(new ApiError('Upload failed', 0, 'network')));
+
+      xhr.open('POST', `${BASE}/media/upload`);
+      xhr.withCredentials = true;
+      if (csrfState) xhr.setRequestHeader('X-CSRF-Token', csrfState);
+      xhr.send(formData);
+    });
+  },
+  // force=true deletes an image even when something still points at it.
+  // Without it the backend answers 409 and lists the usages, so the user
+  // can be told what will break before it breaks.
+  deleteMedia: (id, force = false) =>
+    request(`/media/${encodeURIComponent(id)}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
+  applyMediaUsage: (data) =>
+    request('/media/apply-usage', { method: 'POST', body: JSON.stringify(data) }),
+  getBranding: () => request('/branding'),
+
+  // --- storage ---
+  probeDisk: (path, deep = false) =>
+    request('/storage/probe-disk', {
+      method: 'POST',
+      body: JSON.stringify({ path, deep }),
+    }),
+  listPools: () => request('/storage/pools'),
+  createPool: (data) => request('/storage/pools', { method: 'POST', body: JSON.stringify(data) }),
+  // browseRemote lists the subfolders of an NFS export or SMB share —
+  // shared by the storage pool AND backup target forms (see
+  // RemoteFolderBrowser.svelte).
+  browseRemote: (data) =>
+    request('/storage/browse-remote', { method: 'POST', body: JSON.stringify(data) }),
+  // Folder picker for a path on the server itself (LocalFolderBrowser).
+  // An empty path asks for the root list: the mount points a pool can
+  // sensibly live under, not a raw listing of /.
+  browseLocal: (path = '') =>
+    request('/storage/browse-local', { method: 'POST', body: JSON.stringify({ path }) }),
+  // updatePool calls PUT /api/storage/pools/{name} to rotate
+  // credentials on a CIFS pool or to drive the cifs-needs-reauth
+  // recovery path after a libvirtd reinstall. The backend
+  // accepts a partial body (only the fields the operator wants
+  // to change); unknown fields are rejected.
+  updatePool: (name, data) =>
+    request(`/storage/pools/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deletePool: (name) => request(`/storage/pools/${name}`, { method: 'DELETE' }),
+  listVolumes: (pool) => request(`/storage/volumes?pool=${pool}`),
+  createVolume: (data) =>
+    request('/storage/volumes', { method: 'POST', body: JSON.stringify(data) }),
+  resizeVolume: (pool, name, capacity) =>
+    request(`/storage/volumes/${pool}/${name}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ capacity }),
+    }),
+  deleteVolume: (pool, name) => request(`/storage/volumes/${pool}/${name}`, { method: 'DELETE' }),
+  // Relocate a volume or ISO to another pool of the same kind. Answers
+  // 202 with a job: a multi-GB copy outlives the request, so the caller
+  // polls getDownloadJob() for progress.
+  moveVolume: (pool, name, data) =>
+    request(`/storage/volumes/${encodeURIComponent(pool)}/${encodeURIComponent(name)}/move`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  listISOs: (pool) => request(`/storage/isos${pool ? '?pool=' + encodeURIComponent(pool) : ''}`),
+  // pool is required: it goes in the path, and the ISO library's name
+  // is the server's to decide (it was renamed ISOS -> webkvm-isos in
+  // v2.5). A client-side default here would be a second source of
+  // truth that silently goes stale.
+  deleteISO: (name, pool) =>
+    request(`/storage/isos/${encodeURIComponent(pool)}/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
+  renameISO: (name, newName, pool) =>
+    request(`/storage/isos/${encodeURIComponent(pool)}/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ new_name: newName }),
+    }),
+  downloadISO: (url, name, pool) =>
+    request('/storage/download-iso', { method: 'POST', body: JSON.stringify({ url, name, pool }) }),
+
+  // --- image hub (containers, cloud-base, isos) ---
+  listContainerImages: () => request('/images/containers'),
+  // Where the Incus daemon caches downloaded container images. Empty
+  // pool restores its default directory on the system disk.
+  getIncusImagesVolume: () => request('/images/incus-volume'),
+  setIncusImagesVolume: (pool, volume = '') =>
+    request('/images/incus-volume', { method: 'PUT', body: JSON.stringify({ pool, volume }) }),
+  pullContainerImage: (ref) =>
+    request('/images/containers/pull', { method: 'POST', body: JSON.stringify({ ref }) }),
+  deleteContainerImage: (fp) =>
+    request(`/images/containers/${encodeURIComponent(fp)}`, { method: 'DELETE' }),
+  listBaseCloudImages: () => request('/images/cloud-base'),
+  // pool is optional: the backend falls back to the default disk pool,
+  // which is what this call did before the destination was selectable.
+  pullBaseCloudImage: (id, pool = '') =>
+    request('/images/cloud-base/pull', { method: 'POST', body: JSON.stringify({ id, pool }) }),
+  deleteBaseCloudImage: (id) =>
+    request(`/images/cloud-base/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  uploadISO: (file, onProgress, pool) => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('pool', pool);
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      });
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(JSON.parse(xhr.responseText || '{}'));
+        } else if (xhr.status === 401) {
+          auth.onUnauthorized();
+          reject(new ApiError('Unauthorized', 401, 'unauthorized'));
+        } else {
+          let msg = 'Upload failed';
+          try {
+            const j = JSON.parse(xhr.responseText);
+            if (j.error) msg = j.error;
+          } catch {
+            /* ignore: non-JSON response */
+          }
+          reject(new ApiError(msg, xhr.status, 'upload_failed'));
+        }
+      });
+      xhr.addEventListener('error', () => reject(new ApiError('Upload failed', 0, 'network')));
+
+      xhr.open('POST', `${BASE}/storage/upload-iso`);
+      xhr.withCredentials = true;
+      if (csrfState) xhr.setRequestHeader('X-CSRF-Token', csrfState);
+      xhr.send(formData);
+    });
+  },
+
+  getDownloadJob: (jobId) => request(`/storage/jobs/${jobId}`),
+
+  // Async job tracking for long operations (VM clone / snapshot). The
+  // endpoints return 202 + {job}; waitJob polls until the job reaches a
+  // terminal state and returns its result (or throws the job's error).
+  waitJob: async (jobId, opts = {}) => {
+    const delay = opts.delay ?? 800;
+    const timeout = opts.timeout ?? 10 * 60 * 1000;
+    const started = Date.now();
+    for (;;) {
+      const job = await request(`/jobs/${jobId}`);
+      // onPoll sees every poll, including the terminal one, so a caller
+      // driving a progress bar can settle it at 100% instead of leaving
+      // it wherever the last intermediate tick landed.
+      opts.onPoll?.(job);
+      if (job.status === 'done') return job.result ?? job;
+      if (job.status === 'error') throw new ApiError(job.error || 'Job failed', 500, 'job_error');
+      if (Date.now() - started > timeout) {
+        throw new ApiError('Job timed out', 504, 'job_timeout');
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  },
+
+  uploadDisk: (file, onProgress, pool) => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      // "pool" must be appended before "file" — the backend streams the
+      // multipart body part-by-part and needs the pool name to run the
+      // ACL/quota check before it starts writing the (potentially huge)
+      // file part to disk.
+      formData.append('pool', pool);
+      formData.append('file', file);
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      });
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(JSON.parse(xhr.responseText || '{}'));
+        } else if (xhr.status === 401) {
+          auth.onUnauthorized();
+          reject(new ApiError('Unauthorized', 401, 'unauthorized'));
+        } else {
+          let msg = 'Upload failed';
+          try {
+            const j = JSON.parse(xhr.responseText);
+            if (j.error) msg = j.error;
+          } catch {
+            /* ignore: non-JSON response */
+          }
+          reject(new ApiError(msg, xhr.status, 'upload_failed'));
+        }
+      });
+      xhr.addEventListener('error', () => reject(new ApiError('Upload failed', 0, 'network')));
+
+      xhr.open('POST', `${BASE}/storage/upload-disk`);
+      xhr.withCredentials = true;
+      if (csrfState) xhr.setRequestHeader('X-CSRF-Token', csrfState);
+      xhr.send(formData);
+    });
+  },
+
+  // --- users ---
+  listUsers: () => request('/users'),
+  createUser: (data) => request('/users', { method: 'POST', body: JSON.stringify(data) }),
+  updateUser: (username, data) =>
+    request(`/users/${username}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteUser: (username) => request(`/users/${username}`, { method: 'DELETE' }),
+  revokeUserSessions: (username) =>
+    request(`/users/${username}/revoke-sessions`, { method: 'POST' }),
+
+  // --- networks ---
+  listNetworks: () => request('/networks'),
+  createNetwork: (data) => request('/networks', { method: 'POST', body: JSON.stringify(data) }),
+  updateNetwork: (id, data) =>
+    request(`/networks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteNetwork: (id) => request(`/networks/${id}`, { method: 'DELETE' }),
+  startNetwork: (id) => request(`/networks/${id}/start`, { method: 'POST' }),
+  stopNetwork: (id) => request(`/networks/${id}/stop`, { method: 'POST' }),
+  listNetworkLeases: (id) => request(`/networks/${id}/leases`),
+  releaseNetworkLease: (id, mac, ip) =>
+    request(`/networks/${id}/leases/${encodeURIComponent(mac)}?ip=${encodeURIComponent(ip)}`, {
+      method: 'DELETE',
+    }),
+
+  // --- host ---
+  getHostInfo: () => request('/host'),
+  getHostStats: () => request('/host/stats'),
+  listHostInterfaces: () => request('/host/interfaces'),
+  listHostUSBDevices: () => request('/host/usb-devices'),
+  listHostPCIDevices: () => request('/host/pci-devices'),
+  getHostPCIPreflight: () => request('/host/pci-preflight'),
+  getGuestInfo: (id) => request(`/vms/${id}/guest-info`),
+  listHostDisks: () => request('/host/disks'),
+  getStorageBreakdown: () => request('/storage/pools/breakdown'),
+  listFilesystems: () => request('/host/disks/filesystems'),
+  listOrphanMounts: () => request('/host/disks/orphan-mounts'),
+  getCapabilities: () => request('/host/capabilities'),
+  refreshCapabilities: () => request('/host/capabilities/refresh', { method: 'POST' }),
+  wipeHostDisk: (diskPath) =>
+    request('/host/disks/wipe', { method: 'POST', body: JSON.stringify({ disk_path: diskPath }) }),
+  initHostDiskDirectory: (data) =>
+    request('/host/disks/initialize-directory', { method: 'POST', body: JSON.stringify(data) }),
+
+  // --- graphics ---
+  getRDPUrl: (id) => `${BASE}/vms/${id}/rdp`,
+  getSPICEUrl: (id) => `${BASE}/vms/${id}/spice`,
+
+  // --- disks ---
+  listDisks: (vmId) => request(`/vms/${vmId}/disks`),
+  createDisk: (vmId, data) =>
+    request(`/vms/${vmId}/disks`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteDisk: (vmId, dev) => request(`/vms/${vmId}/disks/${dev}`, { method: 'DELETE' }),
+  updateDiskSource: (vmId, dev, source) =>
+    request(`/vms/${vmId}/disks/${dev}`, { method: 'PUT', body: JSON.stringify({ source }) }),
+  resizeVmDisk: (vmId, dev, sizeGb) =>
+    request(`/vms/${vmId}/disks/${dev}/resize`, {
+      method: 'POST',
+      body: JSON.stringify({ size_gb: sizeGb }),
+    }),
+  changeDiskBus: (vmId, dev, bus) =>
+    request(`/vms/${vmId}/disks/${dev}/bus`, {
+      method: 'POST',
+      body: JSON.stringify({ bus }),
+    }),
+  attachUSBDevice: (vmId, vendorId, productId) =>
+    request(`/vms/${vmId}/usb`, {
+      method: 'POST',
+      body: JSON.stringify({ vendor_id: vendorId, product_id: productId }),
+    }),
+  detachUSBDevice: (vmId, vendorId, productId) =>
+    request(`/vms/${vmId}/usb/${encodeURIComponent(vendorId)}/${encodeURIComponent(productId)}`, {
+      method: 'DELETE',
+    }),
+  attachPCIDevices: (vmId, addresses) =>
+    request(`/vms/${vmId}/pci`, { method: 'POST', body: JSON.stringify({ addresses }) }),
+  detachPCIDevice: (vmId, address) =>
+    request(`/vms/${vmId}/pci/${encodeURIComponent(address)}`, { method: 'DELETE' }),
+  attachSharedFolder: (vmId, hostPath, tag, readOnly) =>
+    request(`/vms/${vmId}/shared-folders`, {
+      method: 'POST',
+      body: JSON.stringify({ host_path: hostPath, tag, read_only: readOnly }),
+    }),
+  detachSharedFolder: (vmId, tag) =>
+    request(`/vms/${vmId}/shared-folders/${encodeURIComponent(tag)}`, { method: 'DELETE' }),
+
+  // --- net ifaces ---
+  listNetIfaces: (vmId) => request(`/vms/${vmId}/networks`),
+  createNetIface: (vmId, data) =>
+    request(`/vms/${vmId}/networks`, { method: 'POST', body: JSON.stringify(data) }),
+  updateNetIface: (vmId, mac, data) =>
+    request(`/vms/${vmId}/networks/${encodeURIComponent(mac)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  checkVLANSupport: (network) =>
+    request(`/vms/_/vlan-support?network=${encodeURIComponent(network)}`),
+  deleteNetIface: (vmId, mac) =>
+    request(`/vms/${vmId}/networks/${encodeURIComponent(mac)}`, { method: 'DELETE' }),
+
+  // --- meta + metrics + cover ---
+  getVMMeta: (vmId) => request(`/vms/${vmId}/meta`),
+  updateVMMeta: (vmId, data) =>
+    request(`/vms/${vmId}/meta`, { method: 'PUT', body: JSON.stringify(data) }),
+  getVMMetrics: (vmId) => request(`/vms/${vmId}/metrics`),
+
+  uploadCover: (vmId, file) => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      formData.append('file', file);
+      xhr.open('POST', `${BASE}/vms/${vmId}/cover`);
+      xhr.withCredentials = true;
+      if (csrfState) xhr.setRequestHeader('X-CSRF-Token', csrfState);
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch {
+            resolve({});
+          }
+        } else if (xhr.status === 401) {
+          auth.onUnauthorized();
+          reject(new ApiError('Unauthorized', 401, 'unauthorized'));
+        } else {
+          let msg = `HTTP ${xhr.status}`;
+          try {
+            const j = JSON.parse(xhr.responseText);
+            if (j.error) msg = j.error;
+          } catch {
+            /* ignore: non-JSON response */
+          }
+          reject(new ApiError(msg, xhr.status, 'upload_failed'));
+        }
+      };
+      xhr.onerror = () => reject(new ApiError('Upload failed', 0, 'network'));
+      xhr.send(formData);
+    });
+  },
+  deleteCover: (vmId) => request(`/vms/${vmId}/cover`, { method: 'DELETE' }),
+
+  // --- groups ---
+  listGroups: () => request('/groups'),
+  listTags: () => request('/tags'),
+  userUsage: (username) => request(`/users/${encodeURIComponent(username)}/usage`),
+  myUsage: () => request('/users/me/usage'),
+  createGroup: (data) => request('/groups', { method: 'POST', body: JSON.stringify(data) }),
+  updateGroup: (name, data) =>
+    request(`/groups/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteGroup: (name) => request(`/groups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+
+  // --- clone / export / import ---
+  cloneVM: (vmId, data) =>
+    request(`/vms/${vmId}/clone`, { method: 'POST', body: JSON.stringify(data) }),
+  // Move an instance's storage to another pool of the same hypervisor.
+  // Cold only, and answered with a job like moveVolume above.
+  moveVMStorage: (vmId, pool) =>
+    request(`/vms/${vmId}/move-storage`, { method: 'POST', body: JSON.stringify({ pool }) }),
+
+  // --- cloud-init (post-creation reapply) ---
+  getCloudInitStatus: (vmId) => request(`/vms/${vmId}/cloudinit`),
+  reapplyCloudInit: (vmId, data) =>
+    request(`/vms/${vmId}/cloudinit`, { method: 'POST', body: JSON.stringify(data) }),
+  getVMLogs: (vmId, lines = 200) => request(`/vms/${vmId}/logs?lines=${lines}`),
+  exportVM: async (id, opts = {}) => {
+    const params = new SvelteURLSearchParams();
+    if (opts.format) params.set('format', opts.format);
+    if (opts.target) params.set('target', opts.target);
+    if (opts.compress) params.set('compress', '1');
+    const qs = params.toString();
+    const url = `${BASE}/vms/${id}/export${qs ? '?' + qs : ''}`;
+    const res = await fetch(url, {
+      credentials: 'include',
+      signal: opts.signal,
+    });
+    if (res.status === 401) {
+      auth.onUnauthorized();
+      throw new ApiError('Unauthorized', 401, 'unauthorized');
+    }
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j.error) msg = j.error;
+      } catch {
+        /* ignore: non-JSON response */
+      }
+      throw new ApiError(msg, res.status, 'export_failed');
+    }
+    const disp = res.headers.get('Content-Disposition') || '';
+    const m = /filename="?([^"]+)"?/.exec(disp);
+    const filename = m ? m[1] : `${id}.ova`;
+    const total = parseInt(res.headers.get('Content-Length') || '0', 10);
+    const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+    const chunks = [];
+    let received = 0;
+    if (reader) {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        if (opts.onProgress && total > 0) {
+          opts.onProgress({ received, total, percent: (received / total) * 100 });
+        } else if (opts.onProgress) {
+          opts.onProgress({ received, total: 0, percent: 0 });
+        }
+      }
+    } else {
+      const blob = await res.blob();
+      chunks.push(blob);
+      received = blob.size;
+      if (opts.onProgress) opts.onProgress({ received, total: blob.size, percent: 100 });
+    }
+    const blob = new Blob(chunks);
+    const dlUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = dlUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(dlUrl);
+    return { filename, size: received };
+  },
+  importVM: (file, name, pool, onProgress, network) => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      formData.append('file', file);
+      if (name) formData.append('name', name);
+      if (pool) formData.append('pool', pool);
+      if (network) formData.append('network', network);
+      if (onProgress) {
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            onProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        });
+      }
+      xhr.open('POST', `${BASE}/vms/import`);
+      xhr.withCredentials = true;
+      if (csrfState) xhr.setRequestHeader('X-CSRF-Token', csrfState);
+      // Imports can take many minutes for multi-GB archives (upload
+      // + extract + libvirt define). 30 minutes covers a 5 GB file
+      // on a slow link with margin. Without this, the browser's
+      // default XHR timeout (~0 = none) means a hung server would
+      // only surface via the generic onerror handler.
+      xhr.timeout = 30 * 60 * 1000;
+      xhr.onload = () => {
+        if (xhr.status === 401) {
+          auth.onUnauthorized();
+          reject(new ApiError('Unauthorized', 401, 'unauthorized'));
+          return;
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch {
+            resolve({ status: 'ok' });
+          }
+        } else {
+          let msg = `HTTP ${xhr.status}`;
+          try {
+            const j = JSON.parse(xhr.responseText);
+            if (j.error) msg = j.error;
+          } catch {
+            /* ignore: non-JSON response */
+          }
+          reject(new ApiError(msg, xhr.status, 'import_failed'));
+        }
+      };
+      xhr.ontimeout = () => reject(new ApiError('Import timed out (30 min)', 0, 'timeout'));
+      xhr.onerror = () => reject(new ApiError('Network error', 0, 'network'));
+      xhr.onabort = () => reject(new ApiError('Import aborted', 0, 'aborted'));
+      xhr.send(formData);
+    });
+  },
+
+  // --- boot ---
+  getBootDevice: (vmId) => request(`/vms/${vmId}/boot`),
+  setBootDevice: (vmId, device) =>
+    request(`/vms/${vmId}/boot`, { method: 'POST', body: JSON.stringify({ device }) }),
+
+  // --- system ---
+  systemStatus: () => request('/system/status'),
+  systemLogs: async (lines = 200) => {
+    const res = await fetch(`${BASE}/system/logs?lines=${lines}`, {
+      credentials: 'include',
+    });
+    if (res.status === 401) {
+      auth.onUnauthorized();
+      throw new ApiError('Unauthorized', 401, 'unauthorized');
+    }
+    if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status, 'logs_failed');
+    return res.text();
+  },
+  systemRestart: () => request('/system/restart', { method: 'POST' }),
+  systemUpdate: () => request('/system/update', { method: 'POST' }),
+  systemBackup: () => request('/system/backup', { method: 'POST' }),
+  systemBackups: () => request('/system/backups'),
+
+  // --- Settings (config store) ---
+  getSettingsSchema: () => request('/settings/schema'),
+  getSettings: () => request('/settings'),
+  setSettings: (values) =>
+    request('/settings', { method: 'PUT', body: JSON.stringify({ values }) }),
+  resetSettings: () => request('/settings/reset', { method: 'POST' }),
+  getNotifyConfig: () => request('/notify/config'),
+  updateNotifyConfig: (body) =>
+    request('/notify/config', { method: 'PUT', body: JSON.stringify(body) }),
+  testNotify: () => request('/notify/test', { method: 'POST' }),
+  listNotifyEvents: () => request('/notify/events'),
+
+  // --- Cloud-Init Studio & Snippets ---
+  listCloudInitSnippets: () => request('/cloudinit/snippets'),
+  getCloudInitSnippet: (id) => request(`/cloudinit/snippets/${id}`),
+  createCloudInitSnippet: (snippet) =>
+    request('/cloudinit/snippets', {
+      method: 'POST',
+      body: JSON.stringify(snippet),
+    }),
+  updateCloudInitSnippet: (id, snippet) =>
+    request(`/cloudinit/snippets/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(snippet),
+    }),
+  deleteCloudInitSnippet: (id) => request(`/cloudinit/snippets/${id}`, { method: 'DELETE' }),
+  previewCloudInit: (body) =>
+    request('/cloudinit/preview', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  applyLiveSettings: (keys) =>
+    request('/settings/apply-live', {
+      method: 'POST',
+      body: JSON.stringify({ keys }),
+    }),
+  applyRestart: (keys) =>
+    request('/system/apply-restart', {
+      method: 'POST',
+      body: JSON.stringify({ keys }),
+    }),
+
+  // --- API tokens (long-lived) ---
+  listTokens: (all = false) => request(`/tokens${all ? '?all=1' : ''}`),
+  createToken: (name, ttlHours, scopes = []) =>
+    request('/tokens', {
+      method: 'POST',
+      body: JSON.stringify({ name, ttl_hours: ttlHours, scopes }),
+    }),
+  revokeToken: (id) => request(`/tokens/${id}/revoke`, { method: 'POST' }),
+  deleteToken: (id) => request(`/tokens/${id}`, { method: 'DELETE' }),
+
+  // --- Nodes (libvirt hosts) ---
+  listNodes: () => request('/nodes'),
+  getNode: (id) => request(`/nodes/${id}`),
+  createNode: (name, uri) =>
+    request('/nodes', { method: 'POST', body: JSON.stringify({ name, uri }) }),
+  updateNode: (id, data) => request(`/nodes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteNode: (id) => request(`/nodes/${id}`, { method: 'DELETE' }),
+
+  // --- audit log (admin only) ---
+  listAudit: ({ limit, offset, q, user, action } = {}) => {
+    const params = new SvelteURLSearchParams();
+    if (limit) params.set('limit', limit);
+    if (offset) params.set('offset', offset);
+    if (q) params.set('q', q);
+    if (user) params.set('user', user);
+    if (action) params.set('action', action);
+    const qs = params.toString();
+    return request(`/audit${qs ? '?' + qs : ''}`);
+  },
+
+  // --- cross-fleet snapshots ---
+  listAllSnapshots: () => request('/vms/snapshots'),
+
+  // --- Backup v2 ---
+  listBackupTargets: () => request('/backup/targets'),
+  createBackupTarget: (data) =>
+    request('/backup/targets', { method: 'POST', body: JSON.stringify(data) }),
+  updateBackupTarget: (id, data) =>
+    request(`/backup/targets/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteBackupTarget: (id) => request(`/backup/targets/${id}`, { method: 'DELETE' }),
+  testBackupTarget: (data) =>
+    request('/backup/targets/test', { method: 'POST', body: JSON.stringify(data) }),
+  backupNow: (id) => request(`/backup/targets/${id}/run`, { method: 'POST' }),
+  listBackupsOnTarget: (id) => request(`/backup/targets/${id}/files`),
+  deleteBackupFile: (id, filename) =>
+    request(`/backup/targets/${id}/files/${encodeURIComponent(filename)}`, { method: 'DELETE' }),
+  deleteBackupRun: (id, suffix) =>
+    request(`/backup/targets/${id}/runs/${encodeURIComponent(suffix)}`, { method: 'DELETE' }),
+  deleteBackupConfig: (id) => request(`/backup/targets/${id}/config`, { method: 'DELETE' }),
+  restoreBackupConfig: (id) =>
+    request(`/backup/targets/${id}/restore`, {
+      method: 'POST',
+      body: JSON.stringify({ config: true }),
+    }),
+  verifyBackup: (id, filename) =>
+    request(`/backup/targets/${id}/verify?filename=${encodeURIComponent(filename)}`),
+  restoreBackup: (id, filename) =>
+    request(`/backup/targets/${id}/restore`, {
+      method: 'POST',
+      body: JSON.stringify({ filename }),
+    }),
+  restoreBackupRun: (id, run) =>
+    request(`/backup/targets/${id}/restore`, {
+      method: 'POST',
+      body: JSON.stringify({ run }),
+    }),
+  // --- Host firewall (V13-C-01 / V13-C-02) ---
+  getHostFirewall: () => request('/firewall/host'),
+  previewHostFirewall: (firewall) =>
+    request('/firewall/host/preview', { method: 'POST', body: JSON.stringify({ firewall }) }),
+  applyHostFirewall: (firewall) =>
+    request('/firewall/host/apply', { method: 'POST', body: JSON.stringify({ firewall }) }),
+  confirmHostFirewall: () => request('/firewall/host/confirm', { method: 'POST' }),
+  rollbackHostFirewall: () => request('/firewall/host/rollback', { method: 'POST' }),
+  // --- Metric history + alerts (V13-C-03 / V13-C-04) ---
+  getVMMetricsHistory: (id, window) => request(`/vms/${id}/metrics/history?window=${window}`),
+  getVMAlerterRules: (id) => request(`/vms/${id}/alerts`),
+  setVMAlerterRules: (id, rules) =>
+    request(`/vms/${id}/alerts`, { method: 'PUT', body: JSON.stringify({ rules }) }),
+  listActiveAlerts: () => request('/alerts/active'),
+  // --- Dashboard (V13-D-04) ---
+  hostMetrics: () => request('/host/metrics'),
+  importHostFirewall: (firewall) =>
+    request('/firewall/host/import', { method: 'POST', body: JSON.stringify(firewall) }),
+  exportHostFirewall: () => request('/firewall/host/export'),
+  // restoreAsVM is the operator-friendly restore: it takes the
+  // backup archive already on disk in the target's path and
+  // creates a new VM in libvirt from it (no re-upload round-
+  // trip). Equivalent to /api/vms/import but reading from a
+  // local path instead of multipart.
+  restoreAsVM: (id, payload) =>
+    request(`/backup/targets/${id}/restore-as-vm`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  listBackupSchedules: () => request('/backup/schedules'),
+  createBackupSchedule: (data) =>
+    request('/backup/schedules', { method: 'POST', body: JSON.stringify(data) }),
+  updateBackupSchedule: (id, data) =>
+    request(`/backup/schedules/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteBackupSchedule: (id) => request(`/backup/schedules/${id}`, { method: 'DELETE' }),
+  listBackupJobs: () => request('/backup/jobs'),
+};
+
+// passwordStrength returns { score: 0-4, labelKey, label, color } based on a
+// simple heuristic. Used by the Login + Account + Users forms.
+export function passwordStrength(pw) {
+  if (!pw) return { score: 0, labelKey: '', label: '—', color: 'bg-muted' };
+  let score = 0;
+  if (pw.length >= 8) score++;
+  if (pw.length >= 12) score++;
+  if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) score++;
+  if (/\d/.test(pw)) score++;
+  if (/[^A-Za-z0-9]/.test(pw)) score++;
+  if (score > 4) score = 4;
+  const labelKeys = [
+    'account.strengthVeryWeak',
+    'account.strengthWeak',
+    'account.strengthFair',
+    'account.strengthGood',
+    'account.strengthStrong',
+  ];
+  const labels = ['Very weak', 'Weak', 'Fair', 'Good', 'Strong'];
+  const colors = ['bg-destructive', 'bg-destructive', 'bg-warning', 'bg-info', 'bg-success'];
+  return { score, labelKey: labelKeys[score], label: labels[score], color: colors[score] };
+}

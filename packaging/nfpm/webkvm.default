@@ -1,0 +1,9 @@
+# /etc/default/webkvm — optional overrides for the webkvm systemd unit.
+# Sourced via EnvironmentFile (the leading "-" means "ignore if missing").
+# Uncomment and edit what you need, then: systemctl restart webkvm
+#
+# DATA_DIR=/opt/webkvm
+# BIND_ADDR=0.0.0.0
+# PORT=8080
+# WEBKVM_INCUS_ENABLED=1
+# WEBKVM_ADMIN_PASSWORD=change-me-on-first-boot

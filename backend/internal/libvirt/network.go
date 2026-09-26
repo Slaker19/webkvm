@@ -1,0 +1,924 @@
+package libvirt
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+
+	"webkvm/internal/models"
+	"webkvm/internal/netstore"
+)
+
+// ErrNetworkInUse is returned by DeleteNetwork when the bridge still has
+// a live VM/container tap attached. It is a sentinel (rather than just a
+// formatted string) so the compute/api layers above can map it to a
+// caller-actionable HTTP 409 instead of a generic 500 — this package
+// can't import "compute" (compute already imports libvirt) so the
+// sentinel has to originate here and get translated upward.
+var ErrNetworkInUse = errors.New("network is in use")
+
+// ErrNetworkNotFound is returned when the named bridge does not exist.
+// Sentinel so upper layers map it to HTTP 404 instead of 500.
+var ErrNetworkNotFound = errors.New("bridge not found")
+
+// WebKVM uses ONE network model: real OS-level Linux bridges (vmbr0,
+// vmbr1, … — Proxmox-style). libvirt virtual networks (virbr0, etc.)
+// are never created, listed or used. KVM attaches with
+// <interface type='bridge'> and Incus with nictype=bridged
+// parent=<bridge>, both against these host bridges.
+//
+// Every bridge is one of three kinds (Network.Kind /
+// CreateNetworkRequest.Kind):
+//   - "direct": a real physical/wireless NIC enslaved into a bridge
+//     with a user-chosen name — VMs/containers on it share the host's
+//     real LAN, exactly like the host's own vmbr0.
+//   - "isolated": a bare bridge (no physical NIC) with an optional
+//     static IP/DHCP subnet, no internet access.
+//   - "nat": the same bare-bridge shape as "isolated", plus a
+//     masquerade rule (added by the firewall package) so its subnet
+//     reaches the internet through the host.
+//
+// netStore persists which kind + extra state (enslaved interface, NAT
+// CIDR) each WebKVM-created bridge has — kernel state alone can't
+// distinguish "isolated" from "nat with the rule removed by hand", or
+// tell a deliberately-enslaved uplink NIC from a VM/container tap.
+
+// netStore is set once at startup (SetNetStore) by cmd/server/main.go.
+// A nil store degrades gracefully: everything still works, but every
+// bridge falls back to best-effort Kind inference (see ListNetworks).
+var netStoreVar *netstore.Store
+
+// SetNetStore wires the persisted network-kind store. Called once at
+// startup.
+func SetNetStore(s *netstore.Store) { netStoreVar = s }
+
+// natChecker reports whether a bridge/CIDR currently has a masquerade
+// rule applied — used only as a fallback to infer Kind for a "nat"
+// bridge that has no netStore record (created before this feature, or
+// by the installer). Wired by cmd/server/main.go to avoid libvirt
+// importing the firewall package.
+var natChecker func(bridge string) bool
+
+// SetNATChecker wires the best-effort "does this bridge have a NAT
+// rule" check used for Kind inference. Called once at startup.
+func SetNATChecker(fn func(bridge string) bool) { natChecker = fn }
+
+// IsManagedNetwork reports whether a network id is WebKVM-managed in
+// the sense of "protected from deletion" — the host's primary bridge,
+// or (defensively) any bridge WebKVM did not create itself.
+func IsManagedNetwork(id string) bool {
+	return IsManagedBridge(id)
+}
+
+// ListNetworks returns the host's REAL Linux bridges. Virtual/NAT
+// bridges (virbr*, lxdbr*, lxcbr*, docker, br-*) are excluded — they
+// are plumbing, never a place to attach a VM/container.
+func (c *Connector) ListNetworks() ([]models.Network, error) {
+	bridges := listLinuxBridges()
+	result := make([]models.Network, 0, len(bridges))
+	for _, b := range bridges {
+		result = append(result, networkView(b))
+	}
+	return result, nil
+}
+
+// networkView builds the API-facing Network for one existing bridge,
+// using its netStore record when WebKVM created it, or best-effort
+// inference from kernel state otherwise. name is always either a real
+// bridge name freshly enumerated from the kernel (ListNetworks ->
+// listLinuxBridges) or one that already passed isLinuxBridge/
+// validBridgeName in the caller (Start/Stop/Update/DeleteNetwork,
+// CreateNetwork) — both reject "."/".." as well as '/'.
+func networkView(name string) models.Network {
+	slaves := readBridgeSlaves(name)
+	dummy := dummyNameFor(name)
+	var realSlaves []string
+	for _, s := range slaves {
+		if s != dummy {
+			realSlaves = append(realSlaves, s)
+		}
+	}
+
+	var kind, iface, dhcpStart, dhcpEnd string
+	var dns []string
+	var reservations []models.DHCPReservation
+	if netStoreVar != nil {
+		if rec, ok := netStoreVar.Get(name); ok {
+			kind, iface = rec.Kind, rec.Interface
+			dhcpStart, dhcpEnd, dns = rec.DHCPStart, rec.DHCPEnd, rec.DNS
+			reservations = rec.Reservations
+		} else {
+			kind, iface = inferKind(name, realSlaves)
+		}
+	} else {
+		kind, iface = inferKind(name, realSlaves)
+	}
+
+	vlanAware := false
+	if data, err := os.ReadFile("/sys/class/net/" + name + "/bridge/vlan_filtering"); err == nil { // lgtm[go/path-injection] - name validated, see func comment
+		vlanAware = strings.TrimSpace(string(data)) == "1"
+	}
+
+	cidr := bridgeIPv4(name)
+	return models.Network{
+		Name:         name,
+		Kind:         kind,
+		Forward:      kind, // deprecated alias, kept for old clients
+		Bridge:       name,
+		Interface:    iface,
+		CIDR:         cidr,
+		DHCP:         dnsmasqUnitExists(name),
+		DHCPStart:    dhcpStart,
+		DHCPEnd:      dhcpEnd,
+		Gateway:      gatewayFromCIDR(cidr),
+		DNS:          dns,
+		MTU:          bridgeMTU(name),
+		Reservations: reservations,
+		VLanAware:    vlanAware,
+		Slaves:       realSlaves,
+		Active:       true,
+		Autostart:    true,
+		Protected:    IsManagedBridge(name),
+	}
+}
+
+// gatewayFromCIDR returns the bare network address of cidr (e.g.
+// "192.168.100.0/24" -> "192.168.100.0") — the same expression already
+// used for the dnsmasq "option:router" value in configureBridgeDHCP, so
+// this reports exactly what's actually advertised over DHCP rather than
+// re-deriving a different convention.
+func gatewayFromCIDR(cidr string) string {
+	if cidr == "" {
+		return ""
+	}
+	return strings.SplitN(cidr, "/", 2)[0]
+}
+
+// inferKind best-effort classifies a bridge WebKVM has no netStore
+// record for (pre-existing installer bridges like vmbr0/vmbr1, or one
+// made by hand): a real physical NIC enslaved means "direct"; a NAT
+// rule for it means "nat"; otherwise "isolated".
+func inferKind(name string, realSlaves []string) (kind, iface string) {
+	for _, s := range realSlaves {
+		if isPhysicalInterface(s) {
+			return "direct", s
+		}
+	}
+	if natChecker != nil && natChecker(name) {
+		return "nat", ""
+	}
+	return "isolated", ""
+}
+
+// dnsmasqUnitExists reports whether the per-bridge dnsmasq DHCP unit
+// (configureBridgeDHCP) is present for this bridge. br is always
+// pre-validated in both callers (networkView, UpdateNetwork).
+func dnsmasqUnitExists(br string) bool {
+	_, err := os.Stat("/etc/webkvm/" + br + "-dnsmasq.conf") // lgtm[go/path-injection] - br validated, see func comment
+	return err == nil
+}
+
+// validBridgeName reports whether name is a safe identifier for a NEW host
+// Linux bridge: no slashes/whitespace, no virtual/NAT prefixes, and no
+// collision with an existing interface that is not itself a bridge.
+func validBridgeName(name string) bool {
+	// "." and ".." contain none of the blocked characters above but are
+	// real path-traversal payloads once concatenated into a sysfs path
+	// (e.g. "/sys/class/net/" + ".." resolves to "/sys/class", escaping
+	// the intended directory) — CodeQL go/path-injection correctly
+	// flagged every sysfs-path build using a name this function allowed.
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/ \t\n\r\\") || name == "lo" {
+		return false
+	}
+	for _, p := range []string{"virbr", "lxdbr", "lxcbr", "incusbr", "docker", "br-"} {
+		if strings.HasPrefix(name, p) {
+			return false
+		}
+	}
+	// Legacy libvirt virtual-network names are abandoned: they must never
+	// be created as (or confused with) real bridges.
+	switch name {
+	case "default", "webkvm-bridge", "br0-bridge":
+		return false
+	}
+	_, err := os.Stat("/sys/class/net/" + name) // lgtm[go/path-injection] - name validated above
+	if err == nil {
+		// An existing interface must already be a Linux bridge.
+		return isLinuxBridge(name)
+	}
+	return true
+}
+
+// resolveKind maps a request's Kind (or, for older callers, Forward)
+// to one of "nat"/"isolated"/"direct". Empty/"bridge" means "isolated"
+// (the pre-v2.5 behavior of forward="bridge"/"").
+func resolveKind(req models.CreateNetworkRequest) string {
+	k := strings.TrimSpace(req.Kind)
+	if k != "" {
+		return k
+	}
+	switch strings.TrimSpace(req.Forward) {
+	case "", "bridge", "isolated":
+		return "isolated"
+	case "nat":
+		return "nat"
+	case "direct":
+		return "direct"
+	}
+	return strings.TrimSpace(req.Forward)
+}
+
+// validIfaceName mirrors validBridgeName's charset check for the
+// physical interface a "direct" network enslaves — interface names
+// share the same kernel constraints as bridge names (IFNAMSIZ-1, no
+// slashes/whitespace).
+func validIfaceName(name string) bool {
+	// See validBridgeName above: "." and ".." must be rejected explicitly,
+	// they contain none of the blocked characters but escape the intended
+	// sysfs directory once concatenated into a path.
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/ \t\n\r\\") && len(name) <= 15
+}
+
+// CreateNetwork creates a REAL Linux bridge at the OS level (Proxmox-
+// style). It never creates a libvirt virtual network. The bridge is
+// created live; for persistence across reboots use setup-network.sh.
+func (c *Connector) CreateNetwork(req models.CreateNetworkRequest) (models.Network, error) {
+	kind := resolveKind(req)
+	name := strings.TrimSpace(req.Name)
+	if !validBridgeName(name) {
+		return models.Network{}, fmt.Errorf("invalid bridge name %q — WebKVM only manages real Linux bridges, and virtual/NAT bridge names are not allowed", name)
+	}
+	if isLinuxBridge(name) {
+		return models.Network{}, fmt.Errorf("bridge %q already exists", name)
+	}
+
+	switch kind {
+	case "direct":
+		return c.createDirectNetwork(name, req)
+	case "nat", "isolated":
+		return c.createIsolatedOrNATNetwork(name, kind, req)
+	default:
+		return models.Network{}, fmt.Errorf("kind %q is not supported (must be nat, isolated or direct)", kind)
+	}
+}
+
+// createDirectNetwork enslaves req.Interface into a new bridge named
+// `name` (kind=="direct") and persists the record needed to release
+// the NIC (and restore its IP) symmetrically on delete.
+func (c *Connector) createDirectNetwork(name string, req models.CreateNetworkRequest) (models.Network, error) {
+	iface := strings.TrimSpace(req.Interface)
+	if iface == "" {
+		return models.Network{}, fmt.Errorf("kind=direct requires interface (the physical/wireless NIC to enslave)")
+	}
+	if !validIfaceName(iface) {
+		return models.Network{}, fmt.Errorf("invalid interface name %q", iface)
+	}
+	if _, err := os.Stat("/sys/class/net/" + iface); err != nil { // lgtm[go/path-injection] - iface validated by validIfaceName above
+		return models.Network{}, fmt.Errorf("interface %q not found", iface)
+	}
+	if isLinuxBridge(iface) {
+		return models.Network{}, fmt.Errorf("%q is itself a bridge; you can only enslave a non-bridge interface", iface)
+	}
+	if _, err := os.Stat("/sys/class/net/" + iface + "/brport"); err == nil { // lgtm[go/path-injection] - iface validated by validIfaceName above
+		return models.Network{}, fmt.Errorf("%q is already a port of another bridge; remove it from there first", iface)
+	}
+
+	vlanAware := req.VLanAware != nil && *req.VLanAware
+	moved, err := createDirectBridge(name, iface, vlanAware)
+	if err != nil {
+		return models.Network{}, err
+	}
+	if netStoreVar != nil {
+		_ = netStoreVar.Save(netstore.Record{Name: name, Kind: "direct", Interface: iface, MovedIPv4: moved})
+	}
+	return networkView(name), nil
+}
+
+// createIsolatedOrNATNetwork creates a bare bridge (no physical NIC),
+// optionally with a static IP and DHCP, for kind "isolated" or "nat".
+// For "nat" it also asks the firewall package to add a masquerade
+// rule for the bridge's CIDR, rolling the whole bridge back if that
+// fails (the check-then-apply in firewall.applyRuleset is atomic, so a
+// failure here never leaves a half-applied ruleset — only the just-
+// created bridge needs undoing).
+func (c *Connector) createIsolatedOrNATNetwork(name, kind string, req models.CreateNetworkRequest) (models.Network, error) {
+	if req.CIDR == "" {
+		return models.Network{}, fmt.Errorf("kind=%s requires cidr (e.g. 10.20.0.0/24)", kind)
+	}
+	if ip, _, perr := net.ParseCIDR(req.CIDR); perr != nil || ip == nil {
+		return models.Network{}, fmt.Errorf("invalid CIDR %q", req.CIDR)
+	}
+
+	if out, err := exec.Command("ip", "link", "add", name, "type", "bridge").CombinedOutput(); err != nil {
+		return models.Network{}, fmt.Errorf("create Linux bridge %q: %v (%s)", name, err, strings.TrimSpace(string(out)))
+	}
+	// Proxmox-style: give the bridge a dummy port for carrier so it's
+	// UP and dnsmasq can bind (an empty bridge stays NO-CARRIER/DOWN).
+	dummy := dummyNameFor(name)
+	_ = exec.Command("ip", "link", "add", dummy, "type", "dummy").Run()
+	_ = exec.Command("ip", "link", "set", dummy, "master", name).Run()
+	_ = exec.Command("ip", "link", "set", dummy, "up").Run()
+	_ = exec.Command("ip", "link", "set", name, "up").Run()
+
+	teardown := func() {
+		exec.Command("ip", "link", "set", name, "down").Run()
+		exec.Command("ip", "link", "del", name).Run()
+	}
+
+	if out, err := exec.Command("ip", "addr", "add", req.CIDR, "dev", name).CombinedOutput(); err != nil {
+		teardown()
+		return models.Network{}, fmt.Errorf("assign %s to %q: %v (%s)", req.CIDR, name, err, strings.TrimSpace(string(out)))
+	}
+
+	// MTU first (validation is independent of DHCP), so a bad value
+	// fails before any dnsmasq unit is written.
+	if err := applyBridgeMTU(name, req.MTU); err != nil {
+		teardown()
+		return models.Network{}, err
+	}
+
+	dhcp := req.DHCP != nil && *req.DHCP
+	var dhcpStart, dhcpEnd string
+	var dns []string
+	var reservations []models.DHCPReservation
+	if len(req.Reservations) > 0 && !dhcp {
+		teardown()
+		return models.Network{}, fmt.Errorf("DHCP reservations require DHCP to be enabled")
+	}
+	if dhcp {
+		if err := validDNSList(req.DNS); err != nil {
+			teardown()
+			return models.Network{}, err
+		}
+		start, end, err := resolveDHCPRange(req.CIDR, req.DHCPStart, req.DHCPEnd)
+		if err != nil {
+			teardown()
+			return models.Network{}, err
+		}
+		reservations, err = normalizeReservations(req.CIDR, req.Reservations)
+		if err != nil {
+			teardown()
+			return models.Network{}, err
+		}
+		if err := configureBridgeDHCP(name, req.CIDR, start, end, req.DNS, reservations); err != nil {
+			teardown()
+			return models.Network{}, err
+		}
+		dhcpStart, dhcpEnd, dns = start, end, req.DNS
+	}
+
+	if netStoreVar != nil {
+		rec := netstore.Record{Name: name, Kind: kind, CIDR: req.CIDR, MTU: req.MTU}
+		if dhcp {
+			rec.DHCPStart, rec.DHCPEnd, rec.DNS = dhcpStart, dhcpEnd, dns
+			rec.Reservations = reservations
+		}
+		_ = netStoreVar.Save(rec)
+	}
+
+	if kind == "nat" {
+		if firewallReapply != nil {
+			if err := firewallReapply(); err != nil {
+				removeDnsmasqUnit(name)
+				if netStoreVar != nil {
+					_ = netStoreVar.Delete(name)
+				}
+				teardown()
+				return models.Network{}, fmt.Errorf("apply NAT rule for %q: %w", name, err)
+			}
+		}
+		_ = exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run()
+	}
+
+	return networkView(name), nil
+}
+
+// firewallReapply re-renders and applies the whole nftables ruleset,
+// picking up any NAT-kind bridge just added/removed from netStoreVar.
+// Wired by cmd/server/main.go to avoid libvirt importing firewall.
+var firewallReapply func() error
+
+// SetFirewallReapply wires the firewall re-apply callback. Called once
+// at startup.
+func SetFirewallReapply(fn func() error) { firewallReapply = fn }
+
+// removeDnsmasqUnit stops and removes the per-bridge dnsmasq DHCP unit
+// (if configureBridgeDHCP ever created one for this bridge). br is
+// always a name that already passed isLinuxBridge or validBridgeName in
+// every caller (DeleteNetwork, UpdateNetwork, createIsolatedOrNATNetwork
+// rollback) — both now reject "."/".." in addition to '/', so it cannot
+// escape these fixed directories.
+func removeDnsmasqUnit(br string) {
+	svcPath := "/etc/systemd/system/webkvm-" + br + "-dnsmasq.service" // lgtm[go/path-injection] - br validated by every caller, see func comment
+	if _, err := os.Stat(svcPath); err != nil {
+		return
+	}
+	exec.Command("systemctl", "stop", "webkvm-"+br+"-dnsmasq.service").Run()
+	exec.Command("systemctl", "disable", "webkvm-"+br+"-dnsmasq.service").Run()
+	os.Remove(svcPath)                               // lgtm[go/path-injection] - br validated by every caller, see func comment
+	os.Remove("/etc/webkvm/" + br + "-dnsmasq.conf") // lgtm[go/path-injection] - br validated by every caller, see func comment
+	os.Remove(leaseFilePath(br))                     // lgtm[go/path-injection] - br validated by every caller, see func comment
+	exec.Command("systemctl", "daemon-reload").Run()
+}
+
+// validDNSList reports whether every entry in dns is a parseable IP
+// address, rejecting the request before anything is written to disk or
+// dnsmasq is (re)started — same fail-fast style as resolveDHCPRange.
+func validDNSList(dns []string) error {
+	for _, d := range dns {
+		d = strings.TrimSpace(d)
+		if d == "" || net.ParseIP(d) == nil {
+			return fmt.Errorf("invalid DNS server %q", d)
+		}
+	}
+	return nil
+}
+
+// resolveDHCPRange returns the DHCP range to use: the caller-chosen
+// start/end when both are given (validated to fall inside cidr, with
+// start <= end), or today's auto-derived range when both are empty.
+// Exactly one of start/end being set is rejected as ambiguous.
+func resolveDHCPRange(cidr, start, end string) (string, string, error) {
+	start, end = strings.TrimSpace(start), strings.TrimSpace(end)
+	if start == "" && end == "" {
+		s, e := dhcpRangeFor(cidr)
+		if s == "" || e == "" {
+			return "", "", fmt.Errorf("cannot derive a DHCP range from CIDR %q", cidr)
+		}
+		return s, e, nil
+	}
+	if start == "" || end == "" {
+		return "", "", fmt.Errorf("dhcp_start and dhcp_end must both be set, or both left empty for an automatic range")
+	}
+	sIP := net.ParseIP(start).To4()
+	eIP := net.ParseIP(end).To4()
+	if sIP == nil || eIP == nil {
+		return "", "", fmt.Errorf("dhcp_start/dhcp_end must be valid IPv4 addresses")
+	}
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil || !ipnet.Contains(sIP) || !ipnet.Contains(eIP) {
+		return "", "", fmt.Errorf("dhcp range must fall inside %s", cidr)
+	}
+	for i := 0; i < 4; i++ {
+		if sIP[i] != eIP[i] {
+			if sIP[i] > eIP[i] {
+				return "", "", fmt.Errorf("dhcp_start must be <= dhcp_end")
+			}
+			break
+		}
+	}
+	return start, end, nil
+}
+
+// normalizeReservations validates fixed MAC→IP leases (valid MAC, IPv4
+// inside the bridge CIDR, no duplicate MAC or IP) and returns them
+// normalized (lowercase MAC, canonical IP).
+func normalizeReservations(cidr string, in []models.DHCPReservation) ([]models.DHCPReservation, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CIDR %q", cidr)
+	}
+	out := make([]models.DHCPReservation, 0, len(in))
+	seenMAC := map[string]bool{}
+	seenIP := map[string]bool{}
+	for i, r := range in {
+		mac := strings.ToLower(strings.TrimSpace(r.MAC))
+		if _, err := net.ParseMAC(mac); err != nil {
+			return nil, fmt.Errorf("reservation %d: invalid MAC %q", i+1, r.MAC)
+		}
+		ip := net.ParseIP(strings.TrimSpace(r.IP)).To4()
+		if ip == nil {
+			return nil, fmt.Errorf("reservation %d: invalid IPv4 %q", i+1, r.IP)
+		}
+		if !ipnet.Contains(ip) {
+			return nil, fmt.Errorf("reservation %d: %s is outside %s", i+1, r.IP, cidr)
+		}
+		if seenMAC[mac] {
+			return nil, fmt.Errorf("reservation %d: duplicate MAC %s", i+1, mac)
+		}
+		if seenIP[ip.String()] {
+			return nil, fmt.Errorf("reservation %d: duplicate IP %s", i+1, ip.String())
+		}
+		seenMAC[mac] = true
+		seenIP[ip.String()] = true
+		out = append(out, models.DHCPReservation{
+			MAC:  mac,
+			IP:   ip.String(),
+			Name: strings.TrimSpace(r.Name),
+		})
+	}
+	return out, nil
+}
+
+// dhcpHostLines renders the dnsmasq "dhcp-host=" lines for fixed leases.
+// An optional name is sanitized to dnsmasq's hostname charset.
+func dhcpHostLines(reservations []models.DHCPReservation) (string, error) {
+	if len(reservations) == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	for _, r := range reservations {
+		if _, err := net.ParseMAC(r.MAC); err != nil {
+			return "", fmt.Errorf("invalid reservation MAC %q", r.MAC)
+		}
+		if net.ParseIP(r.IP) == nil {
+			return "", fmt.Errorf("invalid reservation IP %q", r.IP)
+		}
+		if r.Name != "" {
+			fmt.Fprintf(&b, "dhcp-host=%s,%s,%s\n", r.MAC, r.IP, sanitizeDnsmasqName(r.Name))
+		} else {
+			fmt.Fprintf(&b, "dhcp-host=%s,%s\n", r.MAC, r.IP)
+		}
+	}
+	return b.String(), nil
+}
+
+// sanitizeDnsmasqName reduces a label to dnsmasq's accepted hostname
+// charset ([A-Za-z0-9-], max 63) so an arbitrary reservation name can
+// never break the generated config.
+func sanitizeDnsmasqName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+			_, _ = b.WriteRune(r)
+		} else {
+			_, _ = b.WriteRune('-')
+		}
+		if b.Len() >= 63 {
+			break
+		}
+	}
+	return b.String()
+}
+
+// applyBridgeMTU sets the bridge's link MTU. mtu <= 0 means "leave the
+// kernel/bridge default". Rejects values outside the sane Ethernet
+// range (576 IPv4 minimum .. 9216 jumbo) before touching the kernel.
+func applyBridgeMTU(br string, mtu int) error {
+	if mtu <= 0 {
+		return nil
+	}
+	if mtu < 576 || mtu > 9216 {
+		return fmt.Errorf("MTU %d out of range (576..9216)", mtu)
+	}
+	if out, err := exec.Command("ip", "link", "set", "dev", br, "mtu", strconv.Itoa(mtu)).CombinedOutput(); err != nil {
+		return fmt.Errorf("set MTU %d on %s: %v (%s)", mtu, br, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// bridgeMTU reads a bridge's current link MTU from sysfs (0 if unknown).
+// br is always pre-validated — see networkView's comment, its only caller.
+func bridgeMTU(br string) int {
+	data, err := os.ReadFile("/sys/class/net/" + br + "/mtu") // lgtm[go/path-injection] - br validated, see func comment
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// configureBridgeDHCP writes a self-contained dnsmasq config + systemd unit
+// for a shared bridge (the same pattern setup-network.sh uses for vmbr1),
+// using the given (already-resolved) DHCP range and DNS server list (dns
+// falls back to 1.1.1.1 when empty, preserving the previous default). br
+// is always pre-validated in both callers (CreateNetwork -> validBridgeName,
+// UpdateNetwork -> isLinuxBridge).
+func configureBridgeDHCP(br, cidr, start, end string, dns []string, reservations []models.DHCPReservation) error {
+	if start == "" || end == "" {
+		return fmt.Errorf("cannot derive a DHCP range from CIDR %q", cidr)
+	}
+	dnsList := dns
+	if len(dnsList) == 0 {
+		dnsList = []string{"1.1.1.1"}
+	}
+	hostLines, err := dhcpHostLines(reservations)
+	if err != nil {
+		return err
+	}
+	confDir := "/etc/webkvm"
+	_ = os.MkdirAll(confDir, 0755)
+	confPath := fmt.Sprintf("%s/%s-dnsmasq.conf", confDir, br) // lgtm[go/path-injection] - br validated, see func comment
+	dnsmasqBin := "/usr/sbin/dnsmasq"
+	if p, err := exec.LookPath("dnsmasq"); err == nil {
+		dnsmasqBin = p
+	} else if _, err := os.Stat("/usr/bin/dnsmasq"); err == nil {
+		dnsmasqBin = "/usr/bin/dnsmasq"
+	}
+	// Derive the DHCP netmask from the CIDR instead of hardcoding
+	// 255.255.255.0. Every lease used to carry a /24 mask no matter
+	// what prefix the network was created with, so guests on a /16
+	// could not reach the rest of their own subnet directly, and guests
+	// on a /26 ARPed for addresses belonging to neighbouring subnets.
+	// The symptom looks like an intermittent firewall problem.
+	netmask := "255.255.255.0"
+	if _, ipnet, err := net.ParseCIDR(cidr); err == nil && len(ipnet.Mask) == net.IPv4len {
+		netmask = net.IP(ipnet.Mask).String()
+	}
+	conf := fmt.Sprintf(`# webkvm %s DHCP (shared KVM+Incus bridge)
+port=0
+interface=%s
+bind-interfaces
+except-interface=lo
+listen-address=%s
+dhcp-range=%s,%s,%s,12h
+dhcp-option=option:router,%s
+dhcp-option=option:dns-server,%s
+dhcp-leasefile=%s
+user=root
+%s`, br, br, strings.SplitN(cidr, "/", 2)[0], start, end, netmask, strings.SplitN(cidr, "/", 2)[0], strings.Join(dnsList, ","), leaseFilePath(br), hostLines)
+	if err := os.WriteFile(confPath, []byte(conf), 0644); err != nil {
+		return fmt.Errorf("write dnsmasq config for %q: %w", br, err)
+	}
+	svcPath := "/etc/systemd/system/webkvm-" + br + "-dnsmasq.service" // lgtm[go/path-injection] - br validated, see func comment
+	unit := fmt.Sprintf(`[Unit]
+Description=webkvm dnsmasq for %s (shared bridge DHCP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%s --keep-in-foreground --conf-file=%s
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+`, br, dnsmasqBin, confPath)
+	if err := os.WriteFile(svcPath, []byte(unit), 0644); err != nil {
+		return fmt.Errorf("write dnsmasq unit for %q: %w", br, err)
+	}
+	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl daemon-reload: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	_ = exec.Command("systemctl", "enable", "webkvm-"+br+"-dnsmasq.service").Run()
+	if out, err := exec.Command("systemctl", "restart", "webkvm-"+br+"-dnsmasq.service").CombinedOutput(); err != nil {
+		return fmt.Errorf("start dnsmasq for %q: %v (%s)", br, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// dhcpRangeFor derives a DHCP .100-.200 range from a /24-style CIDR.
+//
+// The old implementation did byte arithmetic on ip4[3] (base+100 overflowed
+// modulo 256 for base>155) and used the un-masked input IP rather than the
+// network address, so a CIDR like 192.168.1.150/24 produced an inverted or
+// out-of-subnet range. This version works on the network base (from
+// ipnet.IP, i.e. the masked address) in int arithmetic and clamps to the
+// subnet's usable host range for prefixes up to /30.
+func dhcpRangeFor(cidr string) (start, end string) {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", ""
+	}
+	ones, bits := ipnet.Mask.Size()
+	if bits != 32 {
+		return "", ""
+	}
+	net4 := ipnet.IP.To4()
+	if net4 == nil {
+		return "", ""
+	}
+	base := int(net4[0])<<24 | int(net4[1])<<16 | int(net4[2])<<8 | int(net4[3])
+	hostBits := 32 - ones
+	maxHosts := (1 << hostBits) - 2 // minus network + broadcast
+	if maxHosts < 4 {
+		return "", ""
+	}
+	// Default range: start at +100 unless the subnet is too small.
+	s := base + 100
+	if ones > 24 {
+		s = base + 1 // /25..: only a few hosts, start right after network
+	}
+	// End: +200 or the last usable host, whichever is smaller.
+	e := base + 200
+	lastUsable := base + maxHosts
+	if e > lastUsable {
+		e = lastUsable
+	}
+	if s > lastUsable {
+		s = lastUsable
+	}
+	return fmt.Sprintf("%d.%d.%d.%d", byte(s>>24), byte(s>>16), byte(s>>8), byte(s)),
+		fmt.Sprintf("%d.%d.%d.%d", byte(e>>24), byte(e>>16), byte(e>>8), byte(e))
+}
+
+// DeleteNetwork removes a Linux bridge from the host, releasing any
+// physical NIC it enslaved (kind=="direct") and removing its NAT rule
+// (kind=="nat"), for any of the 3 kinds through one code path.
+func (c *Connector) DeleteNetwork(id string) error {
+	if !isLinuxBridge(id) {
+		return fmt.Errorf("bridge %q not found: %w", id, ErrNetworkNotFound)
+	}
+	if IsManagedBridge(id) {
+		return fmt.Errorf("bridge %q is the host's primary bridge and cannot be deleted via the API; tear it down on the host (ip link del %s) if you really want it gone", id, id)
+	}
+
+	var rec netstore.Record
+	if netStoreVar != nil {
+		rec, _ = netStoreVar.Get(id)
+	}
+
+	dummy := dummyNameFor(id)
+	slaves := readBridgeSlaves(id)
+	var physical []string
+	for _, s := range slaves {
+		if s == dummy {
+			continue
+		}
+		if isPhysicalInterface(s) {
+			physical = append(physical, s)
+			continue
+		}
+		// A real VM/container tap (vnet*, an Incus veth, …): never
+		// auto-release it, or a running guest silently loses its NIC.
+		return fmt.Errorf("bridge %q has a VM/container interface (%s) attached; detach it first: %w", id, s, ErrNetworkInUse)
+	}
+
+	removeDnsmasqUnit(id)
+
+	if netStoreVar != nil {
+		_ = netStoreVar.Delete(id)
+	}
+	if rec.Kind == "nat" && firewallReapply != nil {
+		if err := firewallReapply(); err != nil {
+			slog.Default().Warn("network_delete_nat_reapply_failed", "bridge", id, "err", err)
+		}
+	}
+
+	exec.Command("ip", "link", "set", id, "down").Run()
+	for _, s := range physical {
+		exec.Command("ip", "link", "set", s, "nomaster").Run()
+		exec.Command("ip", "link", "set", s, "up").Run()
+		if s == rec.Interface && rec.MovedIPv4 != "" {
+			if err := restoreIPv4FromBridge(id, s, rec.MovedIPv4); err != nil {
+				slog.Default().Warn("network_delete_restore_ip_failed", "bridge", id, "interface", s, "err", err)
+			}
+		}
+	}
+	if _, err := os.Stat("/sys/class/net/" + dummy); err == nil {
+		exec.Command("ip", "link", "set", dummy, "nomaster").Run()
+		exec.Command("ip", "link", "del", dummy).Run()
+	}
+	if out, err := exec.Command("ip", "link", "del", id).CombinedOutput(); err != nil {
+		return fmt.Errorf("ip link del %s: %v: %s", id, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// UpdateNetwork updates a bridge's DHCP settings (isolated/nat) or
+// VLAN-awareness (direct, or any bridge). Kind/CIDR/Interface are
+// immutable after creation — change them by deleting and recreating.
+func (c *Connector) UpdateNetwork(name string, req models.UpdateNetworkRequest) (models.Network, error) {
+	if !isLinuxBridge(name) {
+		return models.Network{}, fmt.Errorf("bridge %q not found: %w", name, ErrNetworkNotFound)
+	}
+	if req.VLanAware != nil {
+		val := "0"
+		if *req.VLanAware {
+			val = "1"
+		}
+		if out, err := exec.Command("ip", "link", "set", name, "type", "bridge", "vlan_filtering", val).CombinedOutput(); err != nil {
+			return models.Network{}, fmt.Errorf("set vlan_filtering: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
+	// Link MTU (independent of DHCP).
+	if req.MTU != nil {
+		if err := applyBridgeMTU(name, *req.MTU); err != nil {
+			return models.Network{}, err
+		}
+		if netStoreVar != nil {
+			rec, ok := netStoreVar.Get(name)
+			if !ok {
+				kind, iface := inferKind(name, readBridgeSlaves(name))
+				rec = netstore.Record{Name: name, Kind: kind, Interface: iface}
+			}
+			rec.MTU = *req.MTU
+			_ = netStoreVar.Save(rec)
+		}
+	}
+
+	// Effective current state drives partial updates (e.g. editing only
+	// the reservations while DHCP stays on).
+	var cur netstore.Record
+	hasCur := false
+	if netStoreVar != nil {
+		cur, hasCur = netStoreVar.Get(name)
+	}
+	dhcpOn := dnsmasqUnitExists(name) || (hasCur && cur.DHCPStart != "")
+
+	turnOn := req.DHCP != nil && *req.DHCP
+	turnOff := req.DHCP != nil && !*req.DHCP
+	editOnly := req.DHCP == nil && req.Reservations != nil
+
+	if turnOff {
+		removeDnsmasqUnit(name)
+		if netStoreVar != nil {
+			if rec, ok := netStoreVar.Get(name); ok {
+				rec.DHCPStart, rec.DHCPEnd, rec.DNS, rec.Reservations = "", "", nil, nil
+				_ = netStoreVar.Save(rec)
+			}
+		}
+		return networkView(name), nil
+	}
+
+	if turnOn || (editOnly && dhcpOn) {
+		cidr := bridgeIPv4(name)
+		if cidr == "" {
+			return models.Network{}, fmt.Errorf("bridge %q has no IP; assign one before enabling DHCP", name)
+		}
+		dns := req.DNS
+		if dns == nil && hasCur {
+			dns = cur.DNS
+		}
+		if err := validDNSList(dns); err != nil {
+			return models.Network{}, err
+		}
+		start, end := req.DHCPStart, req.DHCPEnd
+		if start == "" && end == "" && hasCur {
+			start, end = cur.DHCPStart, cur.DHCPEnd
+		}
+		start, end, err := resolveDHCPRange(cidr, start, end)
+		if err != nil {
+			return models.Network{}, err
+		}
+		resIn := req.Reservations
+		if resIn == nil && hasCur {
+			resIn = cur.Reservations
+		}
+		reservations, err := normalizeReservations(cidr, resIn)
+		if err != nil {
+			return models.Network{}, err
+		}
+		if err := configureBridgeDHCP(name, cidr, start, end, dns, reservations); err != nil {
+			return models.Network{}, err
+		}
+		if netStoreVar != nil {
+			rec := cur
+			if !hasCur {
+				// Not a bridge WebKVM created via the API (e.g. the
+				// installer's own vmbr1) — infer its kind rather than
+				// persisting an empty one, or networkView() would stop
+				// falling back to inferKind() for it from now on.
+				kind, iface := inferKind(name, readBridgeSlaves(name))
+				rec = netstore.Record{Name: name, Kind: kind, Interface: iface}
+			}
+			rec.Name = name
+			rec.CIDR = cidr
+			rec.DHCPStart, rec.DHCPEnd, rec.DNS = start, end, dns
+			rec.Reservations = reservations
+			_ = netStoreVar.Save(rec)
+		}
+	}
+	return networkView(name), nil
+}
+
+// StartNetwork/StopNetwork bring a bridge up/down at the OS level.
+func (c *Connector) StartNetwork(name string) (models.Network, error) {
+	if !isLinuxBridge(name) {
+		return models.Network{}, fmt.Errorf("bridge %q not found: %w", name, ErrNetworkNotFound)
+	}
+	if out, err := exec.Command("ip", "link", "set", name, "up").CombinedOutput(); err != nil {
+		return models.Network{}, fmt.Errorf("ip link set %s up: %v: %s", name, err, strings.TrimSpace(string(out)))
+	}
+	return networkView(name), nil
+}
+
+func (c *Connector) StopNetwork(name string) (models.Network, error) {
+	if !isLinuxBridge(name) {
+		return models.Network{}, fmt.Errorf("bridge %q not found: %w", name, ErrNetworkNotFound)
+	}
+	if IsManagedBridge(name) {
+		return models.Network{}, fmt.Errorf("bridge %q is the host's primary bridge and cannot be stopped", name)
+	}
+	if out, err := exec.Command("ip", "link", "set", name, "down").CombinedOutput(); err != nil {
+		return models.Network{}, fmt.Errorf("ip link set %s down: %v: %s", name, err, strings.TrimSpace(string(out)))
+	}
+	return networkView(name), nil
+}
+
+// bridgeIPv4 returns the bridge's IPv4 CIDR (e.g. "192.168.1.30/24"), or ""
+// when the bridge has no IPv4 address.
+func bridgeIPv4(br string) string {
+	out, err := exec.Command("ip", "-4", "-o", "addr", "show", "dev", br, "scope", "global").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	for _, f := range strings.Fields(string(out)) {
+		if strings.Contains(f, "/") {
+			return f
+		}
+	}
+	return ""
+}

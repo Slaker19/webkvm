@@ -1,0 +1,947 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"sort"
+	"strings"
+	"syscall"
+	"time"
+
+	"webkvm/internal/api"
+	"webkvm/internal/audit"
+	"webkvm/internal/auth"
+	"webkvm/internal/backupstore"
+	"webkvm/internal/compute"
+	"webkvm/internal/compute/incus"
+	"webkvm/internal/config"
+	"webkvm/internal/configstore"
+	"webkvm/internal/events"
+	"webkvm/internal/firewall"
+	"webkvm/internal/libvirt"
+	"webkvm/internal/logging"
+	metrics2 "webkvm/internal/metrics"
+	"webkvm/internal/models"
+	"webkvm/internal/netguard"
+	"webkvm/internal/netstore"
+	"webkvm/internal/nodes"
+	"webkvm/internal/notify"
+	"webkvm/internal/tokens"
+	"webkvm/internal/user"
+	"webkvm/internal/vmsched"
+)
+
+// Set by -ldflags at build time. Defaults are used for `go run`.
+var (
+	Version   = "0.0.1"
+	BuildTime = "unknown"
+)
+
+// mustContainerVersion returns the container daemon version ("" on error)
+func mustContainerVersion(b *incus.IncusBackend) string {
+	v, err := b.ServerInfo()
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+func main() {
+	// version / --version: print the build-time -ldflags version (the
+	// binary is distributed pre-built, not compiled by the installer —
+	// see install.sh) and exit immediately, before any config/libvirt
+	// setup. update.sh relies on this to report what it's upgrading
+	// from/to; without it, "webkvm version" would fall through to a
+	// full second server instance that just fails to bind the port
+	// already held by the running one.
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
+		version, buildTime := Version, BuildTime
+		if version == "dev" {
+			if v := os.Getenv("WEBKVM_VERSION"); v != "" {
+				version = v
+			}
+		}
+		if buildTime == "unknown" {
+			if v := os.Getenv("WEBKVM_BUILD_TIME"); v != "" {
+				buildTime = v
+			}
+		}
+		fmt.Printf("webkvm %s (built %s)\n", version, buildTime)
+		return
+	}
+
+	// --fix-perms: one-shot CLI helper that chmod 0644 every disk
+	// file in every active storage pool so a non-root backend can
+	// read them. Requires root (the binary is invoked via sudo).
+	// Exits 0 on success, 1 if any file couldn't be changed.
+	if len(os.Args) > 1 && os.Args[1] == "--fix-perms" {
+		if os.Geteuid() != 0 {
+			fmt.Fprintln(os.Stderr, "webkvm --fix-perms must be run as root (try: sudo webkvm --fix-perms)")
+			os.Exit(1)
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "config:", err)
+			os.Exit(1)
+		}
+		lv := libvirt.NewConnector("qemu:///system", cfg)
+		if err := lv.Open(); err != nil {
+			fmt.Fprintln(os.Stderr, "connect to libvirt:", err)
+			os.Exit(1)
+		}
+		defer lv.Close()
+		if err := lv.FixDiskPermissions(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Set up structured logging early so even pre-config errors
+	// (e.g. invalid .env) land in the right format. Defaults: json+info.
+	logFormat := os.Getenv("WEBKVM_LOG_FORMAT")
+	if logFormat == "" {
+		logFormat = "json"
+	}
+	logLevel := os.Getenv("WEBKVM_LOG_LEVEL")
+	if logLevel == "" {
+		logLevel = "info"
+	}
+	logging.Init(logFormat, logLevel)
+	logger := slog.Default().With("component", "main")
+	slog.SetDefault(logger)
+
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Error("config_load_failed", "err", err)
+		os.Exit(1)
+	}
+	// Build-time -ldflags Version takes precedence; only fall back to the
+	// env var if the binary was built without one.
+	if Version != "dev" {
+		cfg.Version = Version
+	}
+	if BuildTime != "unknown" {
+		cfg.BuildTime = BuildTime
+	}
+	// If WEBKVM_LOG_FILE is set (typically via a systemd drop-in),
+	// re-init logging so the same records are also written to that
+	// file. This is the path /api/system/logs reads back. This has
+	// to happen here and not before config.Load because config.Load()
+	// reads .env as a fallback.
+	if cfg.LogFile != "" {
+		logging.InitWithFile(logFormat, logLevel, cfg.LogFile)
+		logger = slog.Default().With(
+			"component", "main",
+			"version", cfg.Version,
+			"build_time", cfg.BuildTime,
+		)
+		slog.SetDefault(logger)
+		logger.Info("log_file_enabled", "path", cfg.LogFile)
+	} else {
+		// No file tee: enrich the default with version/build_time
+		// the same way we would inside the if branch above.
+		logger = slog.Default().With(
+			"version", cfg.Version,
+			"build_time", cfg.BuildTime,
+		)
+		slog.SetDefault(logger)
+	}
+
+	// Shutdown context for background goroutines (libvirt reconnection,
+	// event loop, backup runner, metrics). Created early so it can be
+	// wired into the libvirt retry loop before the event loop is set up.
+	eventCtx, cancelEvents := context.WithCancel(context.Background())
+	defer cancelEvents()
+
+	// --- Settings store: MUST be initialized before anything that
+	// reads from it. Phase 1.7-bis wired 12 of the 30+ schema fields
+	// to live code paths, so the order below matters.
+	//
+	// server.incus_enabled needs special handling other restart-required
+	// settings don't: unlike server.bind_addr (whose schema default
+	// already matches config.Config's own default, so the two silently
+	// agree until an operator picks a value in the UI), Incus has been
+	// env-var-only until now. If we let a fresh install of THIS schema
+	// seed the key with a fixed `false` default, an existing install
+	// that has always run with WEBKVM_INCUS_ENABLED=true would lose its
+	// containers the moment it upgrades — the settings store bakes its
+	// default into config.json on first load, silently overriding the
+	// env var from then on. Patching the schema's own Default from
+	// cfg.IncusEnabled BEFORE the store is created means the store's
+	// first-ever value for this key is whatever the env var already
+	// said; only once an operator explicitly changes it in the UI does
+	// the stored value (correctly) start overriding the env var.
+	schema := configstore.DefaultSchema()
+	for i := range schema.Fields {
+		if schema.Fields[i].Key == "server.incus_enabled" {
+			schema.Fields[i].Default = cfg.IncusEnabled
+		}
+	}
+	settingsStore, err := configstore.New(cfg.DataDir, schema)
+	if err != nil {
+		logger.Error("configstore_init_failed", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("configstore_loaded", "path", settingsStore.Path(), "pending_restart", settingsStore.PendingRestart())
+
+	// Honor the persisted server.bind_addr / server.port from the
+	// store. Env-var wins on first boot (we never overwrite a value
+	// the operator explicitly set in the systemd unit file), but on
+	// a subsequent restart the operator's UI change sticks — which
+	// is the whole point of Settings being more than
+	// a vanity screen.
+	bindAddr := cfg.BindAddr
+	if v := settingsStore.GetString("server.bind_addr"); v != "" {
+		bindAddr = v
+	}
+	port := cfg.Port
+	if v := settingsStore.GetInt("server.port"); v > 0 {
+		port = v
+	}
+	if bindAddr != cfg.BindAddr || port != cfg.Port {
+		logger.Info("settings_overrode_addr",
+			"bind_addr_from", cfg.BindAddr, "bind_addr_to", bindAddr,
+			"port_from", cfg.Port, "port_to", port)
+	}
+	cfg.BindAddr = bindAddr
+	cfg.Port = port
+	if v := settingsStore.GetString("server.public_host"); v != "" {
+		cfg.PublicHost = v
+	}
+	// The store's value is authoritative from here on (its Default was
+	// already seeded from cfg.IncusEnabled above on first ever load, so
+	// this is never a silent downgrade of an existing env-var setup).
+	cfg.IncusEnabled = settingsStore.GetBool("server.incus_enabled")
+
+	// TLS: serve HTTPS directly with a self-signed cert and/or automatic
+	// Let's Encrypt. Wired from the same settings store as bind_addr/port
+	// so the installer (or the Settings page) can persist it and the
+	// backend picks it up on the next restart.
+	tlsConfig, tlsMode := configureTLS(settingsStore, cfg.DataDir, logger)
+
+	// Also re-apply the log level from the store so the operator's
+	// Settings page choice takes precedence over the env-var. The
+	// env-var is just a first-boot default.
+	if v := settingsStore.GetString("logging.level"); v != "" {
+		logging.SetLevel(v)
+	}
+	if v := settingsStore.GetString("logging.format"); v != "" && cfg.LogFile == "" {
+		logging.SetFormat(v)
+	}
+
+	lv := libvirt.NewConnector(cfg.LibvirtURI, cfg)
+
+	if err := lv.Open(); err != nil {
+		logger.Warn("libvirt_connect_failed", "uri", cfg.LibvirtURI, "err", err)
+		logger.Warn("running_in_offline_mode", "note", "VM operations will fail until libvirt is available")
+		// Retry in background with exponential backoff so the backend
+		// recovers automatically when libvirtd becomes available.
+		go retryLibvirtConnect(eventCtx, logger, lv, cfg)
+	} else {
+		logger.Info("libvirt_connected", "uri", cfg.LibvirtURI)
+		defer lv.Close()
+		lv.EnsureDefaults()
+		// Sweep stale import leftovers (orphan .tmp uploads and OVA
+		// work dirs) from previous runs. The normal import path
+		// cleans up after itself via defer, but a crash or OOM kill
+		// leaves files behind. Anything older than 1 hour is safe
+		// to remove because a successful import finishes in
+		// minutes and any retry would create a new temp file.
+		stats, err := lv.CleanupStaleImports(1 * time.Hour)
+		if err != nil {
+			logger.Warn("stale_import_cleanup_failed", "err", err)
+		} else if stats.TmpFiles > 0 || stats.OvaDirs > 0 {
+			logger.Info("janitor_cleanup_done",
+				"tmp_files", stats.TmpFiles,
+				"ova_dirs", stats.OvaDirs,
+				"bytes_freed", stats.BytesFree,
+				"mb_freed", stats.BytesFree/1024/1024)
+		}
+
+		// CIFS secret mapping: hydrate the in-memory map from disk
+		// and warn about any secret we know about that's no longer
+		// in libvirt (e.g. after a libvirtd reinstall). Neither
+		// step is fatal — operators can recover via the API.
+		if err := libvirt.LoadCIFSSecrets(lv); err != nil {
+			logger.Warn("cifs_secrets_load_failed", "err", err.Error())
+		}
+		if err := libvirt.VerifyCIFSSecretsConsistency(eventCtx, lv); err != nil {
+			logger.Warn("cifs_secrets_inconsistent", "err", err.Error())
+		}
+	}
+
+	// Auth manager with the settings store wired in. The store is
+	// consulted on every GenerateToken (TTL) and every Middleware
+	// invocation (allow_api_tokens), so a Settings page change takes
+	// effect on the next request — no restart.
+	authMgr := auth.NewManagerWithPath(cfg.JWTSecret, settingsStore, cfg.RevokedFile())
+	authMgr.SetSecureCookies(cfg.SecureCookies)
+
+	// V13-SEC-02: global per-IP rate limiter (token bucket + sweeper).
+	// settingsStore implements auth.RateLimitSettings, so enabled/rps/
+	// burst/trusted_cidrs reload live from the Settings page.
+	globalRateLimiter := auth.NewGlobalRateLimiter(settingsStore)
+	defer globalRateLimiter.Close()
+	loginLimiter := auth.NewLoginRateLimiterWithSettings(settingsStore)
+
+	// Created before the tokens store because the API-token validator
+	// below reads the owner's live role and session epoch from it.
+	userStore, err := user.NewStore(cfg.DataDir)
+	if err != nil {
+		logger.Error("user_store_init_failed", "err", err)
+		os.Exit(1)
+	}
+
+	// API tokens: long-lived Bearer tokens for scripting. The store
+	// is consulted by the auth middleware as a fallback after JWT
+	// validation, so session cookies and API tokens share the same
+	// Authorization header.
+	tokensStore, err := tokens.New(cfg.DataDir)
+	if err != nil {
+		logger.Error("tokens_store_init_failed", "err", err)
+		os.Exit(1)
+	}
+	authMgr.SetTokenValidator(func(plain string) (string, string, int, error) {
+		t, err := tokensStore.Validate(plain)
+		if err != nil {
+			return "", "", 0, err
+		}
+		// The role is read live from the user store, not from the token:
+		// a token minted while its owner was an admin must not keep admin
+		// powers after a demotion. Falling back to the stored role keeps
+		// tokens working if the account lookup fails for an unrelated
+		// reason (SessionEnforcer rejects a truly missing account anyway).
+		role := t.Role
+		if u, uErr := userStore.Get(t.Username); uErr == nil {
+			role = u.Role
+		}
+		return t.Username, role, t.SessionEpoch, nil
+	})
+	// Sweep expired tokens every hour. Best-effort.
+	go func() {
+		t := time.NewTicker(1 * time.Hour)
+		defer t.Stop()
+		for range t.C {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("tokens_purge_panicked", "recover", r)
+					}
+				}()
+				if n, _ := tokensStore.PurgeExpired(); n > 0 {
+					logger.Info("tokens_purged", "count", n)
+				}
+			}()
+		}
+	}()
+
+	auditLogger, err := audit.New(cfg.AuditLogFile())
+	if err != nil {
+		logger.Error("audit_log_init_failed", "err", err)
+		os.Exit(1)
+	}
+	// Durability contract: flush + fsync + close the audit
+	// log on shutdown so the last acknowledged entries are never lost to
+	// a buffered write.
+	defer auditLogger.Close()
+
+	// Job sweeper: purge finished ISO/appliance jobs older
+	// than 24h on a 5-minute ticker. queued/running jobs are never
+	// removed, regardless of age.
+	api.StartJobSweeper(eventCtx, 5*time.Minute, 24*time.Hour, logger.Info)
+	logger.Info("job_sweeper_started", "interval", "5m", "ttl", "24h")
+
+	// Nodes registry: every libvirt host the backend knows about.
+	// The local node is auto-created from cfg.LibvirtURI; remote
+	// nodes are added via /api/nodes (admin only).
+	nodesReg, err := nodes.New(cfg.DataDir, cfg.LibvirtURI)
+	if err != nil {
+		logger.Error("nodes_registry_init_failed", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("nodes_loaded", "path", nodesReg.Path(), "count", len(nodesReg.List()))
+
+	// Event hub for SSE broadcasts (VM state changes)
+	hub := events.NewHub()
+
+	// Start the libvirt event loop (with polling fallback) so the SSE
+	// channel receives VM state changes in realtime.
+	stopEventLoop := lv.StartEventLoop(eventCtx, hub, 4*time.Second)
+	defer stopEventLoop()
+
+	// Backup v2: multi-target / schedule / retention system.
+	// The runner is wired with the same dataDir the rest of the
+	// backend uses, so a backup of {DataDir} covers every file
+	// the running server depends on (users.json, audit.log,
+	// backup/, nodes.json, api-tokens.json, jwt.key, etc.).
+	//
+	// computeBackend is declared here (assigned once the KVM connector
+	// and optional LXD backend are built below) so the runner's VMSource
+	// / XML / snapshot / export closures see the FINAL combined backend:
+	// containers from LXD are backed up via their native export stream.
+	var computeBackend compute.Backend
+	backupStore, err := backupstore.New(cfg.DataDir)
+	if err != nil {
+		logger.Error("backupstore_init_failed", "err", err)
+		os.Exit(1)
+	}
+	backupRunner := backupstore.NewRunnerWithConfig(
+		backupStore,
+		cfg.DataDir,
+		func() backupstore.BackupConfig {
+			return backupstore.BackupConfig{
+				MaxFileSizeMB: settingsStore.GetInt("backup.max_file_size_mb"),
+				VerifyOnWrite: settingsStore.GetBool("backup.verify_on_write"),
+			}
+		},
+		// VMSource lets the runner honour per-target VMFilter
+		// (all / include / exclude) and per-target VMIDs at
+		// backup time. A failure here aborts the run rather
+		// than silently writing an empty archive. The combined
+		// backend merges KVM VMs and LXD containers (v1.4).
+		func() ([]models.VM, error) { return computeBackend.ListDomains() },
+		// VMXMLSource returns the libvirt <domain> XML for
+		// each in-scope VM, used to populate domain.xml in
+		// the per-VM archive. Without this the per-VM tars
+		// would be missing the XML and a restore would be
+		// incomplete. main.go is the only production caller;
+		// tests can pass nil.
+		func(id string) (string, error) { return computeBackend.GetDomainXML(id) },
+		// VMSnapshotSource returns snapshot metadata and
+		// overlay volumes for each in-scope VM, used to
+		// populate the snapshots/ entries in the per-VM
+		// archive. Optional; nil skips snapshot data.
+		func(id string) ([]backupstore.SnapshotBackup, error) {
+			return computeBackend.ExportSnapshots(id)
+		},
+		// VMExportSource streams the native LXD export for
+		// containers straight into the per-VM archive
+		// (io.Copy from /1.0/instances/<name>/export — no
+		// double buffering). KVM VMs never take this path.
+		func(ctx context.Context, vm models.VM, w io.Writer) (int64, error) {
+			if vm.Hypervisor != "incus" {
+				return 0, fmt.Errorf("instance %q is not an LXD container", vm.ID)
+			}
+			res, xerr := computeBackend.ExportDomain(ctx, vm.ID, compute.ExportBackupOptions{Compress: "gzip"}, w)
+			return res.TotalBytes, xerr
+		},
+		logger,
+	)
+	go backupRunner.Start(eventCtx)
+	logger.Info("backupstore_loaded", "targets", len(backupStore.ListTargets()), "schedules", len(backupStore.ListSchedules()))
+	// V13-BCK-03: retention janitor — a dedicated 6h goroutine, decoupled
+	// from the cron ticker that fires backup jobs. A failing target is
+	// logged and skipped; it never aborts the cycle.
+	backupstore.StartRetentionJanitor(eventCtx, 6*time.Hour, backupStore, logger)
+	logger.Info("retention_janitor_started", "interval", "6h")
+
+	// Metrics collector: 5s sampling, in-memory ring buffer per VM.
+	metrics := libvirt.NewMetricsCollector(lv, hub)
+	go metrics.Run(eventCtx)
+
+	// V13-C-03/04: metric history (bucketed time series -> JSONL files)
+	// and the alert state machine. The collector feeds both via its sink;
+	// the history store flushes completed buckets to disk every minute.
+	metricHist := metrics2.NewTimeSeriesStore(cfg.DataDir)
+	if mErr := metricHist.Load(); mErr != nil {
+		logger.Warn("metrics_history_load_failed", "err", mErr)
+	}
+	go metricHist.Run(eventCtx)
+
+	// Host metrics collector: 5s sampling, in-memory ring buffer.
+	hostMetrics := libvirt.NewHostMetricsCollector(hub)
+	go hostMetrics.Run(eventCtx)
+
+	// Notification/alert subsystem. The notifier stores its secrets
+	// in {dataDir}/notify-secrets.json (0600), kept separate from the
+	// config backup. Defaults: alerts disabled until the operator
+	// enables a channel.
+	notifier, nerr := notify.New(cfg.DataDir, notify.Config{
+		Enabled:          false,
+		CheckIntervalSec: 60,
+	}, logger)
+	if nerr != nil {
+		logger.Warn("notify_init_failed", "err", nerr)
+	} else {
+		// Alert engine: evaluates VM downtime, low disk and backup
+		// failures on an interval. Sources wired to live runtime
+		// state; a nil notifier or failed init just disables alerts.
+		sources := notify.Sources{
+			VMState: func() (map[string]bool, error) {
+				out := map[string]bool{}
+				if lv == nil {
+					return out, nil
+				}
+				vms, err := lv.ListDomains()
+				if err != nil {
+					return nil, err
+				}
+				for _, vm := range vms {
+					// Only VMs flagged to autostart count as
+					// "unexpectedly down" — reporting every stopped VM
+					// meant a machine deliberately shut off fired a
+					// warning on every evaluation tick, which is noise
+					// that trains operators to ignore the channel.
+					// A VM the admin asked to come up on boot but that
+					// isn't running is a genuine incident.
+					autostart, aerr := lv.GetDomainAutostart(vm.ID)
+					if aerr != nil || !autostart {
+						continue
+					}
+					out[vm.Name] = vm.State == models.VMStateRunning
+				}
+				return out, nil
+			},
+			DiskFreePercent: func() (int, error) {
+				var st syscall.Statfs_t
+				if err := syscall.Statfs(cfg.DataDir, &st); err != nil {
+					return 0, err
+				}
+				total := st.Blocks * uint64(st.Bsize)
+				if total == 0 {
+					return 100, nil
+				}
+				free := st.Bavail * uint64(st.Bsize)
+				return int(free * 100 / total), nil
+			},
+			LastBackupResult: func() map[string]string {
+				out := map[string]string{}
+				for _, j := range backupStore.ListJobs(5) {
+					if _, ok := out[j.TargetID]; ok {
+						continue
+					}
+					out[j.TargetID] = j.Status
+				}
+				return out
+			},
+		}
+		engine := notify.NewEngine(notifier, sources, time.Duration(60)*time.Second, time.Hour, logger)
+		go engine.Run(eventCtx)
+		logger.Info("notify_ready")
+	}
+
+	// V13-C-04: metric alert state machine (PENDING -> FIRING with
+	// cooldown). Fed by the collector sink, evaluates every sample.
+	alerter := metrics2.NewAlertEngine(cfg.DataDir, notifier, hub)
+	if aErr := alerter.Load(); aErr != nil {
+		logger.Warn("alerts_load_failed", "err", aErr)
+	}
+	metrics.SetSink(func(vmID string, at time.Time, m models.VMMetrics) {
+		metricHist.Record(vmID, at, m)
+		alerter.Evaluate(vmID, at, m)
+	})
+
+	// Firewall subsystem: per-VM rules + port forwards via nftables.
+	// Rules are rebuilt and applied at startup so they survive service
+	// restarts. Failures are logged but never fatal — the backend still
+	// serves; the operator sees the error via the UI.
+	fwStore := firewall.NewStore(cfg.DataDir)
+	if ferr := fwStore.Load(); ferr != nil {
+		logger.Warn("firewall_load_failed", "err", ferr)
+	}
+	var ipResolver firewall.IPResolver
+	if lv != nil {
+		ipResolver = lv.GetDomainIP
+	}
+	fwMgr := firewall.NewManager(fwStore, ipResolver, cfg.Port, logger)
+	// V13-C-01: host firewall store + Safe Apply. The confirmed host
+	// ruleset is loaded and applied at startup so it survives restarts
+	// and never drifts.
+	fwHostStore := firewall.NewHostStore(cfg.DataDir)
+	if ferr := fwHostStore.Load(); ferr != nil {
+		logger.Warn("firewall_host_load_failed", "err", ferr)
+	}
+	fwMgr.SetHostStore(fwHostStore)
+	// Safe-Apply window follows the firewall.confirm_window_secs
+	// setting live (clamped server-side even though the schema
+	// validates the range too).
+	fwMgr.SetConfirmWindowProvider(func() time.Duration {
+		secs := settingsStore.GetInt("firewall.confirm_window_secs")
+		if secs < 10 || secs > 300 {
+			secs = 30
+		}
+		return time.Duration(secs) * time.Second
+	})
+
+	// Networking (nat/isolated/direct): persisted record of which kind
+	// each WebKVM-created bridge is, and the wiring so a "nat" bridge's
+	// masquerade rule is rendered by the firewall package from that
+	// store (kernel state alone can't tell "isolated" apart from "nat
+	// with the rule removed by hand").
+	netStore, nerr := netstore.Open(cfg.DataDir)
+	if nerr != nil {
+		logger.Warn("netstore_load_failed", "err", nerr)
+		netStore = nil
+	}
+	libvirt.SetNetStore(netStore)
+	libvirt.SetNATChecker(firewall.HasNATRuleForBridge)
+	libvirt.SetFirewallReapply(func() error {
+		_, err := fwMgr.Apply()
+		return err
+	})
+	if netStore != nil {
+		fwMgr.SetNATProvider(func() []firewall.NATBridge {
+			var out []firewall.NATBridge
+			for _, rec := range netStore.All() {
+				if rec.Kind == "nat" && rec.CIDR != "" {
+					out = append(out, firewall.NATBridge{Name: rec.Name, CIDR: rec.CIDR})
+				}
+			}
+			return out
+		})
+	}
+
+	if _, ferr := fwMgr.Apply(); ferr != nil {
+		logger.Warn("firewall_apply_failed", "err", ferr)
+	} else {
+		logger.Info("firewall_ready")
+	}
+
+	// VM power scheduler: automatic start/stop via cron. Schedules
+	// are re-registered at startup.
+	vmSchedStore := vmsched.NewStore(cfg.DataDir)
+	if serr := vmSchedStore.Load(); serr != nil {
+		logger.Warn("vmsched_load_failed", "err", serr)
+	}
+	vmScheduler := vmsched.NewScheduler(vmSchedStore, func(vmID, action string) error {
+		if lv == nil {
+			return fmt.Errorf("libvirt not connected")
+		}
+		switch action {
+		case "start":
+			return lv.StartDomain(vmID)
+		case "stop":
+			return lv.ShutdownDomain(vmID)
+		}
+		return fmt.Errorf("unknown action %q", action)
+	}, func(vmID string, maxKeep int) error {
+		if lv == nil {
+			return fmt.Errorf("libvirt not connected")
+		}
+		snapName := "auto-" + time.Now().Format("20060102-150405")
+		_, err := lv.CreateSnapshot(vmID, models.CreateSnapshotRequest{
+			Name:        snapName,
+			Description: "Automated snapshot by scheduler",
+		})
+		if err != nil {
+			return err
+		}
+		if maxKeep > 0 {
+			snaps, err := lv.ListSnapshots(vmID)
+			if err == nil {
+				var autoSnaps []models.Snapshot
+				for _, s := range snaps {
+					if strings.HasPrefix(s.Name, "auto-") {
+						autoSnaps = append(autoSnaps, s)
+					}
+				}
+				sort.Slice(autoSnaps, func(i, j int) bool {
+					return autoSnaps[i].CreationTime < autoSnaps[j].CreationTime
+				})
+				if len(autoSnaps) > maxKeep {
+					toDelete := len(autoSnaps) - maxKeep
+					for i := 0; i < toDelete; i++ {
+						_, _ = lv.DeleteSnapshot(vmID, autoSnaps[i].Name)
+					}
+				}
+			}
+		}
+		return nil
+	}, logger)
+	vmScheduler.Start()
+	logger.Info("vmsched_ready")
+
+	// V1.4-Fase 0: the ComputeBackend seam. KVM is the only backend; the
+	// adapter wraps the existing connector so api handlers never touch
+	// libvirt types. Bind the managed-bridge/network predicates too.
+	computeBackend = compute.NewKVMBackend(lv)
+	compute.BindHelpers(libvirt.IsManagedBridge, libvirt.IsManagedNetwork)
+
+	// V1.4-Fase 1: optional LXD container backend. Fail-safe: when
+	// disabled or when the daemon socket is unreachable, the backend
+	// degrades to KVM-only with zero regression.
+	// v2.4: the backend uses ONE network model — real OS-level Linux
+	// bridges (vmbr0, vmbr1, …). No libvirt network-name resolver is
+	// needed: the network IS the bridge. A per-container metrics collector
+	// shares the KVM sink.
+	var incusMetrics *incus.MetricsCollector
+	if cfg.IncusEnabled {
+		incusSocket := cfg.IncusSocket
+		if incusBackend, lerr := incus.NewIncusBackend(incusSocket); lerr != nil {
+			logger.Warn("incus_disabled", "err", lerr, "socket", incusSocket)
+		} else {
+			computeBackend = compute.NewCombined(computeBackend, incusBackend)
+			logger.Info("incus_connected", "socket", incusSocket, "server_version", mustContainerVersion(incusBackend))
+			// Container metrics feed the same history store + alert
+			// engine as KVM, so charts and alerts just work for LXC.
+			incusMetrics = incusBackend.NewMetricsCollector(hub)
+			go incusMetrics.Run(eventCtx)
+			incusMetrics.SetSink(func(vmID string, at time.Time, m models.VMMetrics) {
+				metricHist.Record(vmID, at, m)
+				alerter.Evaluate(vmID, at, m)
+			})
+			// Ensure dedicated Incus container pool exists.
+			if err := incusBackend.EnsureIncusPool(context.Background(), cfg); err != nil {
+				logger.Warn("incus_pool_ensure_failed", "err", err)
+			}
+		}
+	}
+
+	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter, incusMetrics)
+
+	srv := &http.Server{
+		Addr:    net.JoinHostPort(cfg.BindAddr, fmt.Sprintf("%d", cfg.Port)),
+		Handler: router,
+		// ReadHeaderTimeout caps how long the client may take to send
+		// the request headers (slowloris protection). 30s is
+		// generous for browsers and proxies on a LAN.
+		ReadHeaderTimeout: 30 * time.Second,
+		// WriteTimeout is the upper bound for the full request →
+		// response cycle. We allow 30 minutes so a 5 GB import
+		// (upload + extract + libvirt define) can finish without
+		// the server preemptively closing the connection. There is
+		// no ReadTimeout set, so the client can take as long as it
+		// needs for the request body (the actual upload).
+		WriteTimeout: 30 * time.Minute,
+		// IdleTimeout kills keep-alive sockets that go silent for
+		// too long; protects against leaked goroutines on dropped
+		// clients.
+		IdleTimeout: 120 * time.Second,
+	}
+	if tlsConfig != nil {
+		srv.TLSConfig = tlsConfig
+	}
+
+	// Connection-level hardening.
+	//
+	// net/http logs one line per failed TLS handshake. A client that
+	// rejects our certificate and retries without backoff (a browser
+	// left open on a self-signed cert does exactly this, at ~80
+	// attempts/second) therefore turns an unauthenticated peer into an
+	// unbounded log writer — measured at ~2 GB of journal per day, with
+	// the process pinned at 25% CPU. Collapse repeats into a periodic
+	// summary so the signal survives but the volume does not.
+	tlsErrLog := netguard.NewAggregatingWriter(nil, func(msg string, count int, first, last time.Time) {
+		logger.Warn("listener_errors_suppressed",
+			"sample", msg,
+			"suppressed", count,
+			"window_s", int(last.Sub(first).Seconds()),
+		)
+	}, netguard.DefaultFlushInterval)
+	defer tlsErrLog.Close()
+	srv.ErrorLog = netguard.NewErrorLog(tlsErrLog)
+
+	// Suppressing the log bounds disk use but not CPU: the handshake is
+	// already paid for by the time anything is logged. The cooldown
+	// refuses a looping peer at accept() time, before any crypto runs,
+	// which is what actually reclaims the CPU. A client that trusts the
+	// certificate never fails a handshake and so can never be throttled.
+	handshakeCooldown := netguard.NewCooldown(netguard.DefaultFailureThreshold, netguard.DefaultCooldown)
+	handshakeCooldown.OnTrip = func(ip string, failures int, until time.Time) {
+		logger.Warn("tls_handshake_cooldown",
+			"peer", ip,
+			"failures", failures,
+			"until", until.Format(time.RFC3339),
+			"hint", "peer is rejecting the server certificate in a retry loop; trust /api/system/cert on that host",
+		)
+	}
+	tlsErrLog.Observer = handshakeCooldown.Observe
+	// Drop expired entries so a scan from many distinct source IPs
+	// cannot grow the tracking map without bound.
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-eventCtx.Done():
+				return
+			case <-t.C:
+				handshakeCooldown.Sweep()
+			}
+		}
+	}()
+
+	go func() {
+		logger.Info("server_starting",
+			"addr", srv.Addr,
+			"data_dir", cfg.DataDir,
+			"public_host", cfg.PublicHost,
+			"tls_mode", string(tlsMode),
+			"per_ip_conn_limit", netguard.DefaultPerIPLimit,
+		)
+
+		ln, lerr := net.Listen("tcp", srv.Addr)
+		if lerr != nil {
+			logger.Error("server_failed", "err", lerr)
+			os.Exit(1)
+		}
+		// Cap simultaneous connections per source IP so one runaway
+		// client cannot exhaust file descriptors or crowd out other
+		// users. The cap is per IP, not global: a single global limit
+		// would let one abusive peer deny service to everyone.
+		limited := netguard.NewLimitListener(ln, netguard.DefaultPerIPLimit)
+		limited.Cooldown = handshakeCooldown
+		// Loopback and trusted reverse proxies carry every user's
+		// traffic from a single IP; capping them would make SSE and
+		// console streams starve everyone behind the proxy (502s).
+		limited.Exempt = perIPLimitExempt(settingsStore)
+		limited.OnReject = func(ip string, active int) {
+			// Routed through the same aggregator: a peer hitting the
+			// cap is by definition looping, so per-event logging here
+			// would recreate the amplification we just fixed.
+			fmt.Fprintf(tlsErrLog, "conn limit reached for %s: %d active\n", ip, active)
+		}
+
+		var serveErr error
+		if tlsConfig != nil {
+			// With TLSConfig.GetCertificate or Certificates set, the
+			// certificate is resolved from the config, not from disk,
+			// so ServeTLS needs no file arguments.
+			serveErr = srv.ServeTLS(limited, "", "")
+		} else {
+			serveErr = srv.Serve(limited)
+		}
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			logger.Error("server_failed", "err", serveErr)
+			os.Exit(1)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	// SIGHUP is intentionally ignored. The service unit uses it for
+	// `systemctl reload`, and the config is loaded once at startup
+	// (not re-read), so there is nothing to do. Without this, Go's
+	// default behavior would exit on SIGHUP, which combined with
+	// Restart=always would make every reload silently restart the
+	// process.
+	signal.Ignore(syscall.SIGHUP)
+	<-quit
+
+	logger.Info("shutting_down")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Stop the background collectors FIRST, and persist what they hold.
+	//
+	// cancelEvents used to be a bare `defer` at the top of main, so it
+	// fired as the process was already exiting: TimeSeriesStore.Run
+	// reacted by flushing the whole fleet's metrics, but nothing ever
+	// waited for that write to finish. Up to a full minute of history
+	// for every VM was lost on every restart and every upgrade.
+	cancelEvents()
+	metricHist.FlushAndWait()
+
+	// Release the auth Manager's background GC goroutine (token blacklist).
+	authMgr.Close()
+
+	// Disconnect SSE clients BEFORE waiting on the server.
+	//
+	// srv.Shutdown waits for in-flight requests to return, and an SSE
+	// stream never returns on its own — /api/events blocks until the
+	// client disconnects or its channel closes. With a browser tab open
+	// on the UI, every single shutdown therefore burned the full 10s
+	// timeout and exited 1, which systemd logged as
+	// "webkvm.service: Failed with result 'exit-code'" on every restart
+	// and upgrade. Closing the hub ends those handlers immediately, so
+	// Shutdown completes in milliseconds and the exit status is clean.
+	hub.Close()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Error("forced_shutdown", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("server_stopped")
+}
+
+// retryLibvirtConnect attempts to establish the libvirt connection in the
+// background with exponential backoff (10s → 20s → 40s → 60s cap). Once
+// connected it runs EnsureDefaults, stale-import cleanup, and CIFS secret
+// loading — the same initialisation the main path performs when the initial
+// lv.Open() succeeds. Stops when ctx is cancelled (server shutdown).
+func retryLibvirtConnect(ctx context.Context, logger *slog.Logger, lv *libvirt.Connector, cfg *config.Config) {
+	backoff := 10 * time.Second
+	maxBackoff := 60 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+			if err := lv.Open(); err != nil {
+				logger.Warn("libvirt_retry_failed", "backoff", backoff.String(), "err", err)
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
+			}
+			logger.Info("libvirt_reconnected", "uri", cfg.LibvirtURI)
+			lv.EnsureDefaults()
+
+			stats, err := lv.CleanupStaleImports(1 * time.Hour)
+			if err != nil {
+				logger.Warn("stale_import_cleanup_failed", "err", err)
+			} else if stats.TmpFiles > 0 || stats.OvaDirs > 0 {
+				logger.Info("janitor_cleanup_done",
+					"tmp_files", stats.TmpFiles,
+					"ova_dirs", stats.OvaDirs,
+					"bytes_freed", stats.BytesFree,
+					"mb_freed", stats.BytesFree/1024/1024)
+			}
+			if err := libvirt.LoadCIFSSecrets(lv); err != nil {
+				logger.Warn("cifs_secrets_load_failed", "err", err.Error())
+			}
+			if err := libvirt.VerifyCIFSSecretsConsistency(ctx, lv); err != nil {
+				logger.Warn("cifs_secrets_inconsistent", "err", err.Error())
+			}
+			return
+		}
+	}
+}
+
+// perIPLimitExempt returns the netguard exemption for the per-IP
+// connection cap: loopback, WEBKVM_TRUSTED_PROXY_CIDRS (the same env
+// list the request/audit logger trusts for X-Forwarded-For) and the
+// live server.trusted_cidrs setting.
+func perIPLimitExempt(settings interface{ GetList(string) []string }) func(string) bool {
+	envCIDRs := parseCIDRList(strings.Split(os.Getenv("WEBKVM_TRUSTED_PROXY_CIDRS"), ","))
+	return func(host string) bool {
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return false
+		}
+		if ip.IsLoopback() {
+			return true
+		}
+		for _, n := range envCIDRs {
+			if n.Contains(ip) {
+				return true
+			}
+		}
+		if settings != nil {
+			for _, n := range parseCIDRList(settings.GetList("server.trusted_cidrs")) {
+				if n.Contains(ip) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+}
+
+func parseCIDRList(items []string) []*net.IPNet {
+	var out []*net.IPNet
+	for _, c := range items {
+		if _, n, err := net.ParseCIDR(strings.TrimSpace(c)); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}

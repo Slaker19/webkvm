@@ -1,0 +1,86 @@
+# nfpm packaging for WebKVM (DEB) — built from one file per format
+# because nfpm v2 overrides do not accept version/release.
+#
+#   make deb   (VERSION=0.0.1 -> mapping below)
+#
+# Version mapping (git tag stays v0.0.1):
+#   deb: 0.0.1   (no prerelease suffix, no tilde needed)
+name: webkvm
+arch: amd64
+platform: linux
+version: ${VERSION_DEB}
+section: admin
+priority: optional
+maintainer: WebKVM <Slaker19@users.noreply.github.com>
+description: |-
+  WebKVM — native libvirt+QEMU/KVM manager (Go backend + embedded Svelte UI).
+  Single binary serving VMs, containers (Incus), storage, networks, backups
+  and nftables firewall from one HTTPS UI. Runs as a systemd service.
+vendor: WebKVM
+homepage: https://github.com/Slaker19/webkvm
+license: SEE LICENSE IN LICENSE
+contents:
+  - src: ./backend/webkvm
+    dst: /usr/local/bin/webkvm
+    file_info: { mode: 0755 }
+  - src: ./backend/webkvm-cli
+    dst: /usr/local/bin/webkvm-cli
+    file_info: { mode: 0755 }
+  - src: ./scripts/webkvm.service
+    dst: /etc/systemd/system/webkvm.service
+    file_info: { mode: 0644 }
+  - src: ./packaging/nfpm/webkvm.default
+    dst: /etc/default/webkvm
+    type: config
+    file_info: { mode: 0644 }
+  # Host-networking helper referenced by the postinstall checklist.
+  # Explicit user action only (sudo .../setup-network.sh) — the package
+  # NEVER runs it automatically (reconfiguring host networking
+  # unattended could drop the machine's connectivity).
+  - src: ./scripts/setup-network.sh
+    dst: /usr/share/webkvm/setup-network.sh
+    file_info: { mode: 0755 }
+  - src: ./LICENSE
+    dst: /usr/share/doc/webkvm/LICENSE
+    file_info: { mode: 0644 }
+  - src: ./CHANGELOG.md
+    dst: /usr/share/doc/webkvm/CHANGELOG.md
+    file_info: { mode: 0644 }
+scripts:
+  postinstall: ./packaging/nfpm/postinstall.sh
+  preremove: ./packaging/nfpm/preremove.sh
+  postremove: ./packaging/nfpm/postremove.sh
+depends:
+  - ca-certificates
+  - curl
+  - openssl
+  - python3
+  - iproute2
+  - procps
+  - util-linux
+  - tar
+  - zstd
+  - xz-utils
+  - libvirt-daemon-system
+  - libvirt-clients
+  - qemu-system-x86
+  - qemu-utils
+  - ovmf
+  - swtpm
+  - swtpm-tools
+  - dnsmasq-base
+  - bridge-utils
+  - virtinst
+  - nftables
+  - iptables
+  - nfs-common
+  - cifs-utils
+  - smbclient
+  - gdisk
+  - parted
+  - e2fsprogs
+  - xfsprogs
+  - btrfs-progs
+  - f2fs-tools
+recommends:
+  - incus

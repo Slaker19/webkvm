@@ -1,0 +1,17 @@
+# webkvm-bin.install — systemd hooks + first-boot notes.
+post_install() {
+  echo "==> webkvm installed."
+  echo "    Data dir /opt/webkvm is created on first start; the admin password"
+  echo "    (if generated) lands in /opt/webkvm/admin-password.initial."
+  echo "    UI: https://<this-host>:8080 — enable+start with:"
+  echo "      systemctl enable --now webkvm.service"
+  echo "    Optional container backend: pacman -S incus && WEBKVM_INCUS_ENABLED=1"
+}
+
+post_upgrade() {
+  post_install
+}
+
+pre_remove() {
+  systemctl disable --now webkvm.service 2>/dev/null || true
+}

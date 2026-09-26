@@ -1,0 +1,195 @@
+/**
+ * Frontend SSE event store.
+ *
+ * Connects to the backend's /api/events endpoint via EventSource and
+ * dispatches incoming events to registered listeners.
+ *
+ * Auth (V13-SEC-01): the session rides an HttpOnly cookie, so a
+ * same-origin EventSource authenticates automatically — no ticket
+ * exchange, no token in a URL. (The backend still supports single-use
+ * ?ticket= for non-browser clients; the SPA no longer needs it.)
+ *
+ * Reconnect policy: exponential backoff starting at 1s, doubling up to
+ * 30s, reset on successful open. A `reconnecting` state is exposed so
+ * the UI can show a "reconnecting…" pill.
+ *
+ * Usage:
+ *   import { events } from '$lib/stores/events.svelte.js';
+ *
+ *   // In a component:
+ *   $effect(() => {
+ *     const off = events.onVmState((e) => { ... });
+ *     return off;
+ *   });
+ */
+
+import { auth } from './auth.svelte.js';
+import { browser } from '$lib/utils/browser.js';
+
+const MIN_RECONNECT_MS = 1000;
+const MAX_RECONNECT_MS = 30000;
+const MAX_RECONNECT_ATTEMPTS = 0; // 0 = unlimited
+
+class EventsStore {
+  connected = $state(false);
+  reconnecting = $state(false);
+  reconnectAttempts = $state(0);
+  lastError = $state(null);
+
+  constructor() {
+    this._es = null;
+    this._vmStateListeners = new Set();
+    this._removedListeners = new Set();
+    this._metricsListeners = new Set();
+    this._hostMetricsListeners = new Set();
+    this._reconnectTimer = null;
+  }
+
+  connect() {
+    if (!browser) return;
+    if (!auth.isLoggedIn) return;
+    if (this._es || this._reconnectTimer) return;
+    this._open();
+  }
+
+  _open() {
+    // Close whatever handle we already hold before creating a new one.
+    // _open used to assign this._es unconditionally, so every
+    // error -> _scheduleReconnect -> _open cycle abandoned a still-open
+    // EventSource: the old connection kept its TCP/TLS socket and its
+    // server-side handler alive. Browsers cap concurrent connections
+    // per origin (6 in Chrome), so after a few network blips or one
+    // backend restart, NEW requests to the API stop being sent entirely
+    // — the whole UI appears frozen, and reloading is the only cure.
+    if (this._es) {
+      this._es.close();
+      this._es = null;
+    }
+    const es = new EventSource('/api/events');
+    this._es = es;
+
+    es.addEventListener('open', () => {
+      this.connected = true;
+      this.reconnecting = false;
+      this.reconnectAttempts = 0;
+      this.lastError = null;
+    });
+
+    es.addEventListener('connected', () => {
+      this.connected = true;
+    });
+
+    es.addEventListener('vm.state', (e) => {
+      this._dispatch('vmState', e, this._vmStateListeners);
+    });
+
+    es.addEventListener('vm.removed', (e) => {
+      this._dispatch('vmRemoved', e, this._removedListeners);
+    });
+
+    es.addEventListener('vm.metrics', (e) => {
+      this._dispatch('vmMetrics', e, this._metricsListeners);
+    });
+
+    es.addEventListener('host.metrics', (e) => {
+      this._dispatch('hostMetrics', e, this._hostMetricsListeners);
+    });
+
+    es.addEventListener('error', () => {
+      this.connected = false;
+      // If the session is gone, stop reconnecting entirely.
+      if (!auth.isLoggedIn) {
+        this._disconnect();
+        return;
+      }
+      this._scheduleReconnect();
+    });
+  }
+
+  _dispatch(name, e, set) {
+    try {
+      const data = JSON.parse(e.data);
+      for (const fn of set) {
+        try {
+          fn(data);
+        } catch (err) {
+          console.error(`${name} listener error:`, err);
+        }
+      }
+    } catch (err) {
+      console.error(`Failed to parse ${name} event:`, err);
+    }
+  }
+
+  _scheduleReconnect() {
+    if (this._reconnectTimer) return;
+    if (MAX_RECONNECT_ATTEMPTS > 0 && this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      this.lastError = 'giving up after ' + MAX_RECONNECT_ATTEMPTS + ' attempts';
+      this.reconnecting = false;
+      return;
+    }
+    this.reconnecting = true;
+    this.reconnectAttempts += 1;
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s, ...
+    const delay = Math.min(
+      MIN_RECONNECT_MS * Math.pow(2, Math.max(0, this.reconnectAttempts - 1)),
+      MAX_RECONNECT_MS
+    );
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      if (auth.isLoggedIn) this._open();
+    }, delay);
+  }
+
+  _disconnect() {
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    if (this._es) {
+      this._es.close();
+      this._es = null;
+    }
+    this.connected = false;
+    this.reconnecting = false;
+  }
+
+  disconnect() {
+    this._disconnect();
+    this.reconnectAttempts = 0;
+  }
+
+  onVmState(fn) {
+    this._vmStateListeners.add(fn);
+    this.connect();
+    return () => {
+      this._vmStateListeners.delete(fn);
+    };
+  }
+
+  onVmRemoved(fn) {
+    this._removedListeners.add(fn);
+    this.connect();
+    return () => {
+      this._removedListeners.delete(fn);
+    };
+  }
+
+  onVmMetrics(fn) {
+    this._metricsListeners.add(fn);
+    this.connect();
+    return () => {
+      this._metricsListeners.delete(fn);
+    };
+  }
+
+  onHostMetrics(fn) {
+    this._hostMetricsListeners.add(fn);
+    this.connect();
+    return () => {
+      this._hostMetricsListeners.delete(fn);
+    };
+  }
+}
+
+export const events = new EventsStore();

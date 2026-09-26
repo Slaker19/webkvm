@@ -1,0 +1,582 @@
+package compute
+
+import (
+	"archive/tar"
+	"bufio"
+	"compress/gzip"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"sync"
+
+	"github.com/klauspost/compress/zstd"
+
+	"webkvm/internal/backupstore"
+	"webkvm/internal/models"
+)
+
+// Combined is a compute.Backend that runs a PRIMARY backend (KVM) plus
+// an optional SECONDARY backend (LXD) side by side (v1.4 Fase 1). The
+// read path (ListDomains, GetDomain) merges both; every instance-scoped
+// operation is ROUTED to the backend that owns the instance, so a
+// container operation lands on the LXD backend (returning
+// ErrNotImplemented → 501 until implemented) instead of leaking a
+// primary "domain not found".
+//
+// The secondary is never a hard dependency: if LXD is unreachable the
+// caller simply wires Combined{primary} and behaviour is identical to
+// KVM-only.
+type Combined struct {
+	Backend   // embedded interface: non-instance ops delegate to primary
+	secondary Backend
+
+	mu     sync.Mutex
+	owners map[string]Backend // instance id -> owning backend
+}
+
+// NewCombined builds the merged backend. secondary may be nil (KVM-only).
+func NewCombined(primary, secondary Backend) *Combined {
+	return &Combined{Backend: primary, secondary: secondary, owners: map[string]Backend{}}
+}
+
+// Secondary exposes the optional secondary (Incus) backend, or nil —
+// used by status/platform reporting to query the engine version
+// without adding a ServerInfo() method to the Backend interface itself.
+func (c *Combined) Secondary() Backend { return c.secondary }
+
+// remember caches which backend owns an instance.
+func (c *Combined) remember(id string, b Backend) {
+	if b == nil {
+		return
+	}
+	c.mu.Lock()
+	c.owners[id] = b
+	c.mu.Unlock()
+}
+
+// route returns the backend that owns id: a cached owner, else the
+// secondary if it can resolve the instance, else the primary.
+func (c *Combined) route(id string) Backend {
+	c.mu.Lock()
+	if b, ok := c.owners[id]; ok {
+		c.mu.Unlock()
+		return b
+	}
+	c.mu.Unlock()
+	if c.secondary != nil {
+		if _, err := c.secondary.GetDomain(id); err == nil {
+			c.remember(id, c.secondary)
+			return c.secondary
+		}
+	}
+	return c.Backend
+}
+
+// ListDomains merges the primary's instances with the secondary's. A
+// secondary failure is NON-FATAL: it must never hide KVM VMs or break
+// the list if the container daemon is down mid-flight.
+func (c *Combined) ListDomains() ([]models.VM, error) {
+	primary, err := c.Backend.ListDomains()
+	if err != nil {
+		return nil, err
+	}
+	for i := range primary {
+		c.remember(primary[i].ID, c.Backend)
+	}
+	if c.secondary == nil {
+		return primary, nil
+	}
+	extra, err := c.secondary.ListDomains()
+	if err != nil {
+		return primary, nil // degrade gracefully
+	}
+	for i := range extra {
+		c.remember(extra[i].ID, c.secondary)
+	}
+	return append(primary, extra...), nil
+}
+
+// GetDomain searches the primary first, then the secondary.
+func (c *Combined) GetDomain(id string) (models.VM, error) {
+	vm, err := c.Backend.GetDomain(id)
+	if err == nil {
+		c.remember(id, c.Backend)
+		return vm, nil
+	}
+	if c.secondary == nil {
+		return vm, err
+	}
+	extra, lerr := c.secondary.GetDomain(id)
+	if lerr == nil {
+		c.remember(id, c.secondary)
+		return extra, nil
+	}
+	return vm, err
+}
+
+// --- Instance-scoped operations: routed to the owning backend ---
+
+// CreateDomain routes to the secondary backend when the request names
+// an LXD image (or an explicit container type) — a container has no
+// owner to route by yet. Without a secondary it is a clean 501.
+func (c *Combined) CreateDomain(req models.CreateVMRequest) (models.VM, error) {
+	if req.Image != "" || req.Type == "container" {
+		if c.secondary == nil {
+			return models.VM{}, ErrNotImplemented
+		}
+		vm, err := c.secondary.CreateDomain(req)
+		if err == nil {
+			c.remember(vm.ID, c.secondary)
+		}
+		return vm, err
+	}
+	return c.Backend.CreateDomain(req)
+}
+
+func (c *Combined) DomainExists(name string) (bool, error) {
+	return c.route(name).DomainExists(name)
+}
+func (c *Combined) UpdateDomain(id string, req models.UpdateVMRequest) (models.VM, error) {
+	return c.route(id).UpdateDomain(id, req)
+}
+func (c *Combined) DeleteDomain(id string) error { return c.route(id).DeleteDomain(id) }
+func (c *Combined) CloneDomain(id string, req models.CloneVMRequest) (models.VM, error) {
+	return c.route(id).CloneDomain(id, req)
+}
+func (c *Combined) StartDomain(id string) error    { return c.route(id).StartDomain(id) }
+func (c *Combined) ShutdownDomain(id string) error { return c.route(id).ShutdownDomain(id) }
+func (c *Combined) ForceOffDomain(id string) error { return c.route(id).ForceOffDomain(id) }
+func (c *Combined) RebootDomain(id string) error   { return c.route(id).RebootDomain(id) }
+func (c *Combined) SuspendDomain(id string) error  { return c.route(id).SuspendDomain(id) }
+func (c *Combined) ResumeDomain(id string) error   { return c.route(id).ResumeDomain(id) }
+func (c *Combined) SetDomainAutostart(id string, enabled bool) error {
+	return c.route(id).SetDomainAutostart(id, enabled)
+}
+func (c *Combined) GetDomainAutostart(id string) (bool, error) {
+	return c.route(id).GetDomainAutostart(id)
+}
+func (c *Combined) SetBootDevice(id string, device string) error {
+	return c.route(id).SetBootDevice(id, device)
+}
+func (c *Combined) GetBootDevice(id string) (string, error) {
+	return c.route(id).GetBootDevice(id)
+}
+func (c *Combined) ValidateDomainDisks(id string) error {
+	return c.route(id).ValidateDomainDisks(id)
+}
+func (c *Combined) GetDomainLog(id string, lines int) (string, error) {
+	return c.route(id).GetDomainLog(id, lines)
+}
+
+func (c *Combined) AttachDisk(id string, req models.AttachDiskRequest) error {
+	return c.route(id).AttachDisk(id, req)
+}
+func (c *Combined) DetachDisk(id, target string) error { return c.route(id).DetachDisk(id, target) }
+func (c *Combined) ChangeDiskBus(id, target, newBus string) error {
+	return c.route(id).ChangeDiskBus(id, target, newBus)
+}
+func (c *Combined) UpdateDiskSource(id, target, source string) error {
+	return c.route(id).UpdateDiskSource(id, target, source)
+}
+func (c *Combined) ResizeDomainDisk(ctx context.Context, id, target string, newSizeGB int64) (int64, error) {
+	return c.route(id).ResizeDomainDisk(ctx, id, target, newSizeGB)
+}
+func (c *Combined) RunCloudInitReprovision(id string) error {
+	return c.route(id).RunCloudInitReprovision(id)
+}
+func (c *Combined) AttachNetworkIface(id string, req models.AttachNetRequest) error {
+	return c.route(id).AttachNetworkIface(id, req)
+}
+func (c *Combined) DetachNetworkIface(id, mac string) error {
+	return c.route(id).DetachNetworkIface(id, mac)
+}
+func (c *Combined) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIfaceRequest) error {
+	return c.route(id).UpdateNetworkIface(id, oldMAC, req)
+}
+func (c *Combined) AttachUSBDevice(id, vendorID, productID string) error {
+	return c.route(id).AttachUSBDevice(id, vendorID, productID)
+}
+func (c *Combined) DetachUSBDevice(id, vendorID, productID string) error {
+	return c.route(id).DetachUSBDevice(id, vendorID, productID)
+}
+func (c *Combined) AttachPCIDevice(id string, addresses []string) error {
+	return c.route(id).AttachPCIDevice(id, addresses)
+}
+func (c *Combined) DetachPCIDevice(id, address string) error {
+	return c.route(id).DetachPCIDevice(id, address)
+}
+func (c *Combined) AttachSharedFolder(id, hostPath, tag string, readOnly bool) error {
+	return c.route(id).AttachSharedFolder(id, hostPath, tag, readOnly)
+}
+func (c *Combined) DetachSharedFolder(id, tag string) error {
+	return c.route(id).DetachSharedFolder(id, tag)
+}
+
+// ListHostPCIDevices is intentionally NOT overridden here: it's a
+// host-level enumeration (not scoped to any one VM/instance), so it
+// delegates through the embedded Backend to the primary (KVM) backend —
+// same reasoning as ListHostUSBDevices above it.
+
+func (c *Combined) ListSnapshots(domainID string) ([]models.Snapshot, error) {
+	return c.route(domainID).ListSnapshots(domainID)
+}
+func (c *Combined) CreateSnapshot(domainID string, req models.CreateSnapshotRequest) (models.Snapshot, error) {
+	return c.route(domainID).CreateSnapshot(domainID, req)
+}
+func (c *Combined) DeleteSnapshot(domainID, snapID string) (int64, error) {
+	return c.route(domainID).DeleteSnapshot(domainID, snapID)
+}
+func (c *Combined) RevertSnapshot(domainID, snapID string) error {
+	return c.route(domainID).RevertSnapshot(domainID, snapID)
+}
+func (c *Combined) ExportSnapshots(domainID string) ([]backupstore.SnapshotBackup, error) {
+	return c.route(domainID).ExportSnapshots(domainID)
+}
+
+func (c *Combined) GetVMMeta(uuid string) (models.VMMeta, error) {
+	return c.route(uuid).GetVMMeta(uuid)
+}
+func (c *Combined) SetVMMeta(uuid string, meta models.VMMeta) error {
+	return c.route(uuid).SetVMMeta(uuid, meta)
+}
+func (c *Combined) UpdateVMMeta(uuid string, upd models.VMMetaUpdate) (models.VMMeta, error) {
+	return c.route(uuid).UpdateVMMeta(uuid, upd)
+}
+func (c *Combined) GetVNCInfo(id string) (GraphicsInfo, error) {
+	return c.route(id).GetVNCInfo(id)
+}
+func (c *Combined) GetDomainIP(id string) string { return c.route(id).GetDomainIP(id) }
+func (c *Combined) GetDomainXML(id string) (string, error) {
+	return c.route(id).GetDomainXML(id)
+}
+func (c *Combined) GuestGetClipboard(id string) (string, error) {
+	return c.route(id).GuestGetClipboard(id)
+}
+func (c *Combined) GetGuestInfo(id string) (GuestInfo, error) {
+	return c.route(id).GetGuestInfo(id)
+}
+func (c *Combined) GuestSetClipboard(id, text string) error {
+	return c.route(id).GuestSetClipboard(id, text)
+}
+func (c *Combined) OpenSerialConsole(id string) (ConsoleStream, error) {
+	return c.route(id).OpenSerialConsole(id)
+}
+func (c *Combined) SetUserPassword(id, user, password string) error {
+	return c.route(id).SetUserPassword(id, user, password)
+}
+
+func (c *Combined) ExportDomain(ctx context.Context, id string, opts ExportBackupOptions, w io.Writer) (backupstore.ProducerResult, error) {
+	return c.route(id).ExportDomain(ctx, id, opts, w)
+}
+func (c *Combined) ExportDomainOVA(ctx context.Context, id string, opts OVAOptions, w io.Writer) error {
+	return c.route(id).ExportDomainOVA(ctx, id, opts, w)
+}
+func (c *Combined) EstimateExportSize(ctx context.Context, id string, compress bool) (int64, error) {
+	return c.route(id).EstimateExportSize(ctx, id, compress)
+}
+func (c *Combined) EstimateOVASize(ctx context.Context, id string, target OVATarget) (int64, error) {
+	return c.route(id).EstimateOVASize(ctx, id, target)
+}
+func (c *Combined) DeleteVMDiskFiles(vmName string, exact ...string) (deleted []string, skipped []string, err error) {
+	return c.route(vmName).DeleteVMDiskFiles(vmName, exact...)
+}
+
+func (c *Combined) ListIncusProfiles() ([]string, error) {
+	if c.secondary != nil {
+		return c.secondary.ListIncusProfiles()
+	}
+	return []string{}, nil
+}
+
+func (c *Combined) ListIncusImages() ([]models.IncusImageItem, error) {
+	if c.secondary != nil {
+		return c.secondary.ListIncusImages()
+	}
+	return []models.IncusImageItem{}, nil
+}
+
+func (c *Combined) PullIncusImage(ref string) error {
+	if c.secondary != nil {
+		return c.secondary.PullIncusImage(ref)
+	}
+	return ErrNotImplemented
+}
+
+func (c *Combined) DeleteIncusImage(fingerprint string) error {
+	if c.secondary != nil {
+		return c.secondary.DeleteIncusImage(fingerprint)
+	}
+	return ErrNotImplemented
+}
+
+// The image cache is an Incus daemon setting, so like every other
+// Incus-only call it has to reach the secondary backend: the primary
+// (libvirt) knows nothing about it.
+func (c *Combined) GetIncusImagesVolume() (string, error) {
+	if c.secondary != nil {
+		return c.secondary.GetIncusImagesVolume()
+	}
+	return "", ErrNotImplemented
+}
+
+func (c *Combined) SetIncusImagesVolume(pool, volume string) error {
+	if c.secondary != nil {
+		return c.secondary.SetIncusImagesVolume(pool, volume)
+	}
+	return ErrNotImplemented
+}
+
+func (c *Combined) ListStoragePools() ([]models.StoragePool, error) {
+	// A primary (libvirt) failure is FATAL here, mirroring ListDomains
+	// above. Swallowing it into an empty slice rendered the storage
+	// page successfully with only the Incus pools: every libvirt pool —
+	// where all VM disks, ISOs and backups live — silently vanished
+	// from the UI with no error banner, which reads as "the pools were
+	// deleted" rather than "libvirtd is down".
+	primaryPools, err := c.Backend.ListStoragePools()
+	if err != nil {
+		return nil, err
+	}
+	if c.secondary != nil {
+		if secPools, err := c.secondary.ListStoragePools(); err == nil {
+			primaryPools = append(primaryPools, secPools...)
+		}
+	}
+	// Each purpose of a disk is an independent pool with its own
+	// name (mydisk-vdi in libvirt, mydisk-containers in Incus),
+	// so same-name rows across backends no longer happen by design.
+	// The dedupe stays as a safety net: keep the first occurrence
+	// (primary wins) and drop later duplicates — a duplicate name
+	// would crash the UI's keyed lists.
+	//
+	// The result is a NEW slice: reusing primaryPools[:0] would
+	// rewrite the backing array a backend may still hold a reference
+	// to (a cached pool list would be silently corrupted).
+	seen := make(map[string]bool, len(primaryPools))
+	deduped := make([]models.StoragePool, 0, len(primaryPools))
+	for _, p := range primaryPools {
+		if seen[p.Name] {
+			continue
+		}
+		seen[p.Name] = true
+		deduped = append(deduped, p)
+	}
+	return deduped, nil
+}
+
+func (c *Combined) ListStorageVolumes(poolName string) ([]models.StorageVolume, error) {
+	// Try primary (KVM) first
+	vols, err := c.Backend.ListStorageVolumes(poolName)
+	if err == nil {
+		return vols, nil
+	}
+	// Fall back to secondary (Incus)
+	if c.secondary != nil {
+		if secVols, secErr := c.secondary.ListStorageVolumes(poolName); secErr == nil {
+			return secVols, nil
+		}
+	}
+	return nil, err
+}
+
+func (c *Combined) DeleteStorageVolume(poolName, volName string) error {
+	err := c.Backend.DeleteStorageVolume(poolName, volName)
+	if err == nil {
+		return nil
+	}
+	if c.secondary != nil {
+		if secErr := c.secondary.DeleteStorageVolume(poolName, volName); secErr == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+func (c *Combined) CreateStoragePool(ctx context.Context, req models.CreatePoolRequest) (models.StoragePool, error) {
+	if req.Purpose == PoolPurposeContainer || req.Purpose == "lxc" || strings.HasPrefix(req.Type, "incus-") || req.Type == "container" {
+		if c.secondary != nil {
+			return c.secondary.CreateStoragePool(ctx, req)
+		}
+		return models.StoragePool{}, ErrNotImplemented
+	}
+	return c.Backend.CreateStoragePool(ctx, req)
+}
+
+func (c *Combined) DeletePool(name string) error {
+	// Pools of one disk live in exactly one backend each
+	// (mydisk-vdi in libvirt, mydisk-containers in Incus). Probe
+	// each side and delete the pool wherever it actually exists, so
+	// no orphaned Incus (or libvirt) pool is left behind. Probing
+	// also keeps one-side pools working: an Incus-only pool
+	// (webkvm-incus) is never offered to the libvirt side, and a
+	// libvirt-only pool never hits Incus.
+	var firstErr error
+	deleted := false
+	probed := false
+	attempt := func(b Backend) {
+		if !c.poolLivesIn(b, name) {
+			return // pool doesn't live in this backend
+		}
+		probed = true
+		if err := b.DeletePool(name); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			return
+		}
+		deleted = true
+	}
+	attempt(c.Backend)
+	if c.secondary != nil {
+		attempt(c.secondary)
+	}
+	if deleted {
+		// One side is gone. A partial failure on the other side is
+		// still reported so the operator can retry (the deleted side
+		// then fails its probe and is skipped).
+		return firstErr
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	if !probed {
+		// No backend recognized the pool. Rather than declaring it
+		// missing, fall back to the historical blind delete: a pool
+		// can exist while being invisible to the probe (a libvirt
+		// pool with no filesystem target, an unreadable Incus
+		// config), and refusing here would make it undeletable.
+		err := c.Backend.DeletePool(name)
+		if err == nil {
+			return nil
+		}
+		if c.secondary != nil {
+			if secErr := c.secondary.DeletePool(name); secErr == nil {
+				return nil
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+// poolLivesIn reports whether the named pool belongs to this backend.
+// GetPoolPath is the probe, with one caveat it must absorb: libvirt
+// returns a real "pool has no filesystem path" error for pools whose
+// XML carries no <target><path> (lvm/zfs), and that error still means
+// the pool EXISTS here. Only a genuine lookup miss counts as absent.
+func (c *Combined) poolLivesIn(b Backend, name string) bool {
+	if _, err := b.GetPoolPath(name); err == nil {
+		return true
+	} else if strings.Contains(err.Error(), "no filesystem path") {
+		return true
+	}
+	return false
+}
+
+// MoveDomainStorage routes the move to whichever backend owns the
+// instance, then refuses the request when the destination pool belongs
+// to the other one.
+//
+// This is the guard that keeps the two storage worlds apart. A libvirt
+// VM cannot live in an Incus pool and a container cannot live in a
+// libvirt disk pool; without the check the backend would be handed a
+// pool name it has never heard of and would fail deep inside the move,
+// possibly after copying gigabytes.
+func (c *Combined) MoveDomainStorage(id, destPool string, onProgress func(pct float64, stage string)) error {
+	owner := c.route(id)
+	if !c.poolLivesIn(owner, destPool) {
+		return fmt.Errorf("%w: pool %q belongs to a different hypervisor", ErrCrossBackendMove, destPool)
+	}
+	return owner.MoveDomainStorage(id, destPool, onProgress)
+}
+
+// MoveVolume routes by pool, requiring BOTH pools to live in the same
+// backend for the same reason as above.
+func (c *Combined) MoveVolume(srcPool, volName, destPool string, opts MoveVolumeOpts) error {
+	for _, b := range c.backends() {
+		if !c.poolLivesIn(b, srcPool) {
+			continue
+		}
+		if !c.poolLivesIn(b, destPool) {
+			return fmt.Errorf("%w: %q and %q are served by different hypervisors",
+				ErrCrossBackendMove, srcPool, destPool)
+		}
+		return b.MoveVolume(srcPool, volName, destPool, opts)
+	}
+	return fmt.Errorf("storage pool %q not found", srcPool)
+}
+
+// backends lists the configured backends, primary first.
+func (c *Combined) backends() []Backend {
+	if c.secondary != nil {
+		return []Backend{c.Backend, c.secondary}
+	}
+	return []Backend{c.Backend}
+}
+
+func (c *Combined) ImportDomain(tarPath, newName, poolName string, opts ImportOpts) (string, string, []string, error) {
+	if isIncusBackupArchive(tarPath) && c.secondary != nil {
+		return c.secondary.ImportDomain(tarPath, newName, poolName, opts)
+	}
+	return c.Backend.ImportDomain(tarPath, newName, poolName, opts)
+}
+
+func (c *Combined) GetPoolPath(name string) (string, error) {
+	// Try Incus (secondary) first for container pools, then libvirt (primary)
+	if c.secondary != nil {
+		if path, err := c.secondary.GetPoolPath(name); err == nil {
+			return path, nil
+		}
+	}
+	return c.Backend.GetPoolPath(name)
+}
+
+func isIncusBackupArchive(tarPath string) bool {
+	f, err := os.Open(tarPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	br := bufio.NewReader(f)
+	head, _ := br.Peek(4)
+	var r io.Reader = br
+
+	if len(head) >= 2 && head[0] == 0x1f && head[1] == 0x8b {
+		gz, err := gzip.NewReader(br)
+		if err != nil {
+			return false
+		}
+		defer gz.Close()
+		r = gz
+	} else if len(head) >= 4 && head[0] == 0x28 && head[1] == 0xb5 && head[2] == 0x2f && head[3] == 0xfd {
+		dec, err := zstd.NewReader(br)
+		if err != nil {
+			return false
+		}
+		defer dec.Close()
+		r = dec
+	}
+
+	tr := tar.NewReader(r)
+	for i := 0; i < 20; i++ {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		name := hdr.Name
+		// Incus backup layout: backup/ prefix, or root-level backup.yaml + index.yaml.
+		if strings.HasPrefix(name, "backup/") || name == "backup/index.yaml" || strings.HasPrefix(name, "backup/container") {
+			return true
+		}
+		if name == "backup.yaml" || name == "index.yaml" {
+			return true
+		}
+		if name == "domain.xml" {
+			return false
+		}
+	}
+	return false
+}

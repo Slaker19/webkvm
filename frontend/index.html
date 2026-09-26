@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebKVM</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <!-- Early theme hydration to prevent flash of wrong theme -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('webkvm.theme.mode.v1') || 'zinc';
+          var a = localStorage.getItem('webkvm.theme.accent.v1') || 'indigo';
+          if (['zinc', 'oled', 'light'].indexOf(t) !== -1) {
+            document.documentElement.setAttribute('data-theme', t);
+            if (t === 'light') {
+              document.documentElement.classList.remove('dark');
+              document.documentElement.classList.add('light');
+            } else {
+              document.documentElement.classList.remove('light');
+              document.documentElement.classList.add('dark');
+            }
+          }
+          if (['indigo', 'emerald', 'blue', 'violet', 'amber', 'rose'].indexOf(a) !== -1) {
+            document.documentElement.setAttribute('data-accent', a);
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

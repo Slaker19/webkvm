@@ -1,0 +1,664 @@
+package firewall
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+)
+
+// HostPorts returns the essential host ports that must always be
+// reachable. The web UI port is passed in; SSH (22) and the default
+// noVNC range are hard-coded as safety rails.
+func HostPorts(webPort int) []int {
+	return []int{22, webPort, 5900, 5901, 5902, 5903}
+}
+
+// IPResolver returns the current IPv4 of a VM (empty when off/no lease).
+type IPResolver func(vmID string) string
+
+// NATBridge is one bridge whose subnet should reach the internet
+// through the host (kind=="nat" networks — see internal/libvirt).
+type NATBridge struct {
+	Name string
+	CIDR string
+}
+
+// NATProvider returns every currently active NAT-kind bridge. Wired to
+// the persisted network store (internal/netstore) so egress rules are
+// rendered from durable state, not guessed from kernel state — a bare
+// bridge with no masquerade rule is genuinely ambiguous ("isolated" vs
+// "nat with the rule removed by hand").
+type NATProvider func() []NATBridge
+
+// Manager builds and applies the nftables ruleset for every VM.
+type Manager struct {
+	store      *Store
+	host       *HostStore
+	resolve    IPResolver
+	natBridges NATProvider
+	webPort    int
+	logger     *slog.Logger
+
+	// applyMu serializes safe-apply state transitions (stage/confirm/
+	// rollback) so a per-VM Apply() can never race a pending host
+	// apply's rollback timer.
+	applyMu sync.Mutex
+	// rulesMu serializes the render+apply of the nftables ruleset.
+	// Unlike applyMu it is held across the nft invocations, so two
+	// concurrent Apply() calls (two HTTP requests) cannot interleave:
+	// without it they share a fixed temp file and can delete/apply each
+	// other's ruleset. Kept separate from applyMu because the pending
+	// transition methods hold applyMu and must not block on nft.
+	rulesMu sync.Mutex
+	// pending holds a staged-but-unconfirmed host apply (V13-C-01
+	// Safe Apply): the new ruleset is live in the kernel, but the
+	// previous confirmed ruleset is kept so RollbackHostApply can
+	// restore it if the operator does not Confirm within the deadline.
+	pending       *pendingApply
+	rollbackAfter time.Duration
+	// windowProvider overrides rollbackAfter per staged apply (wired
+	// to the firewall.confirm_window_secs setting; nil keeps the
+	// field/test default).
+	windowProvider func() time.Duration
+}
+
+// pendingApply is the in-flight Safe-Apply transaction.
+type pendingApply struct {
+	prev     HostFirewall
+	next     HostFirewall
+	deadline time.Time
+	timer    *time.Timer
+}
+
+// NewManager wires the store, the IP resolver (usually
+// libvirt.Connector.GetDomainIP) and the web UI port.
+func NewManager(store *Store, resolve IPResolver, webPort int, logger *slog.Logger) *Manager {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Manager{
+		store:         store,
+		resolve:       resolve,
+		webPort:       webPort,
+		logger:        logger,
+		rollbackAfter: 30 * time.Second,
+	}
+}
+
+// SetHostStore attaches the host firewall store (V13-C-01). Safe to
+// call before the first Apply; nil keeps the previous behaviour.
+func (m *Manager) SetHostStore(hs *HostStore) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.host = hs
+}
+
+// SetNATProvider wires the callback used to render the nat_bridges
+// chain (kind=="nat" networks). Safe to call before the first Apply.
+func (m *Manager) SetNATProvider(p NATProvider) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.natBridges = p
+}
+
+// RollbackDeadline sets the Safe-Apply confirmation window. Only used
+// by tests to exercise the rollback path without waiting 30 seconds.
+func (m *Manager) RollbackDeadline(d time.Duration) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.rollbackAfter = d
+}
+
+// SetConfirmWindowProvider overrides the confirmation window per staged
+// apply (e.g. from the firewall.confirm_window_secs setting). Nil
+// restores the field/test default. Safe to call at any time.
+func (m *Manager) SetConfirmWindowProvider(p func() time.Duration) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.windowProvider = p
+}
+
+// confirmWindow returns the provider value when set and sane,
+// otherwise the field default.
+func (m *Manager) confirmWindow() time.Duration {
+	if m.windowProvider != nil {
+		if d := m.windowProvider(); d >= 10*time.Second && d <= 300*time.Second {
+			return d
+		}
+	}
+	return m.rollbackAfter
+}
+
+// Apply rebuilds and applies the whole ruleset. It returns a map of
+// VMID -> applied/pending forward counts for the UI.
+func (m *Manager) Apply() (map[string]int, error) {
+	m.rulesMu.Lock()
+	defer m.rulesMu.Unlock()
+
+	ruleset := m.BuildRuleset()
+	pending := map[string]int{}
+
+	if ruleset == "" {
+		// No rules at all: flush the webkvm table (delete if exists).
+		if err := m.flushTable(); err != nil {
+			return nil, err
+		}
+		return pending, nil
+	}
+
+	if err := m.applyRuleset(ruleset); err != nil {
+		return nil, err
+	}
+
+	// Recompute applied/pending per VM.
+	for _, fw := range m.store.All() {
+		pend := 0
+		for _, f := range fw.Forwards {
+			if !f.Applied {
+				pend++
+			}
+		}
+		if pend > 0 {
+			pending[fw.VMID] = pend
+		}
+	}
+	return pending, nil
+}
+
+// BuildRuleset renders the nftables ruleset text for all VMs plus the
+// host firewall. Empty string means "no rules".
+//
+// The host/pending state is snapshotted under applyMu so a concurrent
+// StageHostApply/ConfirmHostApply/RollbackHostApply cannot mutate
+// m.pending mid-read (data race). applyMu is released before rendering,
+// which touches no shared mutable state beyond the already-snapshotted
+// values and m.store (independently synchronized).
+func (m *Manager) BuildRuleset() string {
+	m.applyMu.Lock()
+	var host HostFirewall
+	if m.host != nil {
+		host = m.host.Get()
+	}
+	if m.pending != nil {
+		host = m.pending.next
+	}
+	m.applyMu.Unlock()
+	return m.buildRulesetWith(host, m.store.All())
+}
+
+// buildRulesetWith renders the complete ruleset for a given host
+// firewall and VM set. Split from BuildRuleset so Safe-Apply can render
+// the NEXT ruleset before it is persisted.
+func (m *Manager) buildRulesetWith(host HostFirewall, all []VMFirewall) string {
+	var natBridges []NATBridge
+	if m.natBridges != nil {
+		natBridges = m.natBridges()
+	}
+	if len(all) == 0 && host.IsEmpty() && len(natBridges) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("# Generated by webkvm — do not edit manually\n")
+	// Replace the table atomically, entirely inside this ruleset.
+	//
+	// The bare `table ip webkvm` line creates the table if it is
+	// missing, so the following `delete` cannot fail on a fresh host;
+	// the delete then clears any previous incarnation, and the full
+	// definition below recreates it. nft executes the whole file as a
+	// single transaction, so a parse error anywhere leaves the running
+	// firewall exactly as it was. Deleting from the caller instead —
+	// as this used to do — tore the table down even when the new
+	// ruleset turned out to be invalid.
+	b.WriteString("table ip webkvm\n")
+	b.WriteString("delete table ip webkvm\n")
+	b.WriteString("table ip webkvm {\n")
+
+	// Input chain: policy accept, safety rails first (anti-lockout,
+	// non-deletable), then per-VM rules, then host input rules.
+	b.WriteString("\tchain input {\n")
+	b.WriteString("\t\ttype filter hook input priority filter; policy accept;\n")
+	for _, p := range HostPorts(m.webPort) {
+		fmt.Fprintf(&b, "\t\ttcp dport %d accept\n", p)
+	}
+	for _, fw := range all {
+		for _, r := range fw.Rules {
+			if r.Disabled {
+				continue
+			}
+			if !validProto(r.Proto) || r.Port < 1 || r.Port > 65535 {
+				continue
+			}
+			if r.Action != "allow" && r.Action != "drop" {
+				continue
+			}
+			for _, p := range protoList(r.Proto) {
+				fmt.Fprintf(&b, "\t\t%s dport %d %s\n", p, r.Port, nftVerdict(r.Action))
+			}
+		}
+	}
+	for _, r := range host.Input {
+		if r.Disabled {
+			continue
+		}
+		if !validProto(r.Proto) || r.Port < 1 || r.Port > 65535 {
+			continue
+		}
+		if r.Action != "allow" && r.Action != "drop" {
+			continue
+		}
+		prefix := ""
+		if r.Src != "" {
+			prefix = "ip saddr " + r.Src + " "
+		}
+		for _, p := range protoList(r.Proto) {
+			fmt.Fprintf(&b, "\t\t%s%s dport %d %s\n", prefix, p, r.Port, nftVerdict(r.Action))
+		}
+	}
+	b.WriteString("\t}\n")
+
+	// Prerouting chain: DNAT port forwards (host forwards first, then
+	// per-VM forwards). targets collects every resolved guest IP so the
+	// postrouting masquerade chain rewrites return traffic for all of
+	// them.
+	var targets []string
+	hasForward := false
+	emitForward := func(line string) {
+		if !hasForward {
+			b.WriteString("\tchain prerouting {\n")
+			b.WriteString("\t\ttype nat hook prerouting priority dstnat; policy accept;\n")
+			hasForward = true
+		}
+		b.WriteString(line)
+	}
+	for _, f := range host.Forwards {
+		if f.Disabled {
+			continue
+		}
+		if !validProto(f.Proto) || f.HostPort < 1 || f.HostPort > 65535 || f.GuestPort < 1 || f.GuestPort > 65535 {
+			continue
+		}
+		if net.ParseIP(f.GuestIP) == nil {
+			continue
+		}
+		targets = append(targets, f.GuestIP)
+		for _, p := range protoList(f.Proto) {
+			emitForward(fmt.Sprintf("\t\t%s dport %d dnat to %s:%d\n", p, f.HostPort, f.GuestIP, f.GuestPort))
+		}
+	}
+	for _, fw := range all {
+		for i := range fw.Forwards {
+			f := &fw.Forwards[i]
+			if f.Disabled {
+				continue
+			}
+			if !validProto(f.Proto) || f.HostPort < 1 || f.HostPort > 65535 || f.GuestPort < 1 || f.GuestPort > 65535 {
+				f.Applied = false
+				continue
+			}
+			ip := f.TargetIP
+			if ip == "" && m.resolve != nil {
+				ip = m.resolve(fw.VMID)
+			}
+			if net.ParseIP(ip) == nil {
+				// Can't resolve: mark pending, skip rule.
+				f.Applied = false
+				continue
+			}
+			f.Applied = true
+			targets = append(targets, ip)
+			for _, p := range protoList(f.Proto) {
+				emitForward(fmt.Sprintf("\t\t%s dport %d dnat to %s:%d\n", p, f.HostPort, ip, f.GuestPort))
+			}
+		}
+	}
+	if hasForward {
+		b.WriteString("\t}\n")
+
+		// Postrouting: masquerade replies only toward forwarded targets.
+		if len(targets) > 0 {
+			b.WriteString("\tchain postrouting {\n")
+			b.WriteString("\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
+			fmt.Fprintf(&b, "\t\tip daddr { %s } masquerade\n", strings.Join(targets, ", "))
+			b.WriteString("\t}\n")
+		}
+	}
+
+	// NAT-kind network bridges: masquerade their whole subnet's egress
+	// through the host's uplink, and explicitly accept forwarding on
+	// them (some distros default FORWARD to drop). A distinct chain
+	// name/hook from "postrouting" above — that one only fires for
+	// explicit per-target DNAT forwards.
+	if len(natBridges) > 0 {
+		uplink := defaultUplinkIface()
+		b.WriteString("\tchain nat_bridges {\n")
+		b.WriteString("\t\ttype nat hook postrouting priority srcnat + 10; policy accept;\n")
+		for _, nb := range natBridges {
+			if nb.CIDR == "" {
+				continue
+			}
+			if uplink != "" {
+				fmt.Fprintf(&b, "\t\tip saddr %s oifname %q masquerade\n", nb.CIDR, uplink)
+			} else {
+				fmt.Fprintf(&b, "\t\tip saddr %s masquerade\n", nb.CIDR)
+			}
+		}
+		b.WriteString("\t}\n")
+		b.WriteString("\tchain nat_bridges_forward {\n")
+		b.WriteString("\t\ttype filter hook forward priority filter; policy accept;\n")
+		for _, nb := range natBridges {
+			fmt.Fprintf(&b, "\t\tiifname %q accept\n", nb.Name)
+			fmt.Fprintf(&b, "\t\toifname %q accept\n", nb.Name)
+		}
+		b.WriteString("\t}\n")
+	}
+
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// applyRuleset removes any existing webkvm table (best-effort) then
+// validates (-c) and applies (-f) the new ruleset atomically. Deleting
+// only our own dedicated table is safe: libvirt's filter/nat tables and
+// any other subsystem's rules are untouched.
+func (m *Manager) applyRuleset(ruleset string) error {
+	// Unique temp file per apply: a fixed name would be clobbered by a
+	// concurrent apply (see rulesMu) or by a stale process, causing nft
+	// to load the wrong ruleset.
+	f, err := os.CreateTemp("", "webkvm-nft-*.rules")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.WriteString(ruleset); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+
+	// Check first: on failure nothing changes.
+	//
+	// The old table used to be deleted here, BEFORE the check, which
+	// made the "on failure nothing changes" promise false in the worst
+	// possible direction: a ruleset nft refused to parse left the host
+	// with no webkvm table at all — every per-VM rule and every host
+	// input rule gone — while the API returned "nft check failed" and
+	// the UI still listed the rules as active. The removal is now part
+	// of the ruleset itself (see buildRuleset), so nft applies the
+	// delete and the new definition as ONE atomic transaction: either
+	// the whole new ruleset is live, or the old one is untouched.
+	check := exec.Command("nft", "-c", "-f", tmp)
+	if out, err := check.CombinedOutput(); err != nil {
+		return fmt.Errorf("nft check failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	apply := exec.Command("nft", "-f", tmp)
+	if out, err := apply.CombinedOutput(); err != nil {
+		return fmt.Errorf("nft apply failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// flushTable deletes the whole webkvm table (used when no rules remain).
+func (m *Manager) flushTable() error {
+	// Delete-if-exists is idempotent and safe.
+	cmd := exec.Command("nft", "delete", "table", "ip", "webkvm")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Only "table does not exist" is benign. A permission error,
+		// missing nft binary or any other failure MUST surface, otherwise
+		// the caller believes stale rules were removed when they weren't.
+		if strings.Contains(strings.ToLower(string(out)), "no such file or directory") {
+			return nil // table absent, nothing to flush
+		}
+		return fmt.Errorf("flush webkvm table: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// HasNATRuleForBridge is a best-effort check for whether a bridge
+// already has a masquerade rule for its subnet — used only to infer
+// Kind for a bridge with no netstore record (see
+// libvirt.Connector.ListNetworks / inferKind): the installer's own
+// vmbr1 gets its MASQUERADE rule from scripts/setup-network.sh via
+// iptables/firewalld, not this package's nftables table, so both are
+// checked.
+func HasNATRuleForBridge(name string) bool {
+	out, err := exec.Command("ip", "-4", "-o", "addr", "show", "dev", name, "scope", "global").Output()
+	if err != nil {
+		return false
+	}
+	var cidr string
+	for _, f := range strings.Fields(string(out)) {
+		if strings.Contains(f, "/") {
+			cidr = f
+			break
+		}
+	}
+	if cidr == "" {
+		return false
+	}
+	if out, err := exec.Command("nft", "list", "table", "ip", "webkvm").Output(); err == nil {
+		if strings.Contains(string(out), cidr) && strings.Contains(string(out), "masquerade") {
+			return true
+		}
+	}
+	_, wantNet, perr := net.ParseCIDR(cidr)
+	if perr == nil {
+		if out, err := exec.Command("iptables", "-t", "nat", "-S", "POSTROUTING").Output(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if !strings.Contains(line, "MASQUERADE") {
+					continue
+				}
+				for _, tok := range strings.Fields(line) {
+					if _, ipnet, e := net.ParseCIDR(tok); e == nil && ipnet.String() == wantNet.String() {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// defaultUplinkIface returns the interface the host's default route
+// goes through (e.g. "eth0"), or "" if there is none.
+func defaultUplinkIface() string {
+	out, err := exec.Command("ip", "-4", "route", "show", "default").Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	for i, f := range fields {
+		if f == "dev" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
+func validProto(p string) bool {
+	return p == "tcp" || p == "udp" || p == "both"
+}
+
+func protoList(p string) []string {
+	switch p {
+	case "tcp":
+		return []string{"tcp"}
+	case "udp":
+		return []string{"udp"}
+	case "both":
+		return []string{"tcp", "udp"}
+	}
+	return nil
+}
+
+// nftVerdict translates webkvm's rule actions into nftables verdicts.
+// The UI (and the persisted store) use "allow"/"drop"; nftables only
+// knows "accept"/"drop". Emitting "allow" is a syntax error that would
+// abort the whole nft -f transaction — always translate.
+func nftVerdict(action string) string {
+	if action == "allow" {
+		return "accept"
+	}
+	return action
+}
+
+// --- Safe Apply (V13-C-01) ---
+//
+// The Safe-Apply protocol protects the administrator from locking
+// themselves out (or breaking the host's networking) with a bad
+// ruleset:
+//
+//  1. StageHostApply validates the new rules, renders the complete
+//     ruleset (host + per-VM) and applies it ATOMICALLY via nft -f
+//     (a single transaction; a syntax error aborts before anything
+//     changes). The new rules are live in the kernel immediately.
+//  2. A timer starts (default 30s). If the operator does not call
+//     ConfirmHostApply before the deadline — e.g. they applied a rule
+//     that cut their own SSH/UI connection — the timer fires and
+//     RollbackHostApply restores the previous confirmed ruleset
+//     automatically.
+//  3. ConfirmHostApply persists the staged rules to the host store and
+//     cancels the timer, making them the new baseline.
+//
+// Only one Safe-Apply can be in flight at a time; per-VM Apply() calls
+// (from the VmDetail page) never disturb a pending host apply.
+
+// StageHostApply validates and applies `next`, keeping `prev` for
+// rollback. It returns the previous ruleset and the confirm deadline.
+func (m *Manager) StageHostApply(next HostFirewall) (prev HostFirewall, deadline time.Time, err error) {
+	if err := ValidateHostFirewall(next, m.webPort); err != nil {
+		return prev, deadline, err
+	}
+	if m.host == nil {
+		return prev, deadline, errors.New("host firewall store not attached")
+	}
+
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+
+	if m.pending != nil {
+		return prev, deadline, errors.New("a firewall apply is already pending confirmation; confirm or roll it back first")
+	}
+
+	prev = m.host.Get()
+	ruleset := m.buildRulesetWith(next, m.store.All())
+	if ruleset == "" {
+		if err := m.flushTable(); err != nil {
+			return prev, deadline, err
+		}
+	} else if err := m.applyRuleset(ruleset); err != nil {
+		return prev, deadline, err
+	}
+
+	window := m.confirmWindow()
+	m.pending = &pendingApply{prev: prev, next: next}
+	m.pending.deadline = time.Now().Add(window)
+	m.logger.Info("firewall_safe_apply_staged", "deadline_seconds", window.Seconds(),
+		"input_rules", len(next.Input), "forward_rules", len(next.Forwards))
+
+	// Rollback timer: fire once if Confirm never arrives.
+	m.pending.timer = time.AfterFunc(window, func() {
+		rolled, rerr := m.RollbackHostApply()
+		if rerr != nil {
+			m.logger.Error("firewall_safe_apply_auto_rollback_failed", "err", rerr)
+			return
+		}
+		if rolled {
+			m.logger.Warn("firewall_safe_apply_timeout_rolled_back",
+				"msg", "the firewall changes were not confirmed within the deadline; the previous ruleset has been restored")
+		}
+	})
+
+	return prev, m.pending.deadline, nil
+}
+
+// ConfirmHostApply persists the staged rules as the new baseline and
+// cancels the rollback timer.
+func (m *Manager) ConfirmHostApply() error {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	if m.pending == nil {
+		return ErrNoPendingApply
+	}
+	next := m.pending.next
+	if m.pending.timer != nil {
+		m.pending.timer.Stop()
+	}
+	m.pending = nil
+	if err := m.host.Set(next); err != nil {
+		// Persist failed: the kernel still has the staged rules but
+		// the disk baseline is stale. Log loudly; the next Apply will
+		// rewrite from the store, so this is a disk problem, not a
+		// network one.
+		m.logger.Error("firewall_confirm_persist_failed", "err", err)
+		return err
+	}
+	m.logger.Info("firewall_safe_apply_confirmed", "input_rules", len(next.Input), "forward_rules", len(next.Forwards))
+	return nil
+}
+
+// RollbackHostApply restores the previous confirmed ruleset and clears
+// the pending state. Returns whether there was anything to roll back.
+func (m *Manager) RollbackHostApply() (bool, error) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	if m.pending == nil {
+		return false, nil
+	}
+	if m.pending.timer != nil {
+		m.pending.timer.Stop()
+	}
+	prev := m.pending.prev
+	m.pending = nil
+	ruleset := m.buildRulesetWith(prev, m.store.All())
+	if ruleset == "" {
+		if err := m.flushTable(); err != nil {
+			return true, err
+		}
+	} else if err := m.applyRuleset(ruleset); err != nil {
+		return true, err
+	}
+	m.logger.Info("firewall_safe_apply_rolled_back", "input_rules", len(prev.Input), "forward_rules", len(prev.Forwards))
+	return true, nil
+}
+
+// PendingApply returns the in-flight Safe-Apply (if any) and its
+// deadline, so the API can tell the UI a confirmation is awaited.
+func (m *Manager) PendingApply() (HostFirewall, time.Time, bool) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	if m.pending == nil {
+		return HostFirewall{}, time.Time{}, false
+	}
+	return m.pending.next, m.pending.deadline, true
+}
+
+// HostRules returns the CONFIRMED host firewall and whether a host
+// store is attached. The API GET endpoint uses it.
+func (m *Manager) HostRules() (HostFirewall, bool) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	if m.host == nil {
+		return HostFirewall{}, false
+	}
+	return m.host.Get(), true
+}
+
+// RenderRuleset renders the nftables text for a candidate host
+// firewall WITHOUT applying anything (preview for the editor).
+func (m *Manager) RenderRuleset(host HostFirewall) (string, error) {
+	if err := ValidateHostFirewall(host, m.webPort); err != nil {
+		return "", err
+	}
+	return m.buildRulesetWith(host, m.store.All()), nil
+}

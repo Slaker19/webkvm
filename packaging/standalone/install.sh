@@ -1,0 +1,993 @@
+#!/usr/bin/env bash
+# webkvm standalone installer.
+#
+# Supported families (auto-detected by package manager, covers every
+# derivative): Debian/Ubuntu & derivatives (apt), Fedora/RHEL & derivatives
+# (dnf/yum), Arch & derivatives (pacman).
+#
+# Usage: sudo ./install.sh [flags]
+#   --yes, -y, --unattended   Never touch a TTY: accept every default
+#                             below (or whatever other flags/env vars you
+#                             also pass) without asking a single question.
+#                             Unattended runs default NETWORK_MODE to
+#                             "both" (physical bridge + NAT) instead of
+#                             the interactive default (bridge only).
+#   --dry-run                 Run all preflight checks and print what
+#                             WOULD be installed; performs no system
+#                             changes.
+#   --port=N                  Backend HTTP/HTTPS port (default: 8080).
+#   --bind=ADDR                Bind address (default: 0.0.0.0).
+#   --https=yes|no             Self-signed HTTPS (default: yes).
+#   --domain=NAME               Optional cert SAN domain (default: none).
+#   --network=bridge|nat|both|none   Instance networking (default: bridge
+#                             interactively, both when --yes/unattended).
+#   --incus=yes|no             Install + enable Incus containers (default:
+#                             yes).
+#   --prefix=PATH               Install prefix (default: /usr/local).
+#   --data-dir=PATH             Data directory (default: /opt/webkvm).
+#   --admin-password=PASS       Initial admin password for first boot.
+#   --bridge-dhcp                Bridge gets its address via DHCP instead
+#                             of pinning the current lease as static.
+#   --bridge-static=CIDR         Static IP (CIDR) for the bridge.
+#   --gateway=IP / --dns=IPs     Explicit gateway/DNS for --bridge-static.
+# Every flag has an equivalent WEBKVM_* / NETWORK_MODE / BRIDGE_* env var
+# (flags simply set these before the rest of the script runs); env vars
+# remain supported for scripting and take a back seat to explicit flags.
+#
+# Example — fully unattended, physical bridge + NAT, no containers:
+#   sudo ./install.sh --yes --network=both --incus=no
+#
+# From a fresh server this script:
+#   1. Preflight-checks KVM, RAM, disk, arch and network.
+#   2. Installs runtime dependencies (libvirt, qemu, ovmf, swtpm, …).
+#   3. Builds the backend+frontend from this checkout (or uses a supplied
+#      binary / release URL).
+#   4. Installs the binary, systemd service and DATA_DIR.
+#   5. Optionally generates a self-signed TLS certificate (SAN includes
+#      localhost, hostname.local, the LAN IP and an optional domain) and
+#      persists server.tls_* so the backend serves HTTPS directly.
+#   6. Optionally wires the libvirt default NAT network and/or a macvlan
+#      bridge (br0) to the real LAN via scripts/setup-network.sh.
+#   7. Health-checks the running service and prints a summary.
+#
+# Interactive when run on a TTY; uses defaults when piped (one-liner).
+# Every input is overridable via WEBKVM_* / NETWORK_MODE / BRIDGE_* env vars.
+set -Eeuo pipefail
+
+# ── Flag parsing ─────────────────────────────────────────────────────────
+# Every flag just exports the matching WEBKVM_*/NETWORK_MODE/BRIDGE_* env
+# var below it would otherwise take from the environment, so a flag and
+# its equivalent env var are fully interchangeable; an explicit flag on
+# the command line wins over an already-exported var.
+usage() {
+  awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1 && !/^#/{exit}' "${BASH_SOURCE[0]}"
+  exit "${1:-0}"
+}
+DRY_RUN=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1 ;;
+    --yes|-y|--unattended) WEBKVM_NONINTERACTIVE=1 ;;
+    --port=*) WEBKVM_PORT="${1#*=}" ;;
+    --bind=*) WEBKVM_BIND_ADDR="${1#*=}" ;;
+    --https=*) WEBKVM_HTTPS="${1#*=}" ;;
+    --domain=*) WEBKVM_TLS_DOMAIN="${1#*=}" ;;
+    --network=*) NETWORK_MODE="${1#*=}" ;;
+    --incus=*)
+      case "${1#*=}" in
+        yes|1) WEBKVM_INSTALL_INCUS=1 ;;
+        no|0) WEBKVM_INSTALL_INCUS=0 ;;
+        *) echo "invalid --incus value: ${1#*=} (expected yes|no)" >&2; usage 1 ;;
+      esac
+      ;;
+    --prefix=*) WEBKVM_PREFIX="${1#*=}" ;;
+    --data-dir=*) WEBKVM_DATA_DIR="${1#*=}" ;;
+    --admin-password=*) WEBKVM_ADMIN_PASSWORD="${1#*=}" ;;
+    --bridge-dhcp) BRIDGE_DHCP="true" ;;
+    --bridge-static=*) BRIDGE_STATIC_IP="${1#*=}"; BRIDGE_DHCP="false" ;;
+    --gateway=*) BRIDGE_STATIC_GW="${1#*=}" ;;
+    --dns=*) BRIDGE_STATIC_DNS="${1#*=}" ;;
+    -h|--help) usage 0 ;;
+    *) echo "unknown flag: $1" >&2; usage 1 ;;
+  esac
+  shift
+done
+
+PREFIX="${WEBKVM_PREFIX:-/usr/local}"
+BIN="${PREFIX}/bin/webkvm"
+DATA_DIR="${WEBKVM_DATA_DIR:-/opt/webkvm}"
+DEFAULT_BIND="${WEBKVM_BIND_ADDR:-}"
+DEFAULT_PORT="${WEBKVM_PORT:-}"
+BIN_URL="${WEBKVM_BINARY_URL:-}"
+BIN_SHA256="${WEBKVM_BINARY_SHA256:-}"
+HTTPS="${WEBKVM_HTTPS:-}"
+TLS_DOMAIN="${WEBKVM_TLS_DOMAIN:-}"
+NETWORK_MODE="${NETWORK_MODE:-}"
+BRIDGE_DHCP="${BRIDGE_DHCP:-}"
+BRIDGE_STATIC_IP="${BRIDGE_STATIC_IP:-}"
+BRIDGE_STATIC_GW="${BRIDGE_STATIC_GW:-}"
+BRIDGE_STATIC_DNS="${BRIDGE_STATIC_DNS:-}"
+# WEBKVM_INSTALL_INCUS=1 installs + enables the Incus daemon so the
+# container module works out of the box. Uses the native `incus` package
+# on every package manager (apt/pacman/dnf) — snap is never used. If the
+# package is missing it warns and continues KVM-only (non-fatal).
+# WEBKVM_INCUS_ENABLED=1 alone just wires the opt-in env var into the unit
+# (Incus must already be present).
+WEBKVM_INSTALL_INCUS="${WEBKVM_INSTALL_INCUS:-1}"
+WEBKVM_INCUS_ENABLED="${WEBKVM_INCUS_ENABLED:-0}"
+
+SERVICE="${WEBKVM_SERVICE:-webkvm.service}"
+SERVICE_PATH="/etc/systemd/system/${SERVICE}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+CERT_DIR="${DATA_DIR}/certs"
+CONFIG_PATH="${DATA_DIR}/config.json"
+SETUP_NETWORK="${REPO_DIR}/scripts/setup-network.sh"
+
+PREVIOUS="${BIN}.previous"
+SERVICE_PREVIOUS="${SERVICE_PATH}.previous"
+CONFIG_EXISTED=0
+DOWNLOADED_BIN=""
+DOWNLOADED_TARBALL=""
+RELEASE_DIR=""
+HEALTH_FILE=""
+HAD_BIN=0
+HAD_SERVICE=0
+ROLLBACK_ARMED=0
+INSTALL_SUCCEEDED=0
+PKG=""
+RUNTIME_PACKAGES=()
+NONINTERACTIVE=0
+STRICT_NONINTERACTIVE=0
+[[ -t 0 ]] || NONINTERACTIVE=1
+if [[ "${WEBKVM_NONINTERACTIVE:-0}" == "1" ]]; then
+  NONINTERACTIVE=1
+  STRICT_NONINTERACTIVE=1
+fi
+# Never let apt prompt (daemon restarts, GRUB, …) freeze an unattended run.
+if command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
+fi
+
+rollback_on_failure() {
+  local rc=$?
+  [[ -n "${DOWNLOADED_BIN}" ]] && rm -f -- "${DOWNLOADED_BIN}"
+  [[ -n "${DOWNLOADED_TARBALL}" ]] && rm -f -- "${DOWNLOADED_TARBALL}"
+  if [[ "${rc}" -ne 0 && "${ROLLBACK_ARMED}" == 1 && "${INSTALL_SUCCEEDED}" == 0 ]]; then
+    log "deployment failed; restoring previous installation"
+    if [[ "${HAD_BIN}" == 1 && -f "${PREVIOUS}" ]]; then
+      install -m 0755 "${PREVIOUS}" "${BIN}" || true
+    else
+      rm -f -- "${BIN}" || true
+    fi
+    if [[ "${HAD_SERVICE}" == 1 && -f "${SERVICE_PREVIOUS}" ]]; then
+      install -m 0644 "${SERVICE_PREVIOUS}" "${SERVICE_PATH}" || true
+    elif [[ "${HAD_SERVICE}" == 0 ]]; then
+      rm -f -- "${SERVICE_PATH}" || true
+    fi
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl restart "${SERVICE}" 2>/dev/null || true
+  fi
+  exit "${rc}"
+}
+trap rollback_on_failure EXIT
+
+log() { printf '[webkvm] %s\n' "$*"; }
+die() { printf '[webkvm] ERROR: %s\n' "$*" >&2; exit 1; }
+confirm() { # confirm VAR "question" default
+  local var="$1" q="$2" dflt="${3:-}"
+  if [[ -n "${!var:-}" ]]; then return; fi
+  if [[ "${NONINTERACTIVE}" == 1 ]]; then
+    # Strict unattended (WEBKVM_NONINTERACTIVE=1): never touch /dev/tty.
+    if [[ "${STRICT_NONINTERACTIVE}" == 0 && -t 1 && -c /dev/tty ]]; then
+      local ans
+      read -r -p "  ${q} [${dflt}]: " ans < /dev/tty > /dev/tty
+      [[ -z "${ans}" ]] && ans="${dflt}"
+      printf -v "${var}" '%s' "${ans}"
+      return
+    fi
+    if [[ -n "${dflt}" ]]; then printf -v "${var}" '%s' "${dflt}"; fi
+    return
+  fi
+  local ans
+  read -r -p "  ${q} [${dflt}]: " ans
+  [[ -z "${ans}" ]] && ans="${dflt}"
+  printf -v "${var}" '%s' "${ans}"
+}
+prompt_select() { # prompt_select VAR "question" "opt1|label" "opt2|label" default
+  local var="$1" q="$2"; shift 2
+  local default="${*: -1}"
+  local -a opts_raw=("${@:1:$#-1}")
+  if [[ -n "${!var:-}" ]]; then return; fi
+  if [[ "${NONINTERACTIVE}" == 1 ]]; then
+    if [[ "${STRICT_NONINTERACTIVE}" == 0 && -t 1 && -c /dev/tty ]]; then
+      # fall through to interactive prompt via /dev/tty
+      :
+    else
+      printf -v "${var}" '%s' "${default}"
+      return
+    fi
+  fi
+  echo "  ${q}"
+  local i=1 opts=() key
+  for opt in "${opts_raw[@]}"; do
+    key="${opt%%|*}"
+    echo "    ${i}) ${opt#*|}"
+    opts[$i]="${key}"
+    i=$((i+1))
+  done
+  local ans
+  if [[ "${NONINTERACTIVE}" == 1 && "${STRICT_NONINTERACTIVE}" == 0 && -t 1 && -c /dev/tty ]]; then
+    read -r -p "  Choose [1-${#opts[@]}] (default ${default}): " ans < /dev/tty > /dev/tty
+  else
+    read -r -p "  Choose [1-${#opts[@]}] (default ${default}): " ans
+  fi
+  [[ -z "${ans}" ]] && ans="${default}"
+  if [[ "${ans}" =~ ^[0-9]+$ ]] && [[ -n "${opts[${ans}]:-}" ]]; then
+    printf -v "${var}" '%s' "${opts[${ans}]}"
+  else
+    printf -v "${var}" '%s' "${ans}"
+  fi
+}
+
+# ── Preflight ──────────────────────────────────────────────────────────
+preflight() {
+  [[ "${EUID}" -eq 0 ]] || die "run as root (sudo $0)"
+  # Family detection by PACKAGE MANAGER presence — covers every derivative
+  # (Mint/Pop/Kali→apt, Nobara/Bazzite-workstations→dnf, Manjaro/CachyOS→pacman)
+  # without maintaining a distro ID list. /etc/os-release is only logged.
+  if command -v apt-get >/dev/null 2>&1; then
+    PKG="apt"
+  elif command -v dnf >/dev/null 2>&1; then
+    PKG="dnf"; YUM_BIN="dnf"
+  elif command -v yum >/dev/null 2>&1; then
+    PKG="dnf"; YUM_BIN="yum"   # legacy RHEL: same repo/args, yum binary
+  elif command -v pacman >/dev/null 2>&1; then
+    PKG="pacman"
+  else
+    die "no supported package manager found (apt-get / dnf / yum / pacman). Supported families: Debian/Ubuntu & derivatives, Fedora/RHEL & derivatives, Arch & derivatives."
+  fi
+  [[ -f /etc/os-release ]] && . /etc/os-release
+  log "detected: ${PRETTY_NAME:-${ID:-unknown}} (family: ${PKG})"
+  command -v systemctl >/dev/null || die "systemd is required"
+  [[ "$(dpkg --print-architecture 2>/dev/null || uname -m)" == "amd64" ]] || [[ "$(uname -m)" == "x86_64" ]] || die "this release currently requires amd64/x86_64"
+
+  echo "  [preflight] checking virtualization support..."
+  if [[ ! -e /dev/kvm ]]; then
+    echo "  [preflight] FAIL: /dev/kvm is missing — VMs cannot run on this machine." >&2
+    echo "  [preflight] Fix: enable virtualization in the BIOS/UEFI (Intel VT-x / AMD-V)," >&2
+    echo "  [preflight] or if this is a VM, enable nested virtualization on the hypervisor." >&2
+    exit 1
+  fi
+  local mem_kib avail_kib
+  mem_kib="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  [[ "${mem_kib}" =~ ^[0-9]+$ && "${mem_kib}" -ge 2097152 ]] || die "at least 2 GiB RAM is required (found $((mem_kib/1024)) MiB)"
+  avail_kib="$(df -Pk "$(dirname "${DATA_DIR}")" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [[ "${avail_kib:-}" =~ ^[0-9]+$ ]]; then
+    [[ "${avail_kib}" -ge 5242880 ]] || die "at least 5 GiB free space is required on ${DATA_DIR} (found $((avail_kib/1024)) MiB)"
+  fi
+  if command -v ip >/dev/null 2>&1; then
+    # `ip route get 1.1.1.1` resolves a route via the kernel's routing
+    # table (no DNS lookup involved — it's an AF_NETLINK query, not
+    # getaddrinfo), so a host with several nameservers in resolv.conf is
+    # NOT the failure mode here. The real failure mode, confirmed live:
+    # a host/VM whose network is otherwise fully usable but where THAT
+    # SPECIFIC IP is null-routed or firewalled (Cloudflare's 1.1.1.1 is a
+    # common target for such policies) makes this single probe report
+    # "no route to host" and abort the entire install, even though any
+    # other destination resolves a route fine. Probe a small set of
+    # well-known IPs and only fail if NONE of them yield a route; also
+    # accept the mere presence of a default route as a last resort (a
+    # host can be preflighted before its uplink has full internet
+    # reachability, e.g. behind a proxy-only egress).
+    local route_ok=0 probe_ip
+    for probe_ip in 1.1.1.1 8.8.8.8 9.9.9.9; do
+      if ip route get "${probe_ip}" >/dev/null 2>&1; then
+        route_ok=1
+        break
+      fi
+    done
+    if [[ "${route_ok}" != 1 ]]; then
+      ip -4 route show default 2>/dev/null | grep -q . && route_ok=1
+    fi
+    [[ "${route_ok}" == 1 ]] || die "no usable network route found"
+  fi
+  echo "  [preflight] ok — KVM, RAM, disk, arch and network look good"
+}
+
+# ── Package management ─────────────────────────────────────────────────
+# pkg_installed reports whether $1 is CURRENTLY INSTALLED — used only as
+# the skip-if-already-there optimization in pkg_install.
+pkg_installed() {
+  local p="$1"
+  case "${PKG}" in
+    apt)    dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' ;;
+    dnf)    rpm -q "$p" >/dev/null 2>&1 ;;
+    pacman) pacman -Q "$p" >/dev/null 2>&1 ;;
+  esac
+}
+# pkg_available reports whether $1 CAN BE INSTALLED — already installed,
+# or present in a configured repo. Used by install_incus() to decide
+# whether Incus can be installed at all.
+#
+# This used to be conflated with pkg_installed(): the apt/pacman
+# branches checked "is it installed?" (dpkg-query / pacman -Q), and the
+# dnf branch (`dnf -q "$p"`) was not even valid dnf syntax (missing
+# subcommand — it always fails, exit 2, regardless of the package).
+# Net effect: on a fresh machine (nothing installed yet) this always
+# reported "not available" for every package on every distro, so Incus
+# was never auto-installed even where it genuinely exists in the repos
+# (confirmed on Debian 13: `apt-cache show incus` succeeds, yet the old
+# check always said no) — and on dnf specifically, EVERY runtime
+# package always took the slow path in pkg_install (no early skip),
+# since `dnf -q "$p"` can never return success.
+pkg_available() {
+  local p="$1"
+  pkg_installed "$p" && return 0
+  case "${PKG}" in
+    apt)    apt-cache show "$p" >/dev/null 2>&1 ;;
+    dnf)    "${YUM_BIN:-dnf}" -q list "$p" >/dev/null 2>&1 ;;
+    pacman) pacman -Si "$p" >/dev/null 2>&1 ;;
+  esac
+}
+pkg_install() {
+  # Retry package installs: mirror timeouts (pacman/dnf/apt) are transient,
+  # so a failed transaction is retried a couple of times before aborting.
+  local failed=0 attempts="${WEBKVM_PKG_RETRIES:-3}" retry_delay="${WEBKVM_PKG_RETRY_DELAY:-4}"
+  for p in "$@"; do
+    pkg_installed "$p" && continue
+    local ok=0
+    for attempt in $(seq 1 "${attempts}"); do
+      if case "${PKG}" in
+        apt) apt-get install -y --no-install-recommends "$p" ;;
+        dnf) "${YUM_BIN:-dnf}" install -y "$p" ;;
+        pacman) pacman -S --needed --noconfirm "$p" ;;
+      esac; then
+        ok=1
+        break
+      fi
+      if [[ "${attempt}" -lt "${attempts}" ]]; then
+        log "package install failed for '${p}' (attempt ${attempt}/${attempts}); retrying in ${retry_delay}s..."
+        sleep "${retry_delay}"
+      fi
+    done
+    if [[ "${ok}" != 1 ]]; then
+      echo "    failed to install: $p" >&2
+      failed=1
+    fi
+  done
+  [[ "${failed}" == 1 ]] && return 1
+  return 0
+}
+pkg_update() {
+  # Same retry policy for the package index refresh (apt update / dnf
+  # check-update / pacman -Sy) — these hit the mirrors too.
+  local attempts="${WEBKVM_PKG_RETRIES:-3}" retry_delay="${WEBKVM_PKG_RETRY_DELAY:-4}"
+  local attempt=0
+  while :; do
+    attempt=$((attempt+1))
+    if case "${PKG}" in
+      apt) apt-get update ;;
+      dnf) "${YUM_BIN:-dnf}" check-update >/dev/null 2>&1 || true ;;
+      pacman)
+        # Old ISOs ship a stale keyring -> signature errors on EVERY package.
+        pacman -Sy --noconfirm archlinux-keyring >/dev/null 2>&1 || true
+        pacman -Sy ;;
+    esac; then
+      return 0
+    fi
+    if [[ "${attempt}" -lt "${attempts}" ]]; then
+      log "package index update failed (attempt ${attempt}/${attempts}); retrying in ${retry_delay}s..."
+      sleep "${retry_delay}"
+    else
+      return 1
+    fi
+  done
+}
+
+setup_package_map() {
+  case "${PKG}" in
+    apt)
+      # dnsmasq-utils (separate from dnsmasq-base): provides dhcp_release,
+      # used by the API to release a DHCP lease on a nat/isolated network
+      # (a real DHCPRELEASE — editing the leasefile by hand is not a safe
+      # substitute, dnsmasq's in-memory lease table is authoritative).
+      # nfs-common/cifs-utils: provide mount.nfs/mount.cifs, which
+      # libvirt's own netfs storage-pool driver shells out to when
+      # creating an NFS/SMB pool from the Storage page — without them,
+      # pool creation fails at the mount(8) step with a libvirt error.
+      # smbclient: the smbclient CLI, used by the storage/backup "browse
+      # folders" feature to list SMB subdirectories without mounting —
+      # separate from cifs-utils, which only provides mount.cifs.
+      # gdisk/parted: the Storage > Host Disks "format" flow shells out to
+      # sgdisk (GPT partitioning) and, as a fallback when sgdisk is
+      # missing, parted (also partprobe, from the same package) — see
+      # InitHostDiskDirectory/WipeHostDisk in internal/api/host_disks.go.
+      # e2fsprogs/xfsprogs/btrfs-progs/f2fs-tools: mkfs.ext4/mkfs.xfs/
+      # mkfs.btrfs/mkfs.f2fs, one per entry in the curated filesystem
+      # catalog (supportedFilesystems) that same feature offers. Without
+      # these, formatting a disk fails at the mkfs step with "$fs is not
+      # installed on this host" — e2fsprogs is "required" priority on
+      # Debian/Ubuntu and normally already present, but is listed
+      # explicitly so a minimal/container base image doesn't skip it.
+      RUNTIME_PACKAGES=(ca-certificates curl openssl xorriso xz-utils dnsmasq-base dnsmasq-utils libvirt-daemon-system libvirt-clients libvirt-daemon-driver-qemu qemu-system-x86 qemu-utils ovmf swtpm swtpm-tools virtinst bridge-utils python3 iproute2 procps util-linux tar zstd nftables iptables nfs-common cifs-utils smbclient gdisk parted e2fsprogs xfsprogs btrfs-progs f2fs-tools)
+      ;;
+    dnf)
+      # dnsmasq-utils: same rationale as the apt branch above — provides
+      # dhcp_release, not bundled in the base dnsmasq package on Fedora/RHEL.
+      # nfs-utils/cifs-utils: same rationale as apt's nfs-common/cifs-utils
+      # above — mount.nfs/mount.cifs for libvirt's netfs pool driver.
+      # samba-client: Fedora/RHEL's package name for the smbclient CLI
+      # (same "browse folders" rationale as apt's smbclient above).
+      # gdisk/parted/e2fsprogs/xfsprogs/btrfs-progs/f2fs-tools: same
+      # rationale as the apt branch above (host-disk format/partition
+      # tooling) — package names are identical to apt/Debian on Fedora/RHEL.
+      #
+      # qemu-kvm-core, NOT qemu-kvm: on Fedora, qemu-kvm is a metapackage
+      # that pulls every UI frontend, qemu-ui-gtk among them, and with it
+      # GTK3, Mesa (53 MiB of DRI drivers alone), PipeWire, Wayland and
+      # the Adwaita icon and font themes — 116 MiB of desktop on a
+      # headless hypervisor, and 426 packages / 905 MiB where 104 / 227
+      # do the job. None of it is reachable: WebKVM drives VMs over
+      # libvirt and serves the console over VNC, whose support is
+      # compiled into qemu-system-x86-core rather than shipped as a UI
+      # plugin (verified: a VM created on a host without qemu-ui-gtk
+      # still answers "RFB 003.008" on its VNC port).
+      #
+      # libvirt-daemon-kvm is likewise a metapackage that depends on the
+      # qemu-kvm one, so it has to go too. The drivers it bundled are
+      # named individually instead, plus libvirt-daemon itself for
+      # libvirtd — without it there is no service to enable at all.
+      RUNTIME_PACKAGES=(ca-certificates curl openssl xorriso xz dnsmasq dnsmasq-utils libvirt-daemon libvirt-daemon-driver-qemu libvirt-daemon-driver-storage libvirt-daemon-driver-network libvirt-daemon-driver-interface libvirt-daemon-driver-nodedev libvirt-daemon-driver-nwfilter libvirt-daemon-driver-secret libvirt-daemon-config-network libvirt-client qemu-kvm-core qemu-img edk2-ovmf swtpm swtpm-tools virt-install bridge-utils python3 iproute procps-ng util-linux tar zstd nftables iptables nfs-utils cifs-utils samba-client gdisk parted e2fsprogs xfsprogs btrfs-progs f2fs-tools)
+      ;;
+    pacman)
+      # Arch: bridge-utils was dropped (brctl replaced by `ip` from iproute2, already listed);
+      # the setup-network bridge uses `ip link add ... type macvlan` and never needs brctl.
+      # dnsmasq is required for the libvirt default NAT network (otherwise
+      # "could not find dnsmasq in $PATH" and VMs never get an IP).
+      # No separate dnsmasq-utils package here: Arch's own "dnsmasq"
+      # package already bundles dhcp_release (confirmed:
+      # /usr/bin/dhcp_release via `pacman -Ql dnsmasq`).
+      # libisoburn (not "xorriso" — no such package on Arch, it's only a
+      # "provides" satisfied by libisoburn): pacman resolves provides for
+      # -S so "xorriso" would install fine here, but uninstall.sh's -R
+      # needs the real, installed package name, so both lists must agree.
+      # nfs-utils/cifs-utils: mount.nfs/mount.cifs for libvirt's netfs
+      # pool driver, same rationale as the apt/dnf branches above.
+      # smbclient: verified live against the Arch test VM (`pacman -Si
+      # smbclient` → package "smbclient" 2:4.24.7-1, repo extra) — the
+      # CLI used by the storage/backup "browse folders" feature.
+      # gptfdisk (NOT "gdisk" — that name doesn't exist on Arch, it's
+      # only a "provides" satisfied by gptfdisk, same libisoburn/xorriso
+      # situation as above): provides sgdisk for the host-disk format
+      # flow. parted/e2fsprogs/xfsprogs/btrfs-progs/f2fs-tools: same
+      # rationale as the apt/dnf branches above. e2fsprogs ships in
+      # Arch's base group already, but is listed explicitly so a
+      # minimal/container base that skipped base-devel extras still
+      # gets it.
+      RUNTIME_PACKAGES=(ca-certificates curl openssl libisoburn xz libvirt qemu-full qemu-img swtpm edk2-ovmf python iproute2 procps-ng util-linux tar zstd virt-install dnsmasq nftables iptables nfs-utils cifs-utils smbclient gptfdisk parted e2fsprogs xfsprogs btrfs-progs f2fs-tools)
+      ;;
+  esac
+}
+
+# ── Incus (containers, v2.2.0) ─────────────────────────────────────────
+# install_incus installs the Incus daemon when WEBKVM_INSTALL_INCUS=1.
+# It uses the NATIVE `incus` package on every package manager (apt /
+# pacman / dnf) — snap is never used. If `incus` is unavailable it falls
+# back to the legacy native `lxd` package; if neither exists it prints a
+# warning and continues KVM-only (never aborts, never touches snap).
+install_incus() {
+  [[ "${WEBKVM_INSTALL_INCUS}" == "1" ]] || return 0
+  log "installing Incus (containers) — WEBKVM_INSTALL_INCUS=1"
+  local pkg="incus"
+  local svc="incus"
+  if ! pkg_available "${pkg}"; then
+    if pkg_available lxd; then
+      pkg="lxd"; svc="lxd"
+      log "paquete 'incus' no disponible; usando 'lxd' legacy"
+    else
+      log "ADVERTENCIA: no hay paquete 'incus' (ni 'lxd') en ${PKG}. Instala Incus o LXD manualmente según la wiki de tu distribución; WebKVM continúa en modo KVM-only."
+      return 0
+    fi
+  fi
+  pkg_install "${pkg}" || true
+  systemctl enable --now "${svc}" >/dev/null 2>&1 || true
+  # Unprivileged containers need subuid/subgid ranges for root (Arch's
+  # incus package does not configure them) — without these, instance
+  # creation fails with "System doesn't have a functional idmap setup".
+  local subrange="root:1000000:1000000000"
+  if ! grep -qs "^root:1000000:1000000000" /etc/subuid 2>/dev/null; then
+    echo "${subrange}" >> /etc/subuid
+    echo "${subrange}" >> /etc/subgid
+    log "configured subuid/subgid for root (unprivileged containers)"
+  fi
+  # Minimal init: storage pool + default profile so `incus launch` and the
+  # WebKVM container module work immediately (setup-network.sh then points
+  # the default profile NIC at the physical bridge vmbr0).
+  if command -v "${pkg}" >/dev/null 2>&1; then
+    "${pkg}" admin init --auto >/dev/null 2>&1 || true
+    "${pkg}" profile set default security.nesting=true >/dev/null 2>&1 || true
+    log "Incus inicializado (incus admin init --auto, security.nesting=true)"
+  fi
+  log "Incus/LXD instalado vía paquete nativo (${pkg}, ${PKG})"
+}
+
+# ── Interactive settings ───────────────────────────────────────────────
+prompt_settings() {
+  echo ""
+  confirm DEFAULT_PORT "Backend HTTP/HTTPS port" "8080"
+  confirm DEFAULT_BIND "Bind address" "0.0.0.0"
+  # Pregunta clara: SSL (IP o dominio) vs solo IP (HTTP). Cubre el caso
+  prompt_select HTTPS "How do you want to access WebKVM?" "no|IP only (plain HTTP)" "yes|With SSL — self-signed certificate (works for IP and domain names, recommended)" "yes"
+  if [[ "${HTTPS}" == "yes" ]]; then
+    confirm TLS_DOMAIN "Certificate domain (optional — e.g. webkvm.example.com; empty = IP/hostname only, SAN covers LAN IP too)" ""
+  fi
+  # Physical shared-L2 bridge (vmbr0/br0 attached to the physical NIC) is the
+  # interactive default: KVM and Incus share the real LAN and get IPs from
+  # the router via DHCP (Proxmox-style). Unattended runs (--yes /
+  # WEBKVM_NONINTERACTIVE=1) default to "both" instead — bridge alone would
+  # silently skip the isolated NAT network an unattended admin can't opt
+  # into afterwards without re-running the installer; NAT alone would
+  # silently skip the shared-LAN bridge most standalone deployments need.
+  # An explicit --network=/NETWORK_MODE= always wins over either default.
+  local net_default="bridge"
+  [[ "${NONINTERACTIVE}" == 1 ]] && net_default="both"
+  prompt_select NETWORK_MODE "How should instances reach the network?" "bridge|Physical bridge vmbr0 (shared L2 — required, recommended)" "nat|NAT (explicit opt-in, isolated)" "both|Both (explicit opt-in)" "${net_default}"
+  if [[ "${NETWORK_MODE}" == "both" || "${NETWORK_MODE}" == "bridge" ]]; then
+    if [[ -z "${BRIDGE_DHCP}" && -z "${BRIDGE_STATIC_IP}" && "${NONINTERACTIVE}" == 0 ]]; then
+      local ans
+      read -r -p "  Bridge IP: pin current as STATIC (recommended) or DHCP? [static/dhcp] (default static): " ans
+      if [[ "${ans}" == "dhcp" ]]; then
+        BRIDGE_DHCP="true"
+      else
+        # static: setup-network.sh auto-detects the current address and pins
+        # it on the bridge (DHCP lease → static); optional explicit values.
+        BRIDGE_DHCP="false"
+        read -r -p "  Static IP (CIDR) [enter = pin current DHCP lease]: " BRIDGE_STATIC_IP
+        if [[ -n "${BRIDGE_STATIC_IP}" ]]; then
+          read -r -p "  Gateway: " BRIDGE_STATIC_GW
+          read -r -p "  DNS (comma-separated): " BRIDGE_STATIC_DNS
+        fi
+      fi
+    fi
+  fi
+}
+
+# ── Self-signed certificate ────────────────────────────────────────────
+gen_self_signed() {
+  command -v openssl >/dev/null || die "openssl is required for HTTPS"
+  install -d -m 0755 "${CERT_DIR}"
+  local hn
+  hn="$(printf '%s' "${HOSTNAME:-webkvm}" | tr -c 'A-Za-z0-9.-' '-' | sed 's/-\{2,\}/-/g;s/^-//;s/-$//')"
+  [[ -n "${hn}" ]] || hn="webkvm"
+  local san="DNS:webkvm,DNS:localhost,DNS:${hn}.local,IP:127.0.0.1"
+  local lan_ip=""
+  # Prefer the source address of the route actually used to reach the
+  # internet: `hostname -I` returns every kernel address in UNSPECIFIED
+  # order and can hand back docker0's 172.17.0.1 or libvirt's
+  # 192.168.122.1 first — the cert then misses the LAN IP entirely
+  # (same pitfall the install summary already documents).
+  if command -v ip >/dev/null 2>&1; then
+    lan_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' || true)"
+  fi
+  if [[ -z "${lan_ip}" ]]; then
+    # hostname(1) may be missing on minimal Arch — do not let pipefail trigger ERR trap.
+    lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  [[ -n "${lan_ip}" ]] && san="${san},IP:${lan_ip}"
+  [[ -n "${TLS_DOMAIN}" ]] && san="${san},DNS:${TLS_DOMAIN}"
+  log "generating self-signed certificate (SAN=${san})..."
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -keyout "${CERT_DIR}/webkvm.key" -out "${CERT_DIR}/webkvm.crt" \
+    -subj "/O=webkvm/CN=webkvm" -addext "subjectAltName=${san}" 2>/dev/null
+  chmod 0600 "${CERT_DIR}/webkvm.key"
+  chmod 0644 "${CERT_DIR}/webkvm.crt"
+}
+
+# Persist a scalar into config.json values without clobbering anything else.
+persist_setting() {
+  local key="$1" value="$2"
+  [[ -f "${CONFIG_PATH}" ]] || return 0
+  python3 - "${CONFIG_PATH}" "${key}" "${value}" <<'PY'
+import json
+import pathlib
+import sys
+path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.loads(pathlib.Path(path).read_text())
+d.setdefault("values", {})[key] = value
+tmp = pathlib.Path(path + ".tmp")
+tmp.write_text(json.dumps(d, indent=2) + "\n")
+tmp.chmod(0o600)
+tmp.replace(path)
+PY
+}
+
+# ── Main ───────────────────────────────────────────────────────────────
+bold() { printf "\033[1m%s\033[0m\n" "$*"; }
+
+echo ""
+bold "webkvm standalone installer"
+echo ""
+
+preflight
+setup_package_map
+
+if [[ "${DRY_RUN}" == 1 ]]; then
+  echo ""
+  log "── DRY-RUN (no se ha instalado nada) ────────────"
+  log "familia de paquetes : ${PKG}"
+  log "runtime packages that would be installed:"
+  local_pkg=""
+  for local_pkg in "${RUNTIME_PACKAGES[@]}"; do log "  · ${local_pkg}"; done
+  if [[ "${WEBKVM_INSTALL_INCUS}" == "1" ]]; then
+    log "Incus (contenedores)  : instalación automática (WEBKVM_INSTALL_INCUS=1) + WEBKVM_INCUS_ENABLED=1"
+  elif [[ "${WEBKVM_INCUS_ENABLED}" == "1" ]]; then
+    log "Incus (contenedores)  : opt-in activado (WEBKVM_INCUS_ENABLED=1); asume LXD ya instalado"
+  fi
+  log "binario destino     : ${BIN}"
+  log "servicio            : ${SERVICE} (enable --now)"
+  log "datos               : ${DATA_DIR}"
+  if [[ -x "${WEBKVM_BINARY:-}" ]]; then
+    log "fuente binario      : ${WEBKVM_BINARY} (local)"
+  elif [[ -x "${REPO_DIR}/backend/webkvm" ]]; then
+    log "fuente binario      : ${REPO_DIR}/backend/webkvm (repo checkout)"
+  elif [[ -n "${BIN_URL}" && -n "${BIN_SHA256}" ]]; then
+    log "fuente binario      : descarga desde BIN_URL"
+  else
+    log "fuente binario      : release tarball oficial (webkvm-*.tar.gz) de GitHub Releases (extracción automática del binario)"
+  fi
+  log "dry-run OK — sistema intacto."
+  exit 0
+fi
+
+prompt_settings
+
+# Values are interpolated into a systemd unit. Reject whitespace / control
+# chars / malformed paths rather than producing an ambiguous unit file.
+[[ "${PREFIX}" == /* && "${PREFIX}" != *[[:space:]]* && "${PREFIX}" != *$'\n'* ]] || die "WEBKVM_PREFIX must be an absolute path without whitespace"
+[[ "${DATA_DIR}" == /* && "${DATA_DIR}" != *[[:space:]]* && "${DATA_DIR}" != *$'\n'* ]] || die "WEBKVM_DATA_DIR must be an absolute path without whitespace"
+[[ "${DEFAULT_BIND}" != *[[:space:]]* && "${DEFAULT_BIND}" != *$'\n'* ]] || die "WEBKVM_BIND_ADDR contains whitespace"
+[[ "${DEFAULT_PORT}" =~ ^[0-9]+$ && ${DEFAULT_PORT} -ge 1 && ${DEFAULT_PORT} -le 65535 ]] || die "WEBKVM_PORT must be between 1 and 65535"
+
+export DEBIAN_FRONTEND=noninteractive
+
+# Port already bound? Fail EARLY with a clear message instead of a
+# confusing rollback after packages were installed.
+if command -v ss >/dev/null 2>&1 && ss -ltnH 2>/dev/null | grep -q ":${DEFAULT_PORT} "; then
+  if ! systemctl is-active --quiet webkvm 2>/dev/null; then
+    die "port ${DEFAULT_PORT} is already in use by another process; free it or choose another port with WEBKVM_PORT"
+  fi
+fi
+
+log "installing runtime dependencies (${PKG})"
+pkg_update || log "warning: could not refresh the package index; continuing anyway"
+pkg_install "${RUNTIME_PACKAGES[@]}" || die "runtime dependencies could not be installed"
+
+# v2.1.0: optional LXD daemon for the container module (opt-in).
+install_incus
+
+# --no-pager: 'systemctl cat' can die with SIGPIPE (rc=141) in
+# non-TTY contexts, falsely reading as "unit not found".
+if systemctl --no-pager cat libvirtd.service >/dev/null 2>&1; then
+  systemctl enable --now libvirtd.service
+elif systemctl --no-pager cat virtqemud.service >/dev/null 2>&1; then
+  systemctl enable --now virtqemud.service
+else
+  die "libvirt daemon service was not found after installation"
+fi
+# /etc/webkvm must exist: the unit declares it in ReadWritePaths, and a
+# missing ReadWritePaths path aborts startup with 226/NAMESPACE (the .deb
+# postinstall already creates it; the standalone path must too).
+install -d -m 0755 "${DATA_DIR}" "${DATA_DIR}/logs" "${DATA_DIR}/source" "${CERT_DIR}" /etc/webkvm
+[[ -f "${CONFIG_PATH}" ]] && CONFIG_EXISTED=1
+
+# ── Source of the binary ───────────────────────────────────────────────
+# webkvm is distributed as a precompiled binary that embeds the frontend.
+# The server only needs runtime packages (libvirt/qemu), never a toolchain.
+SOURCE_BIN=""
+if [[ -x "${WEBKVM_BINARY:-}" ]]; then
+  SOURCE_BIN="${WEBKVM_BINARY}"
+elif [[ -n "${BIN_URL}" ]]; then
+  [[ "${BIN_URL}" == https://* ]] || die "WEBKVM_BINARY_URL must use HTTPS"
+  [[ "${BIN_SHA256}" =~ ^[[:xdigit:]]{64}$ ]] || die "WEBKVM_BINARY_SHA256 must be a 64-character SHA-256 when downloading a binary"
+  DOWNLOADED_BIN="$(mktemp /tmp/webkvm.XXXXXX)"
+  log "downloading release binary"
+  curl --fail --location --retry 3 --proto '=https' --tlsv1.2 "${BIN_URL}" -o "${DOWNLOADED_BIN}"
+  chmod 0755 "${DOWNLOADED_BIN}"
+  printf '%s  %s\n' "${BIN_SHA256}" "${DOWNLOADED_BIN}" | sha256sum --check --status || die "downloaded binary checksum mismatch"
+  SOURCE_BIN="${DOWNLOADED_BIN}"
+elif [[ -x "${REPO_DIR}/backend/webkvm" ]]; then
+  SOURCE_BIN="${REPO_DIR}/backend/webkvm"
+  log "using binary from repo checkout: ${SOURCE_BIN}"
+else
+  # Last resort: fetch the official release tarball (webkvm-*.tar.gz) from
+  # GitHub Releases and extract the precompiled binary from it. This covers
+  # `git clone` checkouts where backend/webkvm has not been built, and any
+  # server that only has the installer script (curl | bash one-liner).
+  log "fetching latest release tarball from GitHub..."
+  RELEASE_API="https://api.github.com/repos/Slaker19/webkvm/releases/latest"
+  TARBALL_URL=$(curl -fsSL --retry 3 --proto '=https' --tlsv1.2 "${RELEASE_API}" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*webkvm-[^"]*\.tar\.gz"' | head -1 | cut -d'"' -f4 || true)
+  SHA256_URL=$(curl -fsSL --retry 3 --proto '=https' --tlsv1.2 "${RELEASE_API}" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*SHA256SUMS[^"]*"' | head -1 | cut -d'"' -f4 || true)
+  if [[ -n "${TARBALL_URL}" && -n "${SHA256_URL}" ]]; then
+    DOWNLOADED_TARBALL="$(mktemp /tmp/webkvm.XXXXXX.tar.gz)"
+    log "downloading release tarball from ${TARBALL_URL}"
+    curl --fail --location --retry 3 --proto '=https' --tlsv1.2 "${TARBALL_URL}" -o "${DOWNLOADED_TARBALL}" || die "release tarball download failed"
+    TARBALL_NAME=$(basename "${TARBALL_URL}")
+    # Fail closed: the extracted binary runs as root — installing it
+    # unverified would be an avatar of RCE.
+    TARBALL_SHA256=$(curl -fsSL --retry 3 --proto '=https' --tlsv1.2 "${SHA256_URL}" 2>/dev/null | grep "${TARBALL_NAME}" | awk '{print $1}' || true)
+    if [[ -n "${TARBALL_SHA256}" && "${TARBALL_SHA256}" =~ ^[[:xdigit:]]{64}$ ]]; then
+      printf '%s  %s\n' "${TARBALL_SHA256}" "${DOWNLOADED_TARBALL}" | sha256sum --check --status || die "downloaded tarball checksum mismatch"
+    else
+      die "tarball checksum could not be verified (no SHA256SUMS entry for this asset); refusing to install an unverified binary as root"
+    fi
+    RELEASE_DIR="$(mktemp -d /tmp/webkvm-release.XXXXXX)"
+    tar xzf "${DOWNLOADED_TARBALL}" -C "${RELEASE_DIR}" || die "failed to extract release tarball"
+    if [[ -x "${RELEASE_DIR}/backend/webkvm" ]]; then
+      DOWNLOADED_BIN="${RELEASE_DIR}/backend/webkvm"
+      chmod 0755 "${DOWNLOADED_BIN}"
+      SOURCE_BIN="${DOWNLOADED_BIN}"
+      log "using binary extracted from release tarball: ${SOURCE_BIN}"
+    else
+      die "release tarball does not contain backend/webkvm"
+    fi
+  else
+    die "no webkvm binary found. Provide one with WEBKVM_BINARY=<path>, WEBKVM_BINARY_URL=<https>+WEBKVM_BINARY_SHA256, build it with 'make dist' (the server never compiles), or check that a GitHub release for Slaker19/webkvm exists."
+  fi
+fi
+[[ -x "${SOURCE_BIN}" ]] || die "binary not found: ${SOURCE_BIN}"
+for command_name in curl python3 ip virsh qemu-img tar zstd; do
+  command -v "${command_name}" >/dev/null || die "required command is missing: ${command_name}"
+done
+
+# ── Deploy binary + service ────────────────────────────────────────────
+if [[ -f "${BIN}" ]]; then HAD_BIN=1; cp -f "${BIN}" "${PREVIOUS}"; fi
+if [[ -f "${SERVICE_PATH}" ]]; then HAD_SERVICE=1; cp -f "${SERVICE_PATH}" "${SERVICE_PREVIOUS}"; fi
+ROLLBACK_ARMED=1
+# Validate dynamic linker compatibility before replacing the active binary
+if command -v ldd >/dev/null 2>&1; then
+  if ldd "${SOURCE_BIN}" 2>&1 | grep -q "not found"; then
+    missing_libs="$(ldd "${SOURCE_BIN}" 2>&1 | grep "not found")"
+    die "the binary ${SOURCE_BIN} is not dynamically compatible with this host:\n${missing_libs}\nEnsure the binary was built on or against the minimum supported distro version (e.g. glibc and libvirt.so.0)."
+  fi
+fi
+
+# Upgrades may hand us the very binary that is already installed
+# (WEBKVM_BINARY=/usr/local/bin/webkvm). install(1) fails on src==dst.
+if [[ ! -e "${BIN}" ]] || [[ "${SOURCE_BIN}" != "${BIN}" && "$(realpath -e "${SOURCE_BIN}" 2>/dev/null)" != "$(realpath -e "${BIN}" 2>/dev/null)" ]]; then
+  install -D -m 0755 "${SOURCE_BIN}" "${BIN}"
+fi
+
+# Deploy the CLI (webkvm-cli) if present next to the main binary. It is
+# taken from the same source as the server binary, so the two always
+# come from the same build: a sibling of WEBKVM_BINARY, the matching
+# release asset, the release tarball, or a local `make cli` build in the
+# checkout. No CLI binary is committed to git. The CLI is optional.
+CLI_SRC=""
+if [[ -x "${WEBKVM_BINARY:-}" ]]; then
+  cli_dir="$(dirname "${WEBKVM_BINARY}")"
+  if [[ -x "${cli_dir}/webkvm-cli" ]]; then
+    CLI_SRC="${cli_dir}/webkvm-cli"
+  fi
+elif [[ -n "${BIN_URL}" ]]; then
+  # Release assets are webkvm-<ver>-linux_amd64 / webkvm-cli-<ver>-linux_amd64
+  # (see release.yml); a bare .../webkvm maps to .../webkvm-cli. Best-effort.
+  bin_asset="${BIN_URL##*/}"
+  if [[ "${bin_asset}" == webkvm-* ]]; then
+    cli_url="${BIN_URL%/*}/webkvm-cli-${bin_asset#webkvm-}"
+  else
+    cli_url="${BIN_URL}-cli"
+  fi
+  if curl --fail --silent --location --retry 2 --proto '=https' --tlsv1.2 "${cli_url}" -o "${DOWNLOADED_BIN}.cli" 2>/dev/null; then
+    CLI_SRC="${DOWNLOADED_BIN}.cli"
+    chmod 0755 "${CLI_SRC}"
+  fi
+elif [[ -n "${RELEASE_DIR}" && -x "${RELEASE_DIR}/backend/webkvm-cli" ]]; then
+  # Release-tarball fallback: ship the CLI bundled in the same tarball.
+  CLI_SRC="${RELEASE_DIR}/backend/webkvm-cli"
+elif [[ "${SOURCE_BIN}" == "${REPO_DIR}/backend/webkvm" && -x "${REPO_DIR}/backend/webkvm-cli" ]]; then
+  # Local build in the checkout (`make build cli`), never a committed file.
+  CLI_SRC="${REPO_DIR}/backend/webkvm-cli"
+fi
+if [[ -n "${CLI_SRC}" && -x "${CLI_SRC}" ]]; then
+  install -D -m 0755 "${CLI_SRC}" "${PREFIX}/bin/webkvm-cli"
+  log "CLI installed -> ${PREFIX}/bin/webkvm-cli"
+fi
+
+# Pass the initial admin password through to the backend's first boot.
+ADMIN_PW_LINE=""
+[[ -n "${WEBKVM_ADMIN_PASSWORD:-}" ]] && ADMIN_PW_LINE="Environment=WEBKVM_ADMIN_PASSWORD=${WEBKVM_ADMIN_PASSWORD}"
+# v2.1.0: opt-in the container module in the systemd unit.
+INCUS_ENV_LINE=""
+[[ "${WEBKVM_INSTALL_INCUS}" == "1" || "${WEBKVM_INCUS_ENABLED}" == "1" ]] && INCUS_ENV_LINE="Environment=WEBKVM_INCUS_ENABLED=1"
+
+install -D -m 0644 /dev/stdin "${SERVICE_PATH}" <<EOF
+[Unit]
+Description=WebKVM (standalone)
+After=libvirtd.service virtqemud.service virtstoraged.service virtnetworkd.service virtlogd.service network-online.target
+Wants=libvirtd.service virtqemud.service virtstoraged.service virtnetworkd.service virtlogd.service network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=DATA_DIR=${DATA_DIR}
+Environment=REPO_DIR=${DATA_DIR}/source
+Environment=BIND_ADDR=127.0.0.1
+Environment=PORT=${DEFAULT_PORT}
+Environment=TMPDIR=/var/tmp
+Environment=WEBKVM_LOG_FILE=${DATA_DIR}/logs/backend.log
+${ADMIN_PW_LINE}
+${INCUS_ENV_LINE}
+WorkingDirectory=${DATA_DIR}
+ExecStart=${BIN}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=webkvm
+ReadWritePaths=${DATA_DIR} /var/lib/libvirt /var/tmp /etc/webkvm /etc/systemd/system
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+for unit in virtqemud.socket virtstoraged.socket virtnetworkd.socket virtlogd.socket virtnodedevd.socket; do
+  # --no-pager: see the libvirtd/virtqemud detection above — 'systemctl cat'
+  # can die with SIGPIPE (rc=141) in non-TTY contexts (the default for a
+  # piped one-liner install), which reads as "unit not found" and silently
+  # skips enabling a socket that actually exists.
+  if systemctl --no-pager cat "${unit}" >/dev/null 2>&1; then
+    systemctl enable --now "${unit}"
+  fi
+done
+
+# ── Persist settings BEFORE the first start ────────────────────────────
+# The backend reads server.bind_addr / server.port / server.tls_* from
+# config.json and overrides the systemd unit env. Writing them before the
+# first boot means a fresh install binds the requested port immediately
+# (not the schema default 8080) and starts with HTTPS already enabled.
+if [[ "${CONFIG_EXISTED}" == 0 ]]; then
+  python3 - "${CONFIG_PATH}" "${DEFAULT_BIND}" "${DEFAULT_PORT}" <<'PY'
+import json
+import pathlib
+import sys
+path, bind, port = sys.argv[1], sys.argv[2], sys.argv[3]
+d = {"values": {"server.bind_addr": bind, "server.port": int(port)}}
+tmp = pathlib.Path(path + ".tmp")
+tmp.write_text(json.dumps(d, indent=2) + "\n")
+tmp.chmod(0o600)
+tmp.replace(path)
+PY
+  log "wrote initial settings: bind=${DEFAULT_BIND} port=${DEFAULT_PORT}"
+else
+  log "preserving existing persistent server settings"
+fi
+
+# ── HTTPS ──────────────────────────────────────────────────────────────
+if [[ "${HTTPS}" == "yes" ]]; then
+  gen_self_signed
+  persist_setting "server.tls_cert" "${CERT_DIR}/webkvm.crt"
+  persist_setting "server.tls_key" "${CERT_DIR}/webkvm.key"
+  if [[ -n "${TLS_DOMAIN}" ]]; then
+    persist_setting "server.tls_domain" "${TLS_DOMAIN}"
+  fi
+fi
+
+systemctl daemon-reload
+systemctl enable "${SERVICE}"
+systemctl restart "${SERVICE}"
+
+# ── Networks: NAT + bridge to the real LAN ─────────────────────────────
+if [[ -x "${SETUP_NETWORK}" && -n "${NETWORK_MODE}" && "${NETWORK_MODE}" != "none" ]]; then
+  log "wiring networks (mode=${NETWORK_MODE})..."
+  args=()
+  case "${NETWORK_MODE}" in
+    nat) args+=(--nat) ;;
+    bridge) args+=(--bridge) ;;
+    both) args+=(--both) ;;
+  esac
+  if [[ "${NETWORK_MODE}" == "both" || "${NETWORK_MODE}" == "bridge" ]]; then
+    # Automatic: setup-network.sh DETECTS DHCP vs static and, when DHCP, pins
+    # the current lease as STATIC on the bridge (vmbr0 keeps the same IP).
+    # Apply the bridge automatically (the admin explicitly chose bridge mode);
+    # pass through explicit static values and the pin toggle if provided.
+    export BRIDGE_APPLY=1 BRIDGE_STATIC_IP BRIDGE_STATIC_GW BRIDGE_STATIC_DNS
+    export WEBKVM_PIN_STATIC="${WEBKVM_PIN_STATIC:-1}"
+    if [ -n "${BRIDGE_STATIC_IP}" ]; then
+      export BRIDGE_DHCP=false
+    fi
+  fi
+  bash "${SETUP_NETWORK}" "${args[@]}" || {
+    die "WebKVM requires a PHYSICAL Linux bridge (vmbr0/br0) attached to your physical NIC — shared Layer-2, IPs from your router via DHCP (Proxmox-style). See the instructions above; NAT is not used."
+  }
+fi
+
+# ── Firewall: open the web UI port when a firewall is active ──────────
+open_firewall_port() {
+  local port="$1"
+  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+    firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 \
+      && log "firewalld: opened port ${port}/tcp"
+  elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow "${port}/tcp" >/dev/null 2>&1 && log "ufw: allowed ${port}/tcp"
+  else
+    log "no active firewalld/ufw detected; nothing to open for port ${port}"
+  fi
+}
+open_firewall_port "${DEFAULT_PORT}"
+
+# ── Health check ───────────────────────────────────────────────────────
+HEALTH_PORT="$(python3 - "${CONFIG_PATH}" "${DEFAULT_PORT}" <<'PY'
+import json, pathlib, sys
+try:
+    values = json.loads(pathlib.Path(sys.argv[1]).read_text()).get("values", {})
+    port = int(values.get("server.port", sys.argv[2]))
+    print(port if 1 <= port <= 65535 else sys.argv[2])
+except Exception:
+    print(sys.argv[2])
+PY
+)"
+PROTO="http"
+if [[ "${HTTPS}" == "yes" ]]; then PROTO="https"; fi
+HEALTH_FILE="$(mktemp --tmpdir webkvm-health.XXXXXX)"
+chmod 0600 "${HEALTH_FILE}"
+ok=0
+for _ in $(seq 1 30); do
+  if curl -kfsS --max-time 2 "${PROTO}://127.0.0.1:${HEALTH_PORT}/api/health" >"${HEALTH_FILE}" 2>/dev/null; then ok=1; break; fi
+  sleep 1
+done
+if [[ "${ok}" != 1 ]]; then
+  journalctl -u "${SERVICE}" -n 80 --no-pager >&2 || true
+  die "health check failed; previous binary was restored when available"
+fi
+
+systemctl is-active --quiet "${SERVICE}" || die "webkvm service is not active"
+virsh -c qemu:///system list --all >/dev/null || die "libvirt qemu:///system is unavailable"
+virsh -c qemu:///system pool-list --all >/dev/null || die "libvirt storage pools are unavailable"
+
+INSTALL_SUCCEEDED=1
+rm -f -- "${HEALTH_FILE}"
+
+# ── Summary ────────────────────────────────────────────────────────────
+# The LAN IP for the "Web UI" URL below MUST be the address reachable
+# from other machines, not just any local address. `hostname -I` (the
+# old approach here) returns every address the kernel knows about in
+# unspecified order — on a host with Docker or libvirt's default NAT
+# network active (both very common), it can return docker0's or
+# virbr0's address FIRST, printing an unreachable-from-outside URL
+# (confirmed live on two different distros: 192.168.122.1 on one,
+# 172.17.0.1 on another — neither was the real LAN IP the installer had
+# just configured on vmbr0/br0 a moment earlier). Use the same
+# reliable technique already used above for the certificate's SAN: the
+# source address of the route actually used to reach the internet.
+lan_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' || true)"
+[ -n "${lan_ip}" ] || lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+[ -n "${lan_ip}" ] || lan_ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | head -1 | cut -d/ -f1 || true)"
+echo ""
+bold "=== webkvm installed successfully ==="
+echo ""
+echo "  Web UI:  ${PROTO}://${lan_ip}:${HEALTH_PORT}"
+echo "           ${PROTO}://localhost:${HEALTH_PORT}"
+if [[ "${HTTPS}" == "yes" ]]; then
+  echo "  Certificate: ${CERT_DIR}/webkvm.crt  (download it from the UI at /api/system/cert and trust it to remove the warning)"
+  if [[ -n "${TLS_DOMAIN}" ]]; then
+    echo "  Domain:   ${TLS_DOMAIN} (Let's Encrypt automatic — fallback to self-signed if unreachable)"
+  fi
+fi
+if [[ -f "${DATA_DIR}/admin-password.initial" ]]; then
+  echo "  Admin password: $(cat "${DATA_DIR}/admin-password.initial")"
+fi
+echo ""
+  echo "  Networks:"
+  echo "    - vmbr0: physical bridge on the real LAN (shared Layer-2, IPs from the router)"
+  if [[ "${NETWORK_MODE}" == "both" || "${NETWORK_MODE}" == "bridge" ]]; then
+    echo "    - vmbr1: NAT bridge (100.0.0.0/24) — isolated tenants with internet via MASQUERADE"
+  fi
+  echo ""
+echo "  Commands:"
+echo "    systemctl status webkvm   # service status"
+echo "    journalctl -u webkvm -f   # follow logs"
+echo ""

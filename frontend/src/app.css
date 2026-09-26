@@ -1,0 +1,602 @@
+@import 'tailwindcss';
+
+/* Self-hosted Inter (weights used by the heading/body scale below) —
+   bundled via Vite/embedded in the binary like everything else, not
+   hotlinked to Google Fonts: WebKVM ships as a single offline binary
+   with no guaranteed internet access at runtime. */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-active: var(--surface-active);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-tertiary: var(--tertiary);
+  --color-tertiary-foreground: var(--tertiary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-accent-subtle-hover: var(--accent-subtle-hover);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-border: var(--border);
+  --color-border-hover: var(--border-hover);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-subtle: var(--destructive-subtle);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-subtle: var(--success-subtle);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-subtle: var(--warning-subtle);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-subtle: var(--info-subtle);
+  --color-status-running: var(--status-running);
+  --color-status-shutoff: var(--status-shutoff);
+  --color-status-paused: var(--status-paused);
+  --color-status-crashed: var(--status-crashed);
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/*
+ * WebKVM — Design tokens
+ * Dark-only for this phase. Light theme tokens defined in a comment block
+ * for future use (uncomment + add the `.dark` selector for opt-in switching).
+ *
+ * Palette inspired by shadcn/ui "zinc" + Beszel's neutral-first aesthetic.
+ * No gradients on surfaces. Accent (indigo) reserved for buttons, links,
+ * focus rings, and chart lines.
+ */
+
+@layer base {
+  :root {
+    /* Surfaces */
+    --background: #0a0a0c;
+    --foreground: #f4f4f5;
+
+    --card: #131316;
+    --card-foreground: #f4f4f5;
+
+    --popover: #131316;
+    --popover-foreground: #f4f4f5;
+
+    /* Surfaces with hover/active states */
+    --surface: #131316;
+    --surface-hover: #1b1b1f;
+    --surface-active: #232328;
+
+    /* Muted text/backgrounds */
+    --muted: #1b1b1f;
+    --muted-foreground: #a1a1aa;
+
+    /* Secondary surfaces */
+    --secondary: #1b1b1f;
+    --secondary-foreground: #f4f4f5;
+
+    /* Tertiary */
+    --tertiary: #232328;
+    --tertiary-foreground: #a1a1aa;
+
+    /* Accent (indigo) — buttons, links, focus rings ONLY */
+    --accent: #6366f1;
+    --accent-foreground: #ffffff;
+    --accent-hover: #818cf8;
+    --accent-subtle: rgba(99, 102, 241, 0.1);
+    --accent-subtle-hover: rgba(99, 102, 241, 0.15);
+
+    /* Primary — alias of accent, consumed by shadcn Button default variant */
+    --primary: #6366f1;
+    --primary-foreground: #ffffff;
+
+    /* Borders */
+    --border: #232328;
+    --border-hover: #2e2e34;
+    --input: #232328;
+    --ring: #6366f1;
+
+    /* Status colors */
+    --status-running: #22c55e;
+    --status-shutoff: #71717a;
+    --status-paused: #eab308;
+    --status-crashed: #ef4444;
+
+    --success: #22c55e;
+    --success-foreground: #ffffff;
+    --success-subtle: rgba(34, 197, 94, 0.1);
+    --warning: #f59e0b;
+    --warning-foreground: #ffffff;
+    --warning-subtle: rgba(245, 158, 11, 0.1);
+    --info: #3b82f6;
+    --info-foreground: #ffffff;
+    --info-subtle: rgba(59, 130, 246, 0.1);
+    --destructive: #ef4444;
+    --destructive-foreground: #ffffff;
+    --destructive-subtle: rgba(239, 68, 68, 0.1);
+
+    /* Radius */
+    --radius: 8px;
+
+    /* Text */
+    --text-primary: #f4f4f5;
+    --text-secondary: #a1a1aa;
+    --text-muted: #52525b;
+  }
+
+  /* OLED Black Theme (True Pitch Black) */
+  :root[data-theme='oled'],
+  html[data-theme='oled'] {
+    --background: #000000;
+    --foreground: #ffffff;
+    --card: #08080a;
+    --card-foreground: #ffffff;
+    --popover: #08080a;
+    --popover-foreground: #ffffff;
+    --surface: #08080a;
+    --surface-hover: #121215;
+    --surface-active: #1a1a1f;
+    --muted: #101012;
+    --muted-foreground: #a1a1aa;
+    --secondary: #101012;
+    --secondary-foreground: #ffffff;
+    --tertiary: #1a1a1f;
+    --tertiary-foreground: #a1a1aa;
+    --border: #1a1a1f;
+    --border-hover: #26262e;
+    --input: #1a1a1f;
+    --text-primary: #ffffff;
+    --text-secondary: #a1a1aa;
+    --text-muted: #71717a;
+  }
+
+  /* Modern Light Theme */
+  :root[data-theme='light'],
+  html[data-theme='light'],
+  :root:not(.dark) {
+    --background: #f8fafc;
+    --foreground: #0f172a;
+    --card: #ffffff;
+    --card-foreground: #0f172a;
+    --popover: #ffffff;
+    --popover-foreground: #0f172a;
+    --surface: #ffffff;
+    --surface-hover: #f1f5f9;
+    --surface-active: #e2e8f0;
+    --muted: #f1f5f9;
+    --muted-foreground: #64748b;
+    --secondary: #f1f5f9;
+    --secondary-foreground: #0f172a;
+    --tertiary: #e2e8f0;
+    --tertiary-foreground: #64748b;
+    --border: #e2e8f0;
+    --border-hover: #cbd5e1;
+    --input: #e2e8f0;
+    --text-primary: #0f172a;
+    --text-secondary: #64748b;
+    --text-muted: #94a3b8;
+  }
+
+  /* Accent Color Variants */
+  :root[data-accent='emerald'],
+  html[data-accent='emerald'] {
+    --accent: #10b981;
+    --accent-hover: #34d399;
+    --accent-subtle: rgba(16, 185, 129, 0.1);
+    --accent-subtle-hover: rgba(16, 185, 129, 0.15);
+    --primary: #10b981;
+    --ring: #10b981;
+  }
+
+  :root[data-accent='blue'],
+  html[data-accent='blue'] {
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+    --accent-subtle: rgba(59, 130, 246, 0.1);
+    --accent-subtle-hover: rgba(59, 130, 246, 0.15);
+    --primary: #3b82f6;
+    --ring: #3b82f6;
+  }
+
+  :root[data-accent='violet'],
+  html[data-accent='violet'] {
+    --accent: #8b5cf6;
+    --accent-hover: #a78bfa;
+    --accent-subtle: rgba(139, 92, 246, 0.1);
+    --accent-subtle-hover: rgba(139, 92, 246, 0.15);
+    --primary: #8b5cf6;
+    --ring: #8b5cf6;
+  }
+
+  :root[data-accent='amber'],
+  html[data-accent='amber'] {
+    --accent: #f59e0b;
+    --accent-hover: #fbbf24;
+    --accent-subtle: rgba(245, 158, 11, 0.1);
+    --accent-subtle-hover: rgba(245, 158, 11, 0.15);
+    --primary: #f59e0b;
+    --ring: #f59e0b;
+  }
+
+  :root[data-accent='rose'],
+  html[data-accent='rose'] {
+    --accent: #f43f5e;
+    --accent-hover: #fb7185;
+    --accent-subtle: rgba(244, 63, 94, 0.1);
+    --accent-subtle-hover: rgba(244, 63, 94, 0.15);
+    --primary: #f43f5e;
+    --ring: #f43f5e;
+  }
+
+  body {
+    margin: 0;
+    /* Soft indigo glow near the top for depth; stays subtle against the
+       flat dark surfaces. Uses the accent-subtle token so it can't be
+       mistaken for a button. */
+    background:
+      radial-gradient(60rem 36rem at 50% -10%, var(--accent-subtle) 0%, transparent 55%),
+      var(--background);
+    color: var(--foreground);
+    font-family:
+      'Inter',
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  ::selection {
+    background: var(--accent-subtle);
+    color: var(--foreground);
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--background);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--border-hover);
+  }
+  /* Firefox scrollbar styling (WebKit rules above don't apply). */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) var(--background);
+  }
+}
+
+/* Tabular numbers for data tables */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Status dot — tiny circle for status indicators */
+.status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* Divider that fades to transparent at both ends instead of a hard
+   edge. Used sparingly (sidebar rail-mode section separators, the
+   Fleet stat-card row divider) — not a wholesale replacement for
+   border-border, which stays the default everywhere else. */
+.fade-rule {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--border) 15%,
+    var(--border) 85%,
+    transparent
+  );
+}
+
+/* .input is NOT legacy: it's the only styling for native <select> and
+   <textarea> elements, since no shadcn Select/Textarea component exists
+   yet. Every <input> in the app uses the real shadcn Input component
+   (lib/components/ui/input) — this class only backs the two element
+   types that don't have one. */
+:where(.input) {
+  width: 100%;
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  background: var(--background);
+  border: 1px solid var(--input);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+  outline: none;
+  box-sizing: border-box;
+}
+.input:focus {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23a1a1aa' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  background-size: 12px;
+  padding-right: 2rem;
+  cursor: pointer;
+}
+select.input option {
+  background: var(--popover);
+  color: var(--text-primary);
+  padding: 0.5rem;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes progressIndeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(100%);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+.animate-fade-in {
+  animation: fadeIn var(--motion-slow) var(--ease-out);
+}
+.animate-slide-up {
+  animation: slideUp var(--motion-slow) var(--ease-out);
+}
+.animate-slide-down {
+  animation: slideDown var(--motion-slow) var(--ease-out);
+}
+.animate-scale-in {
+  animation: scaleIn var(--motion-base) var(--ease-out);
+}
+.animate-progress-indeterminate {
+  animation: progressIndeterminate 2s ease-in-out infinite;
+}
+
+/* ============================================================
+ * Motion tokens — single source of truth for every animation
+ * system in the app (there used to be three: hand-rolled
+ * @keyframes classes below, the bits-ui animate-in/out utilities,
+ * and ad-hoc svelte/transition durations sprinkled across
+ * components). Everything now reads from these variables, so
+ * changing "how snappy WebKVM feels" is a one-line edit here
+ * instead of a grep-and-replace across the codebase.
+ *
+ * Durations follow Material's "small = fast, large = slow" rule:
+ * the more screen real-estate a transition covers, the longer it
+ * gets. Easing values are the shadcn/tw-animate-css cubic-beziers
+ * (a slight overshoot on enter, a sharper cut on exit).
+ * ============================================================ */
+@theme {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.32, 0, 0.67, 0);
+  /* Micro feedback: hover/active state changes, toggles. */
+  --motion-fast: 120ms;
+  /* Default for most enter animations: cards, badges, alerts. */
+  --motion-base: 150ms;
+  /* Larger surfaces entering the viewport: dialogs, drawers, the
+     route transition in App.svelte. */
+  --motion-slow: 200ms;
+}
+
+/* ============================================================
+ * Micro-interactions — subset of tw-animate-css, hand-rolled so
+ * the shadcn primitives (dialogs, toasts, dropdowns, tooltips)
+ * animate in/out instead of appearing instantly.
+ *
+ * Tailwind v4's `data-open:` / `data-closed:` variants drive the
+ * utilities below (`data-open:animate-in` compiles to
+ * `.data-open\:animate-in[data-open]`). The per-property classes
+ * (fade-in-0, zoom-in-95, slide-in-from-*-2, …) set CSS variables
+ * consumed by the enter/exit keyframes.
+ * ============================================================ */
+
+@utility animate-in {
+  animation-name: enter;
+  animation-duration: var(--tw-duration, var(--motion-base));
+  animation-timing-function: var(--tw-ease, var(--ease-out));
+  animation-fill-mode: both;
+}
+
+@utility animate-out {
+  animation-name: exit;
+  animation-duration: var(--tw-duration, var(--motion-fast));
+  animation-timing-function: var(--tw-ease, var(--ease-in));
+  animation-fill-mode: both;
+}
+
+@utility fade-in-0 {
+  --tw-enter-opacity: 0;
+}
+@utility fade-out-0 {
+  --tw-exit-opacity: 0;
+}
+@utility zoom-in-95 {
+  --tw-enter-scale: 0.95;
+}
+@utility zoom-out-95 {
+  --tw-exit-scale: 0.95;
+}
+@utility slide-in-from-top-2 {
+  --tw-enter-translate-y: -8px;
+}
+@utility slide-in-from-bottom-2 {
+  --tw-enter-translate-y: 8px;
+}
+@utility slide-in-from-left-2 {
+  --tw-enter-translate-x: -8px;
+}
+@utility slide-in-from-right-2 {
+  --tw-enter-translate-x: 8px;
+}
+@utility slide-out-to-top-2 {
+  --tw-exit-translate-y: -8px;
+}
+@utility slide-out-to-bottom-2 {
+  --tw-exit-translate-y: 8px;
+}
+@utility slide-out-to-left-2 {
+  --tw-exit-translate-x: -8px;
+}
+@utility slide-out-to-right-2 {
+  --tw-exit-translate-x: 8px;
+}
+
+@keyframes enter {
+  from {
+    opacity: var(--tw-enter-opacity, 1);
+    transform: translate3d(var(--tw-enter-translate-x, 0), var(--tw-enter-translate-y, 0), 0)
+      scale3d(var(--tw-enter-scale, 1), var(--tw-enter-scale, 1), var(--tw-enter-scale, 1))
+      rotate(var(--tw-enter-rotate, 0));
+  }
+}
+
+@keyframes exit {
+  to {
+    opacity: var(--tw-exit-opacity, 1);
+    transform: translate3d(var(--tw-exit-translate-x, 0), var(--tw-exit-translate-y, 0), 0)
+      scale3d(var(--tw-exit-scale, 1), var(--tw-exit-scale, 1), var(--tw-exit-scale, 1))
+      rotate(var(--tw-exit-rotate, 0));
+  }
+}
+
+/* Respect users who prefer reduced motion: collapse all animation
+ * and transition durations to ~0 so nothing pulses or slides. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Clear, consistent keyboard focus for plain links and custom
+   interactive elements (buttons already use the ring utilities). */
+a:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Transparency checkerboard background for media previews */
+.checkerboard-bg {
+  background-image:
+    linear-gradient(45deg, rgba(128, 128, 128, 0.08) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(128, 128, 128, 0.08) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(128, 128, 128, 0.08) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(128, 128, 128, 0.08) 75%);
+  background-size: 14px 14px;
+  background-position:
+    0 0,
+    0 7px,
+    7px -7px,
+    -7px 0px;
+}
+
+/* Override Tailwind v4's forced-colors outline-hidden rule.
+   The default uses `outline: 2px solid #0000` (4-digit hex with
+   alpha=0), which Firefox logs as a 'Declaration rejected' warning
+   because in forced-colors mode the browser expects the outline to
+   be drawn with a system color, not a transparent one. The
+   `transparent` keyword is universally accepted and renders the
+   same way (no visible outline) in forced-colors mode.
+
+   Also use the longhand `outline-*` properties so the
+   `outline-offset: 2px` from the original rule is preserved (the
+   shorthand `outline:` resets it to 0). */
+@media (forced-colors: active) {
+  .outline-hidden {
+    outline-color: transparent;
+    outline-style: solid;
+    outline-width: 2px;
+    outline-offset: 2px;
+  }
+}

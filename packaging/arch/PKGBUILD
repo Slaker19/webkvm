@@ -1,0 +1,37 @@
+# Maintainer: WebKVM <Slaker19@users.noreply.github.com>
+# webkvm-bin: precompiled upstream binary + systemd unit (no toolchain needed).
+# The -bin suffix follows AUR convention for repackaged upstream binaries.
+# Tag stays v0.0.1; pkgver uses underscore (hyphens are illegal in pkgver).
+pkgname=webkvm-bin
+_pkgver=0.0.1
+pkgver=${_pkgver}
+pkgrel=1
+pkgdesc="Native libvirt+QEMU/KVM manager — Go backend with embedded Svelte UI (precompiled)"
+arch=('x86_64')
+url="https://github.com/Slaker19/webkvm"
+license=('SEE LICENSE IN LICENSE')
+depends=('ca-certificates' 'curl' 'openssl' 'libisoburn' 'xz' 'libvirt' 'qemu-full'
+         'qemu-img' 'swtpm' 'edk2-ovmf' 'python' 'iproute2' 'procps-ng' 'util-linux'
+         'tar' 'zstd' 'virt-install' 'dnsmasq' 'nftables' 'iptables'
+         'nfs-utils' 'cifs-utils' 'smbclient' 'gptfdisk' 'parted' 'e2fsprogs'
+         'xfsprogs' 'btrfs-progs' 'f2fs-tools')
+optdepends=('incus: LXC container backend (WEBKVM_INCUS_ENABLED=1)')
+provides=('webkvm')
+conflicts=('webkvm')
+backup=('etc/default/webkvm')
+install=webkvm-bin.install
+source=("https://github.com/Slaker19/webkvm/releases/download/v0.0.1/webkvm-0.0.1.tar.gz")
+# Published release tarball hash goes here (updpkgsums after `make dist`
+# from the tagged tree, or when the release is cut):
+sha256sums=('SKIP')
+
+package() {
+  # Upstream tarball layout: backend/webkvm (+webkvm-cli), scripts, install.sh, ...
+  install -Dm0755 backend/webkvm "${pkgdir}/usr/local/bin/webkvm"
+  install -Dm0755 backend/webkvm-cli "${pkgdir}/usr/local/bin/webkvm-cli"
+  # Packaged units live in /usr/lib on Arch (not /etc like the .deb).
+  install -Dm0644 scripts/webkvm.service "${pkgdir}/usr/lib/systemd/system/webkvm.service"
+  install -Dm0644 packaging/nfpm/webkvm.default "${pkgdir}/etc/default/webkvm"
+  install -Dm0644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm0644 CHANGELOG.md "${pkgdir}/usr/share/doc/${pkgname}/CHANGELOG.md"
+}

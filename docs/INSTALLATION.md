@@ -1,0 +1,493 @@
+# WebKVM — Installation guide & technical documentation
+
+Single document covering **installation** of the WebKVM manager and the
+**technical documentation** of the application and its code. For daily use see
+[USAGE.md](USAGE.md).
+
+[**English**](INSTALLATION.md) • [**Español**](INSTALLATION.es.md)
+
+---
+
+## Part I — Installation
+
+### 1. Requirements
+
+| Requirement | Detail |
+|-----------|---------|
+| OS | Debian/Ubuntu (apt), Fedora/RHEL (dnf) or Arch (pacman) |
+| Architecture | amd64 / x86_64 |
+| KVM | `/dev/kvm` present (virtualization enabled in BIOS/UEFI, or nested on the hypervisor) |
+| RAM | at least 2 GB |
+| Disk | at least 5 GB free |
+| Network | outbound internet (packages and tool downloads) |
+| Incus *(optional, containers)* | the **Incus** daemon installed and running on the host to manage **LXC containers**. Skip for KVM-only. See [Containers (LXC)](#7-containers-lxc--hybrid-kvmlxc) below. |
+
+### 2. One-command install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/install-webkvm.sh | sudo bash
+# it asks: IP only (HTTP) vs With SSL — self-signed cert works for IP + domain
+# + optional domain (e.g. webkvm.example.com) + network mode (nat / bridge / both)
+```
+
+The script downloads the repository (tarball, no `git` required) to a working
+directory under `/var/tmp` and runs the standalone installer. The full output is
+persisted at **`/var/log/webkvm-install.log`**; if something fails the working
+directory is kept so you can attach it to a bug report.
+
+Or from a clone:
+
+```bash
+git clone https://github.com/Slaker19/webkvm
+cd webkvm
+sudo ./install.sh              # delegates to packaging/standalone/install.sh
+sudo ./packaging/standalone/install.sh --dry-run   # verify without touching anything
+```
+
+What the installer does:
+
+1. Preflight checks (KVM, RAM ≥ 2 GB, disk ≥ 5 GB, amd64) with actionable errors.
+2. Installs libvirt, QEMU, OVMF, swtpm, xorriso, dnsmasq and disk-management
+   tooling (gdisk/parted, e2fsprogs, xfsprogs, btrfs-progs, f2fs-tools — used
+   by Storage > Host Disks to format/mount physical disks) via apt/dnf/pacman.
+   On Arch it also refreshes `archlinux-keyring` first (old ISOs ship stale keys).
+3. Deploys the **prebuilt binary** (frontend embedded). The server **never
+   compiles**: no Go/Node toolchain needed.
+4. Installs `webkvm.service`, data under `/opt/webkvm`.
+5. Asks about HTTPS and networking interactively, or uses defaults when piped
+   (`curl … | sudo bash` → non-interactive: HTTPS yes, networking `both`
+   — shared-L2 bridge **and** the isolated NAT network — and Incus installed).
+6. Health-checks the service (`/api/health`) and prints the summary: URL,
+   admin password, networks.
+
+### 3. Install from a prebuilt binary
+
+The binary embeds the frontend: it is the only artifact the server needs
+(system libvirt/QEMU only). Build once on a dev machine or CI:
+
+```bash
+make binary   # backend/webkvm
+make dist     # dist/webkvm-<version>.tar.gz (binary + installer + scripts + SHA256SUMS)
+```
+
+On the target server:
+
+```bash
+sudo WEBKVM_BINARY=backend/webkvm ./install.sh
+# from a tarball:
+tar xzf webkvm-<version>.tar.gz
+sudo WEBKVM_BINARY=backend/webkvm bash packaging/standalone/install.sh
+# served over HTTPS with mandatory checksum:
+sudo WEBKVM_BINARY_URL=https://your-server/webkvm \
+     WEBKVM_BINARY_SHA256=<sha256> \
+     ./install.sh
+```
+
+**One generic amd64 binary works on every supported distro**: it needs GLIBC
+≥ 2.34 and `libvirt.so.0`, both present in Debian 13+, Ubuntu 24+,
+Fedora 43/44 and Arch. The installer adds each distro's libvirt packages.
+
+> Upgrades in place are supported: running the installer again keeps all data
+> under `/opt/webkvm` and rolls back automatically if anything fails.
+
+### 4. Installer flags and variables
+
+Every setting has a command-line flag and an equivalent environment
+variable — they are interchangeable, and an explicit flag wins over an
+already-exported variable. Run `install.sh --help` for the built-in list.
+
+| Flag | Equivalent variable |
+|------|---------------------|
+| `--dry-run` | — (report what would change, touch nothing) |
+| `--yes`, `-y`, `--unattended` | `WEBKVM_NONINTERACTIVE=1` |
+| `--port=8080` | `WEBKVM_PORT` |
+| `--bind=0.0.0.0` | `WEBKVM_BIND_ADDR` |
+| `--https=yes\|no` | `WEBKVM_HTTPS` |
+| `--domain=webkvm.example.com` | `WEBKVM_TLS_DOMAIN` |
+| `--network=nat\|bridge\|both\|none` | `NETWORK_MODE` |
+| `--incus=yes\|no` | `WEBKVM_INSTALL_INCUS` |
+| `--prefix=/usr/local` | `WEBKVM_PREFIX` |
+| `--data-dir=/opt/webkvm` | `WEBKVM_DATA_DIR` |
+| `--admin-password=…` | `WEBKVM_ADMIN_PASSWORD` |
+| `--bridge-dhcp` | `BRIDGE_DHCP=true` |
+| `--bridge-static=10.0.0.5/24` | `BRIDGE_STATIC_IP` (implies `BRIDGE_DHCP=false`) |
+| `--gateway=10.0.0.1` | `BRIDGE_STATIC_GW` |
+| `--dns=1.1.1.1` | `BRIDGE_STATIC_DNS` |
+
+| Variable | What it does |
+|----------|--------------|
+| `WEBKVM_DATA_DIR` | Data directory (default `/opt/webkvm`). |
+| `WEBKVM_PREFIX` | Install prefix (default `/usr/local`). |
+| `WEBKVM_BIND_ADDR` | Listen address (default `0.0.0.0`). |
+| `WEBKVM_PORT` | Port (default `8080`). |
+| `WEBKVM_BINARY` | Path to a local binary. |
+| `WEBKVM_BINARY_URL` | HTTPS URL for the binary (checksum mandatory). |
+| `WEBKVM_BINARY_SHA256` | SHA-256 checksum of that binary. |
+| `WEBKVM_HTTPS=yes\|no` | `yes` = native HTTPS with self-signed cert (SAN covers IP + hostname [+ domain]); `no` = plain HTTP. Interactive prompt default `yes`. |
+| `WEBKVM_TLS_DOMAIN` | Certificate domain (e.g. `webkvm.example.com`). Empty = IP/hostname only. When set, the SAN includes it and Let's Encrypt is attempted with automatic fallback to self-signed. |
+| `NETWORK_MODE` | `nat`, `bridge`, `both` or `none`. Interactive default **`bridge`**; unattended installs (`--yes` / `WEBKVM_NONINTERACTIVE=1`) default to **`both`**, because neither half can be added afterwards without re-running the installer. |
+| `BRIDGE_DHCP`, `BRIDGE_STATIC_IP`, `BRIDGE_STATIC_GW`, `BRIDGE_STATIC_DNS` | br0 bridge settings. Default is **static**: the installer pins the address the host currently holds. Set `BRIDGE_DHCP=true` (or pass `--bridge-dhcp`) to leave the bridge on DHCP instead. |
+| `WEBKVM_NONINTERACTIVE=1` | Ask nothing; apply defaults. |
+| `WEBKVM_INSTALL_INCUS=0\|1` | **Default `1`.** Installs + enables the **Incus** daemon for containers (native `incus` package on apt/pacman/dnf, fallback `lxd`; never snap; non-fatal warning if unavailable) and sets `WEBKVM_INCUS_ENABLED=1` in the unit. Set to `0` (or pass `--incus=no`) for a KVM-only host. |
+| `WEBKVM_ADMIN_PASSWORD` | Choose the initial admin password (otherwise a random one is generated and saved). |
+
+### 5. HTTPS (no reverse proxy required)
+
+The installer asks plainly:
+
+```
+How do you want to access WebKVM?
+  1) IP only (plain HTTP)
+  2) With SSL — self-signed certificate (works for IP and domain names, recommended)
+Certificate domain (optional — e.g. webkvm.example.com; empty = IP/hostname only;
+SAN includes LAN IP + hostname.local + localhost)
+```
+
+- **IP only (`WEBKVM_HTTPS=no`)** — plain HTTP on port 8080.
+- **With SSL (default)** — the backend serves **HTTPS natively** with an RSA-2048
+  self-signed certificate valid for 10 years.
+  SAN = `DNS:webkvm, DNS:localhost, DNS:<hostname>.local, IP:127.0.0.1, IP:<LAN>
+  [+ DNS:<domain>]`. Works over IP and domain without nginx/apache/caddy.
+- **Public domain + Let's Encrypt** — when `WEBKVM_TLS_DOMAIN` resolves to the
+  server and ports 80/443 are reachable, autocert issues and renews real
+  certificates (cache in `DATA_DIR/tls`). If validation fails it falls back to
+  the self-signed cert including that domain — the service never goes down.
+
+Browsers warn about self-signed certificates. Download yours from
+`https://IP:8080/api/system/cert` and trust it system-wide. Change later in
+**Settings → Server → TLS certificate / TLS domain**, then
+`systemctl restart webkvm`.
+
+**Reverse proxy?** Only if you already operate one for WAF/rate-limit/central
+auth. In that case install with `WEBKVM_HTTPS=no` and point your vhost at
+`http://127.0.0.1:8080`.
+
+### 6. VM networking
+
+WebKVM uses **one model: real OS-level Linux bridges** (Proxmox-style).
+libvirt virtual networks (`default`, `virbr0`, NAT, macvtap/direct) are no
+longer created, listed or used. KVM attaches with
+`<interface type='bridge'><source bridge='vmbrX'/>` and Incus with
+`nictype=bridged parent=vmbrX`.
+
+Chosen with `NETWORK_MODE`:
+
+- **Shared L2 bridge (`bridge`, default, recommended)** — VMs and containers
+  land on the real LAN through a physical Linux bridge (`vmbr0`/`br0`),
+  getting their IP from the router via DHCP (or static with
+  `BRIDGE_STATIC_IP/CIDR` + gateway + DNS). Reuses an existing host bridge
+  when present; otherwise creates one (macvlan slave) without touching the
+  host's own address.
+- **Isolated NAT (`nat`, opt-in)** — an isolated bridge (`vmbr1`) anchored to
+  a kernel `dummy0` interface, static `100.0.0.1/24`, with `dnsmasq` DHCP and
+  `MASQUERADE`, so its tenants reach the internet through the host's uplink.
+- **Both (`both`, opt-in)** — both bridges available; pick per VM.
+
+From the UI (**Networking**) you can create extra host bridges with an optional
+IP + DHCP, and per-VM nftables firewall rules. The installer wires this up
+through `scripts/setup-network.sh`.
+
+### 7. Containers (LXC) — hybrid KVM/LXC
+
+WebKVM manages **LXC containers natively** through **Incus** (the
+community fork of LXD) on the same host, in a unified view (each instance
+carries a `KVM`/`Incus` badge). The Incus Go client keeps the LXD REST API, so
+**existing LXD daemons work unchanged**. The standalone installer sets this
+module up **by default**; pass `--incus=no` (or `WEBKVM_INSTALL_INCUS=0`) for
+a KVM-only host. In a manual install the module stays disabled until you set
+`WEBKVM_INCUS_ENABLED=1`.
+
+**Host dependency.** The Incus daemon must be installed and running (native
+packages, no snap):
+
+```bash
+# Debian / Ubuntu / Arch / Fedora / RedHat family
+sudo apt install incus    # or: sudo pacman -S incus / sudo dnf install incus
+sudo systemctl enable --now incus
+sudo incus admin init     # legacy LXD: sudo lxd init
+```
+
+**Installer automation.** The standalone installer runs with
+`WEBKVM_INSTALL_INCUS=1` unless you say otherwise: it installs + enables Incus
+and wires the module into the unit. It uses the **native `incus` package on every
+package manager** (apt/pacman/dnf), falling back to the legacy native `lxd`
+package when `incus` is unavailable; snap is **never** used. If no package is
+available it prints a warning asking you to install Incus or LXD manually per
+your distro's wiki and **continues KVM-only (never fails)**:
+
+```bash
+# KVM-only host — skip Incus entirely
+sudo bash install-webkvm.sh --incus=no
+```
+
+**Activation (env).** Set `WEBKVM_INCUS_ENABLED=1` in the systemd unit
+(`Environment=WEBKVM_INCUS_ENABLED=1`) or in `.env`. `INCUS_SOCKET` overrides the
+auto-detected socket (Incus first: `/var/lib/incus/unix.socket` or `/run/incus/*`;
+then legacy LXD snap `/var/snap/lxd/common/lxd/unix.socket`, apt
+`/var/lib/lxd/unix.socket`).
+
+**Permissions.** The process user must read the daemon socket. The native service
+runs as `root` (no step needed); for a non-root/Docker run add the user to the
+**`incus-admin`** group (Incus) or **`lxd`** group (legacy LXD):
+`sudo usermod -aG incus-admin <user> && sudo systemctl restart webkvm`.
+
+**Verify.** `incus_connected` in the backend log at startup; containers appear in
+the VM list and can be created from the same form as VMs (friendly image
+picker, cloud-init credentials, root-disk resize, interfaces, live metrics).
+
+### 8. Non-interactive install (servers / pipelines)
+
+Every option is env-overridable; without a TTY defaults are used:
+
+```bash
+sudo WEBKVM_PORT=8080 \
+     WEBKVM_HTTPS=yes \
+     WEBKVM_TLS_DOMAIN=webkvm.example.com \
+     NETWORK_MODE=nat \
+     WEBKVM_NONINTERACTIVE=1 \
+     ./packaging/standalone/install.sh
+```
+
+Full install output is persisted at **`/var/log/webkvm-install.log`**; on
+failure the working directory under `/var/tmp` is kept and its path printed.
+
+### 9. Upgrading
+
+Run the installer again with the new code/binary. It:
+
+1. Backs up the current binary and unit file (`*.previous`).
+2. Installs the new ones.
+3. Restarts the service and checks `/api/health`.
+4. **Rolls everything back automatically if any step fails.**
+
+Everything under `/opt/webkvm` (config, disks, ISOs, users) is preserved.
+
+### 10. Uninstall
+
+```bash
+cd packaging/standalone
+sudo ./uninstall.sh                                  # keeps data
+sudo PURGE_DATA=1 PURGE_NETWORKS=1 ./uninstall.sh     # also removes data + networks/bridges
+```
+
+Uninstall only removes what WebKVM itself owns: the binary, the systemd
+service, and — opt-in — its own data (`PURGE_DATA`) and the libvirt
+networks/bridges it created (`PURGE_NETWORKS`). It deliberately does **not**
+remove runtime packages (libvirt, qemu, swtpm, ovmf, dnsmasq, ...): those are
+shared system/virtualization tooling that other software on the host may also
+depend on, so uninstall never touches them.
+
+### 11. Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---------|---------------------|
+| `/dev/kvm` missing | Enable virtualization in BIOS/UEFI or nested on the hypervisor |
+| Installer rolls back | Health-check failed; check `journalctl -u webkvm -n 100` |
+| Browser certificate warning | Expected with self-signed; trust the cert from `/api/system/cert` |
+| Service not listening | `systemctl status webkvm` and journal |
+| Domain gets no real cert | Not publicly reachable; self-signed fallback is normal |
+| Port already in use | Fails fast before installing; free the port or set `WEBKVM_PORT` |
+
+Install log lives at `/var/log/webkvm-install.log`; a failed run keeps its
+working directory under `/var/tmp` (path is printed).
+
+---
+
+## Part II — Technical documentation
+
+### 12. Architecture
+
+WebKVM is a **monolithic two-part application**:
+
+- **Go backend** (`backend/`): REST API + noVNC console + embedded Svelte SPA in
+  the single `webkvm` binary.
+- **Svelte 5 frontend** (`frontend/`): SPA compiled to static assets, embedded
+  with `go:embed`.
+
+The backend talks to **libvirt** (`qemu:///system`) to manage domains, networks
+and storage. All application state (users, tokens, settings, backups, groups,
+nodes) persists as **JSON files inside `DATA_DIR`** — no external database.
+
+```
+Browser ──HTTP/SSE + Bearer JWT──► Go backend (:8080)
+                                    │
+                                    ├─ REST API (chi v5)
+                                    ├─ JWT auth + RBAC (admin/operator/viewer)
+                                    ├─ SSE event hub (VM state, metrics)
+                                    ├─ noVNC proxy (WebSocket → VNC), serial WebSocket
+                                    └─ Backup runner (cron) + OVA import/export
+                                    │  libvirt C API (libvirt.org/go/libvirt)
+                                    ▼
+                        libvirtd / qemu:///system
+                        VMs · Networks · Storage pools · Snapshots
+                                    ▼
+                            QEMU/KVM hypervisor
+```
+
+Three planes:
+
+1. **Control plane (Go backend)** — orchestrates libvirt and exposes the API.
+2. **Data plane (libvirt/QEMU)** — the real hypervisor; VMs live here.
+3. **State plane (`DATA_DIR`)** — application configuration and metadata.
+
+### 13. Repository layout
+
+| Path | Contents |
+|------|----------|
+| `backend/` | Go backend (`cmd/server`, `cmd/cli`, `cmd/migrate-disk-names`, `internal/*`). |
+| `frontend/` | Svelte 5 SPA (Vite, Tailwind v4). |
+| `docs/` | This guide and the usage guide. |
+| `packaging/standalone/` | Bare-metal installer with auto-rollback, uninstaller, static tests. |
+| `scripts/` | One-liner wrapper, network setup, systemd unit, logrotate, backup helper. |
+| `Makefile` | build / test / dist / clean. |
+| `install.sh` | Unified entry point (delegates to the standalone installer). |
+
+### 14. Backend packages (`backend/internal/`)
+
+| Package | Responsibility |
+|---------|----------------|
+| `api/` | HTTP router (chi v5), handlers, middleware, embedded noVNC console. |
+| `libvirt/` | libvirt integration: domains, storage, networks, OVA, snapshots, metrics, events, host bridges. |
+| `auth/` | JWT, middleware, RBAC, token blacklist, login rate limiting, console tickets. |
+| `user/` | User store (bcrypt) in `users.json`; initial admin seed. |
+| `tokens/` | Persistent API tokens (`wvmb_…`, sha256-hashed) in `api-tokens.json`. |
+| `configstore/` | Typed hot-reloadable settings in `config.json`. |
+| `config/` | Boot config (env + `.env`), JWT secret resolution. |
+| `backupstore/` | Backup v2: targets, schedules, jobs, tar producer, SFTP support, restore. |
+| `audit/` | JSONL audit log (`audit.log`, 10 MB rotation). |
+| `events/` | SSE fan-out hub (VM state, metrics). |
+| `nodes/` | libvirt node registry (`nodes.json`). |
+| `models/` | Shared types (VM, pools, networks, users, RBAC, quotas, metrics…). |
+| `appliances/` | Community appliance catalog, defaults and provisioning scripts. |
+| `cloudinit/` | NoCloud seed ISO generation (validated, YAML-escaped, xorriso). |
+| `notify/` | Webhook/SMTP notifications. |
+| `vmsched/` | Cron-based VM power scheduling. |
+| `firewall/` | Per-VM nftables rules with atomic apply. |
+| `frontend/` | Embedded compiled Svelte assets (`go:embed`). |
+| `logging/` | Structured `log/slog` (JSON) with optional file tee. |
+
+### 15. Environment variables
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `PORT` | `8080` | Backend HTTP/HTTPS port. |
+| `BIND_ADDR` | `127.0.0.1` → `0.0.0.0` fresh installs | Persisted as `server.bind_addr` in `config.json`. |
+| `LIBVIRT_URI` | `qemu:///system` | libvirt URI. |
+| `DATA_DIR` | `/opt/webkvm` | Persistent data directory. |
+| `JWT_SECRET` | auto-generated | Stored at `{DATA_DIR}/jwt.key` (0600); weak secrets rejected. |
+| `WEBKVM_LOG_FILE` | `""` | Log tee (read by `GET /api/system/logs`). |
+| `VNC_PROXY_HOST` | `127.0.0.1` | Target host for noVNC→VNC TCP connections. |
+| `PUBLIC_HOST` | `""` | IP baked into `.rdp`/`.vv` files (auto-detected when empty). |
+| `CORS_ORIGIN` | `*` | Allowed CORS origins (comma-separated). |
+| `TLS_CERT` / `TLS_KEY` / `TLS_DOMAIN` | — | TLS settings (persisted as server.tls_*). |
+| `WEBKVM_ADMIN_PASSWORD` | — | Initial admin password (random generated otherwise). |
+| `WEBKVM_INCUS_ENABLED` | `0` | enable the Incus/LXD container module (requires the daemon on the host). |
+| `INCUS_SOCKET` | auto | Container daemon unix socket override (Incus first: `/var/lib/incus/unix.socket`, `/run/incus/*`; then LXD snap/apt paths). |
+
+`.env` in the working directory is loaded as fallback (godotenv); real
+environment variables always win.
+
+### 16. On-disk layout (`DATA_DIR`)
+
+| Path | Contents |
+|------|----------|
+| `pools/webkvm-disks` | VM disk pool (libvirt pool `webkvm-disks`). |
+| `pools/webkvm-isos` | ISO library pool (legacy installs that used `ISOS` are renamed automatically on first start). |
+| `pool-purposes.json` | Purpose per pool (`disk`/`iso`). |
+| `users.json` | Users with bcrypt hashes (0600). |
+| `jwt.key` | JWT secret (0600). |
+| `api-tokens.json` | sha256 hashes of API tokens. |
+| `config.json` | Persisted settings (typed schema). |
+| `backup/{targets,schedules,jobs}.json` | Backup v2 registry. |
+| `nodes.json` | libvirt nodes. |
+| `groups.json` | VM groups/tags. |
+| `audit.log` | JSONL audit log. |
+| `cifs-secrets.json` | CIFS secret UUIDs for netfs pools (0600). |
+| `covers/` | VM cover images. |
+| `logs/backend.log` | Structured log (when `WEBKVM_LOG_FILE` enabled). |
+| `admin-password.initial` | Initial admin password (first boot only). |
+| `certs/` | TLS certificates (self-signed). |
+| `appliances.json` | Appliance catalog (seeded from defaults on first boot). |
+| `tls/` | autocert cache (Let's Encrypt). |
+
+### 17. Authentication & security
+
+- **JWT HS256** (TTL 24 h by default, hot-reloadable). The server **refuses to
+  boot** with placeholder/weak secrets; generates a random one and persists it
+  in `jwt.key`.
+- **Login rate limiting**: 5 failures / 15 min → 15-minute lockout (429 +
+  `Retry-After`); loopback always trusted; `WEBKVM_TRUSTED_RATELIMIT_CIDRS`
+  adds trusted CIDRs; `WEBKVM_TRUST_PROXY` controls `X-Forwarded-For`.
+- **RBAC**: fixed hierarchy `admin > operator > viewer`.
+- **API tokens**: `wvmb_` prefix + 32 random bytes; only the sha256 hash is
+  stored; expiring and revocable.
+- **`must_change_password`** blocks every endpoint except auth/password/health
+  until the initial password is rotated.
+- **SSRF blocklist** on ISO downloads (loopback, link-local, private ranges,
+  CGNAT).
+- **Path traversal**: sanitization on ISO upload/rename; validated paths on
+  backups (`backupstore/path_safety.go`, symlink-aware deny list).
+- **Firewall**: dedicated nftables table, atomic validation (`nft -c`), rules
+  applied with argument-separated exec (no shell).
+- **systemd hardening**: `NoNewPrivileges`, `ProtectSystem=full`,
+  `ProtectHome=read-only`, `PrivateTmp`, restricted `CapabilityBoundingSet`,
+  scoped `ReadWritePaths`.
+- **Code scanning**: golangci-lint + eslint + prettier enforced in CI.
+
+### 18. REST API (summary)
+
+Base URL: `http(s)://<host>:8080/api`. Auth: `Authorization: Bearer <JWT or
+API token>`.
+
+| Area | Main endpoints |
+|------|----------------|
+| Auth | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `PUT /users/me/password` |
+| Users/groups | `GET/POST/PUT/DELETE /users/{username}`, `GET/POST /groups`, `GET /accounts` |
+| VMs | `GET/POST /vms`, `GET/PUT/DELETE /vms/{id}`, power actions, clone/import/import-OVA/export, `POST/DELETE /vms/{id}/usb` (USB passthrough, admin only) |
+| Console | serial WebSocket (+ single-use tickets), noVNC (`POST /vms/{id}/vnc-ticket` + reusable VM-scoped ticket), `.rdp`/`.vv` download, clipboard |
+| Storage | pools/volumes/ISOs CRUD, upload/download ISO, `POST /storage/upload-disk` (qcow2/img/raw/qed) |
+| Networks | bridges/networks CRUD, VLAN-aware toggle |
+| Snapshots/backups | snapshot CRUD + revert; backup targets/runs/jobs/schedules |
+| Appliances | catalog CRUD, deploy (background job), provisioning scripts |
+| System | `GET /health`, `/status`, `/metrics`, `/logs`, `GET /events` (SSE), `/system/cert`, `/system/version` |
+
+Frontend uses a single API client (`frontend/src/lib/stores/auth.svelte.js`);
+routes are registered in `backend/internal/api/router.go`.
+
+### 19. CIFS-authenticated netfs pools
+
+`netfs` pools with format `cifs` support authentication via **libvirt secrets**:
+username + password are sent together (400 if partial), the password is stored
+only as a libvirt secret UUID in `{DATA_DIR}/cifs-secrets.json` (0600) — never
+returned by the API. Rotate credentials with `PUT /api/storage/pools/{name}`
+(pool must be stopped). After a libvirtd reinstall (secrets wiped) recover the
+pool by sending `cifs-needs-reauth: true` plus current credentials.
+
+### 20. Build from source
+
+```bash
+make build          # npm ci + frontend build → go:embed → go build -o backend/webkvm
+make test           # go test ./... && go vet ./... ; eslint + prettier on frontend
+make dist           # dist/webkvm-<version>.tar.gz (binary + installer + SHA256SUMS)
+```
+
+Version is stamped via `git describe --tags --always` or `WEBKVM_VERSION`
+(ldflags), fallback `dev`.
+
+### 21. Do-not-break invariants
+
+> Changing these breaks compatibility with existing installs and VMs.
+
+| Invariant | Value |
+|-----------|-------|
+| Domain metadata XML namespace | `https://webvm.local/ns` |
+| Disk pool name | `webkvm-disks` |
+| ISO pool name | `webkvm-isos` |
+| Go module | `webkvm` |
+| systemd service | `webkvm.service` |
+| Backup filename pattern | `webkvm-<host>-<ts>` |
+
+### 22. Security & license
+
+- Vulnerability reports: [SECURITY.md](../SECURITY.md).
+- License **AGPLv3**: [LICENSE](../LICENSE).
