@@ -173,7 +173,7 @@ func (c *Connector) ExportSnapshots(domainID string) ([]backupstore.SnapshotBack
 	defer dom.Free()
 
 	domainName, _ := dom.GetName()
-	poolName := c.DiskPoolName()
+	poolName := c.diskPoolOfDomain(dom)
 
 	// Refresh the pool so snapshot overlay volumes are visible
 	// to lookupSnapshotVolume (libvirt's in-memory cache may be
@@ -401,6 +401,11 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 
 	isoXML := ""
 	if req.ISO != "" {
+		resolvedISO, err := c.resolveMediaPath(req.ISO)
+		if err != nil {
+			return models.VM{}, fmt.Errorf("resolve ISO: %w", err)
+		}
+		req.ISO = resolvedISO
 		if strings.HasSuffix(strings.ToLower(req.ISO), ".img") {
 			// A .img is a raw disk image (Raspberry Pi/ZimaOS/cloud-image
 			// style appliances), not optical media — it has no El Torito
@@ -424,6 +429,11 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 
 	virtioISOXML := ""
 	if req.VirtIOISO != "" {
+		resolvedVirtIO, err := c.resolveMediaPath(req.VirtIOISO)
+		if err != nil {
+			return models.VM{}, fmt.Errorf("resolve virtio ISO: %w", err)
+		}
+		req.VirtIOISO = resolvedVirtIO
 		virtioISOXML = fmt.Sprintf(`<disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
       <source file='%s'/>
@@ -752,7 +762,11 @@ func (c *Connector) ListSnapshots(domainID string) ([]models.Snapshot, error) {
 	// volume key; get it once up front so the per-snapshot lookup is
 	// a single libvirt call.
 	domainName, _ := dom.GetName()
-	poolName := c.DiskPoolName()
+	poolName := c.diskPoolOfDomain(dom)
+
+	// Refresh the pool so freshly created snapshot overlays are visible
+	// to lookupSnapshotVolume. Best-effort.
+	_ = c.RefreshPool(poolName)
 
 	snaps, err := dom.ListAllSnapshots(0)
 	if err != nil {
@@ -912,8 +926,9 @@ func (c *Connector) CreateSnapshot(domainID string, req models.CreateSnapshotReq
 	// ListSnapshots call (with its own ListAllStorageVolumes)
 	// will populate.
 	if name, _ := dom.GetName(); name != "" {
-		_ = c.RefreshPool(c.DiskPoolName())
-		if vol, err := c.lookupSnapshotVolume(c.DiskPoolName(), name+"."+req.Name); err == nil {
+		poolName := c.diskPoolOfDomain(dom)
+		_ = c.RefreshPool(poolName)
+		if vol, err := c.lookupSnapshotVolume(poolName, name+"."+req.Name); err == nil {
 			snap.SizeAtSnapBytes = vol.Allocated
 		}
 	}
@@ -936,8 +951,9 @@ func (c *Connector) DeleteSnapshot(domainID, snapID string) (int64, error) {
 		// Same pool-cache caveat as CreateSnapshot: a refresh
 		// makes sure the volume's current Allocated size is
 		// visible before we record it. Best-effort.
-		_ = c.RefreshPool(c.DiskPoolName())
-		if vol, err := c.lookupSnapshotVolume(c.DiskPoolName(), name+"."+snapID); err == nil {
+		poolName := c.diskPoolOfDomain(dom)
+		_ = c.RefreshPool(poolName)
+		if vol, err := c.lookupSnapshotVolume(poolName, name+"."+snapID); err == nil {
 			allocated = vol.Allocated
 		}
 	}
@@ -2012,6 +2028,44 @@ func (c *Connector) volPoolAndSize(volPath string) (pool string, sizeGB int64) {
 	return pool, sizeGB
 }
 
+// diskPoolOfDomain inspects the domain's attached disks to discover the storage pool
+// holding the instance's active disk image. If the pool cannot be determined, it
+// falls back to the host's default disk pool (c.DiskPoolName()).
+func (c *Connector) diskPoolOfDomain(dom *libvirt.Domain) string {
+	fallback := c.DiskPoolName()
+	if dom == nil || c == nil || c.conn == nil {
+		return fallback
+	}
+	xmlDesc, err := dom.GetXMLDesc(0)
+	if err != nil {
+		return fallback
+	}
+	disks := c.parseDisksFiltered(xmlDesc, true)
+	pools, _ := c.ListStoragePools()
+	for _, d := range disks {
+		if d.Pool != "" {
+			return d.Pool
+		}
+		if d.Source != "" {
+			if pool, _ := c.volPoolAndSize(d.Source); pool != "" {
+				return pool
+			}
+			// Fallback: match by pool filesystem directory if libvirt's in-memory
+			// volume cache hasn't indexed the newly-created overlay file yet.
+			cleanSrc := filepath.Clean(d.Source)
+			for _, p := range pools {
+				if p.Path != "" {
+					cleanPool := filepath.Clean(p.Path)
+					if cleanSrc == cleanPool || strings.HasPrefix(cleanSrc, cleanPool+"/") {
+						return p.Name
+					}
+				}
+			}
+		}
+	}
+	return fallback
+}
+
 func (c *Connector) parseDisks(xmlDesc string) []models.DiskInfo {
 	return c.parseDisksFiltered(xmlDesc, false)
 }
@@ -2170,6 +2224,13 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 	}
 
 	device := req.Device
+	if device == "cdrom" && req.Source != "" {
+		resolvedSource, err := c.resolveMediaPath(req.Source)
+		if err != nil {
+			return fmt.Errorf("resolve cdrom media: %w", err)
+		}
+		req.Source = resolvedSource
+	}
 	forceSATA := false
 	if device == "cdrom" && req.Source != "" && strings.HasSuffix(strings.ToLower(req.Source), ".img") {
 		// A .img is a raw disk image (Raspberry Pi/ZimaOS/cloud-image

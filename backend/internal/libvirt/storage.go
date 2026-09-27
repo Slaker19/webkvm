@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"webkvm/internal/config"
 	"webkvm/internal/models"
 
 	"libvirt.org/go/libvirt"
@@ -391,6 +392,95 @@ func (c *Connector) RefreshCIFSSecretIfNeeded(ctx context.Context, poolName stri
 	return nil, fmt.Errorf("cifs: libvirt secret %q missing for pool %q; reauth required", ref.SecretUUID, poolName)
 }
 
+// lookupVolRefreshing attempts to find a volume by name in the pool. If the
+// initial lookup fails, it refreshes the pool (best-effort) and retries once,
+// in case the volume was recently created externally (such as domain snapshot
+// overlay files) and libvirt's in-memory cache is stale.
+func (c *Connector) lookupVolRefreshing(pool *libvirt.StoragePool, volName string) (*libvirt.StorageVol, error) {
+	vol, err := pool.LookupStorageVolByName(volName)
+	if err == nil {
+		return vol, nil
+	}
+	// Best-effort refresh to re-sync libvirt's in-memory volume cache with disk.
+	if rerr := pool.Refresh(0); rerr == nil {
+		if retryVol, retryErr := pool.LookupStorageVolByName(volName); retryErr == nil {
+			return retryVol, nil
+		}
+	}
+	return nil, err
+}
+
+// resolveMediaPath resolves an ISO or disk image name to an absolute filesystem path.
+// If media is already an absolute path, it verifies that the file exists and is readable.
+// If media is a relative filename, it searches configured storage pools (prioritizing ISO pools).
+// It returns an error if the media is not found or if multiple pools match (strict mode).
+func (c *Connector) resolveMediaPath(media string) (string, error) {
+	if media == "" {
+		return "", nil
+	}
+	if filepath.IsAbs(media) {
+		stat, err := os.Stat(media)
+		if err != nil {
+			return "", fmt.Errorf("media file %q not found or inaccessible: %w", media, err)
+		}
+		if stat.IsDir() {
+			return "", fmt.Errorf("media path %q is a directory, expected an image file", media)
+		}
+		return filepath.Clean(media), nil
+	}
+
+	// Media is a relative name / filename. Search available storage pools.
+	pools, err := c.ListStoragePools()
+	if err != nil && c.conn != nil {
+		pools = nil
+	}
+
+	var matches []string
+	var matchPools []string
+
+	// Pass 1: search pools designated for ISOs
+	for _, p := range pools {
+		if p.Purpose == PoolPurposeISO && p.Path != "" {
+			target := filepath.Join(p.Path, media)
+			if stat, err := os.Stat(target); err == nil && !stat.IsDir() {
+				matches = append(matches, target)
+				matchPools = append(matchPools, p.Name)
+			}
+		}
+	}
+
+	// Pass 2: if not found in ISO pools, search all other pools with a filesystem path
+	if len(matches) == 0 {
+		for _, p := range pools {
+			if p.Purpose != PoolPurposeISO && p.Path != "" {
+				target := filepath.Join(p.Path, media)
+				if stat, err := os.Stat(target); err == nil && !stat.IsDir() {
+					matches = append(matches, target)
+					matchPools = append(matchPools, p.Name)
+				}
+			}
+		}
+	}
+
+	// Pass 3: fallback to default ISO pool path if no matches from pools list
+	if len(matches) == 0 && c.cfg != nil && c.cfg.ISOPoolPath() != "" {
+		target := filepath.Join(c.cfg.ISOPoolPath(), media)
+		if stat, err := os.Stat(target); err == nil && !stat.IsDir() {
+			matches = append(matches, target)
+			matchPools = append(matchPools, config.ISOPoolName)
+		}
+	}
+
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("ambiguous media name %q found in multiple storage pools (%s); specify the full path",
+			media, strings.Join(matchPools, ", "))
+	}
+	return "", fmt.Errorf("media file %q not found in any storage pool", media)
+}
+
 func (c *Connector) GetStorageVolume(poolName, volName string) (models.StorageVolume, error) {
 	if err := c.ensureConnected(); err != nil {
 		return models.StorageVolume{}, err
@@ -402,7 +492,7 @@ func (c *Connector) GetStorageVolume(poolName, volName string) (models.StorageVo
 	}
 	defer pool.Free()
 
-	vol, err := pool.LookupStorageVolByName(volName)
+	vol, err := c.lookupVolRefreshing(pool, volName)
 	if err != nil {
 		return models.StorageVolume{}, notFoundAsVolume("lookup volume", err)
 	}
@@ -430,7 +520,8 @@ func (c *Connector) VolumeExists(poolName, volName string) (bool, error) {
 	}
 	defer pool.Free()
 
-	if _, err := pool.LookupStorageVolByName(volName); err == nil {
+	if vol, err := c.lookupVolRefreshing(pool, volName); err == nil {
+		vol.Free()
 		return true, nil
 	}
 	return false, nil
@@ -614,7 +705,7 @@ func (c *Connector) DeleteStorageVolume(poolName, volName string) error {
 	}
 	defer pool.Free()
 
-	vol, err := pool.LookupStorageVolByName(volName)
+	vol, err := c.lookupVolRefreshing(pool, volName)
 	if err != nil {
 		return notFoundAsVolume("lookup volume", err)
 	}
@@ -964,7 +1055,7 @@ func (c *Connector) ResizeStorageVolume(poolName, volName string, newSizeGB int6
 		return fmt.Errorf("lookup pool: %w", err)
 	}
 	defer pool.Free()
-	vol, err := pool.LookupStorageVolByName(volName)
+	vol, err := c.lookupVolRefreshing(pool, volName)
 	if err != nil {
 		return notFoundAsVolume("lookup volume", err)
 	}
@@ -1036,7 +1127,7 @@ func (c *Connector) DeleteISO(name, poolName string) error {
 	}
 	defer pool.Free()
 
-	vol, err := pool.LookupStorageVolByName(name)
+	vol, err := c.lookupVolRefreshing(pool, name)
 	if err != nil {
 		return notFoundAsVolume("lookup ISO", err)
 	}
@@ -1078,11 +1169,12 @@ func (c *Connector) RenameISO(oldName, newName, poolName string) error {
 	defer pool.Free()
 
 	// Refuse if a volume with the new name already exists.
-	if _, err := pool.LookupStorageVolByName(newName); err == nil {
+	if vol, err := c.lookupVolRefreshing(pool, newName); err == nil {
+		vol.Free()
 		return fmt.Errorf("an ISO named %q already exists in pool %q", newName, poolName)
 	}
 
-	vol, err := pool.LookupStorageVolByName(oldName)
+	vol, err := c.lookupVolRefreshing(pool, oldName)
 	if err != nil {
 		return notFoundAsVolume(fmt.Sprintf("lookup ISO %q", oldName), err)
 	}

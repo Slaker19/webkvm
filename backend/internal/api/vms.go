@@ -259,6 +259,10 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 
 	vm, err := h.compute.CreateDomain(req)
 	if err != nil {
+		if strings.Contains(err.Error(), "resolve ISO") || strings.Contains(err.Error(), "media file") || strings.Contains(err.Error(), "ambiguous media") {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -834,6 +838,10 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := h.compute.AttachDisk(id, req); err != nil {
+		if strings.Contains(err.Error(), "resolve cdrom media") || strings.Contains(err.Error(), "media file") || strings.Contains(err.Error(), "ambiguous media") {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
