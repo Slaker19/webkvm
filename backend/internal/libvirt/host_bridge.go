@@ -211,6 +211,9 @@ func listPhysicalInterfaces() []string {
 // validated by isLinuxBridge/validBridgeName in the caller (same
 // invariant as networkView in network.go).
 func readBridgeSlaves(name string) []string {
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+		return nil
+	}
 	entries, err := os.ReadDir("/sys/class/net/" + name + "/brif") // lgtm[go/path-injection] - name validated, see func comment
 	if err != nil {
 		return nil

@@ -936,12 +936,22 @@ func (s *Store) CreateTargetOpts(name, path string, ttype TargetType, vmFilter s
 				return Target{}, err
 			}
 		}
+		if strings.Contains(path, "..") {
+			delete(s.targets, id)
+			unwindMount()
+			return Target{}, fmt.Errorf("invalid path: traversal not allowed")
+		}
 		if err := os.MkdirAll(path, 0o755); err != nil { // lgtm[go/path-injection] - path validated via ValidateTargetPath above
 			delete(s.targets, id)
 			unwindMount()
 			return Target{}, fmt.Errorf("create path: %w", err)
 		}
 	default:
+		if strings.Contains(path, "..") {
+			delete(s.targets, id)
+			unwindMount()
+			return Target{}, fmt.Errorf("invalid path: traversal not allowed")
+		}
 		if err := os.MkdirAll(path, 0o755); err != nil { // lgtm[go/path-injection] - path validated via ValidateTargetPath above
 			delete(s.targets, id)
 			unwindMount()

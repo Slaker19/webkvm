@@ -365,6 +365,9 @@ func newSafeDownloadClient(timeout time.Duration) *http.Client {
 // unavoidably on 127.0.0.1 and would otherwise always be refused by the
 // loopback check in safeDownloadURL.
 func downloadWithClient(client *http.Client, jobID, url, destPath string, maxBytes int64) (int64, error) {
+	if strings.Contains(destPath, "..") {
+		return 0, fmt.Errorf("invalid destination path: traversal not allowed")
+	}
 	resp, err := client.Get(url)
 	if err != nil {
 		return 0, fmt.Errorf("download failed: %w", err)
@@ -1277,6 +1280,10 @@ func (h *Handler) UploadISO(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+		jsonErr(w, http.StatusBadRequest, "invalid filename")
+		return
+	}
 	if filepath.Ext(name) == "" {
 		name += ".iso"
 	}
@@ -1294,6 +1301,10 @@ func (h *Handler) UploadISO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	destPath := filepath.Join(poolPath, name)
+	if rel, rerr := filepath.Rel(poolPath, destPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		jsonErr(w, http.StatusBadRequest, "invalid destination path")
+		return
+	}
 
 	dst, err := os.Create(destPath)
 	if err != nil {
@@ -1357,6 +1368,13 @@ func convertToQcow2(src, dst string) bool {
 // extractAndConvertOVA extracts the primary virtual disk from an uploaded .ova tarball
 // and converts it to native .qcow2 format inside the destination storage pool.
 func extractAndConvertOVA(ovaPath, poolPath, originalName string) (string, string, int64, error) {
+	if strings.Contains(ovaPath, "..") || strings.Contains(poolPath, "..") {
+		return "", "", 0, fmt.Errorf("invalid path: traversal not allowed")
+	}
+	if strings.Contains(originalName, "/") || strings.Contains(originalName, "\\") || strings.Contains(originalName, "..") {
+		return "", "", 0, fmt.Errorf("invalid original name")
+	}
+
 	f, err := os.Open(ovaPath)
 	if err != nil {
 		return "", "", 0, err
@@ -1367,6 +1385,9 @@ func extractAndConvertOVA(ovaPath, poolPath, originalName string) (string, strin
 	base := strings.TrimSuffix(originalName, filepath.Ext(originalName))
 	qcow2Name := base + ".qcow2"
 	qcow2Path := filepath.Join(poolPath, qcow2Name)
+	if rel, rerr := filepath.Rel(poolPath, qcow2Path); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		return "", "", 0, fmt.Errorf("invalid qcow2 destination path")
+	}
 
 	workDir, err := os.MkdirTemp(poolPath, ".webkvm-ova-extract-*")
 	if err != nil {
@@ -1376,12 +1397,16 @@ func extractAndConvertOVA(ovaPath, poolPath, originalName string) (string, strin
 
 	var extractedDiskPath string
 	for {
-		hdr, err := tr.Next() // lgtm[go/zipslip] - entry names are contained below: only regular files, filepath.Base + Rel containment check; caller name via safeISOFilename
+		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return "", "", 0, err
+		}
+		// Explicit zip-slip guard: reject paths with directory traversal
+		if strings.Contains(hdr.Name, "..") {
+			continue
 		}
 		if hdr.FileInfo().IsDir() {
 			continue
@@ -1433,6 +1458,9 @@ func extractAndConvertOVA(ovaPath, poolPath, originalName string) (string, strin
 	} else {
 		rawName := base + filepath.Ext(extractedDiskPath)
 		rawPath := filepath.Join(poolPath, rawName)
+		if rel, rerr := filepath.Rel(poolPath, rawPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			return "", "", 0, fmt.Errorf("invalid raw destination path")
+		}
 		if err := os.Rename(extractedDiskPath, rawPath); err != nil {
 			return "", "", 0, err
 		}
@@ -1495,6 +1523,10 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+			jsonErr(w, http.StatusBadRequest, "invalid filename")
+			return
+		}
 		if !diskUploadExts[strings.ToLower(filepath.Ext(name))] {
 			jsonErr(w, http.StatusBadRequest, "unsupported disk image extension (use .qcow2, .img, .raw, .qed, .vmdk, .ova, .vdi, or .vhdx)")
 			return
@@ -1530,6 +1562,10 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		destPath = filepath.Join(poolPath, name)
+		if rel, rerr := filepath.Rel(poolPath, destPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			jsonErr(w, http.StatusBadRequest, "invalid destination path")
+			return
+		}
 
 		dst, derr := os.Create(destPath)
 		if derr != nil {
@@ -1571,6 +1607,10 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 			baseName := strings.TrimSuffix(name, ext)
 			qcow2Name := baseName + ".qcow2"
 			qcow2Path := filepath.Join(poolPath, qcow2Name)
+			if rel, rerr := filepath.Rel(poolPath, qcow2Path); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+				jsonErr(w, http.StatusBadRequest, "invalid qcow2 destination path")
+				return
+			}
 			if convertToQcow2(destPath, qcow2Path) {
 				os.Remove(destPath)
 				destPath = qcow2Path
@@ -1617,6 +1657,10 @@ func (h *Handler) UploadISOByCURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name = safe
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+		jsonErr(w, http.StatusBadRequest, "invalid filename")
+		return
+	}
 	if filepath.Ext(name) == "" {
 		name += ".iso"
 	}
@@ -1634,6 +1678,10 @@ func (h *Handler) UploadISOByCURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	destPath := filepath.Join(poolPath, name)
+	if rel, rerr := filepath.Rel(poolPath, destPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		jsonErr(w, http.StatusBadRequest, "invalid destination path")
+		return
+	}
 
 	dst, err := os.Create(destPath)
 	if err != nil {
@@ -1733,12 +1781,20 @@ func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) doDownloadISO(jobID string, name, poolName string) {
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+		updateJob(jobID, 0, "error", "invalid filename")
+		return
+	}
 	poolPath, err := h.compute.GetPoolPath(poolName)
 	if err != nil {
 		updateJob(jobID, 0, "error", "failed to resolve pool: "+err.Error())
 		return
 	}
 	destPath := filepath.Join(poolPath, name)
+	if rel, rerr := filepath.Rel(poolPath, destPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		updateJob(jobID, 0, "error", "invalid destination path")
+		return
+	}
 
 	j, ok := getJob(jobID)
 	if !ok || j.Status != "queued" {

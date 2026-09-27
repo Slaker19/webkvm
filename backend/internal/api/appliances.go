@@ -661,6 +661,9 @@ func deployDiskCandidates(vmName string) []string {
 // fileInode returns the inode of path, or 0 if it cannot be stat'ed for
 // any reason. Linux-only (syscall.Stat_t), matching the server target.
 func fileInode(path string) uint64 {
+	if strings.Contains(path, "..") {
+		return 0
+	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		return 0
@@ -703,6 +706,9 @@ func (h *Handler) deployPoolName(reqPool string, deployingContainer bool, role s
 // non-nil when libvirt itself failed to answer (caller must fail
 // closed: a target we cannot verify is a target we must not overwrite).
 func (h *Handler) verifyDeployTargetFree(poolName, vmName string) (exists bool, verifyErr error) {
+	if strings.Contains(vmName, "/") || strings.Contains(vmName, "\\") || strings.Contains(vmName, "..") {
+		return false, fmt.Errorf("invalid vm name %q", vmName)
+	}
 	exists, err := h.compute.DomainExists(vmName)
 	if err != nil {
 		return false, fmt.Errorf("cannot verify deploy target: %w", err)
@@ -893,6 +899,9 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 	// poolDest, and an orphaned volume is invisible to quota accounting
 	// and would block/overwrite the next deploy with the same name.
 	removePoolImage := func(reason string) {
+		if strings.Contains(poolDest, "..") {
+			return
+		}
 		if _, serr := os.Stat(poolDest); serr != nil && !errors.Is(serr, os.ErrNotExist) {
 			slog.Error("appliance_deploy_cleanup_stat_failed", "job", jobID, "file", poolDest, "err", serr)
 		}
@@ -1145,6 +1154,9 @@ func isQCow2(path string) bool {
 // falling back to a streaming copy followed by source deletion if src and dst
 // reside on different filesystems or devices (e.g. EXDEV / cross-device link).
 func moveFile(src, dst string) error {
+	if strings.Contains(src, "..") || strings.Contains(dst, "..") {
+		return fmt.Errorf("invalid path: traversal not allowed")
+	}
 	if err := os.Rename(src, dst); err == nil {
 		return nil
 	}

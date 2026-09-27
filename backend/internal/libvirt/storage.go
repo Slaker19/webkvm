@@ -115,6 +115,9 @@ func (c *Connector) CreateStoragePool(ctx context.Context, req models.CreatePool
 	}
 
 	if poolType == "dir" && req.Path != "" {
+		if strings.Contains(req.Path, "..") {
+			return models.StoragePool{}, fmt.Errorf("invalid pool path: traversal not allowed")
+		}
 		if err := os.MkdirAll(req.Path, 0755); err != nil {
 			return models.StoragePool{}, fmt.Errorf("create pool directory %q: %w", req.Path, err)
 		}

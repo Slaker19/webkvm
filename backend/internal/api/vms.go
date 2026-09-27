@@ -1742,6 +1742,10 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 	// important because /tmp is often a small tmpfs and large
 	// uploads (OVA/WebKVM backups of multi-GB disks) can fill it
 	// up, causing the import to abort with a network error.
+	if strings.Contains(pool, "..") {
+		jsonErr(w, http.StatusBadRequest, "invalid pool: traversal not allowed")
+		return
+	}
 	poolPath, err := h.compute.GetPoolPath(pool)
 	if err != nil {
 		h.audit.Log(auditFor(r, "vm.import_failed", "unknown", map[string]interface{}{
@@ -1749,6 +1753,10 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 			"error":    "resolve pool path: " + err.Error(),
 		}))
 		jsonErr(w, http.StatusInternalServerError, "resolve pool path: "+err.Error())
+		return
+	}
+	if strings.Contains(poolPath, "..") {
+		jsonErr(w, http.StatusBadRequest, "invalid pool path: traversal not allowed")
 		return
 	}
 

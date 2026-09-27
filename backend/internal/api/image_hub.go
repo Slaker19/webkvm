@@ -136,6 +136,9 @@ type baseImageLocation struct {
 // file can be moved between pools by the storage move feature, and a
 // stale pointer would report a perfectly good image as missing.
 func (h *Handler) findAllCachedBaseImages(id string) []baseImageLocation {
+	if id == "" || strings.Contains(id, "/") || strings.Contains(id, "\\") || strings.Contains(id, "..") {
+		return nil
+	}
 	name := baseImageName(id)
 	var out []baseImageLocation
 	for _, p := range h.baseImagePools() {
@@ -144,14 +147,19 @@ func (h *Handler) findAllCachedBaseImages(id string) []baseImageLocation {
 			continue
 		}
 		cand := filepath.Join(dir, name)
+		if rel, rerr := filepath.Rel(dir, cand); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			continue
+		}
 		if st, err := os.Stat(cand); err == nil && !st.IsDir() && st.Size() > 1024*1024 {
 			out = append(out, baseImageLocation{Path: cand, Pool: p.Name})
 		}
 	}
 	// Legacy folder, written by builds before the pool was selectable.
 	legacy := filepath.Join(h.baseImagesDir(), id+".qcow2")
-	if st, err := os.Stat(legacy); err == nil && !st.IsDir() && st.Size() > 1024*1024 {
-		out = append(out, baseImageLocation{Path: legacy})
+	if rel, rerr := filepath.Rel(h.baseImagesDir(), legacy); rerr == nil && !strings.HasPrefix(rel, "..") && rel != ".." {
+		if st, err := os.Stat(legacy); err == nil && !st.IsDir() && st.Size() > 1024*1024 {
+			out = append(out, baseImageLocation{Path: legacy})
+		}
 	}
 	return out
 }

@@ -21,6 +21,9 @@ concurrency:
   group: docker-publish-${{ github.event.inputs.ref || github.ref }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 env:
   GO_VERSION: "1.26"
   NODE_VERSION: "24"

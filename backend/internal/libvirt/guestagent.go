@@ -9,6 +9,32 @@ import (
 	"time"
 )
 
+type guestExecPayload struct {
+	Execute   string             `json:"execute"`
+	Arguments guestExecArguments `json:"arguments"`
+}
+
+type guestExecArguments struct {
+	Path          string   `json:"path"`
+	Arg           []string `json:"arg"`
+	CaptureOutput bool     `json:"capture-output"`
+}
+
+func buildGuestExec(path string, args []string, captureOutput bool) (string, error) {
+	b, err := json.Marshal(guestExecPayload{
+		Execute: "guest-exec",
+		Arguments: guestExecArguments{
+			Path:          path,
+			Arg:           args,
+			CaptureOutput: captureOutput,
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
 // RunCloudInitReprovision fires a best-effort guest-exec that clears
 // cloud-init's "already ran" state and re-executes it, so a freshly
 // re-seeded NoCloud ISO (new instance-id) actually takes effect on a
@@ -24,7 +50,10 @@ func (c *Connector) RunCloudInitReprovision(id string) error {
 		`cloud-init init >>/tmp/webkvm-cireprovision.log 2>&1; ` +
 		`cloud-init modules --mode=config >>/tmp/webkvm-cireprovision.log 2>&1; ` +
 		`cloud-init modules --mode=final >>/tmp/webkvm-cireprovision.log 2>&1`
-	qcmd := fmt.Sprintf(`{"execute":"guest-exec","arguments":{"path":"/bin/bash","arg":["-c","%s"],"capture-output":false}}`, jsonEscape(cmdStr)) // lgtm[go/unsafe-quoting] - cmdStr is static, no user input
+	qcmd, err := buildGuestExec("/bin/bash", []string{"-c", cmdStr}, false)
+	if err != nil {
+		return err
+	}
 	return c.guestExec(id, qcmd)
 }
 
@@ -56,14 +85,20 @@ func (c *Connector) setClipboardLinux(id, text string) error {
 		`echo ` + b64 + `|base64 -d|timeout 2 xclip -selection clipboard 2>/dev/null && exit 0;` +
 		`exit 1`
 
-	qcmd := fmt.Sprintf(`{"execute":"guest-exec","arguments":{"path":"/bin/bash","arg":["-c","%s"],"capture-output":false}}`, jsonEscape(cmdStr)) // lgtm[go/unsafe-quoting] - cmdStr is base64-encoded and json-escaped
+	qcmd, err := buildGuestExec("/bin/bash", []string{"-c", cmdStr}, false)
+	if err != nil {
+		return err
+	}
 	return c.guestExec(id, qcmd)
 }
 
 func (c *Connector) setClipboardWindows(id, text string) error {
 	b64 := base64.StdEncoding.EncodeToString([]byte(text))
-	psCmd := fmt.Sprintf(`[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("%s")) | Set-Clipboard`, b64)                                                                 // lgtm[go/unsafe-quoting] - b64 is base64, safe
-	qcmd := fmt.Sprintf(`{"execute":"guest-exec","arguments":{"path":"powershell.exe","arg":["-NoProfile","-NonInteractive","-Command","%s"],"capture-output":false}}`, jsonEscape(psCmd)) // lgtm[go/unsafe-quoting]
+	psCmd := fmt.Sprintf(`[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("%s")) | Set-Clipboard`, b64)
+	qcmd, err := buildGuestExec("powershell.exe", []string{"-NoProfile", "-NonInteractive", "-Command", psCmd}, false)
+	if err != nil {
+		return err
+	}
 	return c.guestExec(id, qcmd)
 }
 
@@ -91,12 +126,18 @@ func (c *Connector) getClipboardLinux(id string) (string, error) {
 		`export WAYLAND_DISPLAY=$(ls /run/user/$(id -u "$U")/wayland-* 2>/dev/null|head -1|xargs -r basename 2>/dev/null);` +
 		`wl-paste 2>/dev/null||export DISPLAY=:$(ls /tmp/.X11-unix/ 2>/dev/null|head -1|sed 's/X//';echo 0|head -1);xclip -selection clipboard -o 2>/dev/null||true`
 
-	qcmd := fmt.Sprintf(`{"execute":"guest-exec","arguments":{"path":"/bin/bash","arg":["-c","%s"],"capture-output":true}}`, jsonEscape(cmdStr)) // lgtm[go/unsafe-quoting] - cmdStr is static, no user input
+	qcmd, err := buildGuestExec("/bin/bash", []string{"-c", cmdStr}, true)
+	if err != nil {
+		return "", err
+	}
 	return c.guestExecCapture(id, qcmd)
 }
 
 func (c *Connector) getClipboardWindows(id string) (string, error) {
-	qcmd := `{"execute":"guest-exec","arguments":{"path":"powershell.exe","arg":["-NoProfile","-NonInteractive","-Command","Get-Clipboard"],"capture-output":true}}`
+	qcmd, err := buildGuestExec("powershell.exe", []string{"-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"}, true)
+	if err != nil {
+		return "", err
+	}
 	return c.guestExecCapture(id, qcmd)
 }
 
@@ -193,11 +234,6 @@ func (c *Connector) guestExecCapture(id, qcmd string) (string, error) {
 	return "", nil
 }
 
-func jsonEscape(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b[1 : len(b)-1])
-}
-
 // agentQuery runs a plain qemu-agent-command (no guest-exec involved)
 // and unmarshals its "return" payload into out.
 //
@@ -208,8 +244,11 @@ func jsonEscape(s string) string {
 // work even on guests where exec is disabled via the agent's
 // allow/deny list — which is a common hardening step.
 func (c *Connector) agentQuery(id, command string, out any) error {
-	qcmd := fmt.Sprintf(`{"execute":%q}`, command)
-	raw := exec.Command("virsh", "qemu-agent-command", id, "--cmd", qcmd)
+	cmdBytes, err := json.Marshal(map[string]string{"execute": command})
+	if err != nil {
+		return fmt.Errorf("marshal agent query: %w", err)
+	}
+	raw := exec.Command("virsh", "qemu-agent-command", id, "--cmd", string(cmdBytes))
 	stdout, err := raw.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("guest agent unreachable (is qemu-guest-agent running?): %w", err)

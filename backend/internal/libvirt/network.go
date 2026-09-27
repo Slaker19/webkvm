@@ -95,6 +95,9 @@ func (c *Connector) ListNetworks() ([]models.Network, error) {
 // validBridgeName in the caller (Start/Stop/Update/DeleteNetwork,
 // CreateNetwork) — both reject "."/".." as well as '/'.
 func networkView(name string) models.Network {
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+		return models.Network{}
+	}
 	slaves := readBridgeSlaves(name)
 	dummy := dummyNameFor(name)
 	var realSlaves []string
@@ -179,6 +182,9 @@ func inferKind(name string, realSlaves []string) (kind, iface string) {
 // (configureBridgeDHCP) is present for this bridge. br is always
 // pre-validated in both callers (networkView, UpdateNetwork).
 func dnsmasqUnitExists(br string) bool {
+	if br == "" || strings.Contains(br, "/") || strings.Contains(br, "\\") || strings.Contains(br, "..") {
+		return false
+	}
 	_, err := os.Stat("/etc/webkvm/" + br + "-dnsmasq.conf") // lgtm[go/path-injection] - br validated, see func comment
 	return err == nil
 }
@@ -192,7 +198,7 @@ func validBridgeName(name string) bool {
 	// (e.g. "/sys/class/net/" + ".." resolves to "/sys/class", escaping
 	// the intended directory) — CodeQL go/path-injection correctly
 	// flagged every sysfs-path build using a name this function allowed.
-	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/ \t\n\r\\") || name == "lo" {
+	if name == "" || name == "." || name == ".." || strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") || strings.ContainsAny(name, " \t\n\r") || name == "lo" {
 		return false
 	}
 	for _, p := range []string{"virbr", "lxdbr", "lxcbr", "incusbr", "docker", "br-"} {
@@ -241,7 +247,7 @@ func validIfaceName(name string) bool {
 	// See validBridgeName above: "." and ".." must be rejected explicitly,
 	// they contain none of the blocked characters but escape the intended
 	// sysfs directory once concatenated into a path.
-	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/ \t\n\r\\") && len(name) <= 15
+	return name != "" && name != "." && name != ".." && !strings.Contains(name, "/") && !strings.Contains(name, "\\") && !strings.Contains(name, "..") && !strings.ContainsAny(name, " \t\n\r") && len(name) <= 15
 }
 
 // CreateNetwork creates a REAL Linux bridge at the OS level (Proxmox-
@@ -275,7 +281,7 @@ func (c *Connector) createDirectNetwork(name string, req models.CreateNetworkReq
 	if iface == "" {
 		return models.Network{}, fmt.Errorf("kind=direct requires interface (the physical/wireless NIC to enslave)")
 	}
-	if !validIfaceName(iface) {
+	if !validIfaceName(iface) || strings.Contains(iface, "/") || strings.Contains(iface, "\\") || strings.Contains(iface, "..") {
 		return models.Network{}, fmt.Errorf("invalid interface name %q", iface)
 	}
 	if _, err := os.Stat("/sys/class/net/" + iface); err != nil { // lgtm[go/path-injection] - iface validated by validIfaceName above
@@ -414,6 +420,9 @@ func SetFirewallReapply(fn func() error) { firewallReapply = fn }
 // rollback) — both now reject "."/".." in addition to '/', so it cannot
 // escape these fixed directories.
 func removeDnsmasqUnit(br string) {
+	if br == "" || strings.Contains(br, "/") || strings.Contains(br, "\\") || strings.Contains(br, "..") {
+		return
+	}
 	svcPath := "/etc/systemd/system/webkvm-" + br + "-dnsmasq.service" // lgtm[go/path-injection] - br validated by every caller, see func comment
 	if _, err := os.Stat(svcPath); err != nil {
 		return
@@ -578,6 +587,9 @@ func applyBridgeMTU(br string, mtu int) error {
 // bridgeMTU reads a bridge's current link MTU from sysfs (0 if unknown).
 // br is always pre-validated — see networkView's comment, its only caller.
 func bridgeMTU(br string) int {
+	if br == "" || strings.Contains(br, "/") || strings.Contains(br, "\\") || strings.Contains(br, "..") {
+		return 0
+	}
 	data, err := os.ReadFile("/sys/class/net/" + br + "/mtu") // lgtm[go/path-injection] - br validated, see func comment
 	if err != nil {
 		return 0
@@ -596,6 +608,9 @@ func bridgeMTU(br string) int {
 // is always pre-validated in both callers (CreateNetwork -> validBridgeName,
 // UpdateNetwork -> isLinuxBridge).
 func configureBridgeDHCP(br, cidr, start, end string, dns []string, reservations []models.DHCPReservation) error {
+	if br == "" || strings.Contains(br, "/") || strings.Contains(br, "\\") || strings.Contains(br, "..") {
+		return fmt.Errorf("invalid bridge name %q", br)
+	}
 	if start == "" || end == "" {
 		return fmt.Errorf("cannot derive a DHCP range from CIDR %q", cidr)
 	}

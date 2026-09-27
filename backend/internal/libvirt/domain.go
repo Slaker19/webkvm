@@ -2703,6 +2703,9 @@ func parsePCIAddressHex(addr string) (domain, bus, slot, function string, err er
 }
 
 func pciSysfsDir(addr string) string {
+	if addr == "" || strings.Contains(addr, "/") || strings.Contains(addr, "\\") || strings.Contains(addr, "..") {
+		return ""
+	}
 	return filepath.Join("/sys/bus/pci/devices", addr)
 }
 
@@ -2713,6 +2716,9 @@ func pciSysfsDir(addr string) string {
 // re-validate itself, since ListHostPCIDevices' own callers always pass
 // an addr it built internally from parsed integers, never raw input.
 func pciBootVGA(addr string) bool {
+	if addr == "" || strings.Contains(addr, "/") || strings.Contains(addr, "\\") || strings.Contains(addr, "..") {
+		return false
+	}
 	b, err := os.ReadFile(filepath.Join(pciSysfsDir(addr), "boot_vga")) // lgtm[go/path-injection] - addr validated by every untrusted-input caller, see func comment
 	return err == nil && strings.TrimSpace(string(b)) == "1"
 }
@@ -3411,6 +3417,9 @@ func (c *Connector) CloneDomain(id string, req models.CloneVMRequest) (models.VM
 
 	newUUID := uuid.New().String()
 	newName := req.Name
+	if newName == "" || strings.Contains(newName, "/") || strings.Contains(newName, "\\") || strings.Contains(newName, "..") {
+		return models.VM{}, fmt.Errorf("invalid VM name %q", newName)
+	}
 
 	xmlDesc = regexp.MustCompile(`<name>[^<]+</name>`).ReplaceAllString(xmlDesc, "<name>"+xmlEscape(newName)+"</name>")
 	xmlDesc = regexp.MustCompile(`<uuid>[^<]+</uuid>`).ReplaceAllString(xmlDesc, "<uuid>"+newUUID+"</uuid>")
@@ -3459,6 +3468,10 @@ func (c *Connector) CloneDomain(id string, req models.CloneVMRequest) (models.VM
 		}
 		newDiskName := newName + suffix + ".qcow2"
 		newDiskPath := filepath.Join(poolPath, newDiskName)
+		if rel, rerr := filepath.Rel(poolPath, newDiskPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			cleanupAll()
+			return models.VM{}, fmt.Errorf("invalid disk path")
+		}
 
 		originalFormat := "qcow2"
 		if fm := regexp.MustCompile(`<driver[^>]*type='([^']+)'`).FindStringSubmatch(fullMatch); len(fm) > 1 {
@@ -3503,6 +3516,9 @@ func (c *Connector) CloneDomain(id string, req models.CloneVMRequest) (models.VM
 // for non-qcow2 sources, since raw disks have no backing-file
 // support).
 func cloneDiskFile(srcPath, dstPath, format string, linked bool) error {
+	if strings.Contains(srcPath, "..") || strings.Contains(dstPath, "..") {
+		return fmt.Errorf("invalid disk path: traversal not allowed")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 

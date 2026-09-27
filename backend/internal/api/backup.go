@@ -965,6 +965,10 @@ func (h *Handler) TestBackupTarget(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "path is required")
 		return
 	}
+	if strings.Contains(req.Path, "..") {
+		jsonResp(w, http.StatusOK, map[string]any{"ok": false, "message": "invalid path: traversal not allowed"})
+		return
+	}
 	if err := backupstore.ValidateTargetPath(req.Path, h.cfg.DataDir); err != nil {
 		jsonResp(w, http.StatusOK, map[string]any{"ok": false, "message": err.Error()})
 		return
@@ -974,7 +978,11 @@ func (h *Handler) TestBackupTarget(w http.ResponseWriter, r *http.Request) {
 		jsonResp(w, http.StatusOK, map[string]any{"ok": false, "message": "cannot create path: " + err.Error()})
 		return
 	}
-	probe := filepath.Join(req.Path, ".webkvm-test")                 // lgtm[go/path-injection] - req.Path validated above
+	probe := filepath.Join(req.Path, ".webkvm-test") // lgtm[go/path-injection] - req.Path validated above
+	if rel, rerr := filepath.Rel(req.Path, probe); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		jsonResp(w, http.StatusOK, map[string]any{"ok": false, "message": "invalid probe path"})
+		return
+	}
 	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil { // lgtm[go/path-injection]
 		jsonResp(w, http.StatusOK, map[string]any{"ok": false, "message": "path not writable: " + err.Error()})
 		return

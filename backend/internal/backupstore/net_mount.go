@@ -23,6 +23,9 @@ const backupCredentialsDir = "/etc/webkvm"
 // self-managed SMB backup target. targetID is always newID()-generated
 // by Store.CreateTarget, never user-supplied text.
 func backupCredentialsPath(targetID string) string {
+	if targetID == "" || strings.Contains(targetID, "/") || strings.Contains(targetID, "\\") || strings.Contains(targetID, "..") {
+		return ""
+	}
 	return filepath.Join(backupCredentialsDir, "backup-smb-creds-"+targetID) // lgtm[go/path-injection] - targetID always internally generated, see func comment
 }
 
@@ -71,6 +74,9 @@ func validateNoControlChars(values ...string) error {
 // always validated by ValidateTargetPath in the only caller
 // (Store.CreateTarget), before this function ever runs.
 func mountNFSTarget(host, remoteDir, mountpoint string) error {
+	if strings.Contains(mountpoint, "..") {
+		return fmt.Errorf("invalid mountpoint: traversal not allowed")
+	}
 	if err := validateNoControlChars(host, remoteDir, mountpoint); err != nil {
 		return err
 	}
@@ -102,6 +108,9 @@ WantedBy=multi-user.target
 // the only caller (Store.CreateTarget); targetID is always
 // newID()-generated there too, never user input.
 func mountSMBTarget(targetID, host, share, mountpoint, user, pass string) error {
+	if strings.Contains(mountpoint, "..") {
+		return fmt.Errorf("invalid mountpoint: traversal not allowed")
+	}
 	if err := validateNoControlChars(targetID, host, share, mountpoint, user, pass); err != nil {
 		return err
 	}
@@ -181,7 +190,9 @@ func unmountTarget(targetID, mountpoint string) error {
 	exec.Command("systemctl", "disable", "--now", unitName).Run()      //nolint:errcheck
 	os.Remove(filepath.Join("/etc/systemd/system", automountName))
 	os.Remove(unitPath)
-	os.Remove(backupCredentialsPath(targetID))
+	if cred := backupCredentialsPath(targetID); cred != "" {
+		os.Remove(cred)
+	}
 	exec.Command("systemctl", "daemon-reload").Run() //nolint:errcheck
 	return nil
 }

@@ -1000,6 +1000,12 @@ func rewriteOVFDisks(ovf string, diskFiles map[string][]byte, poolPath, vmName s
 		}
 
 		// Convert to qcow2 at the final destination — ensure qcow2Path is within poolPath.
+		if strings.Contains(qcow2Path, "..") {
+			return match
+		}
+		if rel, rerr := filepath.Rel(poolPath, qcow2Path); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			return match
+		}
 		if !strings.HasPrefix(filepath.Clean(qcow2Path), filepath.Clean(poolPath)+string(os.PathSeparator)) {
 			return match
 		}

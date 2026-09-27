@@ -341,19 +341,44 @@ func (h *Handler) GetMediaRaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var targetPath string
+	var targetDir string
+	var rawFile string
 	if strings.HasPrefix(id, "system:") {
-		filename := filepath.Base(strings.TrimPrefix(id, "system:"))
-		targetPath = filepath.Join(h.cfg.MediaSystemDir(), filename)
+		targetDir = h.cfg.MediaSystemDir()
+		rawFile = strings.TrimPrefix(id, "system:")
 	} else if strings.HasPrefix(id, "custom:") {
-		filename := filepath.Base(strings.TrimPrefix(id, "custom:"))
-		targetPath = filepath.Join(h.cfg.MediaCustomDir(), filename)
+		targetDir = h.cfg.MediaCustomDir()
+		rawFile = strings.TrimPrefix(id, "custom:")
 	} else {
-		filename := filepath.Base(id)
+		rawFile = id
+	}
+
+	filename := filepath.Base(rawFile)
+	if filename == "" || filename == "." || filename == ".." || strings.Contains(filename, "/") || strings.Contains(filename, "\\") || strings.Contains(filename, "..") {
+		http.NotFound(w, r)
+		return
+	}
+
+	var targetPath string
+	if targetDir != "" {
+		targetPath = filepath.Join(targetDir, filename)
+		if rel, rerr := filepath.Rel(targetDir, targetPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			http.NotFound(w, r)
+			return
+		}
+	} else {
 		// Check custom first, then system
 		targetPath = filepath.Join(h.cfg.MediaCustomDir(), filename)
+		if rel, rerr := filepath.Rel(h.cfg.MediaCustomDir(), targetPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			http.NotFound(w, r)
+			return
+		}
 		if _, err := os.Stat(targetPath); os.IsNotExist(err) {
 			targetPath = filepath.Join(h.cfg.MediaSystemDir(), filename)
+			if rel, rerr := filepath.Rel(h.cfg.MediaSystemDir(), targetPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+				http.NotFound(w, r)
+				return
+			}
 		}
 	}
 

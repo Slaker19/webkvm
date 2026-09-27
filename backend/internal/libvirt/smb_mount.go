@@ -35,6 +35,9 @@ const smbCredentialsDir = "/etc/webkvm"
 // CreateStoragePool (storage.go) before this is ever reached — it cannot
 // contain '/', '.', or '..'.
 func smbCredentialsPath(poolName string) string {
+	if poolName == "" || strings.Contains(poolName, "/") || strings.Contains(poolName, "\\") || strings.Contains(poolName, "..") {
+		return ""
+	}
 	return filepath.Join(smbCredentialsDir, "smb-creds-"+poolName) // lgtm[go/path-injection] - poolName validated, see func comment
 }
 
@@ -66,6 +69,12 @@ func validateNoControlChars(values ...string) error {
 // is validated by validPoolName and mountpoint by validatePoolPath,
 // both in the request path before CreateStoragePool ever calls this.
 func mountSMBShare(poolName, host, shareDir, mountpoint, user, pass string) error {
+	if strings.Contains(mountpoint, "..") {
+		return fmt.Errorf("invalid mountpoint: traversal not allowed")
+	}
+	if strings.Contains(poolName, "/") || strings.Contains(poolName, "\\") || strings.Contains(poolName, "..") {
+		return fmt.Errorf("invalid pool name: traversal not allowed")
+	}
 	if err := validateNoControlChars(poolName, host, shareDir, mountpoint, user, pass); err != nil {
 		return err
 	}
@@ -144,7 +153,9 @@ func unmountSMBShare(poolName, mountpoint string) error {
 	exec.Command("systemctl", "disable", "--now", unitName).Run()      //nolint:errcheck
 	os.Remove(filepath.Join("/etc/systemd/system", automountName))     // lgtm[go/path-injection] - derived from systemd-escape output
 	os.Remove(unitPath)
-	os.Remove(smbCredentialsPath(poolName))
+	if credPath := smbCredentialsPath(poolName); credPath != "" {
+		os.Remove(credPath)
+	}
 	exec.Command("systemctl", "daemon-reload").Run() //nolint:errcheck
 	return nil
 }

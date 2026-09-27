@@ -123,6 +123,9 @@ func sameFilesystem(a, b string) bool {
 // occupies 1 MiB, and copying it naively writes out four gigabytes of
 // zeroes. On a pool sized for the real usage that alone fills the disk.
 func copyFile(src, dst string) error {
+	if strings.Contains(src, "..") || strings.Contains(dst, "..") {
+		return fmt.Errorf("invalid path: traversal not allowed")
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -443,16 +446,25 @@ func (c *Connector) MoveVolume(srcPool, volName, destPool string, opts MoveVolum
 	if strings.ContainsAny(volName, `/\`) || volName == "." || volName == ".." {
 		return fmt.Errorf("invalid volume name %q", volName)
 	}
+	if strings.Contains(volName, "/") || strings.Contains(volName, "\\") || strings.Contains(volName, "..") {
+		return fmt.Errorf("invalid source volume name %q", volName)
+	}
 	newName := opts.NewName
 	if newName == "" {
 		newName = volName
 	}
-	if strings.ContainsAny(newName, `/\`) {
+	if strings.Contains(newName, "/") || strings.Contains(newName, "\\") || strings.Contains(newName, "..") {
 		return fmt.Errorf("invalid destination name %q", newName)
 	}
 
 	srcPath := filepath.Join(srcDir, volName)
 	destPath := filepath.Join(destDir, newName)
+	if rel, rerr := filepath.Rel(srcDir, srcPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		return fmt.Errorf("invalid source path")
+	}
+	if rel, rerr := filepath.Rel(destDir, destPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		return fmt.Errorf("invalid destination path")
+	}
 	fi, err := os.Stat(srcPath)
 	if err != nil {
 		return fmt.Errorf("source volume %q: %w", volName, err)

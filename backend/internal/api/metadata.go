@@ -239,12 +239,12 @@ func (h *Handler) UploadCover(w http.ResponseWriter, r *http.Request) {
 
 	// Filename is just the VM id + ext so it's easy to reason about.
 	cleanID := filepath.Base(id)
-	if cleanID == "" || cleanID == "." || cleanID == ".." {
+	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.Contains(cleanID, "/") || strings.Contains(cleanID, "\\") || strings.Contains(cleanID, "..") {
 		jsonErr(w, http.StatusBadRequest, "invalid VM id")
 		return
 	}
 	dst := filepath.Join(coversDir, cleanID+ext)
-	if !strings.HasPrefix(filepath.Clean(dst), filepath.Clean(coversDir)+string(os.PathSeparator)) {
+	if rel, rerr := filepath.Rel(coversDir, dst); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
 		jsonErr(w, http.StatusBadRequest, "invalid cover path")
 		return
 	}
@@ -307,12 +307,12 @@ func (h *Handler) DeleteCover(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ServeCover(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "path")
 	clean := filepath.Base(name)
-	if clean != name || strings.ContainsAny(clean, "/\\") {
+	if clean != name || strings.Contains(clean, "/") || strings.Contains(clean, "\\") || strings.Contains(clean, "..") {
 		http.NotFound(w, r)
 		return
 	}
 	fp := filepath.Join(h.cfg.CoversDir(), clean)
-	if !strings.HasPrefix(filepath.Clean(fp), filepath.Clean(h.cfg.CoversDir())+string(os.PathSeparator)) {
+	if rel, rerr := filepath.Rel(h.cfg.CoversDir(), fp); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
 		http.NotFound(w, r)
 		return
 	}

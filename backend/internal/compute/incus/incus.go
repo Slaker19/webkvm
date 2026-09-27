@@ -211,7 +211,7 @@ func isPhysicalBridge(name string) bool {
 // isLinuxBridge reports whether name is a real Linux bridge on the host.
 // Containers attach to these with nictype=bridged parent=<bridge>.
 func isLinuxBridge(name string) bool {
-	if name == "" || strings.ContainsAny(name, "/ \t\n\r") {
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") || strings.ContainsAny(name, " \t\n\r") {
 		return false
 	}
 	_, err := os.Stat("/sys/class/net/" + name + "/bridge") // lgtm[go/path-injection] - name validated above
@@ -772,7 +772,13 @@ func waitOperation(op incus.Operation) error {
 }
 
 func (b *IncusBackend) GetDomainLog(id string, lines int) (string, error) {
+	if id == "" || strings.Contains(id, "/") || strings.Contains(id, "\\") || strings.Contains(id, "..") {
+		return "", fmt.Errorf("invalid container id %q", id)
+	}
 	logPath := filepath.Join("/var/log/incus", id, "lxc.log")
+	if rel, err := filepath.Rel("/var/log/incus", logPath); err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+		return "", fmt.Errorf("invalid log path")
+	}
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1165,6 +1171,9 @@ func (b *IncusBackend) CreateStoragePool(ctx context.Context, req models.CreateP
 
 	configMap := make(map[string]string)
 	if req.Path != "" {
+		if strings.Contains(req.Path, "..") {
+			return models.StoragePool{}, fmt.Errorf("invalid pool path %q: traversal not allowed", req.Path)
+		}
 		if driver == "dir" {
 			if err := os.MkdirAll(req.Path, 0755); err != nil {
 				return models.StoragePool{}, fmt.Errorf("create pool directory %q: %w", req.Path, err)

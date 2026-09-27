@@ -544,6 +544,10 @@ func (h *Handler) InitHostDiskDirectory(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// 4. Create mountpoint directory
+	if strings.Contains(req.MountPoint, "..") {
+		jsonErr(w, http.StatusBadRequest, "invalid mount point: traversal not allowed")
+		return
+	}
 	if err := os.MkdirAll(req.MountPoint, 0755); err != nil {
 		jsonErr(w, http.StatusInternalServerError, "create mount point: "+err.Error())
 		return
@@ -705,6 +709,9 @@ WantedBy=local-fs.target
 		}
 		seen[sub] = true
 		subPath := filepath.Join(req.MountPoint, sub)
+		if rel, rerr := filepath.Rel(req.MountPoint, subPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			continue
+		}
 		if err := os.MkdirAll(subPath, 0755); err != nil {
 			continue
 		}
@@ -714,14 +721,16 @@ WantedBy=local-fs.target
 	// 6c. Optionally register the backups/ subfolder as a local backup target.
 	if req.RegisterBackupTarget && h.backupStore != nil {
 		backupPath := filepath.Join(req.MountPoint, "backups")
-		if err := os.MkdirAll(backupPath, 0755); err == nil {
-			if !seen["backups"] {
-				createdSubfolders = append(createdSubfolders, backupPath)
+		if rel, rerr := filepath.Rel(req.MountPoint, backupPath); rerr == nil && !strings.HasPrefix(rel, "..") && rel != ".." {
+			if err := os.MkdirAll(backupPath, 0755); err == nil {
+				if !seen["backups"] {
+					createdSubfolders = append(createdSubfolders, backupPath)
+				}
+				_, _ = h.backupStore.CreateTargetOpts(
+					req.VolumeName+"-backups", backupPath,
+					backupstore.TargetLocal, "all", nil, backupstore.TargetOptions{},
+				)
 			}
-			_, _ = h.backupStore.CreateTargetOpts(
-				req.VolumeName+"-backups", backupPath,
-				backupstore.TargetLocal, "all", nil, backupstore.TargetOptions{},
-			)
 		}
 	}
 
