@@ -121,12 +121,28 @@ jobs:
             slaker1908/webkvm:${{ steps.ver.outputs.version }}
 
       # Gate passed: publish the exact image that was tested and scanned.
-      - uses: docker/login-action@v3
+      - name: Check Docker Hub credentials
+        id: check-auth
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "auth=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "auth=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub credentials not configured. Skipping docker login and push."
+          fi
+
+      - name: Log in to Docker Hub
+        if: steps.check-auth.outputs.auth == 'true'
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Push image
+        if: steps.check-auth.outputs.auth == 'true'
         run: |
           docker push slaker1908/webkvm:${{ steps.ver.outputs.version }}
           docker push slaker1908/webkvm:latest

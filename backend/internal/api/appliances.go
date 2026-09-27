@@ -709,6 +709,9 @@ func (h *Handler) verifyDeployTargetFree(poolName, vmName string) (exists bool, 
 	if strings.Contains(vmName, "/") || strings.Contains(vmName, "\\") || strings.Contains(vmName, "..") {
 		return false, fmt.Errorf("invalid vm name %q", vmName)
 	}
+	if strings.Contains(poolName, "/") || strings.Contains(poolName, "\\") || strings.Contains(poolName, "..") {
+		return false, fmt.Errorf("invalid pool name %q", poolName)
+	}
 	exists, err := h.compute.DomainExists(vmName)
 	if err != nil {
 		return false, fmt.Errorf("cannot verify deploy target: %w", err)
@@ -722,8 +725,22 @@ func (h *Handler) verifyDeployTargetFree(poolName, vmName string) (exists bool, 
 	if ferr != nil {
 		return false, fmt.Errorf("cannot resolve pool before deploy: %w", ferr)
 	}
+	if strings.Contains(poolPath, "..") {
+		return false, fmt.Errorf("invalid pool path: traversal not allowed")
+	}
 	for _, cand := range deployDiskCandidates(vmName) {
-		if _, err := os.Stat(filepath.Join(poolPath, cand)); err == nil {
+		candBase := filepath.Base(cand)
+		if candBase != cand || strings.Contains(cand, "..") || strings.Contains(cand, "/") || strings.Contains(cand, "\\") {
+			continue
+		}
+		target := filepath.Join(poolPath, candBase)
+		if strings.Contains(target, "..") {
+			continue
+		}
+		if rel, err := filepath.Rel(poolPath, target); err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			continue
+		}
+		if _, err := os.Stat(target); err == nil {
 			return true, nil
 		}
 		vexists, verr := h.compute.VolumeExists(poolName, cand)

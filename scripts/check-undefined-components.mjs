@@ -50,7 +50,7 @@ for (const file of walk(SRC)) {
   // plus the instance block), and identifiers can be bound in any of
   // them. Reading only the first one makes every import in the second
   // look missing.
-  const scripts = [...src.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)];
+  const scripts = [...src.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/gi)];
   if (!scripts.length) continue;
   const code = scripts.map((m) => m[1]).join('\n');
   const firstIdx = scripts[0].index;

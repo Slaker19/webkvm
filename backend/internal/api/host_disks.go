@@ -707,8 +707,26 @@ WantedBy=local-fs.target
 		if !ok || seen[sub] {
 			continue
 		}
-		seen[sub] = true
-		subPath := filepath.Join(req.MountPoint, sub)
+		var safeSub string
+		switch sub {
+		case "discos":
+			safeSub = "discos"
+		case "contenedores":
+			safeSub = "contenedores"
+		case "isos":
+			safeSub = "isos"
+		case "backups":
+			safeSub = "backups"
+		case "plantillas":
+			safeSub = "plantillas"
+		default:
+			continue
+		}
+		seen[safeSub] = true
+		subPath := filepath.Join(req.MountPoint, safeSub)
+		if strings.Contains(subPath, "..") {
+			continue
+		}
 		if rel, rerr := filepath.Rel(req.MountPoint, subPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
 			continue
 		}

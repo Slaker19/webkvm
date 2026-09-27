@@ -1292,6 +1292,10 @@ func (h *Handler) UploadISO(w http.ResponseWriter, r *http.Request) {
 	if poolName == "" {
 		poolName = config.ISOPoolName
 	}
+	if strings.Contains(poolName, "..") || strings.Contains(poolName, "/") || strings.Contains(poolName, "\\") {
+		jsonErr(w, http.StatusBadRequest, "invalid pool name: traversal not allowed")
+		return
+	}
 	if !h.requireISOPoolForCaller(w, r, poolName) {
 		return
 	}
@@ -1300,7 +1304,15 @@ func (h *Handler) UploadISO(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, "failed to resolve pool: "+err.Error())
 		return
 	}
+	if strings.Contains(poolPath, "..") {
+		jsonErr(w, http.StatusBadRequest, "invalid pool path: traversal not allowed")
+		return
+	}
 	destPath := filepath.Join(poolPath, name)
+	if strings.Contains(destPath, "..") {
+		jsonErr(w, http.StatusBadRequest, "invalid destination path: traversal not allowed")
+		return
+	}
 	if rel, rerr := filepath.Rel(poolPath, destPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
 		jsonErr(w, http.StatusBadRequest, "invalid destination path")
 		return
@@ -1504,6 +1516,10 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 		if part.FormName() == "pool" {
 			b, _ := io.ReadAll(io.LimitReader(part, 256))
 			poolName = strings.TrimSpace(string(b))
+			if strings.Contains(poolName, "..") || strings.Contains(poolName, "/") || strings.Contains(poolName, "\\") {
+				jsonErr(w, http.StatusBadRequest, "invalid pool name: traversal not allowed")
+				return
+			}
 			continue
 		}
 		if part.FormName() != "file" {
@@ -1512,6 +1528,10 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 
 		if poolName == "" {
 			poolName = config.DiskPoolName
+		}
+		if strings.Contains(poolName, "..") || strings.Contains(poolName, "/") || strings.Contains(poolName, "\\") {
+			jsonErr(w, http.StatusBadRequest, "invalid pool name: traversal not allowed")
+			return
 		}
 		// Checked before the body is streamed to disk so a rejected pool
 		// costs no I/O at all.
@@ -1561,7 +1581,15 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusInternalServerError, "failed to resolve pool: "+perr.Error())
 			return
 		}
+		if strings.Contains(poolPath, "..") {
+			jsonErr(w, http.StatusBadRequest, "invalid pool path: traversal not allowed")
+			return
+		}
 		destPath = filepath.Join(poolPath, name)
+		if strings.Contains(destPath, "..") {
+			jsonErr(w, http.StatusBadRequest, "invalid destination path: traversal not allowed")
+			return
+		}
 		if rel, rerr := filepath.Rel(poolPath, destPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
 			jsonErr(w, http.StatusBadRequest, "invalid destination path")
 			return
@@ -1607,6 +1635,10 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 			baseName := strings.TrimSuffix(name, ext)
 			qcow2Name := baseName + ".qcow2"
 			qcow2Path := filepath.Join(poolPath, qcow2Name)
+			if strings.Contains(qcow2Path, "..") {
+				jsonErr(w, http.StatusBadRequest, "invalid qcow2 destination path: traversal not allowed")
+				return
+			}
 			if rel, rerr := filepath.Rel(poolPath, qcow2Path); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
 				jsonErr(w, http.StatusBadRequest, "invalid qcow2 destination path")
 				return
@@ -1669,6 +1701,10 @@ func (h *Handler) UploadISOByCURL(w http.ResponseWriter, r *http.Request) {
 	if poolName == "" {
 		poolName = config.ISOPoolName
 	}
+	if strings.Contains(poolName, "..") || strings.Contains(poolName, "/") || strings.Contains(poolName, "\\") {
+		jsonErr(w, http.StatusBadRequest, "invalid pool name: traversal not allowed")
+		return
+	}
 	if !h.requireISOPoolForCaller(w, r, poolName) {
 		return
 	}
@@ -1677,7 +1713,15 @@ func (h *Handler) UploadISOByCURL(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, "failed to resolve pool: "+err.Error())
 		return
 	}
+	if strings.Contains(poolPath, "..") {
+		jsonErr(w, http.StatusBadRequest, "invalid pool path: traversal not allowed")
+		return
+	}
 	destPath := filepath.Join(poolPath, name)
+	if strings.Contains(destPath, "..") {
+		jsonErr(w, http.StatusBadRequest, "invalid destination path: traversal not allowed")
+		return
+	}
 	if rel, rerr := filepath.Rel(poolPath, destPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
 		jsonErr(w, http.StatusBadRequest, "invalid destination path")
 		return

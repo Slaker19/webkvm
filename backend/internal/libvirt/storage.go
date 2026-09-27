@@ -421,15 +421,23 @@ func (c *Connector) resolveMediaPath(media string) (string, error) {
 	if media == "" {
 		return "", nil
 	}
-	if filepath.IsAbs(media) {
-		stat, err := os.Stat(media)
+	cleanMedia := filepath.Clean(media)
+	if strings.Contains(cleanMedia, "..") || strings.Contains(media, "..") {
+		return "", fmt.Errorf("invalid media path: traversal not allowed")
+	}
+	if filepath.IsAbs(cleanMedia) {
+		stat, err := os.Stat(cleanMedia)
 		if err != nil {
-			return "", fmt.Errorf("media file %q not found or inaccessible: %w", media, err)
+			return "", fmt.Errorf("media file %q not found or inaccessible: %w", cleanMedia, err)
 		}
 		if stat.IsDir() {
-			return "", fmt.Errorf("media path %q is a directory, expected an image file", media)
+			return "", fmt.Errorf("media path %q is a directory, expected an image file", cleanMedia)
 		}
-		return filepath.Clean(media), nil
+		return cleanMedia, nil
+	}
+
+	if strings.ContainsAny(media, "/\\") {
+		return "", fmt.Errorf("relative media path must not contain path separators")
 	}
 
 	// Media is a relative name / filename. Search available storage pools.
@@ -444,7 +452,16 @@ func (c *Connector) resolveMediaPath(media string) (string, error) {
 	// Pass 1: search pools designated for ISOs
 	for _, p := range pools {
 		if p.Purpose == PoolPurposeISO && p.Path != "" {
-			target := filepath.Join(p.Path, media)
+			if strings.Contains(p.Path, "..") {
+				continue
+			}
+			target := filepath.Join(p.Path, filepath.Base(media))
+			if strings.Contains(target, "..") {
+				continue
+			}
+			if rel, err := filepath.Rel(p.Path, target); err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+				continue
+			}
 			if stat, err := os.Stat(target); err == nil && !stat.IsDir() {
 				matches = append(matches, target)
 				matchPools = append(matchPools, p.Name)
@@ -456,7 +473,16 @@ func (c *Connector) resolveMediaPath(media string) (string, error) {
 	if len(matches) == 0 {
 		for _, p := range pools {
 			if p.Purpose != PoolPurposeISO && p.Path != "" {
-				target := filepath.Join(p.Path, media)
+				if strings.Contains(p.Path, "..") {
+					continue
+				}
+				target := filepath.Join(p.Path, filepath.Base(media))
+				if strings.Contains(target, "..") {
+					continue
+				}
+				if rel, err := filepath.Rel(p.Path, target); err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+					continue
+				}
 				if stat, err := os.Stat(target); err == nil && !stat.IsDir() {
 					matches = append(matches, target)
 					matchPools = append(matchPools, p.Name)
@@ -467,10 +493,17 @@ func (c *Connector) resolveMediaPath(media string) (string, error) {
 
 	// Pass 3: fallback to default ISO pool path if no matches from pools list
 	if len(matches) == 0 && c.cfg != nil && c.cfg.ISOPoolPath() != "" {
-		target := filepath.Join(c.cfg.ISOPoolPath(), media)
-		if stat, err := os.Stat(target); err == nil && !stat.IsDir() {
-			matches = append(matches, target)
-			matchPools = append(matchPools, config.ISOPoolName)
+		basePath := c.cfg.ISOPoolPath()
+		if !strings.Contains(basePath, "..") {
+			target := filepath.Join(basePath, filepath.Base(media))
+			if !strings.Contains(target, "..") {
+				if rel, err := filepath.Rel(basePath, target); err == nil && !strings.HasPrefix(rel, "..") && rel != ".." {
+					if stat, err := os.Stat(target); err == nil && !stat.IsDir() {
+						matches = append(matches, target)
+						matchPools = append(matchPools, config.ISOPoolName)
+					}
+				}
+			}
 		}
 	}
 
