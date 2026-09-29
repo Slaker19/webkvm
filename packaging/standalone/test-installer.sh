@@ -94,6 +94,38 @@ grep -F 'SHA256SUMS' "${ROOT}/packaging/standalone/update.sh" >/dev/null
 bash -n "${ROOT}/packaging/standalone/update.sh"
 bash -n "${ROOT}/packaging/standalone/uninstall.sh"
 
+# The backend runs packaging/standalone/update.sh as webkvm-update, so every
+# install flavour must ship it: nfpm packages, the tarball and release.yml's
+# own copy of that tarball list (they drift apart otherwise).
+for shipped_in in \
+  "${ROOT}/packaging/nfpm.deb.yaml" \
+  "${ROOT}/packaging/nfpm.rpm.yaml" \
+  "${ROOT}/Makefile" \
+  "${ROOT}/.github/workflows/release.yml"; do
+  grep -F 'packaging/standalone/update.sh' "${shipped_in}" >/dev/null
+done
+
+# ...and every unit template must set the gate the backend enforces,
+# otherwise the button answers 403 no matter how the binary was installed.
+grep -F 'WEBKVM_ALLOW_UPDATE=1' "${ROOT}/scripts/webkvm.service" >/dev/null
+grep -F 'WEBKVM_ALLOW_UPDATE=1' "${ROOT}/packaging/standalone/install.sh" >/dev/null
+
+# update.sh replaces the binary it is running under: the guards below are the
+# difference between a failed update and a host left with no service at all.
+# A single instance (two runs race over backup/stop/rename)...
+grep -F 'flock -n 9' "${ROOT}/packaging/standalone/update.sh" >/dev/null
+# ...a rollback that cannot abort under `set -e` before it restarts the
+# service (a bare `install` there used to exit silently, leaving it down)...
+grep -F 'restored=1' "${ROOT}/packaging/standalone/update.sh" >/dev/null
+# ...and cleanup of the downloaded binary on every exit path, not just the
+# happy one.
+grep -F 'trap cleanup EXIT' "${ROOT}/packaging/standalone/update.sh" >/dev/null
+
+# uninstall.sh must remove everything the updater can leave behind.
+for leftover in webkvm-update '"${BIN}.previous"'; do
+  grep -F "${leftover}" "${ROOT}/packaging/standalone/uninstall.sh" >/dev/null
+done
+
 # Dockerfile: pinned base (never :rolling), backend shell-outs present,
 # HEALTHCHECK with https+http fallback.
 grep -F 'FROM ubuntu:' "${ROOT}/Dockerfile" | grep -v rolling >/dev/null

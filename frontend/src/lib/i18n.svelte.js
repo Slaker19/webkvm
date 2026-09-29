@@ -2383,7 +2383,9 @@ const messages = {
       storagePools: 'Storage pools',
       restartServiceDesc: 'Restarts the webkvm backend systemd service',
       updateTo: 'Update to v{version}',
-      updateDesc: 'Pulls latest, rebuilds and restarts',
+      updateFromSource: 'Rebuild from source',
+      updateDescRelease: 'Downloads the verified release, installs it and restarts',
+      updateDescSource: 'Pulls the checkout, rebuilds it and restarts',
       backupShareUnmounted: 'SMB share not mounted (configure fstab to enable)',
       hostDetails: 'Host details',
       hostname: 'Hostname',
@@ -2412,7 +2414,7 @@ const messages = {
         'Creates a tar.gz of the data dir (excludes disks and logs) and writes it to the configured SMB share. The operation may take a few minutes on large data dirs.',
       backup: 'Backup',
       updateStartedTitle: 'Update started',
-      updateStartedDesc: 'The build is running in the background. Tail the log file for progress:',
+      updateStartedDesc: 'The update is running in the background. Tail the log file for progress:',
     },
     backup: {
       partialLoadFailed: 'Some panels could not be loaded; the data shown may be incomplete.',
@@ -5568,7 +5570,9 @@ const messages = {
       storagePools: 'Grupos de almacenamiento',
       restartServiceDesc: 'Reinicia el servicio systemd del backend webkvm',
       updateTo: 'Actualizar a v{version}',
-      updateDesc: 'Descarga lo último, recompila y reinicia',
+      updateFromSource: 'Recompilar desde el código',
+      updateDescRelease: 'Descarga el release verificado, lo instala y reinicia',
+      updateDescSource: 'Actualiza el checkout, lo recompila y reinicia',
       backupShareUnmounted: 'Compartición SMB no montada (configura fstab para activarla)',
       hostDetails: 'Detalles del host',
       hostname: 'Nombre de host',
@@ -5598,7 +5602,7 @@ const messages = {
       backup: 'Copia',
       updateStartedTitle: 'Actualización iniciada',
       updateStartedDesc:
-        'La compilación se ejecuta en segundo plano. Sigue el archivo de registro para ver el progreso:',
+        'La actualización se ejecuta en segundo plano. Sigue el archivo de registro para ver el progreso:',
     },
     backup: {
       partialLoadFailed:
@@ -8760,7 +8764,9 @@ const messages = {
       storagePools: "Grups d'emmagatzematge",
       restartServiceDesc: 'Reinicia el servei systemd del backend webkvm',
       updateTo: 'Actualitza a v{version}',
-      updateDesc: "Descarrega l'últim, recompila i reinicia",
+      updateFromSource: 'Recompila des del codi',
+      updateDescRelease: "Descarrega el release verificat, l'instal·la i reinicia",
+      updateDescSource: 'Actualitza el checkout, el recompila i reinicia',
       backupShareUnmounted: 'Compartició SMB no muntada (configura fstab per activar-la)',
       hostDetails: "Detalls de l'host",
       hostname: "Nom de l'host",
@@ -8790,7 +8796,7 @@ const messages = {
       backup: 'Còpia',
       updateStartedTitle: 'Actualització iniciada',
       updateStartedDesc:
-        "La compilació s'executa en segon pla. Segueix el fitxer de registre per veure el progrés:",
+        "L'actualització s'executa en segon pla. Segueix el fitxer de registre per veure el progrés:",
     },
     backup: {
       partialLoadFailed:

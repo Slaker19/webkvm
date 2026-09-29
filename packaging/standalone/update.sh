@@ -1,25 +1,75 @@
 #!/usr/bin/env bash
-# webkvm updater — pulls latest release and reinstalls.
+# webkvm updater — installs the latest release, or rebuilds from a checkout.
 #
 # Usage:
-#   sudo ./update.sh              # update from latest GitHub release
-#   sudo ./update.sh --source     # update from local repo (git pull)
+#   sudo ./update.sh              # install the latest verified GitHub release
+#   sudo ./update.sh --source     # git pull + rebuild WEBKVM_REPO_DIR
+#
+# Run `./update.sh --help` for the full argument and environment list.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# Where the git checkout lives — only used by --source. Installed outside the
+# tree (as /usr/local/bin/webkvm-update) SCRIPT_DIR/../.. would resolve to
+# /usr/local, so callers — the in-app updater above all — pass
+# WEBKVM_REPO_DIR explicitly.
+REPO_DIR="${WEBKVM_REPO_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 BIN="${WEBKVM_BIN:-}"
 SERVICE="webkvm.service"
 SOURCE_MODE=0
-[[ "${1:-}" == "--source" ]] && SOURCE_MODE=1
 
 log()  { printf '[webkvm-update] %s\n' "$*"; }
 die()  { printf '[webkvm-update] ERROR: %s\n' "$*" >&2; exit 1; }
+usage() {
+  cat <<'USAGE'
+webkvm updater — installs the latest release, or rebuilds from a checkout.
+
+Usage:
+  webkvm-update            update from the latest verified GitHub release
+  webkvm-update --source   update from the local checkout (git pull + build)
+
+Environment:
+  WEBKVM_REPO_DIR   checkout to rebuild from in --source mode
+  WEBKVM_BIN        binary to replace (default: read from the systemd unit)
+USAGE
+}
+
+# Reject anything we do not understand instead of silently falling through
+# to a release update: a typo like --sources must not install a different
+# build than the operator asked for.
+case "${1:-}" in
+  "")         ;;
+  --source)   SOURCE_MODE=1 ;;
+  -h|--help)  usage; exit 0 ;;
+  *)          usage >&2; die "unknown argument: $1" ;;
+esac
+[[ $# -le 1 ]] || die "too many arguments"
 
 # ── Preflight ──────────────────────────────────────────────────────────
 [[ $EUID -eq 0 ]] || die "run as root"
 command -v systemctl >/dev/null || die "systemctl not found"
 systemctl list-unit-files "${SERVICE}" >/dev/null 2>&1 || die "webkvm service not found — run install.sh first"
+
+# ── Single instance ────────────────────────────────────────────────────
+# Two concurrent runs would race over the same paths: two backups (the
+# second overwriting the first with an already-replaced binary), two stops
+# and two renames onto ${BIN}. /run is tmpfs, so the lock never survives a
+# reboot and can't go stale.
+if command -v flock >/dev/null; then
+  exec 9>/run/webkvm-update.lock || die "cannot create /run/webkvm-update.lock"
+  flock -n 9 || die "another update is already running"
+else
+  log "WARNING: flock not found; cannot guard against concurrent updates"
+fi
+
+# Remove a half-downloaded release binary on every exit path, not just the
+# happy one: a checksum mismatch or a failed stop used to leave it behind.
+TMP=""
+cleanup() {
+  if [[ -n "${TMP}" && -f "${TMP}" ]]; then rm -f "${TMP}"; fi
+  return 0
+}
+trap cleanup EXIT
 
 # Auto-detect binary path from the running systemd unit. install.sh's
 # default is PREFIX=/usr/local (i.e. /usr/local/bin/webkvm) — /opt/webkvm
@@ -31,6 +81,13 @@ if [[ -z "${BIN}" ]]; then
   [[ -x "${BIN}" ]] || BIN="/opt/webkvm/webkvm"
 fi
 
+# DATA_DIR drives both the .env written by --source and the config.json the
+# health check reads its port from. Detected once, here: hardcoding
+# /opt/webkvm for the health check made a non-default install probe the
+# wrong port and roll back updates that had actually succeeded.
+DATA_DIR="$(systemctl show "${SERVICE}" -p Environment --value 2>/dev/null | tr ' ' '\n' | sed -n 's/^DATA_DIR=//p' | head -1 || true)"
+[[ -n "${DATA_DIR}" && -d "${DATA_DIR}" ]] || DATA_DIR="/opt/webkvm"
+
 CURRENT_VER=""
 if [[ -x "${BIN}" ]]; then
   CURRENT_VER=$("${BIN}" version 2>/dev/null | head -1 || echo "unknown")
@@ -40,10 +97,22 @@ log "current: ${CURRENT_VER:-installed}"
 # ── Fetch updates ──────────────────────────────────────────────────────
 if [[ "${SOURCE_MODE}" == 1 ]]; then
   # Update from local git repo
-  [[ -d "${REPO_DIR}/.git" ]] || die "not a git repo: ${REPO_DIR}"
-  log "pulling latest from origin..."
-  git -C "${REPO_DIR}" pull --ff-only origin main || die "git pull failed"
-  log "rebuilding from source..."
+  [[ -e "${REPO_DIR}/.git" ]] || die "not a git repo: ${REPO_DIR}"
+  # Follow the branch that is actually checked out. Hardcoding `origin main`
+  # would fast-forward a maintenance or feature branch onto main and install
+  # code the operator never asked for.
+  BRANCH="$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+  [[ "${BRANCH}" != "HEAD" ]] || die "checkout is in detached HEAD state; check out a branch before updating from source"
+  UPSTREAM="$(git -C "${REPO_DIR}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+  [[ -n "${UPSTREAM}" ]] || die "branch ${BRANCH} has no upstream; set one with 'git branch --set-upstream-to=origin/${BRANCH}'"
+  log "pulling ${UPSTREAM} into ${BRANCH}..."
+  git -C "${REPO_DIR}" pull --ff-only || die "git pull failed (local commits or a diverged branch block a fast-forward)"
+  # Strip the tag's leading "v": the backend must report exactly what
+  # frontend/package.json and the release assets carry (0.1.0, not v0.1.0),
+  # otherwise /api/system/status disagrees with the UI and with isNewer().
+  GIT_TAG="$(git -C "${REPO_DIR}" describe --tags --abbrev=0 2>/dev/null || echo "dev")"
+  VERSION="${GIT_TAG#v}"
+  log "rebuilding from source (version ${VERSION})..."
   (
     cd "${REPO_DIR}"
     # Frontend
@@ -55,26 +124,24 @@ if [[ "${SOURCE_MODE}" == 1 ]]; then
     fi
     # Backend
     log "building backend..."
-    (cd backend && CGO_ENABLED=1 go build -trimpath -o webkvm ./cmd/server)
+    (cd backend && CGO_ENABLED=1 go build -trimpath \
+      -ldflags "-s -w -X main.Version=${VERSION}" -o webkvm ./cmd/server)
   )
   INSTALL_SRC="${REPO_DIR}/backend/webkvm"
   # Write version into the data dir .env so the running binary picks it up
-  GIT_TAG="$(git -C "${REPO_DIR}" describe --tags --abbrev=0 2>/dev/null || echo "dev")"
-  DATA_DIR="$(systemctl show "${SERVICE}" -p Environment --value 2>/dev/null | grep -o 'DATA_DIR=[^ ]*' | cut -d= -f2 || true)"
-  [[ -d "${DATA_DIR}" ]] || DATA_DIR="/opt/webkvm"
   if [[ -d "${DATA_DIR}" ]]; then
     if grep -q '^WEBKVM_VERSION=' "${DATA_DIR}/.env" 2>/dev/null; then
-      sed -i "s/^WEBKVM_VERSION=.*/WEBKVM_VERSION=${GIT_TAG}/" "${DATA_DIR}/.env"
+      sed -i "s/^WEBKVM_VERSION=.*/WEBKVM_VERSION=${VERSION}/" "${DATA_DIR}/.env"
     else
-      echo "WEBKVM_VERSION=${GIT_TAG}" >> "${DATA_DIR}/.env"
+      echo "WEBKVM_VERSION=${VERSION}" >> "${DATA_DIR}/.env"
     fi
-    log "set WEBKVM_VERSION=${GIT_TAG} in ${DATA_DIR}/.env"
+    log "set WEBKVM_VERSION=${VERSION} in ${DATA_DIR}/.env"
   fi
 else
   # Prefer a proper GitHub release + its SHA256SUMS asset (same source
   # install.sh's own fallback trusts) so the downloaded binary can
   # actually be checksum-verified before it's installed and run as root.
-  TMP="$(mktemp /tmp/webkvm-update.XXXXXX)"
+  TMP="$(mktemp /tmp/webkvm-update.XXXXXX)"  # removed by the EXIT trap
   RELEASE_API="https://api.github.com/repos/Slaker19/webkvm/releases/latest"
   # Raw binary asset published by `make dist`/`make release`
   # (dist/webkvm-<version>-linux_amd64). The tarball is NOT used here:
@@ -107,14 +174,32 @@ else
   INSTALL_SRC="${TMP}"
 fi
 
+# ── Backup current binary ─────────────────────────────────────────────
+# Before the stop: copying a running binary is harmless, whereas a failed
+# backup *after* the stop would leave the service down for good.
+PREV="${BIN}.previous"
+if [[ -f "${BIN}" ]]; then
+  cp -f "${BIN}" "${PREV}" || die "could not back up ${BIN}; nothing was changed"
+fi
+
 # ── Stop old service ───────────────────────────────────────────────────
 log "stopping service..."
 systemctl stop "${SERVICE}" 2>/dev/null || true
 
-# ── Backup & install ──────────────────────────────────────────────────
-PREV="${BIN}.previous"
-[[ -f "${BIN}" ]] && cp -f "${BIN}" "${PREV}"
-install -D -m 0755 "${INSTALL_SRC}" "${BIN}"
+# ── Install ────────────────────────────────────────────────────────────
+# Stage beside the target and rename: `install` writing straight over ${BIN}
+# could leave a truncated binary behind if it failed halfway.
+NEWBIN="${BIN}.new"
+if ! install -D -m 0755 "${INSTALL_SRC}" "${NEWBIN}"; then
+  rm -f "${NEWBIN}"
+  systemctl start "${SERVICE}" 2>/dev/null || true
+  die "staging the new binary failed; ${BIN} was left untouched and the service restarted"
+fi
+if ! mv -f "${NEWBIN}" "${BIN}"; then
+  rm -f "${NEWBIN}"
+  systemctl start "${SERVICE}" 2>/dev/null || true
+  die "could not move the new binary into place; the service was restarted with the old one"
+fi
 
 # ── Restart ────────────────────────────────────────────────────────────
 log "restarting service..."
@@ -122,7 +207,10 @@ systemctl daemon-reload
 systemctl start "${SERVICE}"
 
 # ── Health check ───────────────────────────────────────────────────────
-CONFIG_PATH="/opt/webkvm/config.json"
+CONFIG_PATH="${DATA_DIR}/config.json"
+HEALTH_PORT=""
+# `|| HEALTH_PORT=` keeps set -e from killing the run before the health
+# check: without python3 the default port below is used instead.
 HEALTH_PORT="$(python3 - "${CONFIG_PATH}" 8080 <<'PY'
 import json, pathlib, sys
 try:
@@ -132,7 +220,8 @@ try:
 except Exception:
     print(sys.argv[2])
 PY
-)"
+)" || HEALTH_PORT=""
+HEALTH_PORT="${HEALTH_PORT:-8080}"
 log "waiting for health endpoint on port ${HEALTH_PORT}..."
 ok=0
 for _ in $(seq 1 30); do
@@ -149,12 +238,33 @@ fi
 if [[ "${ok}" == 1 ]]; then
   log "update complete: ${CURRENT_VER:-?} -> ${NEW_VER:-?}"
   log "service is running"
-else
-  log "WARNING: health check failed — rolling back"
-  [[ -f "${PREV}" ]] && install -D -m 0755 "${PREV}" "${BIN}"
-  systemctl restart "${SERVICE}" 2>/dev/null || true
-  die "update failed; restored previous binary"
+  exit 0
 fi
 
-# Cleanup
-[[ -n "${INSTALL_SRC:-}" && -f "${INSTALL_SRC}" && "${INSTALL_SRC}" == /tmp/* ]] && rm -f "${INSTALL_SRC}"
+# ── Rollback ───────────────────────────────────────────────────────────
+# Every step here is guarded. Under `set -e` a bare `install` that failed
+# (read-only /usr/local, full disk, corrupt backup) aborted the script on
+# the spot: no restart attempt, no error message, service left stopped —
+# the worst possible outcome of the one path that exists to recover.
+log "WARNING: health check failed — rolling back"
+restored=0
+if [[ -f "${PREV}" ]]; then
+  # Stage + rename, like the install above: writing straight onto ${BIN}
+  # can truncate it, and at this point there is nothing left to fall back
+  # on.
+  if install -m 0755 "${PREV}" "${BIN}.rollback" 2>/dev/null && mv -f "${BIN}.rollback" "${BIN}" 2>/dev/null; then
+    restored=1
+  else
+    rm -f "${BIN}.rollback" 2>/dev/null || true
+    log "ERROR: could not restore ${PREV} onto ${BIN}"
+  fi
+else
+  log "ERROR: no backup at ${PREV} to restore"
+fi
+
+systemctl restart "${SERVICE}" 2>/dev/null || true
+
+if [[ "${restored}" == 1 ]]; then
+  die "update failed health check; restored the previous binary and restarted the service"
+fi
+die "update failed health check AND the rollback failed — the service may be down. Reinstall with install.sh, or restore ${PREV} onto ${BIN} by hand."

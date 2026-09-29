@@ -175,10 +175,12 @@ este contenedor a operadores en los que no confíes sin entender esto.
 
 ## La única excepción deliberada: la autoactualización
 
-El botón de actualización automática de la instalación nativa (`git pull` más
-recompilación) no tiene sentido en un contenedor — un contenedor en marcha no se
-recompila, se reemplaza. **No uses el flujo de actualización de la aplicación en
-modo Docker.** En su lugar, actualiza descargando la imagen nueva y recreando el
+El botón de actualización de la instalación nativa reemplaza el binario del
+host y reinicia la unidad de systemd — con la release verificada de GitHub o,
+en un checkout, recompilando desde el código fuente. Ninguna de las dos cosas
+tiene sentido en un contenedor: un contenedor en marcha no se recompila, se
+reemplaza. **No uses el flujo de actualización de la aplicación en modo
+Docker.** En su lugar, actualiza descargando la imagen nueva y recreando el
 contenedor:
 
 ```bash

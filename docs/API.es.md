@@ -330,7 +330,7 @@ de pool por diseño.
 
 - `GET /api/system/status` — Estado del backend, de libvirt y del host, más actualizaciones disponibles.
 - `GET /api/system/logs` — Logs recientes del servicio.
-- `POST /api/system/update` — Lanza la actualización desde la aplicación (solo instalaciones nativas; ver DOCKER.es.md).
+- `POST /api/system/update` — Lanza la actualización desde la aplicación (solo instalaciones nativas; ver DOCKER.es.md). Requiere que el backend se ejecute como root y que el entorno del servicio tenga `WEBKVM_ALLOW_UPDATE=1`; si no, devuelve `403`. Responde `202` con `{status, mode, updater, log}`; `mode` es `release` (instala la release verificada de GitHub) o `source` (recompila desde el checkout), elegido automáticamente según si `REPO_DIR` es un checkout de git. Devuelve `503` si falta el script actualizador o `systemd-run`. El progreso se añade a la ruta `log` devuelta.
 - `POST /api/system/restart` y `POST /api/system/apply-restart` — Reinicia el servicio, aplicando antes los ajustes pendientes si procede.
 - `POST /api/system/backup` y `GET /api/system/backups` — Copias del datadir.
 - `GET /api/system/cert` — Descarga el certificado del servidor para poder confiarlo en local (sin autenticación, por diseño).

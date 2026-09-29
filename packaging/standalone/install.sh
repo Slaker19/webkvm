@@ -794,6 +794,46 @@ if [[ -n "${CLI_SRC}" && -x "${CLI_SRC}" ]]; then
   log "CLI installed -> ${PREFIX}/bin/webkvm-cli"
 fi
 
+# Deploy the self-updater behind the UI's "Update" button (/#/status): the
+# backend shells out to it instead of duplicating the download/verify/install
+# logic. In a checkout the script ships in-tree; a `curl | bash` install only
+# has the installer itself, so fetch the same file from the repository.
+# Fails soft — without it the button answers with a clear error rather than
+# the install aborting halfway.
+UPDATE_SRC="${REPO_DIR}/packaging/standalone/update.sh"
+UPDATE_TMP=""
+if [[ ! -f "${UPDATE_SRC}" ]]; then
+  # mktemp, never /tmp/webkvm-update.$$: a predictable name in a
+  # world-writable directory lets a local user pre-create a symlink and
+  # have this root curl overwrite the file it points at.
+  UPDATE_TMP="$(mktemp /tmp/webkvm-update.XXXXXX)"
+  # Defaults to main because this branch only runs for `curl | bash`
+  # installs, which have no tag to pin to. Override it to match a specific
+  # release.
+  UPDATE_REF="${WEBKVM_UPDATE_REF:-main}"
+  if curl --fail --silent --location --retry 3 --proto '=https' --tlsv1.2 \
+      "https://raw.githubusercontent.com/Slaker19/webkvm/${UPDATE_REF}/packaging/standalone/update.sh" \
+      -o "${UPDATE_TMP}" 2>/dev/null; then
+    # Sanity-check the download: a 404 body or an HTML error page saved as
+    # an executable in /usr/local/bin would be both useless and confusing.
+    if head -1 "${UPDATE_TMP}" | grep -q '^#!/usr/bin/env bash' &&
+      grep -q 'webkvm updater' "${UPDATE_TMP}" &&
+      bash -n "${UPDATE_TMP}" 2>/dev/null; then
+      UPDATE_SRC="${UPDATE_TMP}"
+    else
+      log "WARNING: downloaded update.sh failed its sanity check; ignoring it"
+    fi
+  fi
+fi
+# Fails soft, for real: `install` runs under `set -e`, so without the guard
+# a failure here would abort the whole installation over an optional file.
+if [[ -f "${UPDATE_SRC}" ]] && install -D -m 0755 "${UPDATE_SRC}" "${PREFIX}/bin/webkvm-update" 2>/dev/null; then
+  log "updater installed -> ${PREFIX}/bin/webkvm-update"
+else
+  log "WARNING: update.sh unavailable; the UI 'Update' button will report an error until it is installed"
+fi
+if [[ -n "${UPDATE_TMP}" ]]; then rm -f "${UPDATE_TMP}"; fi
+
 # Pass the initial admin password through to the backend's first boot.
 ADMIN_PW_LINE=""
 [[ -n "${WEBKVM_ADMIN_PASSWORD:-}" ]] && ADMIN_PW_LINE="Environment=WEBKVM_ADMIN_PASSWORD=${WEBKVM_ADMIN_PASSWORD}"
@@ -817,6 +857,10 @@ Environment=BIND_ADDR=127.0.0.1
 Environment=PORT=${DEFAULT_PORT}
 Environment=TMPDIR=/var/tmp
 Environment=WEBKVM_LOG_FILE=${DATA_DIR}/logs/backend.log
+# Self-update from /#/status (backend/internal/api/system.go refuses to run
+# the updater unless this is "1"). Kill it with a drop-in if an admin
+# session must not be able to install software as root.
+Environment=WEBKVM_ALLOW_UPDATE=1
 ${ADMIN_PW_LINE}
 ${INCUS_ENV_LINE}
 WorkingDirectory=${DATA_DIR}

@@ -91,6 +91,7 @@ jobs:
             LICENSE CHANGELOG.md CHANGELOG.es.md \
             packaging/standalone/install.sh \
             packaging/standalone/uninstall.sh \
+            packaging/standalone/update.sh \
             packaging/nfpm/webkvm.default \
             scripts/setup-network.sh scripts/setup-bridge.sh \
             scripts/webkvm.service \

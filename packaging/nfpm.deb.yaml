@@ -29,6 +29,11 @@ contents:
   - src: ./scripts/webkvm.service
     dst: /etc/systemd/system/webkvm.service
     file_info: { mode: 0644 }
+  # In-app updater behind the "Update" button on /#/status: the backend
+  # shells out to it, so a package install must ship it too.
+  - src: ./packaging/standalone/update.sh
+    dst: /usr/local/bin/webkvm-update
+    file_info: { mode: 0755 }
   - src: ./packaging/nfpm/webkvm.default
     dst: /etc/default/webkvm
     type: config

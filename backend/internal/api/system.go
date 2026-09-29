@@ -36,6 +36,9 @@ type SystemInfo struct {
 	Pools       []PoolDiskInfo `json:"pools"`
 	Latest      string         `json:"latest_version"`
 	UpdateAvail bool           `json:"update_available"`
+	// UpdateMode is which path POST /api/system/update would take:
+	// "release" (verified GitHub asset) or "source" (rebuild the checkout).
+	UpdateMode string `json:"update_mode"`
 
 	Disk          DiskInfo      `json:"disk"`            // aggregate host disk (DATA_DIR statfs)
 	Load          LoadAvg       `json:"load"`            // /proc/loadavg
@@ -175,6 +178,15 @@ func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		si.Latest = latest
 		si.UpdateAvail = isNewer(latest, h.cfg.Version)
+	}
+	// In a checkout the button rebuilds from source, where "newer" is a
+	// commit, not a published release: gating it on a GitHub tag would grey
+	// it out exactly where rebuilding is the point.
+	if h.cfg.RepoDir != "" && pathExists(filepath.Join(h.cfg.RepoDir, ".git")) {
+		si.UpdateMode = "source"
+		si.UpdateAvail = true
+	} else {
+		si.UpdateMode = "release"
 	}
 
 	// Aggregate host disk (same statfs GetHostStats already does on DataDir).
@@ -739,59 +751,180 @@ func (h *Handler) ApplyLiveSettings(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusOK, map[string]any{"applied": applied})
 }
 
+// updateLogPath is where the updater writes its progress; the same path is
+// returned to the UI so the operator can tail it.
+const updateLogPath = "/var/log/webkvm/update.log"
+
+// SystemUpdate starts a self-update in the background.
+//
+// Two update paths, one script (packaging/standalone/update.sh, installed as
+// webkvm-update) — which one runs is detected, never asked of the operator:
+//
+//   - release (default): download the published GitHub release binary, verify
+//     it against SHA256SUMS, install it, health-check and roll back on
+//     failure. Needs no checkout and no Go/Node toolchain, which is what a
+//     standalone install (install.sh) promises.
+//   - source (--source): git pull + rebuild inside REPO_DIR. Only selected
+//     when REPO_DIR really is a checkout, so a bare DATA_DIR/source directory
+//     (the install.sh default) can never select it.
 func (h *Handler) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 	if !isRoot() {
 		jsonErr(w, http.StatusForbidden, "update requires the backend to run as root")
 		return
 	}
-	// Opt-in gate: git pull + build + systemctl restart is an intentional
-	// root-RCE path for a compromised admin session; require the operator
-	// to consciously enable it via env so it is OFF by default.
+	// Opt-in gate: running an installer as root is an intentional root-RCE
+	// path for a compromised admin session; require the operator to
+	// consciously enable it via env (install.sh and scripts/webkvm.service
+	// now set it, so the button works out of the box).
 	if os.Getenv("WEBKVM_ALLOW_UPDATE") != "1" {
 		jsonErr(w, http.StatusForbidden, "system update is disabled; set WEBKVM_ALLOW_UPDATE=1 in the service environment to enable it")
 		return
 	}
-	if h.cfg.RepoDir == "" {
-		jsonErr(w, http.StatusServiceUnavailable, "REPO_DIR not set; cannot auto-update")
+	updater, sourceMode, err := findUpdater(h.cfg.RepoDir, updaterPaths(h.cfg.RepoDir))
+	if err != nil {
+		jsonErr(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	if _, err := os.Stat(filepath.Join(h.cfg.RepoDir, ".git")); err != nil {
-		jsonErr(w, http.StatusServiceUnavailable, "repo not found at "+h.cfg.RepoDir)
+	// Checked before the 202, not inside the goroutine: without it the
+	// updater cannot be launched at all (see runUpdater), and answering
+	// "updating" would send the operator off to tail a log that no one is
+	// ever going to write.
+	if err := updaterLaunchable(); err != nil {
+		jsonErr(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	h.audit.Log(auditFor(r, "system.update", "webkvm", map[string]interface{}{"repo": h.cfg.RepoDir}))
-	// Run update in background, log progress to /var/log/webkvm/update.log
+	mode := "release"
+	var args []string
+	if sourceMode {
+		mode = "source"
+		args = append(args, "--source")
+	}
+	h.audit.Log(auditFor(r, "system.update", "webkvm", map[string]interface{}{
+		"repo": h.cfg.RepoDir, "updater": updater, "mode": mode,
+	}))
+	// Detached: the updater stops this very service before replacing the
+	// binary, so nothing here may wait on it.
 	go func() {
 		defer safego.Recover("system_update")
-		log, _ := os.OpenFile("/var/log/webkvm/update.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-		if log != nil {
-			defer log.Close()
-		}
-		runStep := func(name string, args ...string) error {
-			cmd := exec.Command(name, args...)
-			cmd.Dir = h.cfg.RepoDir
-			out, err := cmd.CombinedOutput()
-			if log != nil {
-				log.WriteString("$ " + name + " " + strings.Join(args, " ") + "\n")
-				log.Write(out)
-				if err != nil {
-					log.WriteString("\nERROR: " + err.Error() + "\n")
-				}
-			}
-			return err
-		}
-		if err := runStep("git", "pull", "--ff-only"); err != nil {
-			return
-		}
-		if err := runStep("make", "build"); err != nil {
-			return
-		}
-		if err := runStep("make", "install-systemd"); err != nil {
-			return
-		}
-		_ = exec.Command("systemctl", "restart", "webkvm").Run()
+		launchUpdater(updater, args, h.cfg.RepoDir)
 	}()
-	jsonResp(w, http.StatusAccepted, map[string]string{"status": "updating", "log": "/var/log/webkvm/update.log"})
+	jsonResp(w, http.StatusAccepted, map[string]string{
+		"status":  "updating",
+		"mode":    mode,
+		"updater": updater,
+		"log":     updateLogPath,
+	})
+}
+
+// updaterPaths is defaultUpdaterPaths, kept as a variable so tests can point
+// the search at a scratch tree instead of the machine's real /usr/local/bin.
+var updaterPaths = defaultUpdaterPaths
+
+// defaultUpdaterPaths lists where the updater script may live, in priority
+// order. webkvm-update is what install.sh deploys; the copy inside a checkout
+// is the fallback for a dev tree that has not been reinstalled.
+func defaultUpdaterPaths(repoDir string) []string {
+	paths := []string{}
+	if p, err := exec.LookPath("webkvm-update"); err == nil {
+		paths = append(paths, p)
+	}
+	paths = append(paths, "/usr/local/bin/webkvm-update", "/usr/bin/webkvm-update")
+	if repoDir != "" {
+		paths = append(paths, filepath.Join(repoDir, "packaging", "standalone", "update.sh"))
+	}
+	return paths
+}
+
+// findUpdater returns the first existing updater script from candidates and
+// whether the source mode applies (REPO_DIR is a git checkout).
+func findUpdater(repoDir string, candidates []string) (path string, sourceMode bool, err error) {
+	sourceMode = repoDir != "" && pathExists(filepath.Join(repoDir, ".git"))
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if st, serr := os.Stat(c); serr == nil && !st.IsDir() {
+			return c, sourceMode, nil
+		}
+	}
+	return "", false, errors.New("updater not found (install.sh deploys it as webkvm-update); reinstall with install.sh to restore it")
+}
+
+func pathExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// updaterLaunchable reports whether the updater can actually be started. A
+// package var so tests do not depend on the host having systemd.
+var updaterLaunchable = func() error {
+	if _, err := exec.LookPath("systemd-run"); err != nil {
+		return errors.New("systemd-run not found; the updater needs it to survive the service restart it performs")
+	}
+	return nil
+}
+
+// launchUpdater starts the update in the background. A package var so tests
+// can capture the chosen path and mode instead of really invoking systemd.
+var launchUpdater = runUpdater
+
+// runUpdater starts the updater detached from this service's cgroup.
+//
+// The unit runs with KillMode=control-group, and the updater itself calls
+// `systemctl stop webkvm` before replacing the binary: a plain child process
+// would be SIGTERMed by that stop, leaving the old binary in place and the
+// update silently half-done. A transient systemd unit puts the updater in its
+// own cgroup so the stop/restart cycle cannot reach it, and it still gets to
+// run the health check and roll back. The leading sleep gives the 202 response
+// time to reach the browser before we take the service away from it.
+//
+// There is deliberately no in-process fallback. A plain child would be killed
+// by its own `systemctl stop` between the backup and the install, leaving the
+// service stopped, the binary unreplaced and nobody left to restart or roll
+// back — strictly worse than not starting at all. Without systemd-run the
+// launch is refused and journalled.
+func runUpdater(updater string, args []string, repoDir string) {
+	// The redirect below would fail silently (no file, no trace at all)
+	// if the log directory were missing, e.g. a hand-rolled unit.
+	if err := os.MkdirAll(filepath.Dir(updateLogPath), 0o750); err != nil {
+		exec.Command("logger", "-t", "webkvm-update", "cannot create "+filepath.Dir(updateLogPath)+": "+err.Error()).Run()
+	}
+	cmdline := strings.Join(append([]string{shellQuote(updater)}, args...), " ")
+	if repoDir != "" {
+		cmdline = "export WEBKVM_REPO_DIR=" + shellQuote(repoDir) + "; " + cmdline
+	}
+	script := "sleep 2; " + cmdline + " >>" + shellQuote(updateLogPath) + " 2>&1"
+
+	// Re-checked here, not just in the handler: this runs detached, and by
+	// now the 202 is long gone, so a refusal has to leave a trace.
+	if err := updaterLaunchable(); err != nil {
+		_ = exec.Command("logger", "-t", "webkvm-update", "refusing to update: "+err.Error()).Run()
+		return
+	}
+	_ = startTransientUnit(script) // already journalled on failure
+}
+
+// startTransientUnit launches the updater as its own systemd unit and
+// returns nil once it is queued. Any launch failure is journalled: the
+// updater only starts writing update.log itself, so a unit that never
+// started would otherwise fail without a trace.
+func startTransientUnit(script string) error {
+	unit := fmt.Sprintf("webkvm-update-%d", time.Now().UnixNano())
+	out, err := exec.Command("systemd-run", "--quiet", "--no-block", "--collect",
+		"--unit="+unit, "/bin/bash", "-c", script).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	msg := strings.TrimSpace(string(out))
+	if msg == "" {
+		msg = err.Error()
+	}
+	_ = exec.Command("logger", "-t", "webkvm-update", "launch failed: "+msg).Run()
+	return errors.New(msg)
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // --- helpers ---

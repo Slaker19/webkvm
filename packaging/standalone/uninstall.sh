@@ -55,8 +55,9 @@ echo "[1/4] stopping service"
 systemctl disable --now webkvm.service 2>/dev/null || true
 rm -f /etc/systemd/system/webkvm.service \
   /etc/systemd/system/webkvm.service.previous \
-  "${BIN}" "${BIN}.previous" \
-  /usr/local/bin/webkvm-cli /usr/local/bin/webkvm-cli.previous 2>/dev/null || true
+  "${BIN}" "${BIN}.previous" "${BIN}.new" "${BIN}.rollback" \
+  /usr/local/bin/webkvm-cli /usr/local/bin/webkvm-cli.previous \
+  /usr/local/bin/webkvm-update 2>/dev/null || true
 systemctl daemon-reload
 
 # ── networks ───────────────────────────────────────────────────────────

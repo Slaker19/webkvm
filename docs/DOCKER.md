@@ -169,10 +169,12 @@ without understanding that.
 
 ## The one deliberate exception: self-update
 
-The native install's auto-update button (`git pull` + rebuild) doesn't make
-sense for a container — you don't rebuild a running container, you replace
-it. **Do not use the in-app update flow in Docker mode.** Instead, update by
-pulling the new image and recreating the container:
+The native install's update button replaces the binary on the host and
+restarts the systemd unit — either from the verified GitHub release or, in a
+checkout, by rebuilding from source. Neither makes sense for a container: you
+don't rebuild a running container, you replace it. **Do not use the in-app
+update flow in Docker mode.** Instead, update by pulling the new image and
+recreating the container:
 
 ```bash
 docker compose pull

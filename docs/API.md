@@ -327,7 +327,7 @@ Administrators are exempt from quotas and pool ACLs by design.
 
 - `GET /api/system/status` — Backend, libvirt and host status, plus available updates.
 - `GET /api/system/logs` — Recent service logs.
-- `POST /api/system/update` — Trigger the in-app update (native installs only; see DOCKER.md).
+- `POST /api/system/update` — Trigger the in-app update (native installs only; see DOCKER.md). Requires the backend to run as root with `WEBKVM_ALLOW_UPDATE=1` in the service environment, otherwise `403`. Returns `202` with `{status, mode, updater, log}`; `mode` is `release` (install the verified GitHub release asset) or `source` (rebuild from the checkout), chosen automatically depending on whether `REPO_DIR` is a git checkout. `503` if the updater script or `systemd-run` is missing. Progress is appended to the returned `log` path.
 - `POST /api/system/restart` and `POST /api/system/apply-restart` — Restart the service, optionally applying staged settings first.
 - `POST /api/system/backup` and `GET /api/system/backups` — Datadir snapshots.
 - `GET /api/system/cert` — Download the server's certificate so you can trust it locally (unauthenticated by design).

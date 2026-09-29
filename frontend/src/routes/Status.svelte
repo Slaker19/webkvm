@@ -169,7 +169,10 @@
     updateLoading = true;
     try {
       const r = await api.systemUpdate();
-      updateResult = r.log || '/var/log/webkvm/update.log';
+      // The backend reports which of the two update paths it picked
+      // (release = verified GitHub asset, source = rebuild from checkout).
+      const logPath = r.log || '/var/log/webkvm/update.log';
+      updateResult = r.mode ? `${r.mode} · ${logPath}` : logPath;
       showUpdateConfirm = false;
       showUpdateResult = true;
       toast.success(t('status.updateStartedToast'));
@@ -676,9 +679,19 @@
             <Icon name="download" size={16} class="text-muted-foreground mt-0.5 shrink-0" />
             <div class="min-w-0 flex-1">
               <div class="font-medium">
-                {t('status.updateTo', { version: status.latest_version || status.backend.version })}
+                {#if status.update_mode === 'source'}
+                  {t('status.updateFromSource')}
+                {:else}
+                  {t('status.updateTo', {
+                    version: status.latest_version || status.backend.version,
+                  })}
+                {/if}
               </div>
-              <div class="text-xs text-muted-foreground mt-0.5">{t('status.updateDesc')}</div>
+              <div class="text-xs text-muted-foreground mt-0.5">
+                {status.update_mode === 'source'
+                  ? t('status.updateDescSource')
+                  : t('status.updateDescRelease')}
+              </div>
             </div>
           </button>
           <button

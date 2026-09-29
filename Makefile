@@ -14,7 +14,14 @@
 SHELL := /usr/bin/env bash
 
 # Version: prefer git tag/describe, fall back to "dev" for local builds.
-VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
+# The tag's leading "v" is stripped so `make build` bakes exactly what
+# release.yml publishes (`BARE="${VERSION#v}"`): otherwise a locally built
+# binary reports v0.1.0 while the UI, package.json and the release assets all
+# say 0.1.0. The strip is applied with `=`, not `?=`, so it also covers a
+# version passed in explicitly (`make dist VERSION=v1.2.3`) — those used to
+# slip through and produce mislabelled artifacts.
+VERSION_RAW ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
+override VERSION := $(patsubst v%,%,$(or $(VERSION),$(VERSION_RAW)))
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS = -s -w \
   -X 'main.Version=$(VERSION)' \
@@ -121,6 +128,7 @@ dist: binary
 		LICENSE CHANGELOG.md CHANGELOG.es.md \
 		packaging/standalone/install.sh \
 		packaging/standalone/uninstall.sh \
+		packaging/standalone/update.sh \
 		packaging/nfpm/webkvm.default \
 		scripts/setup-network.sh scripts/setup-bridge.sh \
 		scripts/webkvm.service \

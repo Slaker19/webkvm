@@ -14,6 +14,11 @@ EnvironmentFile=-/etc/default/webkvm
 # Defaults if EnvironmentFile is missing.
 Environment=DATA_DIR=/opt/webkvm
 Environment=REPO_DIR=/opt/webkvm/source
+# Self-update from /#/status. The backend refuses to run the updater unless
+# this is "1" (install.sh writes the same line into the standalone unit).
+# Disable it with a drop-in if an admin session must not be able to install
+# software as root.
+Environment=WEBKVM_ALLOW_UPDATE=1
 # Bind on loopback only — the front-end (Caddy on :443) is the
 # only thing that should reach the backend. Operators running
 # without a front proxy can override this with a drop-in setting
