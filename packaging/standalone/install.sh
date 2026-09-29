@@ -804,7 +804,7 @@ INCUS_ENV_LINE=""
 install -D -m 0644 /dev/stdin "${SERVICE_PATH}" <<EOF
 [Unit]
 Description=WebKVM (standalone)
-After=libvirtd.service virtqemud.service virtstoraged.service virtnetworkd.service virtlogd.service network-online.target
+After=libvirtd.service virtqemud.service virtstoraged.service virtnetworkd.service virtlogd.service network-online.target local-fs.target remote-fs.target
 Wants=libvirtd.service virtqemud.service virtstoraged.service virtnetworkd.service virtlogd.service network-online.target
 
 [Service]

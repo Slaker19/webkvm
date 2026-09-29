@@ -16,12 +16,15 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"webkvm/internal/fsutil"
+	"webkvm/internal/libvirtbackup"
 	"webkvm/internal/models"
 	"webkvm/internal/safego"
 
@@ -75,6 +78,19 @@ type VMSnapshotSource func(vmID string) ([]SnapshotBackup, error)
 // backup would be worse than a loud error).
 type VMExportSource func(ctx context.Context, vm models.VM, w io.Writer) (int64, error)
 
+// VMBeginBackup starts a push-mode libvirt backup for a VM. It is
+// the incremental-backup entry point: the runner passes the backup
+// XML and optional checkpoint XML, and the connector executes
+// `virsh backup-begin` under the hood. Optional; nil disables
+// incremental backups (the runner falls back to full tar.zst).
+type VMBeginBackup func(ctx context.Context, vmID, backupXML, checkpointXML string) error
+
+// VMListCheckpoints returns the checkpoint names for a domain.
+type VMListCheckpoints func(vmID string) ([]string, error)
+
+// VMDeleteCheckpoint removes a checkpoint and its dirty bitmap.
+type VMDeleteCheckpoint func(vmID, name string) error
+
 // Runner executes backup jobs. It maintains a cron ticker and
 // records Jobs in the Store as it goes. Manual "backup now" calls
 // go through the same RunOnce path.
@@ -107,6 +123,13 @@ type Runner struct {
 	// exportSource streams the native LXD export for containers.
 	// Optional; nil fails a run that includes a container.
 	exportSource VMExportSource
+	// beginBackup starts a push-mode libvirt backup (incremental).
+	// Optional; nil disables incremental backups.
+	beginBackup VMBeginBackup
+	// listCheckpoints returns checkpoint names for a domain.
+	listCheckpoints VMListCheckpoints
+	// deleteCheckpoint removes a checkpoint and its bitmap.
+	deleteCheckpoint VMDeleteCheckpoint
 }
 
 // NewRunnerWithConfig wires the runner with a live config provider.
@@ -146,6 +169,50 @@ func NewRunnerWithConfig(store *Store, dataDir string, config ConfigProvider, vm
 		snapSource:   snapSource,
 		exportSource: exportSource,
 	}
+}
+
+// NewRunnerWithIncremental extends NewRunnerWithConfig with the
+// libvirt checkpoint/backup-begin closures required for incremental
+// backups. Passing nil for any of them disables the feature (the
+// runner falls back to full tar.zst archives).
+func NewRunnerWithIncremental(
+	store *Store,
+	dataDir string,
+	config ConfigProvider,
+	vms VMSource,
+	xmlSource VMXMLSource,
+	snapSource VMSnapshotSource,
+	exportSource VMExportSource,
+	beginBackup VMBeginBackup,
+	listCheckpoints VMListCheckpoints,
+	deleteCheckpoint VMDeleteCheckpoint,
+	logger *slog.Logger,
+) *Runner {
+	r := NewRunnerWithConfig(store, dataDir, config, vms, xmlSource, snapSource, exportSource, logger)
+	r.beginBackup = beginBackup
+	r.listCheckpoints = listCheckpoints
+	r.deleteCheckpoint = deleteCheckpoint
+	return r
+}
+
+// ListCheckpoints returns the libvirt checkpoint names for a domain.
+// Exposes the injected closure so the API layer can query libvirt
+// directly (source of truth) instead of relying only on chains.json.
+func (r *Runner) ListCheckpoints(vmID string) ([]string, error) {
+	if r.listCheckpoints == nil {
+		return nil, fmt.Errorf("libvirt checkpoint support not wired")
+	}
+	return r.listCheckpoints(vmID)
+}
+
+// DeleteCheckpoint removes a libvirt checkpoint and its dirty bitmap.
+// Exposes the injected closure so chain deletion can clean up
+// libvirt-side state and prevent orphan bitmaps from accumulating.
+func (r *Runner) DeleteCheckpoint(vmID, name string) error {
+	if r.deleteCheckpoint == nil {
+		return fmt.Errorf("libvirt checkpoint support not wired")
+	}
+	return r.deleteCheckpoint(vmID, name)
 }
 
 // Start installs cron entries for every enabled schedule.
@@ -317,6 +384,27 @@ func (r *Runner) runJob(ctx context.Context, tgt Target, job Job, scheduleID str
 	}
 	report(1, "preparing", nil)
 
+	// Resolve the backup mode from the schedule (if any). Manual
+	// "Backup now" calls without a schedule default to full.
+	mode := "full"
+	if scheduleID != "" {
+		if sc, ok := r.store.GetSchedule(scheduleID); ok && sc.Mode != "" {
+			mode = sc.Mode
+		}
+	}
+	job.Mode = mode
+
+	// Incremental backups require libvirt push-mode support. If the
+	// feature is not wired (beginBackup == nil) or the target is
+	// remote (SFTP/S3), degrade gracefully to a full backup and
+	// record the reason in the job message.
+	canIncremental := r.beginBackup != nil && tgt.Type == TargetLocal
+	if mode == "incremental" && !canIncremental {
+		job.Message = "incremental_unavailable_fallback_full"
+		mode = "full"
+		job.Mode = mode
+	}
+
 	destDir := tgt.Path
 	var staging string
 	switch tgt.Type {
@@ -330,7 +418,15 @@ func (r *Runner) runJob(ctx context.Context, tgt Target, job Job, scheduleID str
 		staging = filepath.Join(r.dataDir, "backup-staging", tgt.ID+"-"+randHex(4))
 		destDir = staging
 	}
-	files, totalBytes, err := r.writeBackup(tgt, destDir, report)
+
+	var files []JobFile
+	var totalBytes int64
+	var err error
+	if mode == "incremental" {
+		files, totalBytes, err = r.writeIncrementalBackup(ctx, tgt, destDir, job, report)
+	} else {
+		files, totalBytes, err = r.writeBackup(tgt, destDir, report)
+	}
 	if err == nil {
 		switch tgt.Type {
 		case TargetSFTP:
@@ -860,6 +956,453 @@ func (r *Runner) writeBackup(tgt Target, destDir string, onProgress ...func(int,
 	return files, totalBytes, nil
 }
 
+// writeIncrementalBackup produces per-VM qcow2 files via libvirt
+// push-mode backups with dirty-bitmap checkpoints. For each in-scope
+// VM it:
+//
+//  1. Fetches the domain XML and parses the disk devices.
+//  2. Looks up the existing chain (if any) to determine the parent
+//     checkpoint for an incremental backup.
+//  3. Creates a new libvirt checkpoint with bitmaps.
+//  4. Calls BeginBackup with the appropriate <domainbackup> XML.
+//  5. Records the checkpoint in the chain store.
+//
+// The config archive is still produced as a tar (same as full).
+// Returns the per-file list and total bytes written.
+func (r *Runner) writeIncrementalBackup(
+	ctx context.Context,
+	tgt Target,
+	destDir string,
+	job Job,
+	progress func(int, string, map[string]any),
+) ([]JobFile, int64, error) {
+	if progress == nil {
+		progress = func(int, string, map[string]any) {}
+	}
+
+	cfg := r.config()
+	maxSizeMB := cfg.MaxFileSizeMB
+	if maxSizeMB <= 0 {
+		maxSizeMB = 1 << 20
+	}
+	maxSize := int64(maxSizeMB) * 1024 * 1024
+
+	if err := ValidateTargetPath(destDir, r.dataDir); err != nil {
+		r.logger.Error("backup_path_denied", "target", tgt.ID, "path", destDir, "err", err)
+		return nil, 0, err
+	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return nil, 0, fmt.Errorf("%w: mkdir: %v", ErrTargetPathUnwritable, err)
+	}
+
+	host, err := os.Hostname()
+	if err != nil {
+		host = "unknown"
+	}
+	host = strings.ReplaceAll(host, " ", "_")
+	tsNano := time.Now().UTC().Format("20060102T150405.000000000Z")
+	suffix := randHex(6)
+
+	scope, err := r.resolveScope(tgt)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var files []JobFile
+	var totalBytes int64
+	vmTotal := len(scope)
+	if vmTotal == 0 {
+		vmTotal = 1
+	}
+
+	for i, vm := range scope {
+		if err := ctx.Err(); err != nil {
+			return files, totalBytes, err
+		}
+
+		name := sanitizeVMName(vm.ID)
+		base := (i * 80) / vmTotal
+		vmNextBase := ((i + 1) * 80) / vmTotal
+		vmVars := map[string]any{"vm": name}
+
+		// Containers (LXD/Incus) do not support libvirt checkpoints; skip them gracefully.
+		if vm.Hypervisor == "incus" || vm.Type == "container" {
+			r.logger.Warn("incremental_backup_skipped_container", "vm", vm.ID,
+				"hint", "containers do not support libvirt push checkpoints; use a full backup target")
+			continue
+		}
+
+		// Discover disks: prefer vm.Disks if populated, fallback to domain XML.
+		var parsedDisks []diskInfo
+		for _, d := range vm.Disks {
+			if d.Device == "cdrom" || d.Source == "" || isISOAttachment(d) {
+				continue
+			}
+			targetDev := d.Target
+			if targetDev == "" {
+				targetDev = d.Device
+			}
+			var sz int64
+			if fi, err := os.Stat(d.Source); err == nil {
+				sz = fi.Size()
+			}
+			parsedDisks = append(parsedDisks, diskInfo{
+				Device: targetDev,
+				Source: d.Source,
+				Size:   sz,
+			})
+		}
+		if len(parsedDisks) == 0 && r.xmlSource != nil {
+			if domainXML, xerr := r.xmlSource(vm.ID); xerr == nil && domainXML != "" {
+				parsedDisks = parseDomainDisks(domainXML)
+			}
+		}
+		if len(parsedDisks) == 0 {
+			r.logger.Warn("backup_no_disks", "vm", vm.ID, "name", name)
+			continue
+		}
+
+		// Filter out oversized disks. External storage pools are fully supported.
+		var diskTargets []libvirtbackup.DiskTarget
+		var diskDevs []string
+		for _, d := range parsedDisks {
+			if maxSize > 0 && d.Size > maxSize {
+				continue
+			}
+			// Include the device name so multi-disk VMs don't collide on
+			// the same output path (libvirt refuses to overwrite stores).
+			outPath := filepath.Join(destDir, fmt.Sprintf("webkvm-%s-%s-%s-%s-%s.qcow2", host, tsNano, suffix, name, d.Device))
+			diskTargets = append(diskTargets, libvirtbackup.DiskTarget{Device: d.Device, File: outPath})
+			diskDevs = append(diskDevs, d.Device)
+		}
+
+		if len(diskTargets) == 0 {
+			r.logger.Warn("backup_no_valid_disks", "vm", vm.ID, "name", name)
+			continue
+		}
+
+		// Look up existing chain to determine parent checkpoint.
+		chainStore := NewChainStore(r.dataDir, tgt.ID)
+		parentCheckpoint := ""
+		if chain, cerr := chainStore.GetChain(vm.ID); cerr == nil && chain != nil {
+			parentCheckpoint = chain.Checkpoint
+		}
+
+		// Create checkpoint + backup XML.
+		checkpointName := libvirtbackup.GenerateCheckpointName()
+		backupXML := libvirtbackup.BuildBackupXML(diskTargets, parentCheckpoint)
+		checkpointXML := libvirtbackup.BuildCheckpointXML(checkpointName, diskDevs)
+
+		// Execute the backup.
+		progress(base, "checkpoint", vmVars)
+		if berr := r.beginBackup(ctx, vm.ID, backupXML, checkpointXML); berr != nil {
+			return files, totalBytes, fmt.Errorf("backup vm %s: %w", vm.ID, berr)
+		}
+
+		// Persist the checkpoint ID on the job so the UI can show it.
+		job.CheckpointID = checkpointName
+		if uerr := r.store.UpdateJob(job); uerr != nil {
+			r.logger.Error("job_checkpoint_update_failed", "job_id", job.ID, "err", uerr)
+		}
+
+		// Record the checkpoint in the chain (one entry per checkpoint, tracking all disks).
+		var chkTotalSize int64
+		diskFiles := make(map[string]string, len(diskTargets))
+		primaryFile := ""
+		for _, dt := range diskTargets {
+			baseName := filepath.Base(dt.File)
+			if primaryFile == "" {
+				primaryFile = baseName
+			}
+			diskFiles[dt.Device] = baseName
+			fi, serr := os.Stat(dt.File)
+			var size int64
+			if serr == nil {
+				size = fi.Size()
+			}
+			chkTotalSize += size
+			files = append(files, JobFile{
+				Filename: baseName,
+				Size:     size,
+				Kind:     "vm",
+				VMID:     vm.ID,
+			})
+			totalBytes += size
+		}
+
+		entryMode := "incremental"
+		if parentCheckpoint == "" {
+			entryMode = "full"
+		}
+		entry := CheckpointEntry{
+			Name:       checkpointName,
+			JobID:      job.ID,
+			BackupFile: primaryFile,
+			DiskFiles:  diskFiles,
+			Parent:     parentCheckpoint,
+			Mode:       entryMode,
+			SizeBytes:  chkTotalSize,
+			CreatedAt:  time.Now().UTC(),
+		}
+		if _, cerr := chainStore.AppendEntry(vm.ID, tgt.ID, name, entry); cerr != nil {
+			r.logger.Error("chain_append_failed", "vm", vm.ID, "err", cerr)
+		}
+
+		progress(vmNextBase, "checkpoint", vmVars)
+	}
+
+	// Config archive (same as full).
+	progress(80, "config_copy", nil)
+	cfgOutPath := filepath.Join(destDir, fmt.Sprintf("webkvm-%s-%s-%s-config.tar.zst", host, tsNano, suffix))
+	cfgSize, cfgErr := r.writeConfigArchive(ctx, cfgOutPath, tgt)
+	if cfgErr != nil {
+		r.logger.Warn("backup_config_failed", "target", tgt.ID, "err", cfgErr)
+	} else {
+		files = append(files, JobFile{
+			Filename: filepath.Base(cfgOutPath),
+			Size:     cfgSize,
+			Kind:     "config",
+		})
+		totalBytes += cfgSize
+		if err := copyConfigGlobal(cfgOutPath, destDir); err != nil {
+			r.logger.Warn("backup_config_global_failed", "target", tgt.ID, "err", err)
+		}
+	}
+
+	r.logger.Info("backup_incremental_complete",
+		"target", tgt.ID,
+		"files", len(files),
+		"total_bytes", totalBytes,
+		"vms", len(scope),
+	)
+	return files, totalBytes, nil
+}
+
+// RestoreCheckpoint flattens an incremental backup chain to a specific
+// checkpoint and returns the path to the restored flat qcow2 image.
+//
+// The operation is non-destructive: the original backup files are never
+// modified. The chain is copied to a staging directory, rebased level by
+// level, converted to a flat image, verified, and only then published.
+//
+// Sequence:
+//  1. Load chain, find the target checkpoint entry
+//  2. Copy the full chain (base + all increments up to target) to staging
+//  3. Rebase each level in staging (rebase -u rewrites only the child's
+//     backing metadata, never the parent)
+//  4. Convert the tip to a flat image (qemu-img convert follows the chain)
+//  5. Verify with qemu-img check
+//  6. Publish atomically (rename within destination)
+func (r *Runner) RestoreCheckpoint(
+	ctx context.Context,
+	tgt Target,
+	vmID string,
+	checkpointName string,
+) (string, error) {
+	cs := NewChainStore(r.dataDir, tgt.ID)
+	chain, err := cs.GetChain(vmID)
+	if err != nil {
+		return "", fmt.Errorf("load chain: %w", err)
+	}
+	if chain == nil {
+		return "", fmt.Errorf("chain not found for vm %s", vmID)
+	}
+
+	// Find the target checkpoint entry.
+	var targetEntry *CheckpointEntry
+	for i := range chain.Entries {
+		if chain.Entries[i].Name == checkpointName {
+			targetEntry = &chain.Entries[i]
+			break
+		}
+	}
+	if targetEntry == nil {
+		return "", fmt.Errorf("checkpoint %q not found in chain", checkpointName)
+	}
+
+	// Build the ordered lineage from base to target checkpoint.
+	ordered := chain.OrderedEntries(checkpointName)
+	if len(ordered) == 0 {
+		return "", fmt.Errorf("empty lineage for checkpoint %q", checkpointName)
+	}
+
+	// Staging must reside within target's filesystem to prevent EXDEV on publish
+	// and to avoid filling the root disk with large VM images.
+	stagingDir := filepath.Join(tgt.Path, fmt.Sprintf(".webkvm-restore-staging-%s-%s", time.Now().UTC().Format("20060102T150405Z"), randHex(4)))
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		return "", fmt.Errorf("create staging: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(stagingDir) }()
+
+	// Discover devices to restore.
+	type diskToRestore struct {
+		device string
+		files  []string
+	}
+	var disksToRestore []diskToRestore
+
+	if len(targetEntry.DiskFiles) > 0 {
+		var devs []string
+		for d := range targetEntry.DiskFiles {
+			devs = append(devs, d)
+		}
+		sort.Strings(devs)
+		for _, dev := range devs {
+			var devFiles []string
+			for _, ent := range ordered {
+				f := ent.DiskFiles[dev]
+				if f == "" {
+					f = ent.BackupFile
+				}
+				if f != "" {
+					devFiles = append(devFiles, f)
+				}
+			}
+			if len(devFiles) > 0 {
+				disksToRestore = append(disksToRestore, diskToRestore{device: dev, files: devFiles})
+			}
+		}
+	} else {
+		var devFiles []string
+		for _, ent := range ordered {
+			if ent.BackupFile != "" {
+				devFiles = append(devFiles, ent.BackupFile)
+			}
+		}
+		if len(devFiles) > 0 {
+			disksToRestore = append(disksToRestore, diskToRestore{device: "", files: devFiles})
+		}
+	}
+
+	if len(disksToRestore) == 0 {
+		return "", fmt.Errorf("no backup files found for checkpoint %s", checkpointName)
+	}
+
+	var restoredPaths []string
+	tsStr := time.Now().UTC().Format("20060102T150405Z")
+	restoreRand := randHex(4)
+
+	for _, d := range disksToRestore {
+		subStaging := stagingDir
+		if d.device != "" {
+			subStaging = filepath.Join(stagingDir, d.device)
+			if err := os.MkdirAll(subStaging, 0o755); err != nil {
+				return "", fmt.Errorf("create dev staging for %s: %w", d.device, err)
+			}
+		}
+
+		stagedFiles := make([]string, len(d.files))
+		for i, fn := range d.files {
+			srcPath := filepath.Join(tgt.Path, fn)
+			dstPath := filepath.Join(subStaging, fn)
+			if err := fsutil.CopyFileFast(srcPath, dstPath); err != nil {
+				return "", fmt.Errorf("copy %s to staging: %w", fn, err)
+			}
+			stagedFiles[i] = dstPath
+		}
+
+		// Rebase each level in staging (skip base at index 0).
+		for i := 1; i < len(stagedFiles); i++ {
+			parent := stagedFiles[i-1]
+			child := stagedFiles[i]
+			cmd := exec.CommandContext(ctx, "qemu-img", "rebase", "-u", "-b", parent, "-F", "qcow2", child)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return "", fmt.Errorf("rebase %s: %w: %s", filepath.Base(child), err, strings.TrimSpace(string(out)))
+			}
+		}
+
+		// Convert the tip to a flat image.
+		tipFile := stagedFiles[len(stagedFiles)-1]
+		flatFile := filepath.Join(subStaging, "restored-flat.qcow2")
+		cmd := exec.CommandContext(ctx, "qemu-img", "convert", "-O", "qcow2", tipFile, flatFile)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("convert: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+
+		// Verify the flat image.
+		cmd = exec.CommandContext(ctx, "qemu-img", "check", flatFile)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("verify: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+
+		// Publish atomically within destination directory.
+		var finalName string
+		if d.device != "" {
+			finalName = fmt.Sprintf("webkvm-restore-%s-%s-%s.qcow2", tsStr, restoreRand, d.device)
+		} else {
+			finalName = fmt.Sprintf("webkvm-restore-%s-%s.qcow2", tsStr, restoreRand)
+		}
+		finalPath := filepath.Join(tgt.Path, finalName)
+		if err := os.Rename(flatFile, finalPath); err != nil {
+			return "", fmt.Errorf("publish: %w", err)
+		}
+		restoredPaths = append(restoredPaths, finalPath)
+	}
+
+	r.logger.Info("checkpoint_restored",
+		"target", tgt.ID,
+		"vm", vmID,
+		"checkpoint", checkpointName,
+		"outputs", restoredPaths,
+	)
+	return restoredPaths[0], nil
+}
+
+// copyFileToStaging copies src to dst for the restore staging area.
+func copyFileToStaging(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = out.Close() }()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
+}
+
+// diskInfo holds a parsed disk device from a domain XML.
+type diskInfo struct {
+	Device string
+	Source string
+	Size   int64
+}
+
+// parseDomainDisks extracts disk devices from a domain XML string.
+// It returns only file-backed disks (type='file') and excludes CD-ROMs.
+func parseDomainDisks(xmlStr string) []diskInfo {
+	var disks []diskInfo
+	// Match <disk ... type='file' ...>...</disk> spanning multiple lines with (?s)
+	re := regexp.MustCompile(`(?s)<disk[^>]*type=['"]file['"][^>]*>.*?</disk>`)
+	matches := re.FindAllString(xmlStr, -1)
+	for _, m := range matches {
+		if strings.Contains(m, "device='cdrom'") || strings.Contains(m, "device=\"cdrom\"") {
+			continue
+		}
+		di := diskInfo{}
+		if devRe := regexp.MustCompile(`<target[^>]*dev=['"]([^'"]+)['"]`); devRe.MatchString(m) {
+			di.Device = devRe.FindStringSubmatch(m)[1]
+		}
+		if srcRe := regexp.MustCompile(`<source[^>]*file=['"]([^'"]+)['"]`); srcRe.MatchString(m) {
+			di.Source = srcRe.FindStringSubmatch(m)[1]
+		}
+		if di.Device != "" && di.Source != "" {
+			if fi, err := os.Stat(di.Source); err == nil {
+				di.Size = fi.Size()
+			}
+			disks = append(disks, di)
+		}
+	}
+	return disks
+}
+
 // estimateRunBytes adds up the approximate bytes the run will
 // write to disk. It is used by the A8 pre-flight free-space
 // check to fail fast before the producer starts streaming.
@@ -1118,21 +1661,8 @@ func copyConfigGlobal(srcPath, destDir string) error {
 }
 
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	_, cErr := io.Copy(out, in)
-	clErr := out.Close()
-	if cErr != nil {
-		return cErr
-	}
-	return clErr
+	_ = os.Remove(dst)
+	return fsutil.CopyFileFast(src, dst)
 }
 
 // configGlobalRel is the stable relative path of the "latest
@@ -1443,7 +1973,10 @@ func ListBackupsOnTarget(tgt Target) ([]BackupFile, error) {
 			continue
 		}
 		name := e.Name()
-		if !strings.HasSuffix(name, ".tar.gz") && !strings.HasSuffix(name, ".tar.zst") {
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		if !strings.HasSuffix(name, ".tar.gz") && !strings.HasSuffix(name, ".tar.zst") && !strings.HasSuffix(name, ".qcow2") {
 			continue
 		}
 		info, err := e.Info()
@@ -1468,31 +2001,19 @@ type retentionRun struct {
 	NewestTime time.Time
 }
 
+var runSuffixRegex = regexp.MustCompile(`-(\d{8}T\d{6}\.\d{9}Z)-([0-9a-f]{6,12})[-.]`)
+
 // runSuffixFromFilename extracts the "<ts26>-<rand6|12>" run suffix
 // from a backup filename, or "" if the name doesn't carry one.
 func runSuffixFromFilename(name string) string {
 	if !ValidBackupFilename(name) {
 		return ""
 	}
-	// Shape: webkvm-<host>-<ts26>-<rand6|12>-<name>.tar.(gz|zst)
-	// The suffix is the third dash-separated field after "webkvm-<host>".
-	rest := strings.TrimPrefix(name, "webkvm-")
-	parts := strings.SplitN(rest, "-", 3)
-	if len(parts) < 3 {
-		return ""
+	m := runSuffixRegex.FindStringSubmatch(name)
+	if len(m) == 3 {
+		return m[1] + "-" + m[2]
 	}
-	// parts[0]=host, parts[1]=ts26, parts[2]=rand6...-name.tar.zst
-	ts := parts[1]
-	third := parts[2]
-	idx := strings.Index(third, "-")
-	if idx < 0 {
-		return ""
-	}
-	randPart := third[:idx]
-	if !isNanoTimestamp(ts) || !isRandomSuffix(randPart) {
-		return ""
-	}
-	return ts + "-" + randPart
+	return ""
 }
 
 // BackupFile is one archive on disk.

@@ -24,6 +24,8 @@ export function progressLabel(stage, vars, fallback, t) {
       return t('backup.progress.restoreDefine');
     case 'restore_extract':
       return t('backup.progress.restoreExtract', vars || {});
+    case 'checkpoint':
+      return t('backup.progress.checkpoint', vars || {});
     case 'done':
       return t('backup.progress.done');
     case 'failed':

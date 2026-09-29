@@ -19,6 +19,7 @@ import (
 	"webkvm/internal/helperscripts"
 	"webkvm/internal/libvirt"
 	"webkvm/internal/metrics"
+	"webkvm/internal/models"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
 	"webkvm/internal/tokens"
@@ -672,6 +673,13 @@ func NewRouter(
 			r.Post("/{id}/restore", h.RestoreBackup)
 			r.Post("/{id}/restore-as-vm", h.RestoreAsVM)
 			r.Get("/{id}/verify", h.VerifyBackup)
+			r.Post("/{id}/reconcile", h.ReconcileBackupTarget)
+			r.Get("/{id}/chains", h.ListBackupChains)
+			r.Delete("/{id}/chains/{vmid}", h.DeleteBackupChain)
+		})
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireRole(models.RoleAdmin))
+			r.Get("/checkpoints/{vmid}", h.ListCheckpoints)
 		})
 	})
 	r.Route("/api/backup/schedules", func(r chi.Router) {

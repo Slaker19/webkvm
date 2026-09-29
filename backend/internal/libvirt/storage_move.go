@@ -14,6 +14,7 @@ import (
 
 	"libvirt.org/go/libvirt"
 
+	"webkvm/internal/fsutil"
 	"webkvm/internal/models"
 )
 
@@ -122,33 +123,10 @@ func sameFilesystem(a, b string) bool {
 // Holes matter just as much: a 4 GiB raw image holding 1 MiB of data
 // occupies 1 MiB, and copying it naively writes out four gigabytes of
 // zeroes. On a pool sized for the real usage that alone fills the disk.
+// copyFile copies an image file, trying reflink CoW clone first,
+// and falling back to a sparse-aware extent copy.
 func copyFile(src, dst string) error {
-	if strings.Contains(src, "..") || strings.Contains(dst, "..") {
-		return fmt.Errorf("invalid path: traversal not allowed")
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	fi, err := in.Stat()
-	if err != nil {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fi.Mode().Perm())
-	if err != nil {
-		return err
-	}
-	if err := copySparse(out, in, fi.Size()); err != nil {
-		out.Close()
-		return err
-	}
-	if err := out.Sync(); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
+	return fsutil.CopyFileFast(src, dst)
 }
 
 // copySparse copies src to dst, skipping the holes instead of writing

@@ -231,7 +231,10 @@ func sftpList(tgt Target) ([]BackupFile, error) {
 			continue
 		}
 		name := info.Name()
-		if !strings.HasSuffix(name, ".tar.gz") && !strings.HasSuffix(name, ".tar.zst") {
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		if !strings.HasSuffix(name, ".tar.gz") && !strings.HasSuffix(name, ".tar.zst") && !strings.HasSuffix(name, ".qcow2") {
 			continue
 		}
 		out = append(out, BackupFile{

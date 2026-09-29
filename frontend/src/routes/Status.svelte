@@ -464,7 +464,11 @@
       <StatCard
         label={t('status.backend')}
         status={status.backend.version ? 'running' : 'crashed'}
-        value={`v${status.backend.version}`}
+        value={status.backend.version
+          ? status.backend.version.startsWith('v')
+            ? status.backend.version
+            : `v${status.backend.version}`
+          : '—'}
         hint={t('status.uptimeHint', { uptime: fmtUptime(status.uptime_sec) })}
       />
       <StatCard
@@ -485,7 +489,9 @@
         value={status.update_available
           ? t('status.updateAvailable', { version: status.latest_version })
           : t('status.upToDate')}
-        hint={t('status.currentVersion', { version: status.backend.version })}
+        hint={t('status.currentVersion', {
+          version: status.backend.version ? status.backend.version.replace(/^v/, '') : '',
+        })}
       />
     </div>
 

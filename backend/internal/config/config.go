@@ -46,6 +46,11 @@ type Config struct {
 	RepoDir    string
 	LogFile    string
 
+	// LibvirtStartDelaySec is the maximum duration in seconds to wait at boot
+	// for libvirt and storage pools (NFS, ZFS, USB mounts) to become ready.
+	// Defaults to 0 (no delay).
+	LibvirtStartDelaySec int
+
 	// VNCProxyHost is the host the backend opens TCP connections
 	// to when proxying the noVNC WebSocket to libvirt's VNC port.
 	// On a regular install the VNC socket is on 127.0.0.1, so
@@ -142,6 +147,7 @@ func Load() (*Config, error) {
 		PublicHost:    envStrFrom("PUBLIC_HOST", "", dotenv),
 		CORSOrigin:    envStrFrom("CORS_ORIGIN", "*", dotenv),
 		LogFile:       envStrFrom("WEBKVM_LOG_FILE", "", dotenv),
+		LibvirtStartDelaySec: envIntFrom("LIBVIRT_START_DELAY_SEC", envIntFrom("WEBKVM_LIBVIRT_START_DELAY_SEC", 0, dotenv), dotenv),
 		SecureCookies: envBoolFrom("WEBKVM_COOKIE_SECURE", true, dotenv),
 		IncusEnabled:  envBoolFrom("WEBKVM_INCUS_ENABLED", false, dotenv),
 		IncusSocket:   envStrFrom("INCUS_SOCKET", "", dotenv),

@@ -1,6 +1,7 @@
 package libvirt
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 
 	"libvirt.org/go/libvirt"
 	"webkvm/internal/config"
@@ -319,4 +321,64 @@ func (c *Connector) ensureConnected() error {
 	}
 	slog.Info("libvirt_reconnected")
 	return nil
+}
+
+// WaitForPools waits up to timeout for all autostart and defined storage pools
+// to become active. If an autostart pool is inactive, it attempts to start it.
+// When timeout <= 0 it returns immediately without waiting.
+func (c *Connector) WaitForPools(ctx context.Context, timeout time.Duration) error {
+	if timeout <= 0 {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	slog.Info("libvirt_wait_pools_start", "timeout_sec", timeout.Seconds())
+
+	for {
+		if err := c.ensureConnected(); err != nil {
+			slog.Debug("libvirt_wait_pools_connecting", "err", err)
+		} else {
+			c.mu.RLock()
+			conn := c.conn
+			c.mu.RUnlock()
+
+			if conn != nil {
+				pools, err := conn.ListAllStoragePools(libvirt.CONNECT_LIST_STORAGE_POOLS_INACTIVE)
+				if err == nil {
+					allReady := true
+					for i := range pools {
+						p := pools[i]
+						name, _ := p.GetName()
+						autostart, _ := p.GetAutostart()
+						if autostart {
+							// Attempt to start inactive autostart pool (e.g. NFS/USB mount just completed)
+							if err := p.Create(0); err != nil {
+								slog.Debug("libvirt_pool_start_pending", "pool", name, "err", err)
+								allReady = false
+							} else {
+								slog.Info("libvirt_pool_started", "pool", name)
+							}
+						}
+						p.Free()
+					}
+					if allReady {
+						slog.Info("libvirt_wait_pools_complete")
+						return nil
+					}
+				}
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case t := <-ticker.C:
+			if t.After(deadline) {
+				slog.Warn("libvirt_wait_pools_timeout", "timeout_sec", timeout.Seconds())
+				return nil
+			}
+		}
+	}
 }

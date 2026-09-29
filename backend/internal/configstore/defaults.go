@@ -49,6 +49,15 @@ func DefaultSchema() Schema {
 			Placeholder: "192.168.1.10",
 		},
 		{
+			Key:         "server.libvirt_start_delay_sec",
+			Section:     "Server",
+			Label:       "Libvirt startup wait delay (seconds)",
+			Description: "Maximum seconds to wait at boot for libvirt daemon and storage pools (NFS, ZFS, USB mounts) to become ready before starting VMs. 0 = no delay. Restart required to apply.",
+			Type:        FieldInt,
+			Default:     0,
+			Min:         &zero,
+		},
+		{
 			Key:         "server.trust_proxy",
 			Section:     "Server",
 			Label:       "Trust X-Forwarded-For",

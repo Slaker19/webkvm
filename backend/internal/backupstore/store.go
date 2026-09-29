@@ -1303,6 +1303,10 @@ var validFilenameRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`^webkvm-[A-Za-z0-9._-]+-\d{8}T\d{6}\.\d{9}Z-[0-9a-f]{6,12}\.tar\.gz$`),
 	// Legacy: webkvm-<host>-<ts16>.tar.gz
 	regexp.MustCompile(`^webkvm-[A-Za-z0-9._-]+-\d{8}T\d{6}Z\.tar\.gz$`),
+	// Phase 5: incremental per-disk qcow2 — webkvm-<host>-<ts26>-<randHex>-<name>-<device>.qcow2
+	regexp.MustCompile(`^webkvm-[A-Za-z0-9._-]+-\d{8}T\d{6}\.\d{9}Z-[0-9a-f]{6,12}-[A-Za-z0-9._-]+-[A-Za-z0-9._-]+\.qcow2$`),
+	// Phase 5: restored qcow2 image from incremental checkpoint restore — webkvm-restore-<ts>-[<device>.]qcow2
+	regexp.MustCompile(`^webkvm-restore-\d{8}T\d{6}(\.\d{9})?Z-[0-9a-f]{4,12}(-[A-Za-z0-9._-]+)?\.qcow2$`),
 }
 
 // isSafeName is kept around because it's a useful guard
@@ -1567,6 +1571,16 @@ func (s *Store) ListJobs(limit int) []Job {
 		all = all[:limit]
 	}
 	return all
+}
+
+func (s *Store) GetJob(id string) (Job, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	j, ok := s.jobs[id]
+	if !ok || j == nil {
+		return Job{}, false
+	}
+	return *j, true
 }
 
 func (s *Store) RecordJob(j Job) (Job, error) {

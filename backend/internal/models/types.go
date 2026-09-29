@@ -220,6 +220,9 @@ type DiskInfo struct {
 	SizeGB   int64  `json:"size_gb,omitempty"`
 	ReadOnly bool   `json:"readonly"`
 	Type     string `json:"type"` // file, block
+	WWN      string `json:"wwn,omitempty"`
+	Serial   string `json:"serial,omitempty"`
+	Alias    string `json:"alias,omitempty"`
 }
 
 // VolumeAttachment identifies a domain currently referencing a storage
@@ -242,6 +245,9 @@ type AttachDiskRequest struct {
 	Format      string `json:"format,omitempty"`        // for disk: qcow2, raw
 	DiskCacheIO *bool  `json:"disk_cache_io,omitempty"` // cache='none' io='native'
 	DiskDiscard *bool  `json:"disk_discard,omitempty"`  // discard='unmap'
+	WWN         string `json:"wwn,omitempty"`           // 16 hex chars
+	Serial      string `json:"serial,omitempty"`        // disk serial string
+	Alias       string `json:"alias,omitempty"`         // user alias (ua-...)
 	// Force overrides the "this disk already contains data" guard when
 	// attaching an existing disk image. Without it, attaching a disk
 	// whose image is not empty is refused (409) so the operator cannot

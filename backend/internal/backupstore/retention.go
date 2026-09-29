@@ -166,11 +166,83 @@ func ApplyRetention(store *Store, tgt Target) (int, error) {
 			keep[suf] = true
 		}
 	}
+	// Load incremental chains to protect them from partial pruning.
+	// A chain is a linked list of qcow2 files; deleting only the base
+	// leaves every increment with a dangling backing_file. Policy: if
+	// ANY run of a chain is marked for deletion, the ENTIRE chain is
+	// kept (conservative). Only when ALL runs of a chain are marked
+	// for deletion is the whole chain removed atomically.
+	cs := NewChainStore(store.dataDir, tgt.ID)
+	chains, cerr := cs.Load()
+	if cerr != nil {
+		slog.Warn("backup_retention_chain_load_failed", "target", tgt.ID, "err", cerr)
+		chains = nil
+	}
+	// Map: run suffix -> chain VMID (for runs that belong to a chain).
+	chainRuns := map[string]string{} // suffix -> vmID
+	for _, c := range chains {
+		for _, e := range c.Entries {
+			var fileCandidates []string
+			if e.BackupFile != "" {
+				fileCandidates = append(fileCandidates, e.BackupFile)
+			}
+			for _, df := range e.DiskFiles {
+				if df != "" {
+					fileCandidates = append(fileCandidates, df)
+				}
+			}
+			matched := false
+			for _, fn := range fileCandidates {
+				if suf := runSuffixFromFilename(fn); suf != "" {
+					chainRuns[suf] = c.VMID
+					matched = true
+				}
+			}
+			if !matched && e.JobID != "" {
+				if j, ok := store.GetJob(e.JobID); ok {
+					for _, fn := range append([]string{j.Filename}, j.Filenames...) {
+						if suf := runSuffixFromFilename(fn); suf != "" {
+							chainRuns[suf] = c.VMID
+						}
+					}
+				}
+			}
+		}
+	}
+	// Determine which chains have ALL their runs marked for deletion.
+	chainAllDelete := map[string]bool{} // vmID -> all runs marked
+	chainHasKeep := map[string]bool{}    // vmID -> at least one run kept
+	for suf, vmID := range chainRuns {
+		if keep[suf] {
+			chainHasKeep[vmID] = true
+		} else if !chainAllDelete[vmID] && !chainHasKeep[vmID] {
+			// Mark this chain as having at least one run to delete.
+			chainAllDelete[vmID] = true
+		}
+	}
+	// Refine: a chain is only fully deletable if NONE of its runs are kept.
+	for vmID := range chainHasKeep {
+		delete(chainAllDelete, vmID)
+	}
+
 	removed := 0
 	var firstErr error
 	for _, rr := range runs {
 		if keep[rr.Suffix] {
 			continue
+		}
+		// If this run belongs to a chain that is not fully marked for
+		// deletion, skip it to preserve chain integrity.
+		if vmID, ok := chainRuns[rr.Suffix]; ok {
+			if !chainAllDelete[vmID] {
+				slog.Info("backup_retention_chain_protected",
+					"target", tgt.ID, "run", rr.Suffix, "vm", vmID,
+					"hint", "chain has kept runs; skipping partial prune")
+				continue
+			}
+			// Chain is fully marked: delete all its files atomically.
+			// (DeleteBackupRun on each suffix handles the files; the
+			// chain record itself is pruned below.)
 		}
 		if _, derr := DeleteBackupRun(tgt, rr.Suffix); derr != nil {
 			// Isolated failure: log, keep going, retry next cycle.
@@ -182,6 +254,14 @@ func ApplyRetention(store *Store, tgt Target) (int, error) {
 		}
 		removed++
 	}
+
+	// Prune chain records for fully-deleted chains.
+	for vmID := range chainAllDelete {
+		if _, derr := cs.DeleteChain(vmID); derr != nil {
+			slog.Warn("backup_retention_chain_delete_failed", "target", tgt.ID, "vm", vmID, "err", derr)
+		}
+	}
+
 	return removed, firstErr
 }
 

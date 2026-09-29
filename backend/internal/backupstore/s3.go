@@ -184,7 +184,10 @@ func s3List(tgt Target) ([]BackupFile, error) {
 		if name == "" || obj.IsDeleteMarker {
 			continue
 		}
-		if !strings.HasSuffix(name, ".tar.gz") && !strings.HasSuffix(name, ".tar.zst") {
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		if !strings.HasSuffix(name, ".tar.gz") && !strings.HasSuffix(name, ".tar.zst") && !strings.HasSuffix(name, ".qcow2") {
 			continue
 		}
 		out = append(out, BackupFile{

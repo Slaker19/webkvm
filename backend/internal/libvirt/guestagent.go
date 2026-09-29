@@ -411,7 +411,7 @@ func (c *Connector) GetGuestInfo(id string) (GuestInfo, error) {
 			for _, a := range n.IPAddresses {
 				if a.IPAddressType == "ipv6" {
 					iface.IPv6 = append(iface.IPv6, a.IPAddress)
-				} else {
+				} else if !strings.HasPrefix(a.IPAddress, "169.254.") && !strings.HasPrefix(a.IPAddress, "127.") {
 					iface.IPv4 = append(iface.IPv4, a.IPAddress)
 				}
 			}

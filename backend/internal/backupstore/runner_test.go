@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -1609,5 +1610,162 @@ func TestWriteBackupContainerWithoutExportSource(t *testing.T) {
 	_, _, err := r.writeBackup(tgt, tgt.Path)
 	if err == nil || !strings.Contains(err.Error(), "no LXD export source") {
 		t.Fatalf("expected a loud no-export-source error, got %v", err)
+	}
+}
+
+// TestParseDomainDisks verifies multiline domain XML parsing and disk filtering.
+func TestParseDomainDisks(t *testing.T) {
+	xml := `<domain type='kvm'>
+  <name>test-vm</name>
+  <devices>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='/tmp/qa-test-vda.qcow2'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='/tmp/qa-test-cdrom.iso'/>
+      <target dev='sda' bus='sata'/>
+      <readonly/>
+    </disk>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='/tmp/qa-test-vdb.qcow2'/>
+      <target dev='vdb' bus='virtio'/>
+    </disk>
+    <disk type='block' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source dev='/dev/vg0/lv_data'/>
+      <target dev='vdc' bus='virtio'/>
+    </disk>
+  </devices>
+</domain>`
+
+	disks := parseDomainDisks(xml)
+	if len(disks) != 2 {
+		t.Fatalf("expected 2 file-backed disks, got %d: %+v", len(disks), disks)
+	}
+	if disks[0].Device != "vda" || disks[0].Source != "/tmp/qa-test-vda.qcow2" {
+		t.Errorf("disks[0] = %+v, want vda", disks[0])
+	}
+	if disks[1].Device != "vdb" || disks[1].Source != "/tmp/qa-test-vdb.qcow2" {
+		t.Errorf("disks[1] = %+v, want vdb", disks[1])
+	}
+}
+
+// TestRunSuffixFromFilenameWithDashes verifies suffix extraction even when hostnames contain dashes.
+func TestRunSuffixFromFilenameWithDashes(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{
+			name: "webkvm-alvin-nas-node-20260929T120000.000000000Z-a1b2c3d4e5f6-my-vm.tar.zst",
+			want: "20260929T120000.000000000Z-a1b2c3d4e5f6",
+		},
+		{
+			name: "webkvm-host-20260929T120000.000000000Z-a1b2c3-vm1-vda.qcow2",
+			want: "20260929T120000.000000000Z-a1b2c3",
+		},
+		{
+			name: "webkvm-host-20260929T120000.000000000Z-a1b2c3-config.tar.zst",
+			want: "20260929T120000.000000000Z-a1b2c3",
+		},
+		{
+			name: "invalid-backup-filename.tar.zst",
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		got := runSuffixFromFilename(tc.name)
+		if got != tc.want {
+			t.Errorf("runSuffixFromFilename(%q) = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestRestoreCheckpointLive tests end-to-end flattening and restoration of an incremental chain.
+func TestRestoreCheckpointLive(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not available")
+	}
+	dataDir := t.TempDir()
+	tgtDir := t.TempDir()
+	tgt := Target{ID: "tgt1", Path: tgtDir}
+
+	// Create base qcow2
+	baseName := "webkvm-testhost-20260929T100000.000000000Z-111111-vm1-vda.qcow2"
+	basePath := filepath.Join(tgtDir, baseName)
+	cmd := exec.Command("qemu-img", "create", "-f", "qcow2", basePath, "1M")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create base qcow2: %v: %s", err, string(out))
+	}
+
+	// Create inc qcow2 backed by base
+	incName := "webkvm-testhost-20260929T110000.000000000Z-222222-vm1-vda.qcow2"
+	incPath := filepath.Join(tgtDir, incName)
+	cmd = exec.Command("qemu-img", "create", "-f", "qcow2", "-b", basePath, "-F", "qcow2", incPath, "1M")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create inc qcow2: %v: %s", err, string(out))
+	}
+
+	// Record chain
+	cs := NewChainStore(dataDir, tgt.ID)
+	_, err := cs.AppendEntry("vm1", tgt.ID, "vm1", CheckpointEntry{
+		Name:       "chk-1",
+		JobID:      "j1",
+		BackupFile: baseName,
+		DiskFiles:  map[string]string{"vda": baseName},
+		Parent:     "",
+		Mode:       "full",
+		CreatedAt:  time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("append entry 1: %v", err)
+	}
+
+	_, err = cs.AppendEntry("vm1", tgt.ID, "vm1", CheckpointEntry{
+		Name:       "chk-2",
+		JobID:      "j2",
+		BackupFile: incName,
+		DiskFiles:  map[string]string{"vda": incName},
+		Parent:     "chk-1",
+		Mode:       "incremental",
+		CreatedAt:  time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("append entry 2: %v", err)
+	}
+
+	r := &Runner{
+		dataDir: dataDir,
+		logger:  discardLogger(),
+	}
+
+	restoredPath, err := r.RestoreCheckpoint(context.Background(), tgt, "vm1", "chk-2")
+	if err != nil {
+		t.Fatalf("RestoreCheckpoint failed: %v", err)
+	}
+	if !filepath.IsAbs(restoredPath) || filepath.Dir(restoredPath) != tgtDir {
+		t.Errorf("restoredPath = %q, expected inside tgtDir %q", restoredPath, tgtDir)
+	}
+	if _, err := os.Stat(restoredPath); err != nil {
+		t.Errorf("stat restored file %q: %v", restoredPath, err)
+	}
+
+	// Verify restored file with qemu-img check
+	cmd = exec.Command("qemu-img", "check", restoredPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("qemu-img check on restored file failed: %v: %s", err, string(out))
+	}
+
+	// Ensure no staging directory was leaked
+	entries, _ := os.ReadDir(tgtDir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".webkvm-restore-staging-") {
+			t.Errorf("found leaked staging directory: %s", e.Name())
+		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +19,8 @@ import (
 	"webkvm/internal/config"
 	"webkvm/internal/models"
 	"webkvm/internal/safego"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // --- Targets ---
@@ -519,6 +522,124 @@ func (h *Handler) VerifyBackup(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusAccepted, map[string]any{"status": "verifying", "filename": filename})
 }
 
+// ReconcileBackupTarget compares the files on disk/storage against the store's jobs index.
+// If query param ?apply=true, it adopts orphans and cleans ghost records.
+func (h *Handler) ReconcileBackupTarget(w http.ResponseWriter, r *http.Request) {
+	if h.backupStore == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "backup store not initialized")
+		return
+	}
+	id := chiURLParam(r, "id")
+	tgt, ok := h.backupStore.GetTarget(id)
+	if !ok {
+		jsonErr(w, http.StatusNotFound, "target not found")
+		return
+	}
+	apply := r.URL.Query().Get("apply") == "true" || r.URL.Query().Get("apply") == "1"
+	report, err := h.backupStore.Reconcile(tgt, apply)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "reconcile failed: "+err.Error())
+		return
+	}
+	jsonResp(w, http.StatusOK, report)
+}
+
+// ListBackupChains returns the incremental backup chains for a target.
+func (h *Handler) ListBackupChains(w http.ResponseWriter, r *http.Request) {
+	if h.backupStore == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "backup store not initialized")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	tgt, ok := h.backupStore.GetTarget(id)
+	if !ok {
+		jsonErr(w, http.StatusNotFound, "target not found")
+		return
+	}
+	cs := backupstore.NewChainStore(h.cfg.DataDir, tgt.ID)
+	chains, err := cs.Load()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "load chains: "+err.Error())
+		return
+	}
+	if chains == nil {
+		chains = []*backupstore.Chain{}
+	}
+	backupstore.SortChainsByUpdatedAt(chains)
+	jsonResp(w, http.StatusOK, map[string]any{"chains": chains})
+}
+
+// DeleteBackupChain removes an entire incremental chain for a VM.
+// It first deletes the libvirt checkpoints (and their dirty bitmaps)
+// to prevent orphan bitmaps from accumulating in QEMU, then removes
+// the local chain record. Checkpoint deletion failures are logged but
+// do not abort the operation: the local record is the source of truth
+// for retention, and orphan bitmaps can be detected in a future audit.
+func (h *Handler) DeleteBackupChain(w http.ResponseWriter, r *http.Request) {
+	if h.backupStore == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "backup store not initialized")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	vmID := chi.URLParam(r, "vmid")
+	tgt, ok := h.backupStore.GetTarget(id)
+	if !ok {
+		jsonErr(w, http.StatusNotFound, "target not found")
+		return
+	}
+	cs := backupstore.NewChainStore(h.cfg.DataDir, tgt.ID)
+
+	// Delete libvirt checkpoints first to release dirty bitmaps.
+	chain, err := cs.GetChain(vmID)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "load chain: "+err.Error())
+		return
+	}
+	if chain != nil {
+		for _, entry := range chain.Entries {
+			if entry.Name == "" {
+				continue
+			}
+			if derr := h.backupRunner.DeleteCheckpoint(vmID, entry.Name); derr != nil {
+				// Log but do not abort: the local record is the source
+				// of truth for retention; orphan bitmaps are detectable.
+				slog.Warn("checkpoint_delete_failed", "vm", vmID, "checkpoint", entry.Name, "err", derr)
+			}
+		}
+	}
+
+	deleted, err := cs.DeleteChain(vmID)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "delete chain: "+err.Error())
+		return
+	}
+	if !deleted {
+		jsonErr(w, http.StatusNotFound, "chain not found")
+		return
+	}
+	jsonResp(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+// ListCheckpoints returns the libvirt checkpoint names for a VM.
+// This is the source of truth from libvirt itself, complementing
+// the local chains.json which tracks backup file lineage.
+func (h *Handler) ListCheckpoints(w http.ResponseWriter, r *http.Request) {
+	if h.backupRunner == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "backup runner not initialized")
+		return
+	}
+	vmID := chi.URLParam(r, "vmid")
+	names, err := h.backupRunner.ListCheckpoints(vmID)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "list checkpoints: "+err.Error())
+		return
+	}
+	if names == nil {
+		names = []string{}
+	}
+	jsonResp(w, http.StatusOK, map[string]any{"checkpoints": names})
+}
+
 // RestoreBackup extracts a backup archive into a fresh directory.
 // Phase II accepts two request shapes:
 //
@@ -548,13 +669,16 @@ func (h *Handler) RestoreBackup(w http.ResponseWriter, r *http.Request) {
 		// that wants a checkbox list doesn't need a
 		// breaking change.
 		Files []string `json:"files"`
+		// Checkpoint restores an incremental backup chain to a
+		// specific libvirt checkpoint (point-in-time restore).
+		Checkpoint string `json:"checkpoint"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
-	if req.Filename == "" && req.Run == "" && len(req.Files) == 0 && !req.Config {
-		jsonErr(w, http.StatusBadRequest, "filename, run, files, or config is required")
+	if req.Filename == "" && req.Run == "" && len(req.Files) == 0 && !req.Config && req.Checkpoint == "" {
+		jsonErr(w, http.StatusBadRequest, "filename, run, files, config, or checkpoint is required")
 		return
 	}
 	t, ok := h.backupStore.GetTarget(id)
@@ -570,6 +694,40 @@ func (h *Handler) RestoreBackup(w http.ResponseWriter, r *http.Request) {
 	// the UI polls /api/backup/jobs and renders a live bar.
 	op := func(onProg func(int, string, map[string]any)) (backupstore.RestoreResult, error) {
 		switch {
+		case req.Checkpoint != "":
+			// Point-in-time restore: flatten the incremental chain
+			// to the specified checkpoint. The runner handles the
+			// full qemu-img sequence (staging → rebase → convert →
+			// verify → publish) and returns the final flat image path.
+			// We need the VM ID from the chain store to locate the chain.
+			cs := backupstore.NewChainStore(h.cfg.DataDir, t.ID)
+			chains, err := cs.Load()
+			if err != nil {
+				return backupstore.RestoreResult{}, fmt.Errorf("load chains: %w", err)
+			}
+			// Find which VM owns this checkpoint.
+			var vmID string
+			for _, c := range chains {
+				for _, e := range c.Entries {
+					if e.Name == req.Checkpoint {
+						vmID = c.VMID
+						break
+					}
+				}
+				if vmID != "" {
+					break
+				}
+			}
+			if vmID == "" {
+				return backupstore.RestoreResult{}, fmt.Errorf("checkpoint %q not found in any chain", req.Checkpoint)
+			}
+			// Progress callback is a no-op for now; the runner logs internally.
+			_ = onProg
+			restoredPath, rerr := h.backupRunner.RestoreCheckpoint(context.Background(), t, vmID, req.Checkpoint)
+			if rerr != nil {
+				return backupstore.RestoreResult{}, rerr
+			}
+			return backupstore.RestoreResult{Destination: restoredPath}, nil
 		case req.Run != "":
 			return backupstore.RestoreRun(context.Background(), t, req.Run, h.cfg.DataDir, nil, onProg)
 		case req.Config:

@@ -745,7 +745,17 @@ func (b *IncusBackend) setState(id, action string, timeout int, force bool) erro
 // websocket — polling Refresh()/Get() is equally correct against a real
 // daemon and keeps the adapter testable against a minimal server.
 func waitOperation(op incus.Operation) error {
-	const timeout = 90 * time.Second
+	return waitOperationTimeout(op, 90*time.Second)
+}
+
+// waitOperationLong is like waitOperation but uses a longer timeout suitable
+// for heavy I/O operations (backup creation, export streaming, import) where
+// 90 seconds is routinely insufficient for containers larger than ~2 GB.
+func waitOperationLong(op incus.Operation) error {
+	return waitOperationTimeout(op, 15*time.Minute)
+}
+
+func waitOperationTimeout(op incus.Operation, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		cur := op.Get()
@@ -1954,7 +1964,12 @@ func (b *IncusBackend) ExportDomain(ctx context.Context, id string, opts compute
 	if err != nil {
 		return backupstore.ProducerResult{}, err
 	}
-	if err := waitOperation(op); err != nil {
+	if err := waitOperationLong(op); err != nil {
+		// Clean up the (possibly half-created) backup so it does not
+		// accumulate on the Incus side after repeated failures.
+		if dop, derr := b.client.DeleteInstanceBackup(id, backupName); derr == nil {
+			_ = waitOperation(dop)
+		}
 		return backupstore.ProducerResult{}, err
 	}
 	defer func() {
@@ -2082,7 +2097,7 @@ func (b *IncusBackend) ImportDomain(tarPath, newName, poolName string, opts comp
 	if err != nil {
 		return "", "", nil, fmt.Errorf("create instance from backup: %w", err)
 	}
-	if err := waitOperation(op); err != nil {
+	if err := waitOperationLong(op); err != nil {
 		return "", "", nil, fmt.Errorf("import backup: %w", err)
 	}
 

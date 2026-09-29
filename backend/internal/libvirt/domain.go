@@ -1616,7 +1616,7 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 			for _, iface := range ifaces {
 				mac := strings.ToLower(iface.Hwaddr)
 				for _, a := range iface.Addrs {
-					if a.Type == libvirt.IP_ADDR_TYPE_IPV4 && !strings.HasPrefix(a.Addr, "127.") {
+					if a.Type == libvirt.IP_ADDR_TYPE_IPV4 && !strings.HasPrefix(a.Addr, "127.") && !strings.HasPrefix(a.Addr, "169.254.") {
 						if mac != "" {
 							macIPs[mac] = append(macIPs[mac], a.Addr)
 						}
@@ -2154,6 +2154,18 @@ func (c *Connector) parseDisksFiltered(xmlDesc string, disksOnly bool) []models.
 		} else if source != "" {
 			displaySource = rootDiskName(source)
 		}
+		wwn := ""
+		if wm := regexp.MustCompile(`<wwn>([^<]+)</wwn>`).FindStringSubmatch(d); len(wm) > 1 {
+			wwn = wm[1]
+		}
+		serial := ""
+		if sm := regexp.MustCompile(`<serial>([^<]+)</serial>`).FindStringSubmatch(d); len(sm) > 1 {
+			serial = sm[1]
+		}
+		alias := ""
+		if am := regexp.MustCompile(`<alias\b[^>]*name='([^']+)'`).FindStringSubmatch(d); len(am) > 1 {
+			alias = am[1]
+		}
 		disks = append(disks, models.DiskInfo{
 			Device:   device,
 			Bus:      bus,
@@ -2164,6 +2176,9 @@ func (c *Connector) parseDisksFiltered(xmlDesc string, disksOnly bool) []models.
 			SizeGB:   sizeGB,
 			ReadOnly: readOnly,
 			Type:     dType,
+			WWN:      wwn,
+			Serial:   serial,
+			Alias:    alias,
 		})
 	}
 	return disks
@@ -2207,7 +2222,29 @@ func parseNetworks(xmlDesc string) []models.NetIface {
 	return ifaces
 }
 
+var (
+	wwnRE    = regexp.MustCompile(`^[0-9a-fA-F]{16}$`)
+	serialRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,36}$`)
+	aliasRE  = regexp.MustCompile(`^ua-[A-Za-z0-9_.-]{1,60}$`)
+)
+
+func validateDiskIdentifiers(wwn, serial, alias string) error {
+	if wwn != "" && !wwnRE.MatchString(wwn) {
+		return fmt.Errorf("invalid disk WWN %q: must be exactly 16 hexadecimal characters", wwn)
+	}
+	if serial != "" && !serialRE.MatchString(serial) {
+		return fmt.Errorf("invalid disk serial %q: must be 1-36 characters (letters, digits, '_', '-', '.')", serial)
+	}
+	if alias != "" && !aliasRE.MatchString(alias) {
+		return fmt.Errorf("invalid disk alias %q: user aliases must start with 'ua-' prefix and be 4-63 characters", alias)
+	}
+	return nil
+}
+
 func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
+	if err := validateDiskIdentifiers(req.WWN, req.Serial, req.Alias); err != nil {
+		return err
+	}
 	dom, err := c.lookupDomain(id)
 	if err != nil {
 		return err
@@ -2335,12 +2372,23 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 		addressXML = fmt.Sprintf("<address type='drive' controller='0' bus='0' target='0' unit='%d'/>", nextDriveUnit(dom, busType))
 	}
 
+	var identifiersXML string
+	if req.WWN != "" {
+		identifiersXML += fmt.Sprintf("\n  <wwn>%s</wwn>", xmlEscape(req.WWN))
+	}
+	if req.Serial != "" {
+		identifiersXML += fmt.Sprintf("\n  <serial>%s</serial>", xmlEscape(req.Serial))
+	}
+	if req.Alias != "" {
+		identifiersXML += fmt.Sprintf("\n  <alias name='%s'/>", xmlEscape(req.Alias))
+	}
+
 	devXML := fmt.Sprintf(`<disk type='%s' device='%s'>
   %s
   <target dev='%s' bus='%s'/>
   %s
-  %s
-</disk>`, xmlEscape(diskType), xmlEscape(device), driverXML, xmlEscape(devLetter), xmlEscape(busType), sourceXML, addressXML)
+  %s%s
+</disk>`, xmlEscape(diskType), xmlEscape(device), driverXML, xmlEscape(devLetter), xmlEscape(busType), sourceXML, addressXML, identifiersXML)
 
 	if device == "cdrom" {
 		devXML = fmt.Sprintf(`<disk type='%s' device='cdrom'>

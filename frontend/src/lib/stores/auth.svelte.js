@@ -1057,6 +1057,15 @@ export const api = {
     request(`/backup/schedules/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteBackupSchedule: (id) => request(`/backup/schedules/${id}`, { method: 'DELETE' }),
   listBackupJobs: () => request('/backup/jobs'),
+  listBackupChains: (id) => request(`/backup/targets/${id}/chains`),
+  deleteBackupChain: (id, vmID) =>
+    request(`/backup/targets/${id}/chains/${encodeURIComponent(vmID)}`, { method: 'DELETE' }),
+
+  // --- generic helpers ---
+  // post sends a JSON POST to an absolute path (caller must include the
+  // '/api' prefix). Used by callers that need query strings or dynamic
+  // paths not worth a dedicated named method.
+  post: (path, body) => request(path, { method: 'POST', body: JSON.stringify(body ?? {}) }),
 };
 
 // passwordStrength returns { score: 0-4, labelKey, label, color } based on a

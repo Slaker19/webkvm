@@ -25,6 +25,7 @@ import (
 	"webkvm/internal/events"
 	"webkvm/internal/firewall"
 	"webkvm/internal/libvirt"
+	"webkvm/internal/libvirtbackup"
 	"webkvm/internal/logging"
 	metrics2 "webkvm/internal/metrics"
 	"webkvm/internal/models"
@@ -39,7 +40,7 @@ import (
 
 // Set by -ldflags at build time. Defaults are used for `go run`.
 var (
-	Version   = "0.0.2"
+	Version   = "0.1.0"
 	BuildTime = "unknown"
 )
 
@@ -238,8 +239,29 @@ func main() {
 
 	lv := libvirt.NewConnector(cfg.LibvirtURI, cfg)
 
-	if err := lv.Open(); err != nil {
-		logger.Warn("libvirt_connect_failed", "uri", cfg.LibvirtURI, "err", err)
+	libvirtStartDelay := cfg.LibvirtStartDelaySec
+	if v := settingsStore.GetInt("server.libvirt_start_delay_sec"); v > 0 {
+		libvirtStartDelay = v
+	}
+
+	if libvirtStartDelay > 0 {
+		logger.Info("libvirt_startup_delay_enabled", "delay_sec", libvirtStartDelay)
+		waitDeadline := time.Now().Add(time.Duration(libvirtStartDelay) * time.Second)
+		for {
+			if err := lv.Open(); err == nil {
+				break
+			}
+			if time.Now().After(waitDeadline) {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	} else {
+		_ = lv.Open()
+	}
+
+	if !lv.IsConnected() {
+		logger.Warn("libvirt_connect_failed", "uri", cfg.LibvirtURI)
 		logger.Warn("running_in_offline_mode", "note", "VM operations will fail until libvirt is available")
 		// Retry in background with exponential backoff so the backend
 		// recovers automatically when libvirtd becomes available.
@@ -247,6 +269,11 @@ func main() {
 	} else {
 		logger.Info("libvirt_connected", "uri", cfg.LibvirtURI)
 		defer lv.Close()
+		if libvirtStartDelay > 0 {
+			waitCtx, waitCancel := context.WithTimeout(eventCtx, time.Duration(libvirtStartDelay)*time.Second)
+			_ = lv.WaitForPools(waitCtx, time.Duration(libvirtStartDelay)*time.Second)
+			waitCancel()
+		}
 		lv.EnsureDefaults()
 		// Sweep stale import leftovers (orphan .tmp uploads and OVA
 		// work dirs) from previous runs. The normal import path
@@ -392,7 +419,7 @@ func main() {
 		logger.Error("backupstore_init_failed", "err", err)
 		os.Exit(1)
 	}
-	backupRunner := backupstore.NewRunnerWithConfig(
+	backupRunner := backupstore.NewRunnerWithIncremental(
 		backupStore,
 		cfg.DataDir,
 		func() backupstore.BackupConfig {
@@ -432,6 +459,13 @@ func main() {
 			res, xerr := computeBackend.ExportDomain(ctx, vm.ID, compute.ExportBackupOptions{Compress: "gzip"}, w)
 			return res.TotalBytes, xerr
 		},
+		// VMBeginBackup starts a push-mode libvirt backup
+		// (incremental). Wired to libvirtbackup.BeginBackup.
+		libvirtbackup.BeginBackup,
+		// VMListCheckpoints returns checkpoint names for a domain.
+		libvirtbackup.ListCheckpoints,
+		// VMDeleteCheckpoint removes a checkpoint and its bitmap.
+		libvirtbackup.DeleteCheckpoint,
 		logger,
 	)
 	go backupRunner.Start(eventCtx)

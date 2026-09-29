@@ -342,3 +342,81 @@ func TestSweepRetention_SingleVMRunsDoNotPruneFleet(t *testing.T) {
 		t.Errorf("oldest ad-hoc vm-a run should be pruned")
 	}
 }
+
+// TestApplyRetention_IncrementalChainProtectedEvenWithoutJobRecords verifies
+// that active chains keep their base and all intermediate runs even when
+// KeepLast=1 would otherwise prune them, and even when job records have been evicted.
+func TestApplyRetention_IncrementalChainProtectedEvenWithoutJobRecords(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := filepath.Join(dir, "pool")
+	if err := os.MkdirAll(pool, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tgt, err := s.CreateTargetOpts("loc", pool, TargetLocal, "all", nil, TargetOptions{
+		Retention: RetentionPolicy{KeepLast: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Base run (old)
+	baseFile := "webkvm-testhost-20260101T120000.000000000Z-111111-vm1-vda.qcow2"
+	baseCfg := "webkvm-testhost-20260101T120000.000000000Z-111111-config.tar.zst"
+	// Incremental run (recent)
+	incFile := "webkvm-testhost-20260102T120000.000000000Z-222222-vm1-vda.qcow2"
+	incCfg := "webkvm-testhost-20260102T120000.000000000Z-222222-config.tar.zst"
+
+	for _, f := range []string{baseFile, baseCfg, incFile, incCfg} {
+		if err := os.WriteFile(filepath.Join(pool, f), []byte("dummy-qcow2"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldAt := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	_ = os.Chtimes(filepath.Join(pool, baseFile), oldAt, oldAt)
+	_ = os.Chtimes(filepath.Join(pool, baseCfg), oldAt, oldAt)
+	newAt := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	_ = os.Chtimes(filepath.Join(pool, incFile), newAt, newAt)
+	_ = os.Chtimes(filepath.Join(pool, incCfg), newAt, newAt)
+
+	// Chain recorded with nonexistent job IDs (simulates evicted job records)
+	cs := NewChainStore(s.dataDir, tgt.ID)
+	_, _ = cs.AppendEntry("vm1", tgt.ID, "vm1", CheckpointEntry{
+		Name:       "chk-1",
+		JobID:      "evicted-j1",
+		BackupFile: baseFile,
+		DiskFiles:  map[string]string{"vda": baseFile},
+		Parent:     "",
+		Mode:       "full",
+		CreatedAt:  oldAt,
+	})
+	_, _ = cs.AppendEntry("vm1", tgt.ID, "vm1", CheckpointEntry{
+		Name:       "chk-2",
+		JobID:      "evicted-j2",
+		BackupFile: incFile,
+		DiskFiles:  map[string]string{"vda": incFile},
+		Parent:     "chk-1",
+		Mode:       "incremental",
+		CreatedAt:  newAt,
+	})
+
+	removed, err := ApplyRetention(s, tgt)
+	if err != nil {
+		t.Fatalf("ApplyRetention failed: %v", err)
+	}
+
+	if removed != 0 {
+		t.Errorf("removed = %d, want 0 because base run is part of an active chain", removed)
+	}
+
+	// Verify all files are still present
+	for _, f := range []string{baseFile, baseCfg, incFile, incCfg} {
+		if _, err := os.Stat(filepath.Join(pool, f)); err != nil {
+			t.Errorf("file %s should be kept, got err: %v", f, err)
+		}
+	}
+}

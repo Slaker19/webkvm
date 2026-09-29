@@ -378,6 +378,9 @@
   let aDiskProbe = $state(null);
   let aDiskProbing = $state(false);
   let aDiskForce = $state(false);
+  let aDiskWWN = $state('');
+  let aDiskSerial = $state('');
+  let aDiskAlias = $state('');
 
   // Change ISO state
   let showChangeISO = $state(false);
@@ -1560,6 +1563,11 @@
         data.format = aDiskFormat;
         data.size_gb = aDiskSize;
         data.pool = aDiskPool;
+      }
+      if (aDiskDevice !== 'cdrom') {
+        if (aDiskWWN.trim()) data.wwn = aDiskWWN.trim();
+        if (aDiskSerial.trim()) data.serial = aDiskSerial.trim();
+        if (aDiskAlias.trim()) data.alias = aDiskAlias.trim();
       }
       await api.createDisk(vmId, data);
       showAddDisk = false;
@@ -3519,6 +3527,9 @@
                     aDiskPool = vmDiskPools(pools)[0]?.name || 'webkvm-disks';
                     aDiskExistingVol = '';
                     aDiskVolumes = [];
+                    aDiskWWN = '';
+                    aDiskSerial = '';
+                    aDiskAlias = '';
                     showAddDisk = true;
                   }}>+ Add Disk</Button
                 >
@@ -3542,6 +3553,24 @@
                       >
                       <span class="text-xs text-muted-foreground">{disk.bus}</span>
                       <span class="text-sm truncate">{diskLabel(disk)}</span>
+                      {#if disk.serial}
+                        <span
+                          class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
+                          title={t('vmDetail.diskSerialLabel')}>SN: {disk.serial}</span
+                        >
+                      {/if}
+                      {#if disk.wwn}
+                        <span
+                          class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
+                          title={t('vmDetail.diskWwnLabel')}>WWN: {disk.wwn}</span
+                        >
+                      {/if}
+                      {#if disk.alias}
+                        <span
+                          class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
+                          title={t('vmDetail.diskAliasLabel')}>{disk.alias}</span
+                        >
+                      {/if}
                     </div>
                     <div class="flex items-center gap-1 shrink-0">
                       {#if disk.device === 'cdrom'}
@@ -5030,6 +5059,43 @@
             {#each isos as iso (iso.path || iso.name)}<option value={iso.path}>{iso.name}</option
               >{/each}
           </select>
+        </div>
+      {/if}
+      {#if aDiskDevice === 'disk' || aDiskDevice === 'existing'}
+        <div class="border-t border-border pt-3 space-y-3">
+          <div>
+            <label for="adisk-serial" class="block text-xs font-medium mb-1"
+              >{t('vmDetail.diskSerialLabel')}</label
+            >
+            <Input
+              id="adisk-serial"
+              type="text"
+              placeholder={t('vmDetail.diskSerialPlaceholder')}
+              bind:value={aDiskSerial}
+            />
+          </div>
+          <div>
+            <label for="adisk-wwn" class="block text-xs font-medium mb-1"
+              >{t('vmDetail.diskWwnLabel')}</label
+            >
+            <Input
+              id="adisk-wwn"
+              type="text"
+              placeholder={t('vmDetail.diskWwnPlaceholder')}
+              bind:value={aDiskWWN}
+            />
+          </div>
+          <div>
+            <label for="adisk-alias" class="block text-xs font-medium mb-1"
+              >{t('vmDetail.diskAliasLabel')}</label
+            >
+            <Input
+              id="adisk-alias"
+              type="text"
+              placeholder={t('vmDetail.diskAliasPlaceholder')}
+              bind:value={aDiskAlias}
+            />
+          </div>
         </div>
       {/if}
     </div>

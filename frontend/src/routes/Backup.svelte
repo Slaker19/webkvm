@@ -45,6 +45,8 @@
   // configByTarget holds the stable "latest configuration" snapshot
   // info for each target ({filename, size, modified} | null).
   let configByTarget = $state({});
+  // chainsByTarget holds incremental backup chains per target.
+  let chainsByTarget = $state({});
   let vms = $state([]);
   let loading = $state(true);
   let activeTab = $state('targets');
@@ -664,6 +666,8 @@
     } finally {
       filesLoading = { ...filesLoading, [targetId]: false };
     }
+    // Load incremental chains in parallel (best-effort).
+    loadChains(targetId);
   }
 
   // V13-BCK-04: on-demand verification is ASYNC on the backend — the
@@ -674,6 +678,48 @@
   // up, then renders it in the result dialog.
   let verifying = $state({}); // `${targetId}/${filename}` -> bool
   let verifyResult = $state(null); // { name, filename, size, modified, sha256, lastVerified }
+  let syncLoading = $state({});
+  let syncConfirmOpen = $state(false);
+  let syncConfirmTarget = $state(null);
+  let syncReport = $state(null);
+
+  async function triggerSync(target) {
+    syncLoading = { ...syncLoading, [target.id]: true };
+    try {
+      const res = await api.post(`/backup/targets/${target.id}/reconcile`, {});
+      if (res.orphan_files?.length > 0 || res.ghost_files?.length > 0) {
+        syncConfirmTarget = target;
+        syncReport = res;
+        syncConfirmOpen = true;
+      } else {
+        toast.info(t('backup.syncNoChanges'));
+        await loadFiles(target.id);
+      }
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      syncLoading = { ...syncLoading, [target.id]: false };
+    }
+  }
+
+  async function applySync() {
+    if (!syncConfirmTarget) return;
+    const target = syncConfirmTarget;
+    syncLoading = { ...syncLoading, [target.id]: true };
+    try {
+      await api.post(`/backup/targets/${target.id}/reconcile?apply=true`, {});
+      toast.success(t('backup.syncSuccess'));
+      await loadFiles(target.id);
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      syncLoading = { ...syncLoading, [target.id]: false };
+      syncConfirmOpen = false;
+      syncConfirmTarget = null;
+      syncReport = null;
+    }
+  }
 
   // pollVerifyOutcome polls listBackupsOnTarget until the file carries
   // a fresh last_verified (success) or a last_verify_error (failure).
@@ -848,6 +894,53 @@
 
   async function deleteRun(target, suffix) {
     askDeleteRun = { targetId: target.id, suffix };
+  }
+
+  // --- Incremental backup chain actions -------------------------
+  let askRestoreCheckpoint = $state(null); // { target, chain, entry }
+  let askDeleteChain = $state(null); // { target, chain }
+
+  function restoreCheckpoint(target, chain, entry) {
+    askRestoreCheckpoint = { target, chain, entry };
+  }
+
+  async function applyRestoreCheckpoint() {
+    if (!askRestoreCheckpoint) return;
+    const { target, entry } = askRestoreCheckpoint;
+    askRestoreCheckpoint = null;
+    try {
+      await api.restoreBackup(target.id, { checkpoint: entry.name });
+      toast.success(t('backup.chainRestoreTitle'));
+      await load();
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  function deleteChain(target, chain) {
+    askDeleteChain = { target, chain };
+  }
+
+  async function applyDeleteChain() {
+    if (!askDeleteChain) return;
+    const { target, chain } = askDeleteChain;
+    askDeleteChain = null;
+    try {
+      await api.deleteBackupChain(target.id, chain.vm_id);
+      toast.success(t('backup.chainDeleted'));
+      await load();
+    } catch {
+      toast.error(t('backup.chainDeleteFailed'));
+    }
+  }
+
+  async function loadChains(targetID) {
+    try {
+      const res = await api.listBackupChains(targetID);
+      chainsByTarget = { ...chainsByTarget, [targetID]: res.chains ?? [] };
+    } catch {
+      // Chains are best-effort; a failure here doesn't break the page.
+    }
   }
 
   // --- Stable "latest configuration" snapshot actions ------------
@@ -1282,6 +1375,60 @@
               <span class="text-xs text-muted-foreground shrink-0">{t('backup.neverRun')}</span>
             {/if}
           </div>
+          <!-- Incremental backup chains -->
+          {@const chains = chainsByTarget[target.id] ?? []}
+          {#if chains.length > 0}
+            <div class="mt-3 pt-3 border-t">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-medium text-muted-foreground">{t('backup.chains')}</span>
+              </div>
+              <div class="space-y-2">
+                {#each chains as chain (chain.vm_id)}
+                  <div class="text-xs">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="font-medium">{chain.vm_name || chain.vm_id}</span>
+                      <span class="text-muted-foreground">
+                        {chain.entries.length}
+                        {t('backup.chainCheckpoints')}
+                      </span>
+                    </div>
+                    <div class="flex flex-wrap gap-1">
+                      {#each chain.entries as entry, idx (entry.name)}
+                        <span
+                          class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full {idx ===
+                          0
+                            ? 'bg-success/10 text-success'
+                            : 'bg-blue-500/10 text-blue-500'} font-mono"
+                        >
+                          {idx === 0 ? t('backup.chainBase') : t('backup.chainIncremental')}
+                          {entry.name}
+                        </span>
+                      {/each}
+                    </div>
+                    <div class="flex flex-wrap gap-1 mt-1.5">
+                      {#each chain.entries as entry, idx (entry.name)}
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          onclick={() => restoreCheckpoint(target, chain, entry)}
+                          title="{t('backup.chainRestore')} {entry.name}"
+                        >
+                          {t('backup.chainRestore')} #{idx + 1}
+                        </Button>
+                      {/each}
+                      <Button
+                        size="xs"
+                        variant="destructive"
+                        onclick={() => deleteChain(target, chain)}
+                      >
+                        {t('backup.chainDelete')}
+                      </Button>
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
         </Card>
       {/each}
     </div>
@@ -1298,14 +1445,24 @@
                 <div class="font-medium">{target.name}</div>
                 <p class="text-xs text-muted-foreground font-mono">{target.path}</p>
               </div>
-              <Button
-                size="xs"
-                variant="outline"
-                onclick={() => loadFiles(target.id)}
-                disabled={filesLoading[target.id]}
-              >
-                {filesLoading[target.id] ? t('backup.refreshing') : t('backup.refresh')}
-              </Button>
+              <div class="flex gap-1.5">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onclick={() => triggerSync(target)}
+                  disabled={syncLoading[target.id]}
+                >
+                  {syncLoading[target.id] ? t('backup.syncing') : t('backup.sync')}
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onclick={() => loadFiles(target.id)}
+                  disabled={filesLoading[target.id]}
+                >
+                  {filesLoading[target.id] ? t('backup.refreshing') : t('backup.refresh')}
+                </Button>
+              </div>
             </div>
 
             <!-- Stable "latest configuration" snapshot -->
@@ -1524,6 +1681,18 @@
           <div>
             <div class="flex items-center gap-2">
               <span class="font-medium">{s.name}</span>
+              {#if s.mode}
+                <span
+                  class="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full {s.mode ===
+                  'incremental'
+                    ? 'bg-blue-500/10 text-blue-500'
+                    : 'bg-muted text-muted-foreground'} font-medium"
+                >
+                  {s.mode === 'incremental'
+                    ? t('backup.jobModeIncremental')
+                    : t('backup.jobModeFull')}
+                </span>
+              {/if}
               {#if !s.enabled}
                 <span class="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
                   >{t('backup.disabledBadge')}</span
@@ -1573,11 +1742,37 @@
                   : 'bg-warning'}"
             ></span>
             <div>
-              <div class="font-medium">
+              <div class="font-medium flex items-center gap-2">
                 {j.schedule_id
                   ? t('backup.schedulePrefix', { id: j.schedule_id })
                   : t('backup.manual')}
                 · {t('backup.targetPrefix', { id: targetName(j.target_id) })}
+                {#if j.mode}
+                  <span
+                    class="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full {j.mode ===
+                    'incremental'
+                      ? 'bg-blue-500/10 text-blue-500'
+                      : 'bg-muted text-muted-foreground'} font-medium"
+                  >
+                    {j.mode === 'incremental'
+                      ? t('backup.jobModeIncremental')
+                      : t('backup.jobModeFull')}
+                  </span>
+                {/if}
+                {#if j.checkpoint_id}
+                  <span
+                    class="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-mono"
+                  >
+                    {j.checkpoint_id}
+                  </span>
+                {/if}
+                {#if j.message === 'incremental_unavailable_fallback_full'}
+                  <span
+                    class="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-warning/10 text-warning font-medium"
+                  >
+                    {t('backup.incrementalFallbackFull')}
+                  </span>
+                {/if}
               </div>
               <div class="text-xs text-muted-foreground">
                 {fmtDate(j.started_at)}{j.ended_at ? ` → ${fmtDate(j.ended_at)}` : ''}
@@ -2149,6 +2344,22 @@
 />
 
 <ConfirmDialog
+  open={syncConfirmOpen}
+  title={t('backup.syncConfirmTitle')}
+  message={t('backup.syncConfirmDesc', {
+    orphans: syncReport?.orphan_files?.length || 0,
+    ghosts: syncReport?.ghost_files?.length || 0,
+  })}
+  confirmLabel={t('backup.sync')}
+  onConfirm={applySync}
+  onCancel={() => {
+    syncConfirmOpen = false;
+    syncConfirmTarget = null;
+    syncReport = null;
+  }}
+/>
+
+<ConfirmDialog
   open={!!askDeleteConfigState}
   title={t('backup.deleteConfigTitle')}
   message={t('backup.deleteConfigMsg')}
@@ -2329,3 +2540,27 @@
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
+
+<!-- Restore checkpoint confirm -->
+<ConfirmDialog
+  open={!!askRestoreCheckpoint}
+  title={t('backup.chainRestoreTitle')}
+  message={askRestoreCheckpoint
+    ? t('backup.chainRestoreMsg', { checkpoint: askRestoreCheckpoint.entry.name })
+    : ''}
+  confirmLabel={t('backup.chainRestore')}
+  onConfirm={applyRestoreCheckpoint}
+  onCancel={() => (askRestoreCheckpoint = null)}
+/>
+
+<!-- Delete chain confirm -->
+<ConfirmDialog
+  open={!!askDeleteChain}
+  title={t('backup.chainDeleteTitle')}
+  message={askDeleteChain
+    ? t('backup.chainDeleteMsg', { vm: askDeleteChain.chain.vm_name || askDeleteChain.chain.vm_id })
+    : ''}
+  confirmLabel={t('backup.chainDelete')}
+  onConfirm={applyDeleteChain}
+  onCancel={() => (askDeleteChain = null)}
+/>

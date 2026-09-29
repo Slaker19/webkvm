@@ -1,6 +1,10 @@
 package libvirt
 
-import "testing"
+import (
+	"context"
+	"testing"
+	"time"
+)
 
 // testConnURI is libvirt's built-in fake driver — a real (in-process)
 // connection with no hypervisor required, so these tests exercise the
@@ -96,6 +100,29 @@ func TestIsConnected_FalseBeforeOpen(t *testing.T) {
 	c := NewConnector(testConnURI, nil)
 	if c.IsConnected() {
 		t.Error("IsConnected() = true before Open() was ever called")
+	}
+}
+
+func TestWaitForPools_ZeroTimeoutReturnsImmediately(t *testing.T) {
+	c := NewConnector(testConnURI, nil)
+	ctx := context.Background()
+	if err := c.WaitForPools(ctx, 0); err != nil {
+		t.Errorf("WaitForPools with 0 timeout returned error: %v", err)
+	}
+}
+
+func TestWaitForPools_SuccessWithTestDriver(t *testing.T) {
+	c := NewConnector(testConnURI, nil)
+	if err := c.Open(); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := c.WaitForPools(ctx, 1*time.Second); err != nil {
+		t.Errorf("WaitForPools returned error: %v", err)
 	}
 }
 
