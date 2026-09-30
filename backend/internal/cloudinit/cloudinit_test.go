@@ -334,3 +334,74 @@ func TestGeneratePassword(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildNetworkConfigStatic(t *testing.T) {
+	cfg := Config{
+		Networks: []NetworkConfig{
+			{
+				Interface: "eth0",
+				IPv4:      "192.168.1.50/24",
+				Gateway4:  "192.168.1.1",
+				DNS:       []string{"1.1.1.1", "8.8.8.8"},
+				Search:    []string{"lan"},
+			},
+		},
+	}
+	nc := buildNetworkConfig(cfg)
+	if !strings.Contains(nc, "192.168.1.50/24") {
+		t.Errorf("expected static IPv4 in network-config, got:\n%s", nc)
+	}
+	if !strings.Contains(nc, "gateway4: '192.168.1.1'") {
+		t.Errorf("expected gateway4 in network-config, got:\n%s", nc)
+	}
+	if !strings.Contains(nc, "1.1.1.1") {
+		t.Errorf("expected DNS in network-config, got:\n%s", nc)
+	}
+}
+
+func TestValidateNetworkConfig(t *testing.T) {
+	// Valid network config
+	validCfg := Config{
+		User:     "webkvm",
+		Password: "password123",
+		Networks: []NetworkConfig{
+			{
+				Interface: "eth0",
+				IPv4:      "192.168.1.100/24",
+				Gateway4:  "192.168.1.1",
+				DNS:       []string{"1.1.1.1", "8.8.8.8"},
+			},
+		},
+	}
+	if err := validCfg.Validate(); err != nil {
+		t.Errorf("expected valid config, got error: %v", err)
+	}
+
+	// Invalid IPv4 CIDR
+	invalidCIDR := validCfg
+	invalidCIDR.Networks = []NetworkConfig{{IPv4: "192.168.1.500/24"}}
+	if err := invalidCIDR.Validate(); err == nil {
+		t.Error("expected error for invalid IPv4 CIDR, got nil")
+	}
+
+	// Invalid Gateway4
+	invalidGW := validCfg
+	invalidGW.Networks = []NetworkConfig{{Gateway4: "192.168.1.500"}}
+	if err := invalidGW.Validate(); err == nil {
+		t.Error("expected error for invalid Gateway4, got nil")
+	}
+
+	// Invalid DNS
+	invalidDNS := validCfg
+	invalidDNS.Networks = []NetworkConfig{{DNS: []string{"invalid-dns-ip"}}}
+	if err := invalidDNS.Validate(); err == nil {
+		t.Error("expected error for invalid DNS, got nil")
+	}
+
+	// Invalid Interface Name
+	invalidIface := validCfg
+	invalidIface.Networks = []NetworkConfig{{Interface: "eth0;rm -rf /"}}
+	if err := invalidIface.Validate(); err == nil {
+		t.Error("expected error for invalid interface name, got nil")
+	}
+}

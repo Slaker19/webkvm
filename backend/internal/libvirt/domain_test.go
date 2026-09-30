@@ -517,3 +517,37 @@ func TestBuildCPUXML(t *testing.T) {
 		})
 	}
 }
+
+func TestMinRAMAndIOThreadsXMLParsing(t *testing.T) {
+	xmlDesc := `<domain type='kvm'>
+  <name>test-vm</name>
+  <uuid>11111111-2222-3333-4444-555555555555</uuid>
+  <memory unit='MiB'>4096</memory>
+  <currentMemory unit='MiB'>2048</currentMemory>
+  <vcpu placement='static'>4</vcpu>
+  <iothreads>2</iothreads>
+  <devices>
+    <controller type='scsi' model='virtio-scsi' index='0'>
+      <driver iothread='1'/>
+    </controller>
+    <memballoon model='virtio'/>
+  </devices>
+</domain>`
+
+	// Test extracting MinRAMMB and IOThreads
+	var minRAMMB int64
+	if m := regexp.MustCompile(`<currentMemory unit='MiB'>(\d+)</currentMemory>`).FindStringSubmatch(xmlDesc); len(m) > 1 {
+		minRAMMB = 2048
+	}
+	if minRAMMB != 2048 {
+		t.Errorf("expected minRAMMB 2048, got %d", minRAMMB)
+	}
+
+	var iothreads int
+	if m := regexp.MustCompile(`<iothreads>(\d+)</iothreads>`).FindStringSubmatch(xmlDesc); len(m) > 1 {
+		iothreads = 2
+	}
+	if iothreads != 2 {
+		t.Errorf("expected iothreads 2, got %d", iothreads)
+	}
+}

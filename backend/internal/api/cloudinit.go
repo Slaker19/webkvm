@@ -61,6 +61,19 @@ func (h *Handler) applyCloudInit(vmID, vmName string, req *models.CloudInitReque
 		}
 	}
 
+	var nets []cloudinit.NetworkConfig
+	for _, n := range req.Networks {
+		nets = append(nets, cloudinit.NetworkConfig{
+			Interface: n.Interface,
+			IPv4:      n.IPv4,
+			Gateway4:  n.Gateway4,
+			IPv6:      n.IPv6,
+			Gateway6:  n.Gateway6,
+			DNS:       n.DNS,
+			Search:    n.Search,
+		})
+	}
+
 	// Trim whitespace/newlines: a pasted SSH key often ends with a
 	// trailing newline, which would otherwise be rejected.
 	cfg := cloudinit.Config{
@@ -68,6 +81,7 @@ func (h *Handler) applyCloudInit(vmID, vmName string, req *models.CloudInitReque
 		Password:        req.Password,
 		SSHKey:          strings.TrimSpace(req.SSHKey),
 		Hostname:        strings.TrimSpace(req.Hostname),
+		Networks:        nets,
 		ProvisionScript: req.ProvisionScript,
 		CustomUserData:  customUD,
 		SnippetID:       req.SnippetID,
@@ -528,11 +542,25 @@ func (h *Handler) buildCloudInitSeed(vmName string, req *models.CloudInitRequest
 		}
 	}
 
+	var nets []cloudinit.NetworkConfig
+	for _, n := range req.Networks {
+		nets = append(nets, cloudinit.NetworkConfig{
+			Interface: n.Interface,
+			IPv4:      n.IPv4,
+			Gateway4:  n.Gateway4,
+			IPv6:      n.IPv6,
+			Gateway6:  n.Gateway6,
+			DNS:       n.DNS,
+			Search:    n.Search,
+		})
+	}
+
 	cfg := cloudinit.Config{
 		User:             strings.TrimSpace(req.User),
 		Password:         req.Password,
 		SSHKey:           strings.TrimSpace(req.SSHKey),
 		Hostname:         strings.TrimSpace(req.Hostname),
+		Networks:         nets,
 		CustomUserData:   customUD,
 		SnippetID:        req.SnippetID,
 		InstanceIDSuffix: strconv.FormatInt(time.Now().Unix(), 10),

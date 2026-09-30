@@ -307,6 +307,32 @@ type GuestOSInfo struct {
 	Machine       string `json:"machine,omitempty"` // "x86_64"
 }
 
+// GuestUser represents an active user session inside the guest.
+type GuestUser struct {
+	User      string  `json:"user"`
+	LoginTime float64 `json:"login_time,omitempty"`
+	Domain    string  `json:"domain,omitempty"`
+}
+
+// GuestTimezone represents timezone information from the guest.
+type GuestTimezone struct {
+	Zone   string `json:"zone,omitempty"`
+	Offset int    `json:"offset,omitempty"`
+}
+
+// GuestTrimmedPath represents one filesystem path trimmed during an fstrim operation.
+type GuestTrimmedPath struct {
+	Path    string `json:"path"`
+	Trimmed int64  `json:"trimmed"`
+	Minimum int64  `json:"minimum,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// GuestFSTrimResult summarizes the outcome of guest-fstrim across mounted filesystems.
+type GuestFSTrimResult struct {
+	Paths []GuestTrimmedPath `json:"paths"`
+}
+
 // GuestInfo bundles everything the agent can tell us about a running
 // guest. Each section is independent: a guest may answer osinfo but
 // not fsinfo (older agents), so partial results are returned rather
@@ -318,6 +344,8 @@ type GuestInfo struct {
 	Filesystems []GuestFilesystem       `json:"filesystems,omitempty"`
 	Interfaces  []GuestNetworkInterface `json:"interfaces,omitempty"`
 	Hostname    string                  `json:"hostname,omitempty"`
+	Users       []GuestUser             `json:"users,omitempty"`
+	Timezone    *GuestTimezone          `json:"timezone,omitempty"`
 }
 
 // GetGuestInfo queries the QEMU guest agent for OS, filesystem and
@@ -419,5 +447,65 @@ func (c *Connector) GetGuestInfo(id string) (GuestInfo, error) {
 		}
 	}
 
+	var usersRaw []struct {
+		User      string  `json:"user"`
+		LoginTime float64 `json:"login-time"`
+		Domain    string  `json:"domain"`
+	}
+	if err := c.agentQuery(id, "guest-get-users", &usersRaw); err == nil {
+		for _, u := range usersRaw {
+			if u.User != "" {
+				info.Users = append(info.Users, GuestUser{
+					User:      u.User,
+					LoginTime: u.LoginTime,
+					Domain:    u.Domain,
+				})
+			}
+		}
+	}
+
+	var tzRaw struct {
+		Zone   string `json:"zone"`
+		Offset int    `json:"offset"`
+	}
+	if err := c.agentQuery(id, "guest-get-timezone", &tzRaw); err == nil && tzRaw.Zone != "" {
+		info.Timezone = &GuestTimezone{
+			Zone:   tzRaw.Zone,
+			Offset: tzRaw.Offset,
+		}
+	}
+
 	return info, nil
+}
+
+// FSTrim triggers filesystem TRIM inside the guest across all mounted
+// filesystems supporting discard/trim via the QEMU guest agent.
+func (c *Connector) FSTrim(id string) (GuestFSTrimResult, error) {
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return GuestFSTrimResult{}, fmt.Errorf("lookup domain: %w", err)
+	}
+	dom.Free()
+
+	var raw struct {
+		Paths []struct {
+			Path    string `json:"path"`
+			Trimmed int64  `json:"trimmed"`
+			Minimum int64  `json:"minimum"`
+			Error   string `json:"error"`
+		} `json:"paths"`
+	}
+	if err := c.agentQuery(id, "guest-fstrim", &raw); err != nil {
+		return GuestFSTrimResult{}, err
+	}
+	res := GuestFSTrimResult{}
+	for _, p := range raw.Paths {
+		res.Paths = append(res.Paths, GuestTrimmedPath{
+			Path:    p.Path,
+			Trimmed: p.Trimmed,
+			Minimum: p.Minimum,
+			Error:   p.Error,
+		})
+	}
+	return res, nil
 }

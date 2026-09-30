@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,12 +25,25 @@ import (
 	"github.com/tredoe/osutil/user/crypt/sha512_crypt"
 )
 
+// NetworkConfig specifies static IP assignment, default gateways and DNS servers for a NIC.
+type NetworkConfig struct {
+	Interface string   `json:"interface,omitempty"` // e.g. "eth0" or "enp1s0" (default: "eth0")
+	IPv4      string   `json:"ipv4,omitempty"`      // CIDR format, e.g. "192.168.1.50/24"
+	Gateway4  string   `json:"gateway4,omitempty"`  // IPv4 gateway, e.g. "192.168.1.1"
+	IPv6      string   `json:"ipv6,omitempty"`      // CIDR format, e.g. "2001:db8::50/64"
+	Gateway6  string   `json:"gateway6,omitempty"`  // IPv6 gateway
+	DNS       []string `json:"dns,omitempty"`       // Nameserver IPs, e.g. ["1.1.1.1", "8.8.8.8"]
+	Search    []string `json:"search,omitempty"`    // Search domains, e.g. ["lan", "local"]
+}
+
 // Config is the operator-supplied provisioning data.
 type Config struct {
 	User     string `json:"user,omitempty"`
 	Password string `json:"password,omitempty"`
 	SSHKey   string `json:"ssh_key,omitempty"`
 	Hostname string `json:"hostname,omitempty"`
+	// Networks allows configuring static IP addresses, gateways and DNS servers.
+	Networks []NetworkConfig `json:"networks,omitempty"`
 	// CustomUserData allows providing a full #cloud-config YAML document
 	// or custom shell script directly.
 	CustomUserData string `json:"custom_user_data,omitempty"`
@@ -56,8 +70,9 @@ type Config struct {
 }
 
 var (
-	userRe     = regexp.MustCompile(`^[a-z_][a-z0-9_\-]{0,31}$`)
-	hostnameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.\-]{0,62}$`)
+	userRe      = regexp.MustCompile(`^[a-z_][a-z0-9_\-]{0,31}$`)
+	hostnameRe  = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.\-]{0,62}$`)
+	ifaceNameRe = regexp.MustCompile(`^[a-zA-Z0-9_\-\*]{1,16}$`)
 	// SSH keys must be a single line starting with a known type.
 	sshKeyRe = regexp.MustCompile(`^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519|sk-ecdsa-sha2-nistp256) [A-Za-z0-9+/=]+[ \t]+[^\n]+$`)
 	// System groups present in stock Debian/Ubuntu images. Cloud-init runs
@@ -72,8 +87,8 @@ var (
 // Validate checks the config fields. An all-empty config is an error
 // (there is nothing to provision).
 func (c Config) Validate() error {
-	if c.User == "" && c.SSHKey == "" && c.Hostname == "" && c.Password == "" && c.CustomUserData == "" && c.SnippetID == "" && len(c.SnippetIDs) == 0 {
-		return errors.New("cloud-init needs at least a user, a password, an SSH key, a hostname, or custom user-data")
+	if c.User == "" && c.SSHKey == "" && c.Hostname == "" && c.Password == "" && c.CustomUserData == "" && c.SnippetID == "" && len(c.SnippetIDs) == 0 && len(c.Networks) == 0 {
+		return errors.New("cloud-init needs at least a user, a password, an SSH key, a hostname, network configuration, or custom user-data")
 	}
 	if c.User != "" && !userRe.MatchString(c.User) {
 		return fmt.Errorf("invalid cloud-init user %q (letters, digits, _ and - only)", c.User)
@@ -101,12 +116,123 @@ func (c Config) Validate() error {
 	if c.SSHKey != "" && !sshKeyRe.MatchString(c.SSHKey) {
 		return errors.New("invalid SSH key: expected a single line like 'ssh-ed25519 AAAA... comment'")
 	}
+	for i, n := range c.Networks {
+		if n.Interface != "" && !ifaceNameRe.MatchString(n.Interface) {
+			return fmt.Errorf("network [%d]: invalid interface name %q", i, n.Interface)
+		}
+		if n.IPv4 != "" {
+			ip, _, err := net.ParseCIDR(n.IPv4)
+			if err != nil || ip.To4() == nil {
+				return fmt.Errorf("network [%d]: invalid ipv4 CIDR %q (e.g. 192.168.1.50/24)", i, n.IPv4)
+			}
+		}
+		if n.Gateway4 != "" {
+			gw := net.ParseIP(n.Gateway4)
+			if gw == nil || gw.To4() == nil {
+				return fmt.Errorf("network [%d]: invalid gateway4 IP %q", i, n.Gateway4)
+			}
+		}
+		if n.IPv6 != "" {
+			ip, _, err := net.ParseCIDR(n.IPv6)
+			if err != nil || ip.To4() != nil {
+				return fmt.Errorf("network [%d]: invalid ipv6 CIDR %q", i, n.IPv6)
+			}
+		}
+		if n.Gateway6 != "" {
+			gw := net.ParseIP(n.Gateway6)
+			if gw == nil || gw.To4() != nil {
+				return fmt.Errorf("network [%d]: invalid gateway6 IP %q", i, n.Gateway6)
+			}
+		}
+		for _, d := range n.DNS {
+			d = strings.TrimSpace(d)
+			if d != "" && net.ParseIP(d) == nil {
+				return fmt.Errorf("network [%d]: invalid DNS server IP %q", i, d)
+			}
+		}
+	}
 	return nil
 }
 
 // yamlSingleQuote escapes a value for single-quoted YAML.
 func yamlSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+func buildNetworkConfig(cfg Config) string {
+	if len(cfg.Networks) == 0 {
+		return "version: 2\n" +
+			"ethernets:\n" +
+			"  all-en:\n" +
+			"    match:\n" +
+			"      name: 'en*'\n" +
+			"    dhcp4: true\n" +
+			"    dhcp6: true\n" +
+			"    optional: true\n" +
+			"  all-eth:\n" +
+			"    match:\n" +
+			"      name: 'eth*'\n" +
+			"    dhcp4: true\n" +
+			"    dhcp6: true\n" +
+			"    optional: true\n" +
+			"  all-vi:\n" +
+			"    match:\n" +
+			"      name: 'vi*'\n" +
+			"    dhcp4: true\n" +
+			"    dhcp6: true\n" +
+			"    optional: true\n"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("version: 2\nethernets:\n")
+	for i, n := range cfg.Networks {
+		iface := n.Interface
+		if iface == "" {
+			iface = fmt.Sprintf("eth%d", i)
+		}
+		sb.WriteString(fmt.Sprintf("  %s:\n", iface))
+		sb.WriteString(fmt.Sprintf("    match:\n      name: %s\n", yamlSingleQuote(iface)))
+		if n.IPv4 == "" && n.IPv6 == "" {
+			sb.WriteString("    dhcp4: true\n    dhcp6: true\n")
+		} else {
+			sb.WriteString("    dhcp4: false\n    dhcp6: false\n    addresses:\n")
+			if n.IPv4 != "" {
+				sb.WriteString(fmt.Sprintf("      - %s\n", yamlSingleQuote(n.IPv4)))
+			}
+			if n.IPv6 != "" {
+				sb.WriteString(fmt.Sprintf("      - %s\n", yamlSingleQuote(n.IPv6)))
+			}
+			if n.Gateway4 != "" {
+				sb.WriteString(fmt.Sprintf("    gateway4: %s\n", yamlSingleQuote(n.Gateway4)))
+			}
+			if n.Gateway6 != "" {
+				sb.WriteString(fmt.Sprintf("    gateway6: %s\n", yamlSingleQuote(n.Gateway6)))
+			}
+		}
+		if len(n.DNS) > 0 || len(n.Search) > 0 {
+			sb.WriteString("    nameservers:\n")
+			if len(n.DNS) > 0 {
+				sb.WriteString("      addresses:\n")
+				for _, dns := range n.DNS {
+					dns = strings.TrimSpace(dns)
+					if dns != "" {
+						sb.WriteString(fmt.Sprintf("        - %s\n", yamlSingleQuote(dns)))
+					}
+				}
+			}
+			if len(n.Search) > 0 {
+				sb.WriteString("      search:\n")
+				for _, s := range n.Search {
+					s = strings.TrimSpace(s)
+					if s != "" {
+						sb.WriteString(fmt.Sprintf("        - %s\n", yamlSingleQuote(s)))
+					}
+				}
+			}
+		}
+		sb.WriteString("    optional: true\n")
+	}
+	return sb.String()
 }
 
 // BuildNoCloudISO renders the seed files and produces the ISO at
@@ -138,27 +264,8 @@ func BuildNoCloudISO(isoPath string, cfg Config) (string, error) {
 		md += "local-hostname: " + cfg.Hostname + "\n"
 	}
 
-	// network-config: default to DHCP on all NICs across all interface naming conventions (en*, eth*, vi*).
-	nc := "version: 2\n" +
-		"ethernets:\n" +
-		"  all-en:\n" +
-		"    match:\n" +
-		"      name: 'en*'\n" +
-		"    dhcp4: true\n" +
-		"    dhcp6: true\n" +
-		"    optional: true\n" +
-		"  all-eth:\n" +
-		"    match:\n" +
-		"      name: 'eth*'\n" +
-		"    dhcp4: true\n" +
-		"    dhcp6: true\n" +
-		"    optional: true\n" +
-		"  all-vi:\n" +
-		"    match:\n" +
-		"      name: 'vi*'\n" +
-		"    dhcp4: true\n" +
-		"    dhcp6: true\n" +
-		"    optional: true\n"
+	// network-config: default to DHCP or user-specified static IPs.
+	nc := buildNetworkConfig(cfg)
 
 	files := map[string]string{
 		"user-data":      ud,

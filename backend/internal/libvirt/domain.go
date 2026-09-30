@@ -518,6 +518,13 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 		controllerXML = `<controller type='pci' model='pci-root'/>
     <controller type='pci' model='pci-bridge'/>`
 	}
+	if diskBus == "scsi" {
+		if req.IOThreads > 0 {
+			controllerXML += "\n    <controller type='scsi' model='virtio-scsi' index='0'>\n      <driver iothread='1'/>\n    </controller>"
+		} else {
+			controllerXML += "\n    <controller type='scsi' model='virtio-scsi' index='0'/>"
+		}
+	}
 
 	if chipset == "q35" && tpmEnabled {
 		tpmVersion := "2.0"
@@ -536,6 +543,7 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
       <backend model='random'>/dev/urandom</backend>
     </rng>
     <input type='tablet' bus='usb'/>
+    <memballoon model='virtio'/>
     `
 
 	if req.AudioModel != "" && req.AudioModel != "none" {
@@ -580,12 +588,24 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 		cputuneXML = fmt.Sprintf("\n  <cputune>\n    <shares>%d</shares>\n  </cputune>", *req.CPUUnits)
 	}
 
+	var iothreadsXML string
+	if req.IOThreads > 0 {
+		iothreadsXML = fmt.Sprintf("\n  <iothreads>%d</iothreads>", req.IOThreads)
+	}
+
+	memoryXML := fmt.Sprintf("<memory unit='MiB'>%d</memory>", req.RAMMB)
+	if req.MinRAMMB > 0 && req.MinRAMMB <= req.RAMMB {
+		memoryXML += fmt.Sprintf("\n  <currentMemory unit='MiB'>%d</currentMemory>", req.MinRAMMB)
+	} else {
+		memoryXML += fmt.Sprintf("\n  <currentMemory unit='MiB'>%d</currentMemory>", req.RAMMB)
+	}
+
 	xmlConfig := fmt.Sprintf(`<domain type='kvm'>
   <name>%s</name>
   <uuid>%s</uuid>
   <title>%s</title>
-  <memory unit='MiB'>%d</memory>
-  <vcpu placement='static'>%d</vcpu>%s
+  %s
+  <vcpu placement='static'>%d</vcpu>%s%s
   %s
   %s
   %s
@@ -618,7 +638,7 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
     %s
     %s
   </devices>
-</domain>`, xmlEscape(req.Name), uuidStr, title, req.RAMMB, req.VCPUs, cputuneXML, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, xmlEscape(diskFullPath), xmlEscape(targetDev), xmlEscape(diskBus), isoXML, virtioISOXML, interfaceXMLWithVLAN(req.Network, networkModel, req.VLANTag), serialXML, videoXML, devicesExtra)
+</domain>`, xmlEscape(req.Name), uuidStr, title, memoryXML, req.VCPUs, iothreadsXML, cputuneXML, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, xmlEscape(diskFullPath), xmlEscape(targetDev), xmlEscape(diskBus), isoXML, virtioISOXML, interfaceXMLWithVLAN(req.Network, networkModel, req.VLANTag), serialXML, videoXML, devicesExtra)
 
 	dom, err := c.conn.DomainDefineXML(xmlConfig)
 	if err != nil {
@@ -1044,10 +1064,60 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 		reKiB := regexp.MustCompile(`<memory unit='KiB'>\d+</memory>`)
 		xmlDesc = reMiB.ReplaceAllString(xmlDesc, newValMiB)
 		xmlDesc = reKiB.ReplaceAllString(xmlDesc, newValKiB)
-		reCurrentMiB := regexp.MustCompile(`<currentMemory unit='MiB'>\d+</currentMemory>`)
-		reCurrentKiB := regexp.MustCompile(`<currentMemory unit='KiB'>\d+</currentMemory>`)
-		xmlDesc = reCurrentMiB.ReplaceAllString(xmlDesc, fmt.Sprintf("<currentMemory unit='MiB'>%d</currentMemory>", *req.RAMMB))
-		xmlDesc = reCurrentKiB.ReplaceAllString(xmlDesc, fmt.Sprintf("<currentMemory unit='KiB'>%d</currentMemory>", *req.RAMMB*1024))
+		if req.MinRAMMB == nil {
+			reCurrentMiB := regexp.MustCompile(`<currentMemory unit='MiB'>\d+</currentMemory>`)
+			reCurrentKiB := regexp.MustCompile(`<currentMemory unit='KiB'>\d+</currentMemory>`)
+			xmlDesc = reCurrentMiB.ReplaceAllString(xmlDesc, fmt.Sprintf("<currentMemory unit='MiB'>%d</currentMemory>", *req.RAMMB))
+			xmlDesc = reCurrentKiB.ReplaceAllString(xmlDesc, fmt.Sprintf("<currentMemory unit='KiB'>%d</currentMemory>", *req.RAMMB*1024))
+		}
+	}
+	if req.MinRAMMB != nil {
+		if *req.MinRAMMB > 0 {
+			reCurrentMiB := regexp.MustCompile(`<currentMemory unit='MiB'>\d+</currentMemory>`)
+			reCurrentKiB := regexp.MustCompile(`<currentMemory unit='KiB'>\d+</currentMemory>`)
+			if reCurrentMiB.MatchString(xmlDesc) {
+				xmlDesc = reCurrentMiB.ReplaceAllString(xmlDesc, fmt.Sprintf("<currentMemory unit='MiB'>%d</currentMemory>", *req.MinRAMMB))
+			} else if reCurrentKiB.MatchString(xmlDesc) {
+				xmlDesc = reCurrentKiB.ReplaceAllString(xmlDesc, fmt.Sprintf("<currentMemory unit='KiB'>%d</currentMemory>", *req.MinRAMMB*1024))
+			} else {
+				xmlDesc = regexp.MustCompile(`(<memory[^>]*>[^<]*</memory>)`).ReplaceAllString(xmlDesc, "${1}\n  "+fmt.Sprintf("<currentMemory unit='MiB'>%d</currentMemory>", *req.MinRAMMB))
+			}
+		} else {
+			var maxMem int64
+			if m := regexp.MustCompile(`<memory unit='MiB'>(\d+)</memory>`).FindStringSubmatch(xmlDesc); len(m) > 1 {
+				maxMem, _ = strconv.ParseInt(m[1], 10, 64)
+			} else if m := regexp.MustCompile(`<memory unit='KiB'>(\d+)</memory>`).FindStringSubmatch(xmlDesc); len(m) > 1 {
+				kib, _ := strconv.ParseInt(m[1], 10, 64)
+				maxMem = kib / 1024
+			}
+			if maxMem > 0 {
+				reCurrentMiB := regexp.MustCompile(`<currentMemory unit='MiB'>\d+</currentMemory>`)
+				reCurrentKiB := regexp.MustCompile(`<currentMemory unit='KiB'>\d+</currentMemory>`)
+				xmlDesc = reCurrentMiB.ReplaceAllString(xmlDesc, fmt.Sprintf("<currentMemory unit='MiB'>%d</currentMemory>", maxMem))
+				xmlDesc = reCurrentKiB.ReplaceAllString(xmlDesc, fmt.Sprintf("<currentMemory unit='KiB'>%d</currentMemory>", maxMem*1024))
+			}
+		}
+	}
+	if req.IOThreads != nil {
+		iothreadRE := regexp.MustCompile(`<iothreads>\d+</iothreads>\s*`)
+		if *req.IOThreads > 0 {
+			iothreadXML := fmt.Sprintf("<iothreads>%d</iothreads>", *req.IOThreads)
+			if iothreadRE.MatchString(xmlDesc) {
+				xmlDesc = iothreadRE.ReplaceAllString(xmlDesc, iothreadXML+"\n  ")
+			} else {
+				xmlDesc = regexp.MustCompile(`(<vcpu\b[^>]*>[^<]*</vcpu>)`).ReplaceAllString(xmlDesc, "${1}\n  "+iothreadXML)
+			}
+			scsiCtrlRE := regexp.MustCompile(`(?s)<controller type='scsi' model='virtio-scsi'[^>]*>[\s\S]*?</controller>|<controller type='scsi' model='virtio-scsi'[^>]*/>`)
+			if scsiCtrlRE.MatchString(xmlDesc) {
+				xmlDesc = scsiCtrlRE.ReplaceAllString(xmlDesc, "<controller type='scsi' model='virtio-scsi' index='0'>\n      <driver iothread='1'/>\n    </controller>")
+			}
+		} else {
+			xmlDesc = iothreadRE.ReplaceAllString(xmlDesc, "")
+			scsiCtrlRE := regexp.MustCompile(`(?s)<controller type='scsi' model='virtio-scsi'[^>]*>[\s\S]*?</controller>|<controller type='scsi' model='virtio-scsi'[^>]*/>`)
+			if scsiCtrlRE.MatchString(xmlDesc) {
+				xmlDesc = scsiCtrlRE.ReplaceAllString(xmlDesc, "<controller type='scsi' model='virtio-scsi' index='0'/>")
+			}
+		}
 	}
 	if req.VCPUs != nil {
 		newVal := fmt.Sprintf("<vcpu placement='static'>%d</vcpu>", *req.VCPUs)
@@ -1500,6 +1570,28 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 
 	serialPort := strings.Contains(xmlDesc, "<serial")
 
+	var minRAMMB int64
+	if m := regexp.MustCompile(`<currentMemory unit='MiB'>(\d+)</currentMemory>`).FindStringSubmatch(xmlDesc); len(m) > 1 {
+		if v, err := strconv.ParseInt(m[1], 10, 64); err == nil {
+			minRAMMB = v
+		}
+	} else if m := regexp.MustCompile(`<currentMemory unit='KiB'>(\d+)</currentMemory>`).FindStringSubmatch(xmlDesc); len(m) > 1 {
+		if v, err := strconv.ParseInt(m[1], 10, 64); err == nil {
+			minRAMMB = v / 1024
+		}
+	} else if m := regexp.MustCompile(`<currentMemory>(\d+)</currentMemory>`).FindStringSubmatch(xmlDesc); len(m) > 1 {
+		if v, err := strconv.ParseInt(m[1], 10, 64); err == nil {
+			minRAMMB = v / 1024
+		}
+	}
+
+	var iothreads int
+	if m := regexp.MustCompile(`<iothreads>(\d+)</iothreads>`).FindStringSubmatch(xmlDesc); len(m) > 1 {
+		if v, err := strconv.Atoi(m[1]); err == nil {
+			iothreads = v
+		}
+	}
+
 	vm := models.VM{
 		ID:              uuidStr,
 		Name:            name,
@@ -1508,6 +1600,8 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 		State:           vmState,
 		VCPUs:           int(info.NrVirtCpu),
 		RAMMB:           int64(info.MaxMem) / 1024,
+		MinRAMMB:        minRAMMB,
+		IOThreads:       iothreads,
 		UptimeSec:       uptime,
 		CPUUsage:        calculateCPUUsage(dom, info),
 		RAMUsedMB:       int64(info.Memory) / 1024,

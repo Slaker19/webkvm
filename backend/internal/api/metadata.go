@@ -494,6 +494,34 @@ func (h *Handler) GetGuestInfo(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusOK, info)
 }
 
+// VMGuestFSTrim triggers filesystem discard/trim inside a running guest
+// via the QEMU guest agent, reclaiming unused storage blocks.
+func (h *Handler) VMGuestFSTrim(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	vm, err := h.compute.GetDomain(id)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if vm.Hypervisor == "incus" {
+		jsonErr(w, http.StatusBadRequest, "guest fstrim is not applicable to containers")
+		return
+	}
+	if vm.State != models.VMStateRunning {
+		jsonErr(w, http.StatusConflict, "the VM must be running to execute guest fstrim")
+		return
+	}
+	res, err := h.compute.FSTrim(id)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.audit.Log(auditFor(r, "vm.guest_fstrim", id, map[string]interface{}{
+		"paths_count": len(res.Paths),
+	}))
+	jsonResp(w, http.StatusOK, res)
+}
+
 // GetVMMetricsHistory (V13-C-03) returns downsampled history for a VM.
 // window is "24h", "168h" or "720h" (default 24h). <=24h uses per-minute
 // resolution from the bucketed in-memory window; longer windows use the

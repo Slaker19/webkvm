@@ -109,11 +109,13 @@ func networkView(name string) models.Network {
 
 	var kind, iface, dhcpStart, dhcpEnd string
 	var dns []string
+	var gateway string
 	var reservations []models.DHCPReservation
 	if netStoreVar != nil {
 		if rec, ok := netStoreVar.Get(name); ok {
 			kind, iface = rec.Kind, rec.Interface
 			dhcpStart, dhcpEnd, dns = rec.DHCPStart, rec.DHCPEnd, rec.DNS
+			gateway = rec.Gateway
 			reservations = rec.Reservations
 		} else {
 			kind, iface = inferKind(name, realSlaves)
@@ -128,6 +130,9 @@ func networkView(name string) models.Network {
 	}
 
 	cidr := bridgeIPv4(name)
+	if gateway == "" {
+		gateway = gatewayFromCIDR(cidr)
+	}
 	return models.Network{
 		Name:         name,
 		Kind:         kind,
@@ -138,7 +143,7 @@ func networkView(name string) models.Network {
 		DHCP:         dnsmasqUnitExists(name),
 		DHCPStart:    dhcpStart,
 		DHCPEnd:      dhcpEnd,
-		Gateway:      gatewayFromCIDR(cidr),
+		Gateway:      gateway,
 		DNS:          dns,
 		MTU:          bridgeMTU(name),
 		Reservations: reservations,
@@ -294,13 +299,62 @@ func (c *Connector) createDirectNetwork(name string, req models.CreateNetworkReq
 		return models.Network{}, fmt.Errorf("%q is already a port of another bridge; remove it from there first", iface)
 	}
 
+	cidr := strings.TrimSpace(req.CIDR)
+	if cidr != "" {
+		if ip, _, perr := net.ParseCIDR(cidr); perr != nil || ip == nil {
+			return models.Network{}, fmt.Errorf("invalid CIDR %q", cidr)
+		}
+	}
+	gateway := strings.TrimSpace(req.Gateway)
+	if gateway != "" {
+		if ip := net.ParseIP(gateway); ip == nil {
+			return models.Network{}, fmt.Errorf("invalid gateway IP %q", gateway)
+		}
+	}
+	var cleanDNS []string
+	for _, d := range req.DNS {
+		d = strings.TrimSpace(d)
+		if d != "" {
+			if ip := net.ParseIP(d); ip == nil {
+				return models.Network{}, fmt.Errorf("invalid DNS server %q", d)
+			}
+			cleanDNS = append(cleanDNS, d)
+		}
+	}
+
 	vlanAware := req.VLanAware != nil && *req.VLanAware
 	moved, err := createDirectBridge(name, iface, vlanAware)
 	if err != nil {
 		return models.Network{}, err
 	}
+
+	if cidr != "" && cidr != moved {
+		if out, aerr := exec.Command("ip", "addr", "add", cidr, "dev", name).CombinedOutput(); aerr != nil {
+			exec.Command("ip", "link", "set", iface, "nomaster").Run()
+			exec.Command("ip", "link", "del", name).Run()
+			return models.Network{}, fmt.Errorf("assign %s to %q: %v (%s)", cidr, name, aerr, strings.TrimSpace(string(out)))
+		}
+	}
+
+	if req.MTU > 0 {
+		_ = applyBridgeMTU(name, req.MTU)
+	}
+
 	if netStoreVar != nil {
-		_ = netStoreVar.Save(netstore.Record{Name: name, Kind: "direct", Interface: iface, MovedIPv4: moved})
+		storedCIDR := cidr
+		if storedCIDR == "" {
+			storedCIDR = moved
+		}
+		_ = netStoreVar.Save(netstore.Record{
+			Name:      name,
+			Kind:      "direct",
+			Interface: iface,
+			MovedIPv4: moved,
+			CIDR:      storedCIDR,
+			Gateway:   gateway,
+			DNS:       cleanDNS,
+			MTU:       req.MTU,
+		})
 	}
 	return networkView(name), nil
 }
@@ -824,6 +878,23 @@ func (c *Connector) UpdateNetwork(name string, req models.UpdateNetworkRequest) 
 		}
 	}
 
+	// Update Gateway and/or DNS on netstore if provided
+	if req.Gateway != nil {
+		if netStoreVar != nil {
+			rec, ok := netStoreVar.Get(name)
+			if !ok {
+				kind, iface := inferKind(name, readBridgeSlaves(name))
+				rec = netstore.Record{Name: name, Kind: kind, Interface: iface}
+			}
+			gw := strings.TrimSpace(*req.Gateway)
+			if gw != "" && net.ParseIP(gw) == nil {
+				return models.Network{}, fmt.Errorf("invalid gateway IP %q", gw)
+			}
+			rec.Gateway = gw
+			_ = netStoreVar.Save(rec)
+		}
+	}
+
 	// Effective current state drives partial updates (e.g. editing only
 	// the reservations while DHCP stays on).
 	var cur netstore.Record
@@ -835,7 +906,29 @@ func (c *Connector) UpdateNetwork(name string, req models.UpdateNetworkRequest) 
 
 	turnOn := req.DHCP != nil && *req.DHCP
 	turnOff := req.DHCP != nil && !*req.DHCP
-	editOnly := req.DHCP == nil && req.Reservations != nil
+	editOnly := req.DHCP == nil && (req.Reservations != nil || req.DNS != nil || req.DHCPStart != "" || req.DHCPEnd != "")
+
+	if req.DNS != nil && !dhcpOn && !turnOn {
+		if netStoreVar != nil {
+			rec := cur
+			if !hasCur {
+				kind, iface := inferKind(name, readBridgeSlaves(name))
+				rec = netstore.Record{Name: name, Kind: kind, Interface: iface}
+			}
+			var cleanDNS []string
+			for _, d := range req.DNS {
+				d = strings.TrimSpace(d)
+				if d != "" {
+					if net.ParseIP(d) == nil {
+						return models.Network{}, fmt.Errorf("invalid DNS server %q", d)
+					}
+					cleanDNS = append(cleanDNS, d)
+				}
+			}
+			rec.DNS = cleanDNS
+			_ = netStoreVar.Save(rec)
+		}
+	}
 
 	if turnOff {
 		removeDnsmasqUnit(name)
