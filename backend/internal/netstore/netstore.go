@@ -30,11 +30,12 @@ type Record struct {
 	Name      string   `json:"name"`
 	Kind      string   `json:"kind"` // "nat" | "isolated" | "direct"
 	CIDR      string   `json:"cidr,omitempty"`
+	Gateway   string   `json:"gateway,omitempty"`
 	Interface string   `json:"interface,omitempty"`  // direct only
 	MovedIPv4 string   `json:"moved_ipv4,omitempty"` // direct only: CIDR moved off Interface at creation, to restore on delete
 	DHCPStart string   `json:"dhcp_start,omitempty"` // nat/isolated only, when DHCP is on
 	DHCPEnd   string   `json:"dhcp_end,omitempty"`   // nat/isolated only, when DHCP is on
-	DNS       []string `json:"dns,omitempty"`        // nat/isolated only, when DHCP is on
+	DNS       []string `json:"dns,omitempty"`        // nat/isolated/direct DNS servers
 	MTU       int      `json:"mtu,omitempty"`        // bridge link MTU (0 = default)
 	// Reservations are fixed MAC→IP DHCP leases served by the bridge's
 	// dnsmasq (nat/isolated only, requires DHCP on).

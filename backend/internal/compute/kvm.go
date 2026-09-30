@@ -470,6 +470,36 @@ func (b *KVMBackend) GetGuestInfo(id string) (GuestInfo, error) {
 			Name: n.Name, MAC: n.MAC, IPv4: n.IPv4, IPv6: n.IPv6,
 		})
 	}
+	for _, u := range gi.Users {
+		out.Users = append(out.Users, GuestUser{
+			User:      u.User,
+			LoginTime: u.LoginTime,
+			Domain:    u.Domain,
+		})
+	}
+	if gi.Timezone != nil {
+		out.Timezone = &GuestTimezone{
+			Zone:   gi.Timezone.Zone,
+			Offset: gi.Timezone.Offset,
+		}
+	}
+	return out, nil
+}
+
+func (b *KVMBackend) FSTrim(id string) (GuestFSTrimResult, error) {
+	res, err := b.lv.FSTrim(id)
+	if err != nil {
+		return GuestFSTrimResult{}, err
+	}
+	out := GuestFSTrimResult{}
+	for _, p := range res.Paths {
+		out.Paths = append(out.Paths, GuestTrimmedPath{
+			Path:    p.Path,
+			Trimmed: p.Trimmed,
+			Minimum: p.Minimum,
+			Error:   p.Error,
+		})
+	}
 	return out, nil
 }
 

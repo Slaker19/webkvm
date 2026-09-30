@@ -101,6 +101,19 @@ func (h *Handler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.Gateway != "" {
+		if net.ParseIP(strings.TrimSpace(req.Gateway)) == nil {
+			jsonErr(w, http.StatusBadRequest, fmt.Sprintf("invalid gateway IP %q", req.Gateway))
+			return
+		}
+	}
+	for _, d := range req.DNS {
+		d = strings.TrimSpace(d)
+		if d != "" && net.ParseIP(d) == nil {
+			jsonErr(w, http.StatusBadRequest, fmt.Sprintf("invalid DNS server IP %q", d))
+			return
+		}
+	}
 	// VLanAware left unspecified falls back to the operator's configured
 	// default (Settings -> Network) instead of silently always false.
 	if req.VLanAware == nil && h.settings != nil {
@@ -126,6 +139,19 @@ func (h *Handler) UpdateNetwork(w http.ResponseWriter, r *http.Request) {
 	if err := decodeBody(r, &req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
 		return
+	}
+	if req.Gateway != nil && *req.Gateway != "" {
+		if net.ParseIP(strings.TrimSpace(*req.Gateway)) == nil {
+			jsonErr(w, http.StatusBadRequest, fmt.Sprintf("invalid gateway IP %q", *req.Gateway))
+			return
+		}
+	}
+	for _, d := range req.DNS {
+		d = strings.TrimSpace(d)
+		if d != "" && net.ParseIP(d) == nil {
+			jsonErr(w, http.StatusBadRequest, fmt.Sprintf("invalid DNS server IP %q", d))
+			return
+		}
 	}
 	net, err := h.compute.UpdateNetwork(name, req)
 	if err != nil {

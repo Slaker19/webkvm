@@ -13,6 +13,9 @@ import (
 func TestLoadFromDotEnvFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DATA_DIR", dir) // writable temp dir, not the /opt/webkvm default
+	for _, k := range []string{"PORT", "BIND_ADDR", "LIBVIRT_URI", "PUBLIC_HOST", "VNC_PROXY_HOST", "WEBKVM_VERSION", "WEBKVM_BUILD_TIME", "WEBKVM_TRUST_PROXY", "WEBKVM_TRUSTED_RATELIMIT_CIDRS"} {
+		t.Setenv(k, "")
+	}
 	envPath := filepath.Join(dir, ".env")
 	contents := strings.Join([]string{
 		"PORT=9999",

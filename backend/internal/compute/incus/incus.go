@@ -1941,6 +1941,10 @@ func (b *IncusBackend) GetGuestInfo(id string) (compute.GuestInfo, error) {
 	return compute.GuestInfo{}, compute.ErrNotImplemented
 }
 
+func (b *IncusBackend) FSTrim(id string) (compute.GuestFSTrimResult, error) {
+	return compute.GuestFSTrimResult{}, compute.ErrNotImplemented
+}
+
 // --- Backup / export / OVA / import ---
 
 // ExportDomain streams the container's native LXD backup export straight

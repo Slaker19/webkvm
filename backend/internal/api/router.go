@@ -290,6 +290,7 @@ func NewRouter(
 				r.Put("/schedule", h.SetVMSchedule)
 				r.With(h.requireCapability("control_power")).Post("/power/{action}", h.PowerVMNow)
 				r.Post("/reset-password", h.ResetVMPassword)
+				r.Post("/guest/fstrim", h.VMGuestFSTrim)
 
 				// Exporting streams every byte of the VM's disks. That is
 				// a data-exfiltration path rather than a console one, so

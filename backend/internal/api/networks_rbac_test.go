@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -109,6 +110,23 @@ func TestValidateNetworkCIDR(t *testing.T) {
 	for _, c := range bad {
 		if err := validateNetworkCIDR(c); err == nil {
 			t.Errorf("validateNetworkCIDR(%q) = nil, want error", c)
+		}
+	}
+}
+
+func TestValidateGatewayAndDNS(t *testing.T) {
+	// Test valid and invalid IPs
+	validIPs := []string{"192.168.1.1", "10.0.0.1", "1.1.1.1", "8.8.8.8", "2001:4860:4860::8888"}
+	for _, ip := range validIPs {
+		if net.ParseIP(ip) == nil {
+			t.Errorf("expected %q to be valid IP", ip)
+		}
+	}
+
+	invalidIPs := []string{"192.168.1.999", "1.2.3.4.5", "invalid", "10.0.0.1/24"}
+	for _, ip := range invalidIPs {
+		if net.ParseIP(ip) != nil {
+			t.Errorf("expected %q to be invalid IP", ip)
 		}
 	}
 }

@@ -209,6 +209,32 @@ type GuestOSInfo struct {
 	Machine       string `json:"machine,omitempty"`
 }
 
+// GuestUser represents an active user session inside the guest.
+type GuestUser struct {
+	User      string  `json:"user"`
+	LoginTime float64 `json:"login_time,omitempty"`
+	Domain    string  `json:"domain,omitempty"`
+}
+
+// GuestTimezone represents timezone information from the guest.
+type GuestTimezone struct {
+	Zone   string `json:"zone,omitempty"`
+	Offset int    `json:"offset,omitempty"`
+}
+
+// GuestTrimmedPath represents one filesystem path trimmed during an fstrim operation.
+type GuestTrimmedPath struct {
+	Path    string `json:"path"`
+	Trimmed int64  `json:"trimmed"`
+	Minimum int64  `json:"minimum,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// GuestFSTrimResult summarizes the outcome of guest-fstrim across mounted filesystems.
+type GuestFSTrimResult struct {
+	Paths []GuestTrimmedPath `json:"paths"`
+}
+
 // GuestInfo bundles the guest-agent telemetry for one instance.
 // Available=false with a populated Error means the agent isn't
 // installed or isn't answering — an expected state, not a failure.
@@ -219,6 +245,8 @@ type GuestInfo struct {
 	Filesystems []GuestFilesystem       `json:"filesystems,omitempty"`
 	Interfaces  []GuestNetworkInterface `json:"interfaces,omitempty"`
 	Hostname    string                  `json:"hostname,omitempty"`
+	Users       []GuestUser             `json:"users,omitempty"`
+	Timezone    *GuestTimezone          `json:"timezone,omitempty"`
 }
 
 // SecretRef is a CIFS secret managed by the backend.
@@ -398,6 +426,7 @@ type Backend interface {
 	GuestGetClipboard(id string) (string, error)
 	GuestSetClipboard(id, text string) error
 	GetGuestInfo(id string) (GuestInfo, error)
+	FSTrim(id string) (GuestFSTrimResult, error)
 
 	// --- Backup / export / OVA / import ---
 	ExportDomain(ctx context.Context, id string, opts ExportBackupOptions, w io.Writer) (backupstore.ProducerResult, error)

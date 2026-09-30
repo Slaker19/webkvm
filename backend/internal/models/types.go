@@ -40,6 +40,10 @@ type VM struct {
 	TPMVersion string `json:"tpm_version,omitempty"`
 	// WatchdogEnabled reflects whether a <watchdog> device is present.
 	WatchdogEnabled bool `json:"watchdog_enabled"`
+	// MinRAMMB is the guaranteed minimum memory allocation (memory ballooning floor).
+	MinRAMMB int64 `json:"min_ram_mb,omitempty"`
+	// IOThreads specifies dedicated IOThread count for disk/SCSI IO processing.
+	IOThreads int `json:"iothreads,omitempty"`
 	// Autostart mirrors libvirtd's autostart flag: when true,
 	// libvirtd starts the domain automatically on host boot.
 	// Surfaced here so the UI doesn't need a second round-trip
@@ -119,6 +123,10 @@ type CreateVMRequest struct {
 	// WatchdogEnabled adds an i6300esb watchdog device (action='reset')
 	// — works on both q35 and i440fx, no chipset restriction.
 	WatchdogEnabled  *bool  `json:"watchdog_enabled,omitempty"`
+	// MinRAMMB sets the minimum memory floor in MB for memory ballooning.
+	MinRAMMB int64 `json:"min_ram_mb,omitempty"`
+	// IOThreads sets dedicated IOThread workers for storage/controller IO.
+	IOThreads int `json:"iothreads,omitempty"`
 	Firmware         string `json:"firmware,omitempty"`
 	DiskFormat       string `json:"disk_format,omitempty"`
 	VirtIOISO        string `json:"virtio_iso,omitempty"`
@@ -201,6 +209,8 @@ type UpdateVMRequest struct {
 	TPMVersion *string `json:"tpm_version,omitempty"`
 	// WatchdogEnabled adds/removes an i6300esb watchdog device.
 	WatchdogEnabled *bool    `json:"watchdog_enabled,omitempty"`
+	MinRAMMB        *int64   `json:"min_ram_mb,omitempty"`
+	IOThreads       *int     `json:"iothreads,omitempty"`
 	SerialPort      *bool    `json:"serial_port,omitempty"`
 	Firmware        *string  `json:"firmware,omitempty"`
 	BootOrder       *string  `json:"boot_order,omitempty"`
@@ -677,7 +687,8 @@ type CreateNetworkRequest struct {
 	Kind string `json:"kind"` // "nat" | "isolated" | "direct"; falls back to Forward when empty
 	// Forward is a deprecated alias for Kind ("" / "bridge" == "isolated").
 	Forward string `json:"forward"`
-	CIDR    string `json:"cidr"` // required for "nat"/"isolated"
+	CIDR    string `json:"cidr"` // required for "nat"/"isolated", optional for "direct"
+	Gateway string `json:"gateway,omitempty"` // optional default gateway
 	Bridge  string `json:"bridge,omitempty"`
 	// Interface is required for kind=="direct": the physical/wireless
 	// host NIC to enslave into the new bridge, e.g. "eth0".
@@ -699,6 +710,7 @@ type CreateNetworkRequest struct {
 }
 
 type UpdateNetworkRequest struct {
+	Gateway   *string  `json:"gateway,omitempty"`
 	DHCP      *bool    `json:"dhcp,omitempty"`
 	DHCPStart string   `json:"dhcp_start,omitempty"`
 	DHCPEnd   string   `json:"dhcp_end,omitempty"`
@@ -803,16 +815,28 @@ type VMMetaUpdate struct {
 	AppInfo *string `json:"app_info,omitempty"`
 }
 
+// CloudInitNetworkConfig specifies static IP assignment, default gateways and DNS servers for a NIC.
+type CloudInitNetworkConfig struct {
+	Interface string   `json:"interface,omitempty"` // e.g. "eth0" or "enp1s0"
+	IPv4      string   `json:"ipv4,omitempty"`      // CIDR format, e.g. "192.168.1.50/24"
+	Gateway4  string   `json:"gateway4,omitempty"`  // IPv4 gateway, e.g. "192.168.1.1"
+	IPv6      string   `json:"ipv6,omitempty"`      // CIDR format, e.g. "2001:db8::50/64"
+	Gateway6  string   `json:"gateway6,omitempty"`  // IPv6 gateway
+	DNS       []string `json:"dns,omitempty"`       // Nameserver IPs
+	Search    []string `json:"search,omitempty"`    // Search domains
+}
+
 // CloudInitRequest carries optional NoCloud provisioning data applied
 // when creating a VM or instantiating a template.
 type CloudInitRequest struct {
-	User           string   `json:"user,omitempty"`
-	Password       string   `json:"password,omitempty"`
-	SSHKey         string   `json:"ssh_key,omitempty"`
-	Hostname       string   `json:"hostname,omitempty"`
-	CustomUserData string   `json:"custom_user_data,omitempty"`
-	SnippetID      string   `json:"snippet_id,omitempty"`
-	SnippetIDs     []string `json:"snippet_ids,omitempty"`
+	User           string                   `json:"user,omitempty"`
+	Password       string                   `json:"password,omitempty"`
+	SSHKey         string                   `json:"ssh_key,omitempty"`
+	Hostname       string                   `json:"hostname,omitempty"`
+	Networks       []CloudInitNetworkConfig `json:"networks,omitempty"`
+	CustomUserData string                   `json:"custom_user_data,omitempty"`
+	SnippetID      string                   `json:"snippet_id,omitempty"`
+	SnippetIDs     []string                 `json:"snippet_ids,omitempty"`
 	// ProvisionScript, when set, is a bash script injected into the
 	// cloud-init seed and executed on first boot (used by appliance
 	// "apps" to install software on the base image). It is set

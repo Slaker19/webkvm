@@ -257,6 +257,9 @@ func (c *Combined) GuestGetClipboard(id string) (string, error) {
 func (c *Combined) GetGuestInfo(id string) (GuestInfo, error) {
 	return c.route(id).GetGuestInfo(id)
 }
+func (c *Combined) FSTrim(id string) (GuestFSTrimResult, error) {
+	return c.route(id).FSTrim(id)
+}
 func (c *Combined) GuestSetClipboard(id, text string) error {
 	return c.route(id).GuestSetClipboard(id, text)
 }
