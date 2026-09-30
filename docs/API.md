@@ -106,6 +106,7 @@ Creates a new KVM VM or Incus container.
 
 #### VM Disks
 - `POST /api/vms/{id}/disks` — Attach an existing image (`source`) or create a new volume (`pool`, `size_gb`, `format`). Attaching an image that already contains data is refused with `409` unless the request sets `"force": true`; attaching a volume already attached to another VM is refused with `409`.
+  - **ZFS zvol (admin only):** `{"zvol": "tank/vms/web01"}` attaches an existing ZFS volume as a raw block disk (`<disk type='block'>` → `/dev/zvol/tank/vms/web01`, `cache='none' io='native'` unless `disk_cache_io` says otherwise). It cannot be combined with `source`/`size_gb` or `device: "cdrom"`. The name must be a real ZFS volume (`zfs get type` = `volume`) with its `/dev/zvol` link present (`400` otherwise; `503` if `zfs` is not installed). A zvol with more than 1 MiB written is refused with `409` unless `"force": true`, and one already used by another VM is always `409`. WebKVM never creates, resizes, backs up or deletes a zvol; in `GET /api/vms/{id}` such disks carry `type: "block"`, `block_dev` and `zvol`, with an empty `source`.
 - `GET /api/vms/{id}/disks/{dev}/probe` — Read-only inspection of an attached disk image (format, virtual/allocated size, `has_data`). Authenticated viewers may call it.
 
 #### Storage Migration
@@ -237,6 +238,7 @@ Opens a persistent SSE stream broadcasting real-time system events:
 - `GET /api/host/disks` — List physical disks with `fstype`, mountpoints and partition children (from `lsblk`).
 - `POST /api/host/capabilities/refresh` — Re-probe QEMU/libvirt instead of serving the cached report.
 - `GET /api/host/disks` / `GET /api/host/disks/filesystems` / `GET /api/host/disks/orphan-mounts` — Physical disks, their filesystems, and mounts whose backing device is gone.
+- `GET /api/host/zvols` (admin-only) — ZFS volumes on the host (`name`, `dev`, `size_bytes`, `written_bytes`, `has_data`) plus `attached_vm_id`/`attached_vm_name` when a VM already uses one. Returns `[]` when ZFS is not installed.
 - `POST /api/host/disks/wipe` and `POST /api/host/disks/initialize-directory` (admin-only) — Destructive guards are **fail-closed**: if the `lsblk` safety probe cannot run or be parsed, the request is refused with `503` instead of proceeding. `mount_point` must live under `/mnt/` or `/srv/`; the wipe step aborts the whole operation when it fails.
 - `GET /api/host/pci-devices` — Host PCI devices available for passthrough, grouped by IOMMU group. **Admin only.**
 - `GET /api/host/pci-preflight` — IOMMU/VFIO readiness: whether IOMMU is on, how many groups exist, and whether they are cleanly assignable. The UI blocks a passthrough attach when this reports the device's group would drag unrelated devices along.

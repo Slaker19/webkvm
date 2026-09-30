@@ -106,6 +106,7 @@ Crea una nueva máquina virtual KVM o un contenedor Incus.
 
 #### Discos de VM
 - `POST /api/vms/{id}/disks` — Adjuntar una imagen existente (`source`) o crear un volumen nuevo (`pool`, `size_gb`, `format`). Adjuntar una imagen que ya contiene datos se rechaza con `409` salvo que la petición incluya `"force": true`; adjuntar un volumen ya adjunto a otra VM también se rechaza con `409`.
+  - **zvol de ZFS (solo admin):** `{"zvol": "tank/vms/web01"}` adjunta un volumen ZFS existente como disco de bloque (`<disk type='block'>` → `/dev/zvol/tank/vms/web01`, `cache='none' io='native'` salvo que `disk_cache_io` diga otra cosa). No se puede combinar con `source`/`size_gb` ni con `device: "cdrom"`. El nombre debe ser un volumen ZFS real (`zfs get type` = `volume`) con su enlace en `/dev/zvol` (`400` si no; `503` si `zfs` no está instalado). Un zvol con más de 1 MiB escrito se rechaza con `409` salvo `"force": true`, y uno ya usado por otra VM siempre da `409`. WebKVM nunca crea, redimensiona, respalda ni borra un zvol; en `GET /api/vms/{id}` estos discos llevan `type: "block"`, `block_dev` y `zvol`, con `source` vacío.
 - `GET /api/vms/{id}/disks/{dev}/probe` — Inspección de solo lectura de un disco adjunto (formato, tamaño virtual/asignado, `has_data`). Accesible a viewers autenticados.
 
 #### Migración de Almacenamiento
@@ -237,6 +238,7 @@ Abre una conexión SSE unidireccional que emite eventos del hipervisor en vivo:
 - `GET /api/host/disks` — Lista discos físicos con `fstype`, puntos de montaje y particiones hijas (vía `lsblk`).
 - `POST /api/host/capabilities/refresh` — Volver a sondear QEMU/libvirt en vez de servir el informe cacheado.
 - `GET /api/host/disks/filesystems` y `GET /api/host/disks/orphan-mounts` — Sistemas de ficheros detectados y montajes cuyo dispositivo de respaldo ya no existe.
+- `GET /api/host/zvols` (solo admin) — Volúmenes ZFS del host (`name`, `dev`, `size_bytes`, `written_bytes`, `has_data`) más `attached_vm_id`/`attached_vm_name` si una VM ya usa alguno. Devuelve `[]` si ZFS no está instalado.
 - `POST /api/host/disks/wipe` y `POST /api/host/disks/initialize-directory` (solo admin) — Las guardas destructivas son **fail-closed**: si la sonda de seguridad `lsblk` no puede ejecutarse o parsearse, la petición se rechaza con `503` en vez de continuar. `mount_point` debe vivir bajo `/mnt/` o `/srv/`; si el paso de wipe falla, se aborta toda la operación.
 - `GET /api/host/pci-devices` — Dispositivos PCI del host disponibles para passthrough, agrupados por grupo IOMMU. **Solo administradores.**
 - `GET /api/host/pci-preflight` — Estado de IOMMU/VFIO: si IOMMU está activo, cuántos grupos hay y si son asignables de forma limpia. La interfaz bloquea la asignación cuando esto indica que el grupo del dispositivo arrastraría dispositivos no relacionados.

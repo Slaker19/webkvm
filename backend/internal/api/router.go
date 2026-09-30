@@ -547,6 +547,7 @@ func NewRouter(
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireRole(modelsRoleAdmin()))
 			r.Post("/capabilities/refresh", h.RefreshCapabilities)
+			r.Get("/zvols", h.ListZVols)
 			r.Post("/disks/wipe", h.WipeHostDisk)
 			r.Post("/disks/initialize-directory", h.InitHostDiskDirectory)
 		})

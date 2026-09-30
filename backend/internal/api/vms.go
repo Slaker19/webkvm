@@ -406,7 +406,9 @@ func (h *Handler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 		// (<oldname>.qcow2), so a name-only sweep would orphan it.
 		var diskNames []string
 		for _, d := range vm.Disks {
-			if d.Device == "disk" && d.Name != "" {
+			// Block disks (zvols) are never WebKVM's to delete: their
+			// Name is only a display label and must not match a pool file.
+			if d.Device == "disk" && d.Name != "" && d.Type != "block" {
 				diskNames = append(diskNames, d.Name)
 			}
 		}
@@ -767,6 +769,12 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.ZVol != "" {
+		if status, err := h.checkZVolAttach(r, id, &req); err != nil {
+			jsonErr(w, status, err.Error())
+			return
+		}
+	}
 	if req.Source != "" {
 		if err := h.validateDiskSourcePath(req.Source); err != nil {
 			jsonErr(w, http.StatusForbidden, err.Error())
@@ -845,7 +853,11 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	h.audit.Log(auditFor(r, "vm.disk_attach", id, map[string]interface{}{"bus": req.Bus, "device": req.Device}))
+	details := map[string]interface{}{"bus": req.Bus, "device": req.Device}
+	if req.ZVol != "" {
+		details["zvol"] = req.ZVol
+	}
+	h.audit.Log(auditFor(r, "vm.disk_attach", id, details))
 	jsonResp(w, http.StatusOK, map[string]string{"status": "attached"})
 }
 

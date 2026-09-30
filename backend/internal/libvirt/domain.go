@@ -20,6 +20,7 @@ import (
 
 	"webkvm/internal/backupstore"
 	"webkvm/internal/models"
+	"webkvm/internal/zvol"
 
 	"github.com/google/uuid"
 	"libvirt.org/go/libvirt"
@@ -2147,12 +2148,30 @@ func (c *Connector) parseDisksFiltered(xmlDesc string, disksOnly bool) []models.
 			source = sm[1]
 		}
 		readOnly := strings.Contains(d, "<readonly/>") || strings.Contains(d, "<readonly>")
-		pool, sizeGB := c.volPoolAndSize(source)
+		// Block disks (zvols, raw host devices) keep Source empty so the
+		// file-based paths (qemu-img, backups, resize) skip them; the
+		// device is reported through BlockDev instead.
+		var blockDev, zvolName string
+		var pool string
+		var sizeGB int64
 		displaySource := source
-		if ds := deepestSourcePath(d); ds != "" {
-			displaySource = ds
-		} else if source != "" {
-			displaySource = rootDiskName(source)
+		if dType == "block" {
+			if bm := blockSourceRe.FindStringSubmatch(d); len(bm) > 1 {
+				blockDev = bm[1]
+				displaySource = blockDev
+				sizeGB = blockDevSizeGB(blockDev)
+				if n, ok := zvol.NameFromDev(blockDev); ok {
+					zvolName = n
+					displaySource = n
+				}
+			}
+		} else {
+			pool, sizeGB = c.volPoolAndSize(source)
+			if ds := deepestSourcePath(d); ds != "" {
+				displaySource = ds
+			} else if source != "" {
+				displaySource = rootDiskName(source)
+			}
 		}
 		wwn := ""
 		if wm := regexp.MustCompile(`<wwn>([^<]+)</wwn>`).FindStringSubmatch(d); len(wm) > 1 {
@@ -2179,9 +2198,45 @@ func (c *Connector) parseDisksFiltered(xmlDesc string, disksOnly bool) []models.
 			WWN:      wwn,
 			Serial:   serial,
 			Alias:    alias,
+			BlockDev: blockDev,
+			ZVol:     zvolName,
 		})
 	}
 	return disks
+}
+
+// zvolDiskXML returns the disk type, <source> and <driver> elements for
+// attaching a (validated) zvol. A zvol is a raw block device: no image
+// format, and cache='none' io='native' is the sensible default for it.
+func zvolDiskXML(req models.AttachDiskRequest) (diskType, sourceXML, driverXML string) {
+	cacheIO := req.DiskCacheIO
+	if cacheIO == nil {
+		on := true
+		cacheIO = &on
+	}
+	return "block",
+		fmt.Sprintf("<source dev='%s'/>", xmlEscape(zvol.DevPath(req.ZVol))),
+		fmt.Sprintf("<driver %s/>", diskDriverXMLAttrs("raw", cacheIO, req.DiskDiscard))
+}
+
+var blockSourceRe = regexp.MustCompile(`<source\b[^>]*\bdev='([^']+)'`)
+
+// blockDevSizeGB reads a block device's size from sysfs (no exec, so it
+// is cheap enough for every VM listing). 0 when it cannot be resolved.
+func blockDevSizeGB(dev string) int64 {
+	real, err := filepath.EvalSymlinks(dev)
+	if err != nil {
+		return 0
+	}
+	raw, err := os.ReadFile(filepath.Join("/sys/class/block", filepath.Base(real), "size"))
+	if err != nil {
+		return 0
+	}
+	sectors, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return sectors * 512 / (1 << 30)
 }
 
 func parseNetworks(xmlDesc string) []models.NetIface {
@@ -2251,6 +2306,21 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 	}
 	defer dom.Free()
 
+	if req.ZVol != "" {
+		// Re-validated here (the API already did) so no caller can reach
+		// an arbitrary /dev path through this layer.
+		if err := zvol.ValidateName(req.ZVol); err != nil {
+			return err
+		}
+		if req.Device != "" && req.Device != "disk" {
+			return fmt.Errorf("a zvol can only be attached as a disk")
+		}
+		if req.Source != "" || req.SizeGB > 0 {
+			return fmt.Errorf("zvol cannot be combined with source or size_gb")
+		}
+		req.Device = "disk"
+	}
+
 	format := req.Format
 	if format == "" {
 		format = "qcow2"
@@ -2309,7 +2379,9 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 	// below does not leave it orphaned (a retry would then fail with
 	// "volume exists already").
 	var createdPool, createdVol string
-	if req.Device == "cdrom" {
+	if req.ZVol != "" {
+		diskType, sourceXML, driverXML = zvolDiskXML(req)
+	} else if req.Device == "cdrom" {
 		driverXML = "<driver name='qemu' type='raw'/>"
 		diskType = "file"
 	} else if req.Source != "" {

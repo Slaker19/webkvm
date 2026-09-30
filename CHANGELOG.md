@@ -6,6 +6,18 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
+## [Unreleased]
+
+### Added
+
+- **ZFS zvols as VM disks (admin only):** an existing ZFS volume can be
+  attached to a KVM VM as a raw block disk from *Add Disk → ZFS volume
+  (zvol)* or `POST /api/vms/{id}/disks` with `{"zvol": "pool/name"}`.
+  `GET /api/host/zvols` lists the host's volumes and which VM uses each.
+  The usual guards apply (one VM per zvol, `force` for a zvol that already
+  holds data). WebKVM never creates, resizes, backs up or deletes a zvol,
+  and zvol disks do not count against user quotas.
+
 ## [0.0.1] — 2026-09-26
 
 First public release of WebKVM: a self-hosted web panel (a single Go

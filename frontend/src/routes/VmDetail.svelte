@@ -381,6 +381,11 @@
   let aDiskWWN = $state('');
   let aDiskSerial = $state('');
   let aDiskAlias = $state('');
+  // ZFS volumes offered by the "zvol" source (admin only).
+  let aDiskZVols = $state([]);
+  let aDiskZVol = $state('');
+  let aDiskZVolsLoading = $state(false);
+  const aDiskZVolSel = $derived(aDiskZVols.find((z) => z.name === aDiskZVol) || null);
 
   // Change ISO state
   let showChangeISO = $state(false);
@@ -1539,11 +1544,39 @@
     }
   }
 
+  async function loadZVols() {
+    aDiskZVolsLoading = true;
+    try {
+      aDiskZVols = (await api.listZVols()) || [];
+    } catch (e) {
+      aDiskZVols = [];
+      toast.error(e.message);
+    } finally {
+      aDiskZVolsLoading = false;
+    }
+  }
+
   async function addDisk() {
     actionLoading = 'adddisk';
     try {
-      const data = { device: aDiskDevice === 'existing' ? 'disk' : aDiskDevice, bus: aDiskBus };
-      if (aDiskDevice === 'cdrom') {
+      const data = {
+        device: aDiskDevice === 'existing' || aDiskDevice === 'zvol' ? 'disk' : aDiskDevice,
+        bus: aDiskBus,
+      };
+      if (aDiskDevice === 'zvol') {
+        if (!aDiskZVol) {
+          toast.warning(t('vmDetail.zvolSelect'));
+          actionLoading = '';
+          return;
+        }
+        if (aDiskZVolSel?.has_data && !aDiskForce) {
+          toast.warning(t('vmDetail.diskHasDataWarning'));
+          actionLoading = '';
+          return;
+        }
+        data.zvol = aDiskZVol;
+        data.force = aDiskForce;
+      } else if (aDiskDevice === 'cdrom') {
         data.source = aDiskISO;
       } else if (aDiskDevice === 'existing') {
         const vol = aDiskVolumes.find((v) => v.path === aDiskExistingVol);
@@ -3530,6 +3563,9 @@
                     aDiskWWN = '';
                     aDiskSerial = '';
                     aDiskAlias = '';
+                    aDiskZVol = '';
+                    aDiskProbe = null;
+                    aDiskForce = false;
                     showAddDisk = true;
                   }}>+ Add Disk</Button
                 >
@@ -3553,6 +3589,15 @@
                       >
                       <span class="text-xs text-muted-foreground">{disk.bus}</span>
                       <span class="text-sm truncate">{diskLabel(disk)}</span>
+                      {#if disk.zvol}
+                        <span
+                          class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
+                          title={disk.block_dev}>zvol</span
+                        >
+                        {#if disk.size_gb}
+                          <span class="text-xs text-muted-foreground tnum">{disk.size_gb} GB</span>
+                        {/if}
+                      {/if}
                       {#if disk.serial}
                         <span
                           class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
@@ -4945,7 +4990,9 @@
           ? t('vmDetail.attachIso')
           : aDiskDevice === 'existing'
             ? t('vmDetail.attachExistingDisk')
-            : t('vmDetail.addDisk')}</Dialog.Title
+            : aDiskDevice === 'zvol'
+              ? t('vmDetail.attachZvol')
+              : t('vmDetail.addDisk')}</Dialog.Title
       >
     </Dialog.Header>
     <div class="space-y-3">
@@ -4956,12 +5003,17 @@
           bind:value={aDiskDevice}
           onchange={() => {
             aDiskBus = aDiskDevice === 'cdrom' ? 'scsi' : 'virtio';
+            aDiskForce = false;
             if (aDiskDevice === 'existing') loadDiskVolumesForPool();
+            if (aDiskDevice === 'zvol') loadZVols();
           }}
           class="input"
         >
           <option value="disk">{t('vmDetail.diskType')}</option>
           <option value="existing">{t('vmDetail.existingDisk')}</option>
+          {#if auth.isAdmin()}
+            <option value="zvol">{t('vmDetail.zvolDisk')}</option>
+          {/if}
           <option value="cdrom">{t('vmDetail.cdromIso')}</option>
         </select>
       </div>
@@ -5050,6 +5102,46 @@
             </label>
           </div>
         {/if}
+      {:else if aDiskDevice === 'zvol'}
+        <div>
+          <label for="adisk-zvol" class="block text-sm font-medium mb-1.5"
+            >{t('vmDetail.zvolDisk')}</label
+          >
+          <select
+            id="adisk-zvol"
+            bind:value={aDiskZVol}
+            onchange={() => (aDiskForce = false)}
+            class="input"
+            disabled={aDiskZVolsLoading}
+          >
+            <option value="">{t('vmDetail.zvolSelect')}</option>
+            {#each aDiskZVols as z (z.name)}
+              <option value={z.name} disabled={!!z.attached_vm_id && z.attached_vm_id !== vm?.id}
+                >{z.name} ({bytesToStr(z.size_bytes)}){z.attached_vm_name
+                  ? ' — ' + t('vmDetail.zvolInUse', { vm: z.attached_vm_name })
+                  : ''}</option
+              >
+            {/each}
+          </select>
+        </div>
+        {#if !aDiskZVolsLoading && aDiskZVols.length === 0}
+          <p class="text-xs text-muted-foreground">{t('vmDetail.zvolNone')}</p>
+        {/if}
+        {#if aDiskZVolSel?.has_data}
+          <div class="rounded-lg border border-warning/40 bg-warning/5 p-2.5 space-y-2">
+            <p class="text-[11px] text-warning flex items-start gap-1.5">
+              <Icon name="alertTriangle" size={12} class="mt-0.5 shrink-0" />
+              <span
+                >{t('vmDetail.zvolHasData', { size: bytesToStr(aDiskZVolSel.written_bytes) })}</span
+              >
+            </p>
+            <label class="flex items-center gap-2 text-xs cursor-pointer">
+              <Checkbox bind:checked={aDiskForce} />
+              <span>{t('vmDetail.diskForceAttach')}</span>
+            </label>
+          </div>
+        {/if}
+        <p class="text-[11px] text-muted-foreground">{t('vmDetail.zvolNote')}</p>
       {:else}
         <div>
           <label for="adisk-iso" class="block text-sm font-medium mb-1.5">{t('vmDetail.iso')}</label
@@ -5061,7 +5153,7 @@
           </select>
         </div>
       {/if}
-      {#if aDiskDevice === 'disk' || aDiskDevice === 'existing'}
+      {#if aDiskDevice === 'disk' || aDiskDevice === 'existing' || aDiskDevice === 'zvol'}
         <div class="border-t border-border pt-3 space-y-3">
           <div>
             <label for="adisk-serial" class="block text-xs font-medium mb-1"

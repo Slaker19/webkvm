@@ -645,6 +645,7 @@ export const api = {
   getHostPCIPreflight: () => request('/host/pci-preflight'),
   getGuestInfo: (id) => request(`/vms/${id}/guest-info`),
   listHostDisks: () => request('/host/disks'),
+  listZVols: () => request('/host/zvols'),
   getStorageBreakdown: () => request('/storage/pools/breakdown'),
   listFilesystems: () => request('/host/disks/filesystems'),
   listOrphanMounts: () => request('/host/disks/orphan-mounts'),

@@ -223,6 +223,12 @@ type DiskInfo struct {
 	WWN      string `json:"wwn,omitempty"`
 	Serial   string `json:"serial,omitempty"`
 	Alias    string `json:"alias,omitempty"`
+	// BlockDev is the host device path of a type='block' disk (e.g. a
+	// ZFS zvol at /dev/zvol/tank/vm1). Source stays empty for those so
+	// file-only code paths (qemu-img, backups, resize) skip them.
+	BlockDev string `json:"block_dev,omitempty"`
+	// ZVol is the ZFS volume name when BlockDev is a zvol.
+	ZVol string `json:"zvol,omitempty"`
 }
 
 // VolumeAttachment identifies a domain currently referencing a storage
@@ -253,6 +259,9 @@ type AttachDiskRequest struct {
 	// whose image is not empty is refused (409) so the operator cannot
 	// blindly reuse a disk that already holds an OS or another VM's data.
 	Force bool `json:"force,omitempty"`
+	// ZVol attaches an existing ZFS volume (e.g. "tank/vms/web01") as a
+	// raw block disk. Mutually exclusive with Source and SizeGB; admin only.
+	ZVol string `json:"zvol,omitempty"`
 }
 
 // USBDevice describes a USB device enumerated on the host, available

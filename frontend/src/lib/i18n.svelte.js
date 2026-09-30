@@ -1060,6 +1060,16 @@ const messages = {
       diskHasDataDetail:
         'This disk image already contains data (format {format}). Attaching it may result in a VM that does not boot, or data loss. It is not a blank disk.',
       diskForceAttach: 'I understand — attach it anyway',
+      zvolDisk: 'ZFS volume (zvol)',
+      attachZvol: 'Attach ZFS Volume',
+      zvolSelect: 'Select a ZFS volume',
+      zvolInUse: 'in use by {vm}',
+      zvolNone:
+        'No ZFS volumes found on this host. Create one with: zfs create -V 20G <pool>/<name>',
+      zvolHasData:
+        'This zvol already contains data ({size} written). The VM will see it as-is — it is not a blank disk.',
+      zvolNote:
+        'Attached as a raw block device. WebKVM does not back up, resize or delete zvols; manage them with zfs snapshot/send.',
       cdromIso: 'CDROM (ISO)',
       busLabel: 'Bus',
       scsiRecommended: 'SCSI (recommended)',
@@ -4223,6 +4233,16 @@ const messages = {
       diskHasDataDetail:
         'Esta imagen de disco ya contiene datos (formato {format}). Adjuntarla puede dar lugar a una VM que no arranque, o a pérdida de datos. No es un disco vacío.',
       diskForceAttach: 'Entendido — adjuntar de todos modos',
+      zvolDisk: 'Volumen ZFS (zvol)',
+      attachZvol: 'Adjuntar volumen ZFS',
+      zvolSelect: 'Selecciona un volumen ZFS',
+      zvolInUse: 'en uso por {vm}',
+      zvolNone:
+        'No hay volúmenes ZFS en este host. Crea uno con: zfs create -V 20G <pool>/<nombre>',
+      zvolHasData:
+        'Este zvol ya contiene datos ({size} escritos). La VM lo verá tal cual: no es un disco vacío.',
+      zvolNote:
+        'Se adjunta como dispositivo de bloque. WebKVM no hace copias de seguridad, ni redimensiona ni borra zvols; gestiónalos con zfs snapshot/send.',
       cdromIso: 'CDROM (ISO)',
       busLabel: 'Bus',
       scsiRecommended: 'SCSI (recomendado)',
@@ -7418,6 +7438,16 @@ const messages = {
       diskHasDataDetail:
         'Aquesta imatge de disc ja conté dades (format {format}). Adjuntar-la pot donar lloc a una VM que no arrenqui, o a pèrdua de dades. No és un disc buit.',
       diskForceAttach: 'Entesos — adjuntar de tota manera',
+      zvolDisk: 'Volum ZFS (zvol)',
+      attachZvol: 'Adjunta volum ZFS',
+      zvolSelect: 'Selecciona un volum ZFS',
+      zvolInUse: 'en ús per {vm}',
+      zvolNone:
+        'No hi ha volums ZFS en aquest host. Crea-ne un amb: zfs create -V 20G <pool>/<nom>',
+      zvolHasData:
+        'Aquest zvol ja conté dades ({size} escrites). La VM el veurà tal qual: no és un disc buit.',
+      zvolNote:
+        "S'adjunta com a dispositiu de bloc. WebKVM no fa còpies de seguretat, ni redimensiona ni esborra zvols; gestiona'ls amb zfs snapshot/send.",
       cdromIso: 'CDROM (ISO)',
       busLabel: 'Bus',
       scsiRecommended: 'SCSI (recomanat)',
