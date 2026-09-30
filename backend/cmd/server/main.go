@@ -40,7 +40,7 @@ import (
 
 // Set by -ldflags at build time. Defaults are used for `go run`.
 var (
-	Version   = "0.1.2-dev"
+	Version   = "0.1.2"
 	BuildTime = "unknown"
 )
 
@@ -292,7 +292,7 @@ func main() {
 				"mb_freed", stats.BytesFree/1024/1024)
 		}
 
-		// CIFS secret mapping: hydrate the in-memory map from disk
+		// CIFS and iSCSI CHAP secret mappings: hydrate the in-memory map from disk
 		// and warn about any secret we know about that's no longer
 		// in libvirt (e.g. after a libvirtd reinstall). Neither
 		// step is fatal — operators can recover via the API.
@@ -301,6 +301,12 @@ func main() {
 		}
 		if err := libvirt.VerifyCIFSSecretsConsistency(eventCtx, lv); err != nil {
 			logger.Warn("cifs_secrets_inconsistent", "err", err.Error())
+		}
+		if err := libvirt.LoadCHAPSecrets(lv); err != nil {
+			logger.Warn("chap_secrets_load_failed", "err", err.Error())
+		}
+		if err := libvirt.VerifyCHAPSecretsConsistency(eventCtx, lv); err != nil {
+			logger.Warn("chap_secrets_inconsistent", "err", err.Error())
 		}
 	}
 
@@ -934,6 +940,12 @@ func retryLibvirtConnect(ctx context.Context, logger *slog.Logger, lv *libvirt.C
 			}
 			if err := libvirt.VerifyCIFSSecretsConsistency(ctx, lv); err != nil {
 				logger.Warn("cifs_secrets_inconsistent", "err", err.Error())
+			}
+			if err := libvirt.LoadCHAPSecrets(lv); err != nil {
+				logger.Warn("chap_secrets_load_failed", "err", err.Error())
+			}
+			if err := libvirt.VerifyCHAPSecretsConsistency(ctx, lv); err != nil {
+				logger.Warn("chap_secrets_inconsistent", "err", err.Error())
 			}
 			return
 		}

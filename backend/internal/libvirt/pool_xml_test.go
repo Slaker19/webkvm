@@ -97,9 +97,121 @@ func TestBuildPoolXMLNFSMissingSource(t *testing.T) {
 }
 
 func TestBuildPoolXMLUnsupportedType(t *testing.T) {
-	_, err := buildPoolXML("iscsi", models.CreatePoolRequest{Name: "i", Path: "/x"})
+	_, err := buildPoolXML("glusterfs", models.CreatePoolRequest{Name: "i", Path: "/x"})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestBuildPoolXMLISCSI(t *testing.T) {
+	got, err := buildPoolXML("iscsi", models.CreatePoolRequest{
+		Name:         "iscsi1",
+		Path:         "/dev/disk/by-path",
+		SourceHost:   "192.168.1.50",
+		SourceDevice: "iqn.2003-01.org.linux-iscsi.target:sn.12345",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wants := []string{
+		"<pool type='iscsi'>",
+		"<name>iscsi1</name>",
+		"<host name='192.168.1.50'/>",
+		"<device path='iqn.2003-01.org.linux-iscsi.target:sn.12345'/>",
+		"<path>/dev/disk/by-path</path>",
+	}
+	for _, w := range wants {
+		if !strings.Contains(got, w) {
+			t.Errorf("missing %q in:\n%s", w, got)
+		}
+	}
+	if strings.Contains(got, "<auth") {
+		t.Errorf("unexpected <auth> block in:\n%s", got)
+	}
+	if extractSourceHost(got) != "192.168.1.50" {
+		t.Errorf("extractSourceHost got %q, want %q", extractSourceHost(got), "192.168.1.50")
+	}
+	if extractSourceDevice(got) != "iqn.2003-01.org.linux-iscsi.target:sn.12345" {
+		t.Errorf("extractSourceDevice got %q, want %q", extractSourceDevice(got), "iqn.2003-01.org.linux-iscsi.target:sn.12345")
+	}
+	if extractSourcePort(got) != 0 {
+		t.Errorf("extractSourcePort got %d, want 0", extractSourcePort(got))
+	}
+}
+
+func TestBuildPoolXMLISCSIWithCustomPort(t *testing.T) {
+	got, err := buildPoolXML("iscsi", models.CreatePoolRequest{
+		Name:         "iscsi-custom",
+		Path:         "/dev/disk/by-path",
+		SourceHost:   "san.local",
+		SourcePort:   3261,
+		SourceDevice: "iqn.2003-01.org.linux-iscsi.target:sn.99999",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "<host name='san.local' port='3261'/>") {
+		t.Errorf("missing custom port in:\n%s", got)
+	}
+	if extractSourcePort(got) != 3261 {
+		t.Errorf("extractSourcePort got %d, want 3261", extractSourcePort(got))
+	}
+}
+
+func TestBuildPoolXMLISCSIWithCHAP(t *testing.T) {
+	got, err := buildPoolXML("iscsi", models.CreatePoolRequest{
+		Name:           "iscsi-chap",
+		Path:           "/dev/disk/by-path",
+		SourceHost:     "192.168.1.50",
+		SourceDevice:   "iqn.2003-01.org.linux-iscsi.target:sn.12345",
+		SourceUsername: "admin_user",
+		SecretUUID:     "12345678-abcd-ef01-2345-6789abcdef01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wants := []string{
+		"<auth type='chap' username='admin_user'>",
+		"<secret uuid='12345678-abcd-ef01-2345-6789abcdef01'/>",
+		"</auth>",
+	}
+	for _, w := range wants {
+		if !strings.Contains(got, w) {
+			t.Errorf("missing %q in:\n%s", w, got)
+		}
+	}
+}
+
+func TestBuildPoolXMLISCSIMissingFields(t *testing.T) {
+	_, err := buildPoolXML("iscsi", models.CreatePoolRequest{
+		Name: "iscsi-bad",
+		Path: "/dev/disk/by-path",
+		// missing SourceHost and SourceDevice
+	})
+	if err == nil {
+		t.Fatal("expected error for missing SourceHost")
+	}
+
+	_, err = buildPoolXML("iscsi", models.CreatePoolRequest{
+		Name:       "iscsi-bad",
+		Path:       "/dev/disk/by-path",
+		SourceHost: "192.168.1.50",
+		// missing SourceDevice
+	})
+	if err == nil {
+		t.Fatal("expected error for missing SourceDevice")
+	}
+
+	_, err = buildPoolXML("iscsi", models.CreatePoolRequest{
+		Name:           "iscsi-bad",
+		Path:           "/dev/disk/by-path",
+		SourceHost:     "192.168.1.50",
+		SourceDevice:   "iqn.123",
+		SourceUsername: "user",
+		// missing SecretUUID
+	})
+	if err == nil {
+		t.Fatal("expected error for missing SecretUUID when username is provided")
 	}
 }
 
@@ -129,9 +241,9 @@ func TestBuildPoolXMLCIFSWithAuth(t *testing.T) {
 	got, err := buildPoolXML("netfs", models.CreatePoolRequest{
 		Name: "smb1", Path: "/mnt/smb1",
 		SourceHost: "files.example.com", SourceDir: "/share",
-		SourceFormat: "cifs",
+		SourceFormat:   "cifs",
 		SourceUsername: "alice",
-		SecretUUID:    "abc-123-def",
+		SecretUUID:     "abc-123-def",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +265,7 @@ func TestBuildPoolXMLCIFSWithUsernameButNoSecret(t *testing.T) {
 	_, err := buildPoolXML("netfs", models.CreatePoolRequest{
 		Name: "smb1", Path: "/mnt/smb1",
 		SourceHost: "h", SourceDir: "/e",
-		SourceFormat: "cifs",
+		SourceFormat:   "cifs",
 		SourceUsername: "alice",
 		// SecretUUID deliberately empty.
 	})
@@ -166,9 +278,9 @@ func TestBuildPoolXMLNFSDoesNotEmitAuth(t *testing.T) {
 	got, err := buildPoolXML("netfs", models.CreatePoolRequest{
 		Name: "nfs1", Path: "/mnt/nfs1",
 		SourceHost: "h", SourceDir: "/e",
-		SourceFormat: "nfs",
+		SourceFormat:   "nfs",
 		SourceUsername: "should-be-ignored",
-		SecretUUID:    "u-ignored",
+		SecretUUID:     "u-ignored",
 	})
 	if err != nil {
 		t.Fatal(err)

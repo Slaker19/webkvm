@@ -76,7 +76,7 @@ func normalizeDiskMode(in string) string {
 // TestSafeDiskPathRE guards the disk-path validator against injection of
 // unsafe targets into wipefs/mkfs/mount.
 func TestSafeDiskPathRE(t *testing.T) {
-	valid := []string{"/dev/sdb", "/dev/sdb1", "/dev/nvme0n1", "/dev/nvme0n1p1", "/dev/vda", "/dev/loop0"}
+	valid := []string{"/dev/sdb", "/dev/sdb1", "/dev/nvme0n1", "/dev/nvme0n1p1", "/dev/vda", "/dev/loop0", "/dev/md0", "/dev/md127", "/dev/md/data"}
 	for _, p := range valid {
 		if !safeDiskPathRE.MatchString(p) {
 			t.Errorf("safeDiskPathRE should accept %q", p)

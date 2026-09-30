@@ -142,15 +142,15 @@ func Load() (*Config, error) {
 		// (setup-bridge.sh, etc.) and the live source tree. The
 		// systemd units set REPO_DIR; WEBKVM_REPO_DIR is the
 		// fallback for dotfiles.
-		RepoDir:       envStrFrom("REPO_DIR", envStrFrom("WEBKVM_REPO_DIR", defaultDataDir(), dotenv), dotenv),
-		VNCProxyHost:  envStrFrom("VNC_PROXY_HOST", "127.0.0.1", dotenv),
-		PublicHost:    envStrFrom("PUBLIC_HOST", "", dotenv),
-		CORSOrigin:    envStrFrom("CORS_ORIGIN", "*", dotenv),
-		LogFile:       envStrFrom("WEBKVM_LOG_FILE", "", dotenv),
+		RepoDir:              envStrFrom("REPO_DIR", envStrFrom("WEBKVM_REPO_DIR", defaultDataDir(), dotenv), dotenv),
+		VNCProxyHost:         envStrFrom("VNC_PROXY_HOST", "127.0.0.1", dotenv),
+		PublicHost:           envStrFrom("PUBLIC_HOST", "", dotenv),
+		CORSOrigin:           envStrFrom("CORS_ORIGIN", "*", dotenv),
+		LogFile:              envStrFrom("WEBKVM_LOG_FILE", "", dotenv),
 		LibvirtStartDelaySec: envIntFrom("LIBVIRT_START_DELAY_SEC", envIntFrom("WEBKVM_LIBVIRT_START_DELAY_SEC", 0, dotenv), dotenv),
-		SecureCookies: envBoolFrom("WEBKVM_COOKIE_SECURE", true, dotenv),
-		IncusEnabled:  envBoolFrom("WEBKVM_INCUS_ENABLED", false, dotenv),
-		IncusSocket:   envStrFrom("INCUS_SOCKET", "", dotenv),
+		SecureCookies:        envBoolFrom("WEBKVM_COOKIE_SECURE", true, dotenv),
+		IncusEnabled:         envBoolFrom("WEBKVM_INCUS_ENABLED", false, dotenv),
+		IncusSocket:          envStrFrom("INCUS_SOCKET", "", dotenv),
 	}, nil
 }
 

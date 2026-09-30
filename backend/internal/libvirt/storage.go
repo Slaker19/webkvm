@@ -114,6 +114,25 @@ func (c *Connector) CreateStoragePool(ctx context.Context, req models.CreatePool
 		poolType = "dir"
 	}
 
+	targetIQN := req.SourceDevice
+	if targetIQN == "" {
+		targetIQN = req.SourceIQN
+	}
+	req.SourceDevice = targetIQN
+
+	if poolType == "iscsi" && req.Path == "" {
+		req.Path = "/dev/disk/by-path"
+	}
+
+	hasCHAPAuth := poolType == "iscsi" && req.SourceUsername != "" && req.SourcePassword != ""
+	if hasCHAPAuth {
+		ref, err := defineCHAPSecret(ctx, c, req.Name, targetIQN, req.SourceUsername, req.SourcePassword)
+		if err != nil {
+			return models.StoragePool{}, fmt.Errorf("define chap secret: %w", err)
+		}
+		req.SecretUUID = ref.SecretUUID
+	}
+
 	if poolType == "dir" && req.Path != "" {
 		if strings.Contains(req.Path, "..") {
 			return models.StoragePool{}, fmt.Errorf("invalid pool path: traversal not allowed")
@@ -129,6 +148,9 @@ func (c *Connector) CreateStoragePool(ctx context.Context, req models.CreatePool
 		if selfManagedSMB {
 			_ = unmountSMBShare(req.Name, req.Path)
 		}
+		if hasCHAPAuth {
+			_ = unsetCHAPSecret(ctx, c, req.Name)
+		}
 		return models.StoragePool{}, err
 	}
 
@@ -137,22 +159,33 @@ func (c *Connector) CreateStoragePool(ctx context.Context, req models.CreatePool
 		if selfManagedSMB {
 			_ = unmountSMBShare(req.Name, req.Path)
 		}
+		if hasCHAPAuth {
+			_ = unsetCHAPSecret(ctx, c, req.Name)
+		}
 		return models.StoragePool{}, fmt.Errorf("define pool: %w", err)
 	}
 	defer pool.Free()
 
 	if err := pool.Build(0); err != nil {
-		pool.Undefine()
-		if selfManagedSMB {
-			_ = unmountSMBShare(req.Name, req.Path)
+		if poolType != "iscsi" {
+			pool.Undefine()
+			if selfManagedSMB {
+				_ = unmountSMBShare(req.Name, req.Path)
+			}
+			if hasCHAPAuth {
+				_ = unsetCHAPSecret(ctx, c, req.Name)
+			}
+			return models.StoragePool{}, fmt.Errorf("build pool: %w", err)
 		}
-		return models.StoragePool{}, fmt.Errorf("build pool: %w", err)
 	}
 
 	if err := pool.Create(0); err != nil {
 		pool.Undefine()
 		if selfManagedSMB {
 			_ = unmountSMBShare(req.Name, req.Path)
+		}
+		if hasCHAPAuth {
+			_ = unsetCHAPSecret(ctx, c, req.Name)
 		}
 		return models.StoragePool{}, fmt.Errorf("create pool: %w", err)
 	}
@@ -209,19 +242,19 @@ func (c *Connector) UpdateStoragePool(ctx context.Context, name string, req mode
 		return models.StoragePool{}, err
 	}
 
-	if req.Path != nil || req.SourceHost != nil || req.SourceDir != nil || req.SourceFormat != nil {
+	if req.Path != nil || req.SourceHost != nil || req.SourcePort != nil || req.SourceDevice != nil || req.SourceIQN != nil || req.SourceDir != nil || req.SourceFormat != nil {
 		return models.StoragePool{}, fmt.Errorf(
 			"updating path/source is not supported; create a new pool and migrate volumes")
 	}
 
 	// A purpose-only update is the common case (retagging a pool from
-	// the UI) and must not fall through into the CIFS reauth path
-	// below, which would reject every non-netfs pool.
+	// the UI) and must not fall through into the CIFS/CHAP reauth path
+	// below, which would reject plain pools.
 	if req.Purpose != nil {
 		if err := c.SetPoolPurpose(name, *req.Purpose); err != nil {
 			return models.StoragePool{}, err
 		}
-		if !req.CifsNeedsReauth && req.SourceUsername == nil {
+		if !req.CifsNeedsReauth && !req.ChapNeedsReauth && req.SourceUsername == nil {
 			return c.storagePoolToModelByName(name)
 		}
 	}
@@ -232,14 +265,14 @@ func (c *Connector) UpdateStoragePool(ctx context.Context, name string, req mode
 	hasPass := req.SourcePassword != nil
 	if hasUser != hasPass {
 		return models.StoragePool{}, fmt.Errorf(
-			"cifs auth requires both username and password")
+			"auth requires both username and password")
 	}
 
 	if hasUser && *req.SourceUsername == "" {
 		return models.StoragePool{}, fmt.Errorf("source_username cannot be empty when reauthing")
 	}
 
-	// Look up the existing pool to make sure it's a CIFS pool before
+	// Look up the existing pool to make sure it's a CIFS or iSCSI pool before
 	// we touch libvirt secrets.
 	pool, err := c.conn.LookupStoragePoolByName(name)
 	if err != nil {
@@ -247,12 +280,12 @@ func (c *Connector) UpdateStoragePool(ctx context.Context, name string, req mode
 	}
 	xmlDesc, _ := pool.GetXMLDesc(0)
 	pType := extractPoolType(xmlDesc)
-	if pType != "netfs" {
+	if pType != "netfs" && pType != "iscsi" {
 		pool.Free()
-		return models.StoragePool{}, fmt.Errorf("reauth only supported for netfs pools (got %q)", pType)
+		return models.StoragePool{}, fmt.Errorf("reauth only supported for netfs or iscsi pools (got %q)", pType)
 	}
 	format := extractPoolFormatFromXML(xmlDesc)
-	if format != "cifs" {
+	if pType == "netfs" && format != "cifs" {
 		pool.Free()
 		return models.StoragePool{}, fmt.Errorf("reauth only supported for cifs pools (got format %q)", format)
 	}
@@ -273,48 +306,31 @@ func (c *Connector) UpdateStoragePool(ctx context.Context, name string, req mode
 
 	// Resolve credentials. If the caller provided them, use them.
 	// Otherwise, fall back to the values from the pool's existing
-	// XML (this is the cifs-needs-reauth-without-credentials case
-	// for the "rebuild secret after libvirtd reinstall" workflow).
+	// XML.
 	user := ""
 	pass := ""
 	if hasUser {
 		user = *req.SourceUsername
 		pass = *req.SourcePassword
 	} else {
-		// Reauth without re-supplying credentials: extract from
-		// the existing <auth>/<name> block in the pool XML. This
-		// only works if the auth was originally set; if not, the
-		// caller must supply new credentials.
-		p, err := c.conn.LookupStoragePoolByName(name)
-		if err != nil {
-			return models.StoragePool{}, fmt.Errorf("lookup pool: %w", err)
-		}
-		xmlDesc, _ := p.GetXMLDesc(0)
-		p.Free()
-		user = extractAuthUsernameFromXML(xmlDesc)
-		if user == "" {
-			return models.StoragePool{}, fmt.Errorf(
-				"no credentials supplied and pool has no <auth> block to recover from; send source_username and source_password")
-		}
-		// We can't recover the password from the pool XML; the
-		// libvirt secret is the only place it lives. Refuse.
 		return models.StoragePool{}, fmt.Errorf(
-			"cifs-needs-reauth without credentials cannot recover the password; send source_username and source_password")
+			"reauth without credentials cannot recover the password; send source_username and source_password")
 	}
 
-	// Define the new secret (defineCIFSSecret is idempotent — it
-	// replaces any pre-existing secret for this pool).
-	if _, err := defineCIFSSecret(ctx, c, name, "cifs-"+name, user, pass); err != nil {
-		return models.StoragePool{}, fmt.Errorf("cifs secret rotation: %w", err)
-	}
-
-	// The pool XML embeds the secret UUID at define time. libvirt
-	// does not live-update that reference; the pool has to be
-	// redefined for the new UUID to take effect. We do that here
-	// by undefine + redefine while inactive.
-	secretUUID, _ := lookupCIFSSecretRef(c.cfg.DataDir, name)
-	if secretUUID == nil {
-		return models.StoragePool{}, fmt.Errorf("cifs: secret not found after rotation")
+	var secretUUID string
+	if pType == "iscsi" {
+		targetIQN := extractSourceDevice(xmlDesc)
+		ref, err := defineCHAPSecret(ctx, c, name, targetIQN, user, pass)
+		if err != nil {
+			return models.StoragePool{}, fmt.Errorf("iscsi chap secret rotation: %w", err)
+		}
+		secretUUID = ref.SecretUUID
+	} else {
+		ref, err := defineCIFSSecret(ctx, c, name, "cifs-"+name, user, pass)
+		if err != nil {
+			return models.StoragePool{}, fmt.Errorf("cifs secret rotation: %w", err)
+		}
+		secretUUID = ref.SecretUUID
 	}
 
 	p, err := c.conn.LookupStoragePoolByName(name)
@@ -330,10 +346,12 @@ func (c *Connector) UpdateStoragePool(ctx context.Context, name string, req mode
 		Type:           pType,
 		Path:           extractPoolPath(poolXML),
 		SourceHost:     extractSourceHost(poolXML),
+		SourcePort:     extractSourcePort(poolXML),
+		SourceDevice:   extractSourceDevice(poolXML),
 		SourceDir:      extractSourceDir(poolXML),
 		SourceFormat:   format,
 		SourceUsername: user,
-		SecretUUID:     secretUUID.SecretUUID,
+		SecretUUID:     secretUUID,
 	}
 	newXML, err := buildPoolXML(pType, req2)
 	if err != nil {
@@ -762,6 +780,36 @@ func (c *Connector) FindVolumeAttachments(poolName, volName string) ([]models.Vo
 	return c.findPathAttachments(vol.Path)
 }
 
+// FindZVolAttachments scans every domain's XML for block disks referencing
+// the given zvol name or /dev/zvol device path.
+func (c *Connector) FindZVolAttachments(zvolName string) ([]models.VolumeAttachment, error) {
+	doms, err := c.ListDomains()
+	if err != nil {
+		return nil, err
+	}
+	cleanZVol := strings.TrimPrefix(strings.TrimSpace(zvolName), "/dev/zvol/")
+	devPath := "/dev/zvol/" + cleanZVol
+	out := []models.VolumeAttachment{}
+	for _, vm := range doms {
+		xmlDesc, err := c.GetDomainXML(vm.ID)
+		if err != nil {
+			continue // unreachable domain: skip, never fail the scan
+		}
+		for _, d := range c.parseDisks(xmlDesc) {
+			if d.BlockDev == devPath || d.ZVol == cleanZVol || (d.BlockDev != "" && strings.TrimPrefix(d.BlockDev, "/dev/zvol/") == cleanZVol) {
+				out = append(out, models.VolumeAttachment{
+					VMID:   vm.ID,
+					VMName: vm.Name,
+					State:  string(vm.State),
+					Device: d.Device,
+					Target: d.Target,
+				})
+			}
+		}
+	}
+	return out, nil
+}
+
 func (c *Connector) findPathAttachments(path string) ([]models.VolumeAttachment, error) {
 	doms, err := c.ListDomains()
 	if err != nil {
@@ -1004,16 +1052,21 @@ func (c *Connector) storagePoolToModel(pool *libvirt.StoragePool) (models.Storag
 	}
 
 	return models.StoragePool{
-		Name:      name,
-		Type:      pType,
-		Path:      pPath,
-		Purpose:   c.poolPurpose(name),
-		Capacity:  safeUint64ToInt64(info.Capacity),
-		Allocated: safeUint64ToInt64(info.Allocation),
-		Available: safeUint64ToInt64(info.Available),
-		State:     state,
-		Autostart: autostart,
-		DeviceID:  deviceIDOf(pPath),
+		Name:         name,
+		Type:         pType,
+		Path:         pPath,
+		Purpose:      c.poolPurpose(name),
+		Capacity:     safeUint64ToInt64(info.Capacity),
+		Allocated:    safeUint64ToInt64(info.Allocation),
+		Available:    safeUint64ToInt64(info.Available),
+		State:        state,
+		Autostart:    autostart,
+		SourceHost:   extractSourceHost(xmlDesc),
+		SourcePort:   extractSourcePort(xmlDesc),
+		SourceDevice: extractSourceDevice(xmlDesc),
+		SourceDir:    extractSourceDir(xmlDesc),
+		SourceFormat: extractPoolFormatFromXML(xmlDesc),
+		DeviceID:     deviceIDOf(pPath),
 	}, nil
 }
 
@@ -1145,10 +1198,11 @@ func (c *Connector) DeletePool(name string) error {
 	}
 
 	// Clean up the libvirt secret and the on-disk mapping if this
-	// pool had CIFS auth via the (legacy, netfs-native) mechanism.
-	// unsetCIFSSecret is idempotent; safe to call even when no secret
+	// pool had CIFS or iSCSI CHAP auth.
+	// unsetCIFSSecret and unsetCHAPSecret are idempotent; safe to call even when no secret
 	// exists for the pool.
 	_ = unsetCIFSSecret(context.Background(), c, name)
+	_ = unsetCHAPSecret(context.Background(), c, name)
 	return nil
 }
 

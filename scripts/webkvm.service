@@ -56,16 +56,16 @@ NoNewPrivileges=false
 ProtectSystem=full
 ProtectHome=false
 PrivateTmp=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
+ProtectKernelTunables=false
+ProtectKernelModules=false
+ProtectControlGroups=false
 RestrictSUIDSGID=false
 LockPersonality=true
 SystemCallArchitectures=native
-MemoryDenyWriteExecute=true
-RestrictNamespaces=true
-ReadWritePaths=/opt/webkvm /var/lib/libvirt /var/tmp /etc/webkvm /etc/systemd/system
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SYS_ADMIN CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID CAP_KILL CAP_SYS_PTRACE CAP_SYS_RESOURCE CAP_AUDIT_WRITE
+MemoryDenyWriteExecute=false
+RestrictNamespaces=false
+ReadWritePaths=/opt/webkvm /var/lib/libvirt /var/tmp /etc/webkvm /etc/systemd/system /etc/mdadm
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SYS_ADMIN CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID CAP_KILL CAP_SYS_PTRACE CAP_SYS_RESOURCE CAP_AUDIT_WRITE CAP_MKNOD CAP_SYS_RAWIO
 AmbientCapabilities=
 
 [Install]

@@ -390,6 +390,10 @@
   let aDiskFormat = $state('qcow2');
   let aDiskVolumes = $state([]);
   let aDiskExistingVol = $state('');
+  let aDiskZVol = $state('');
+  let aDiskZVols = $state([]);
+  let aDiskZVolsLoading = $state(false);
+  let aDiskZVolCustom = $state(false);
   // Result of probing the selected existing disk (null = not probed yet).
   // Used to warn that the image already contains data before attaching.
   let aDiskProbe = $state(null);
@@ -1544,6 +1548,34 @@
     }
   }
 
+  async function loadHostZVols() {
+    if (!auth.isAdmin() || isContainerVm) return;
+    aDiskZVolsLoading = true;
+    try {
+      aDiskZVols = (await api.listHostZVols()) || [];
+    } catch (_e) {
+      aDiskZVols = [];
+    } finally {
+      aDiskZVolsLoading = false;
+    }
+  }
+
+  async function probeZVolDisk() {
+    aDiskProbe = null;
+    aDiskForce = false;
+    const name = aDiskZVol?.trim();
+    if (!name) return;
+    const devPath = name.startsWith('/dev/zvol/') ? name : `/dev/zvol/${name}`;
+    aDiskProbing = true;
+    try {
+      aDiskProbe = await api.probeDisk(devPath, false);
+    } catch (_e) {
+      aDiskProbe = null;
+    } finally {
+      aDiskProbing = false;
+    }
+  }
+
   // Inspect the selected existing disk so we can warn if it already has
   // data before it is attached. Basic probe (qemu-img) is fast and
   // always available; never blocks the dialog on failure.
@@ -1565,9 +1597,28 @@
   async function addDisk() {
     actionLoading = 'adddisk';
     try {
-      const data = { device: aDiskDevice === 'existing' ? 'disk' : aDiskDevice, bus: aDiskBus };
+      const data = {
+        device: aDiskDevice === 'existing' || aDiskDevice === 'zvol' ? 'disk' : aDiskDevice,
+        bus: aDiskBus,
+      };
       if (aDiskDevice === 'cdrom') {
         data.source = aDiskISO;
+      } else if (aDiskDevice === 'zvol') {
+        const zvolName = aDiskZVol?.trim();
+        if (!zvolName) {
+          toast.error(t('vmDetail.zvolSelectPlaceholder'));
+          actionLoading = '';
+          return;
+        }
+        data.zvol = zvolName;
+        data.format = 'raw';
+        if (aDiskProbe?.has_data && !aDiskForce) {
+          toast.warning(t('vmDetail.diskHasDataWarning'));
+          aDiskProbing = false;
+          actionLoading = '';
+          return;
+        }
+        data.force = aDiskForce;
       } else if (aDiskDevice === 'existing') {
         const vol = aDiskVolumes.find((v) => v.path === aDiskExistingVol);
         data.source = aDiskExistingVol;
@@ -2124,6 +2175,8 @@
 
   function diskLabel(d) {
     if (d.device === 'cdrom') return d.name || (d.source ? d.source.split('/').pop() : '(empty)');
+    if (d.zvol) return `zvol: ${d.zvol}`;
+    if (d.block_dev) return d.block_dev;
     return d.name || (d.source ? d.source.split('/').pop() : d.target);
   }
 
@@ -2761,7 +2814,10 @@
                     </SettingRow>
 
                     {#if !isContainerVm}
-                      <SettingRow label={t('vmDetail.minRamLabel')} helper={t('vmDetail.minRamHelper')}>
+                      <SettingRow
+                        label={t('vmDetail.minRamLabel')}
+                        helper={t('vmDetail.minRamHelper')}
+                      >
                         <div class="flex items-center gap-2">
                           <Input
                             id="edit-min-ram"
@@ -2773,12 +2829,17 @@
                             class="tnum w-32 text-center font-medium"
                           />
                           <span class="text-xs text-muted-foreground">
-                            {eMinRamMB > 0 ? `MB (${(eMinRamMB / 1024).toFixed(1)} GB)` : t('vmDetail.minRamDynamic')}
+                            {eMinRamMB > 0
+                              ? `MB (${(eMinRamMB / 1024).toFixed(1)} GB)`
+                              : t('vmDetail.minRamDynamic')}
                           </span>
                         </div>
                       </SettingRow>
 
-                      <SettingRow label={t('vmDetail.iothreadsLabel')} helper={t('vmDetail.iothreadsHelper')}>
+                      <SettingRow
+                        label={t('vmDetail.iothreadsLabel')}
+                        helper={t('vmDetail.iothreadsHelper')}
+                      >
                         <div class="flex items-center gap-2">
                           <Input
                             id="edit-iothreads"
@@ -2788,7 +2849,11 @@
                             bind:value={eIOThreads}
                             class="tnum w-24 text-center font-medium"
                           />
-                          <span class="text-xs text-muted-foreground">{eIOThreads > 0 ? t('vmDetail.iothreadsDedicated') : t('vmDetail.iothreadsDisabled')}</span>
+                          <span class="text-xs text-muted-foreground"
+                            >{eIOThreads > 0
+                              ? t('vmDetail.iothreadsDedicated')
+                              : t('vmDetail.iothreadsDisabled')}</span
+                          >
                         </div>
                       </SettingRow>
                     {/if}
@@ -3604,8 +3669,10 @@
                       <span
                         class="text-xs px-1.5 py-0.5 rounded border {disk.device === 'cdrom'
                           ? 'border-accent/30 bg-accent/10 text-accent'
-                          : 'border-border bg-muted text-muted-foreground'}"
-                        >{disk.device === 'cdrom' ? 'CDROM' : 'DISK'}</span
+                          : disk.zvol
+                            ? 'border-primary/30 bg-primary/10 text-primary'
+                            : 'border-border bg-muted text-muted-foreground'}"
+                        >{disk.device === 'cdrom' ? 'CDROM' : disk.zvol ? 'ZVOL' : 'DISK'}</span
                       >
                       <span class="text-xs text-muted-foreground">{disk.bus}</span>
                       <span class="text-sm truncate">{diskLabel(disk)}</span>
@@ -3976,12 +4043,7 @@
                       />{t('vmDetail.fstrimBtn')}{/if}
                   </Button>
                 {/if}
-                <Button
-                  size="xs"
-                  variant="outline"
-                  onclick={loadGuestInfo}
-                  disabled={guestLoading}
-                >
+                <Button size="xs" variant="outline" onclick={loadGuestInfo} disabled={guestLoading}>
                   {#if guestLoading}<Spinner size="xs" />{:else}{t('common.refresh')}{/if}
                 </Button>
               </div>
@@ -4056,7 +4118,9 @@
                     >
                       <Icon name="user" size={13} class="text-muted-foreground" />
                       <span>{u.user}</span>
-                      {#if u.domain}<span class="text-[10px] text-muted-foreground">({u.domain})</span>{/if}
+                      {#if u.domain}<span class="text-[10px] text-muted-foreground"
+                          >({u.domain})</span
+                        >{/if}
                     </span>
                   {/each}
                 </div>
@@ -5049,7 +5113,9 @@
           ? t('vmDetail.attachIso')
           : aDiskDevice === 'existing'
             ? t('vmDetail.attachExistingDisk')
-            : t('vmDetail.addDisk')}</Dialog.Title
+            : aDiskDevice === 'zvol'
+              ? t('vmDetail.attachZVol')
+              : t('vmDetail.addDisk')}</Dialog.Title
       >
     </Dialog.Header>
     <div class="space-y-3">
@@ -5061,11 +5127,15 @@
           onchange={() => {
             aDiskBus = aDiskDevice === 'cdrom' ? 'scsi' : 'virtio';
             if (aDiskDevice === 'existing') loadDiskVolumesForPool();
+            if (aDiskDevice === 'zvol') loadHostZVols();
           }}
           class="input"
         >
           <option value="disk">{t('vmDetail.diskType')}</option>
           <option value="existing">{t('vmDetail.existingDisk')}</option>
+          {#if auth.isAdmin() && !isContainerVm}
+            <option value="zvol">{t('vmDetail.zvolType')}</option>
+          {/if}
           <option value="cdrom">{t('vmDetail.cdromIso')}</option>
         </select>
       </div>
@@ -5154,6 +5224,79 @@
             </label>
           </div>
         {/if}
+      {:else if aDiskDevice === 'zvol'}
+        <div>
+          <label for="adisk-zvol" class="block text-sm font-medium mb-1.5"
+            >{t('vmDetail.zvolLabel')}</label
+          >
+          {#if aDiskZVolCustom}
+            <div class="space-y-2">
+              <Input
+                id="adisk-zvol-input"
+                type="text"
+                placeholder={t('vmDetail.zvolPlaceholder')}
+                bind:value={aDiskZVol}
+                onblur={probeZVolDisk}
+              />
+              <button
+                type="button"
+                class="text-xs text-accent hover:underline"
+                onclick={() => {
+                  aDiskZVolCustom = false;
+                  aDiskZVol = '';
+                  aDiskProbe = null;
+                }}
+              >
+                ← {t('vmDetail.zvolSelectPlaceholder')}
+              </button>
+            </div>
+          {:else}
+            <select
+              id="adisk-zvol"
+              bind:value={aDiskZVol}
+              disabled={aDiskZVolsLoading}
+              onchange={(e) => {
+                if (e.target.value === '__custom__') {
+                  aDiskZVolCustom = true;
+                  aDiskZVol = '';
+                  aDiskProbe = null;
+                } else {
+                  probeZVolDisk();
+                }
+              }}
+              class="input"
+            >
+              <option value="">{t('vmDetail.zvolSelectPlaceholder')}</option>
+              {#each aDiskZVols as z (z.name)}
+                <option value={z.name} disabled={!!z.used_by && z.used_by.vm_id !== vmId}>
+                  {z.name} ({bytesToStr(z.volsize)})
+                  {#if z.used_by}
+                    - {t('vmDetail.zvolInUseWarning', {
+                      vm: z.used_by.vm_name,
+                      target: z.used_by.target,
+                    })}
+                  {/if}
+                </option>
+              {/each}
+              <option value="__custom__">➕ {t('vmDetail.zvolCustomOption')}</option>
+            </select>
+          {/if}
+          <p class="text-[11px] text-muted-foreground mt-1">{t('vmDetail.zvolHint')}</p>
+        </div>
+        {#if aDiskProbing}
+          <p class="text-xs text-muted-foreground">{t('vmDetail.diskProbing')}</p>
+        {:else if aDiskProbe?.has_data}
+          <div class="rounded-lg border border-warning/40 bg-warning/5 p-2.5 space-y-2">
+            <p class="text-[11px] text-warning flex items-start gap-1.5">
+              <Icon name="alertTriangle" size={12} class="mt-0.5 shrink-0" />
+              <span>{t('vmDetail.diskHasDataDetail', { format: aDiskProbe.format })}</span>
+            </p>
+            <label class="flex items-center gap-2 text-xs cursor-pointer">
+              <Checkbox bind:checked={aDiskForce} />
+              <span>{t('vmDetail.diskForceAttach')}</span>
+            </label>
+          </div>
+        {/if}
       {:else}
         <div>
           <label for="adisk-iso" class="block text-sm font-medium mb-1.5">{t('vmDetail.iso')}</label
@@ -5165,7 +5308,7 @@
           </select>
         </div>
       {/if}
-      {#if aDiskDevice === 'disk' || aDiskDevice === 'existing'}
+      {#if aDiskDevice === 'disk' || aDiskDevice === 'existing' || aDiskDevice === 'zvol'}
         <div class="border-t border-border pt-3 space-y-3">
           <div>
             <label for="adisk-serial" class="block text-xs font-medium mb-1"

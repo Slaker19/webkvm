@@ -209,13 +209,12 @@ func TestParseLeasesWithClientID(t *testing.T) {
 	}
 }
 
-
 func TestDHCPRangeFor(t *testing.T) {
 	cases := []struct {
-		cidr       string
-		wantStart  string
-		wantEnd    string
-		wantEmpty  bool
+		cidr      string
+		wantStart string
+		wantEnd   string
+		wantEmpty bool
 	}{
 		{"192.168.1.0/24", "192.168.1.100", "192.168.1.200", false},
 		// The old code used the un-masked IP (192.168.1.150) and overflowed.

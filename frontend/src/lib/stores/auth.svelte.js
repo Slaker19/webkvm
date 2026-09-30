@@ -646,6 +646,12 @@ export const api = {
   getGuestInfo: (id) => request(`/vms/${id}/guest-info`),
   guestFSTrim: (id) => request(`/vms/${id}/guest/fstrim`, { method: 'POST' }),
   listHostDisks: () => request('/host/disks'),
+  listHostZVols: () => request('/host/zvols'),
+  listHostZpools: () => request('/host/zpools'),
+  createHostZpool: (data) =>
+    request('/host/zpools', { method: 'POST', body: JSON.stringify(data) }),
+  createHostZvol: (data) => request('/host/zvols', { method: 'POST', body: JSON.stringify(data) }),
+  createHostRaid: (data) => request('/host/raid', { method: 'POST', body: JSON.stringify(data) }),
   getStorageBreakdown: () => request('/storage/pools/breakdown'),
   listFilesystems: () => request('/host/disks/filesystems'),
   listOrphanMounts: () => request('/host/disks/orphan-mounts'),

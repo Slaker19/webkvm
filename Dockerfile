@@ -46,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       xfsprogs \
       btrfs-progs \
       f2fs-tools \
+      mdadm \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/webkvm /usr/local/bin/webkvm

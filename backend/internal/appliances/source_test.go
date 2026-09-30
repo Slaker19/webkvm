@@ -45,12 +45,12 @@ func TestValidateSourceURL(t *testing.T) {
 			url:     "://invalid-url",
 			wantErr: true,
 		},
-        {
+		{
 			name:    "subdomain mismatch",
 			url:     "https://cloud-images.ubuntu.com.evil.com/x.qcow2",
 			wantErr: true,
 		},
-        {
+		{
 			name:    "ftp scheme",
 			url:     "ftp://cloud-images.ubuntu.com/x.img",
 			wantErr: true,

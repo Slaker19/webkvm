@@ -28,10 +28,17 @@ const cifsSecretsFileMode os.FileMode = 0600
 var (
 	cifsSecretsMu sync.RWMutex
 	cifsSecrets   = map[string]SecretRef{}
+
+	chapSecretsMu sync.RWMutex
+	chapSecrets   = map[string]SecretRef{}
 )
 
 func cifsSecretsPath(dataDir string) string {
 	return filepath.Join(dataDir, "cifs-secrets.json")
+}
+
+func chapSecretsPath(dataDir string) string {
+	return filepath.Join(dataDir, "chap-secrets.json")
 }
 
 // defineCIFSSecret is the SINGLE source of truth for creating a
@@ -364,4 +371,266 @@ func UnsetCIFSSecretForTest(ctx context.Context, c *Connector, poolName string) 
 // the smoke harness.
 func LookupCIFSSecretRefForTest(dataDir, poolName string) (*SecretRef, error) {
 	return lookupCIFSSecretRef(dataDir, poolName)
+}
+
+// defineCHAPSecret creates a libvirt secret with iSCSI CHAP credentials.
+func defineCHAPSecret(ctx context.Context, c *Connector,
+	poolName, targetIQN, user, pass string) (*SecretRef, error) {
+
+	if err := c.ensureConnected(); err != nil {
+		return nil, err
+	}
+	conn := c.Get()
+	if conn == nil {
+		return nil, errors.New("libvirt not connected")
+	}
+
+	_ = unsetCHAPSecret(ctx, c, poolName)
+
+	secret, err := conn.SecretDefineXML(buildCHAPSecretXML(poolName, targetIQN, user), 0)
+	if err != nil {
+		return nil, fmt.Errorf("iscsi chap: libvirt define: %w", err)
+	}
+	defer secret.Free()
+
+	if err := secret.SetValue([]byte(pass), 0); err != nil {
+		_ = secret.Undefine()
+		return nil, fmt.Errorf("iscsi chap: libvirt set value: %w", err)
+	}
+
+	uuid, err := secret.GetUUIDString()
+	if err != nil {
+		_ = secret.Undefine()
+		return nil, fmt.Errorf("iscsi chap: get uuid: %w", err)
+	}
+
+	ref := &SecretRef{
+		PoolName:   poolName,
+		SecretUUID: uuid,
+		CreatedAt:  time.Now().Unix(),
+	}
+	if c.cfg == nil {
+		_ = secret.Undefine()
+		return nil, errors.New("iscsi chap: connector has no config; cannot resolve dataDir")
+	}
+	if err := persistCHAPSecretRef(c.cfg.DataDir, ref); err != nil {
+		_ = secret.Undefine()
+		return nil, fmt.Errorf("iscsi chap: persist (rolled back libvirt secret): %w", err)
+	}
+
+	chapSecretsMu.Lock()
+	chapSecrets[poolName] = *ref
+	chapSecretsMu.Unlock()
+
+	return ref, nil
+}
+
+// unsetCHAPSecret removes the libvirt secret and the on-disk mapping for an iSCSI pool.
+func unsetCHAPSecret(ctx context.Context, c *Connector, poolName string) error {
+	chapSecretsMu.Lock()
+	ref, inMem := chapSecrets[poolName]
+	delete(chapSecrets, poolName)
+	chapSecretsMu.Unlock()
+
+	if !inMem && c != nil && c.cfg != nil {
+		if r, err := readCHAPSecretRef(c.cfg.DataDir, poolName); err == nil && r != nil {
+			ref = *r
+		}
+	}
+
+	if ref.SecretUUID != "" && c != nil && c.IsConnected() {
+		if conn := c.Get(); conn != nil {
+			if s, err := conn.LookupSecretByUUIDString(ref.SecretUUID); err == nil && s != nil {
+				_ = s.Undefine()
+				s.Free()
+			}
+		}
+	}
+
+	if c == nil || c.cfg == nil {
+		return nil
+	}
+	return removeCHAPSecretRef(c.cfg.DataDir, poolName)
+}
+
+func lookupCHAPSecretRef(dataDir, poolName string) (*SecretRef, error) {
+	chapSecretsMu.RLock()
+	if r, ok := chapSecrets[poolName]; ok {
+		chapSecretsMu.RUnlock()
+		return &r, nil
+	}
+	chapSecretsMu.RUnlock()
+	return readCHAPSecretRef(dataDir, poolName)
+}
+
+func loadCHAPSecretsFromDisk(dataDir string) error {
+	if dataDir == "" {
+		return nil
+	}
+	b, err := os.ReadFile(chapSecretsPath(dataDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var all map[string]SecretRef
+	if err := json.Unmarshal(b, &all); err != nil {
+		return fmt.Errorf("chap-secrets.json: %w", err)
+	}
+	chapSecretsMu.Lock()
+	defer chapSecretsMu.Unlock()
+	for k, v := range all {
+		chapSecrets[k] = v
+	}
+	return nil
+}
+
+func persistCHAPSecretRef(dataDir string, ref *SecretRef) error {
+	if dataDir == "" {
+		return errors.New("iscsi chap: dataDir is empty")
+	}
+	path := chapSecretsPath(dataDir)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	chapSecretsMu.Lock()
+	all := make(map[string]SecretRef, len(chapSecrets)+1)
+	for k, v := range chapSecrets {
+		all[k] = v
+	}
+	chapSecretsMu.Unlock()
+
+	if existing, err := readCHAPSecretRefMap(dataDir); err == nil {
+		for k, v := range existing {
+			if _, taken := all[k]; !taken {
+				all[k] = v
+			}
+		}
+	}
+	all[ref.PoolName] = *ref
+
+	b, err := json.MarshalIndent(all, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, cifsSecretsFileMode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func removeCHAPSecretRef(dataDir, poolName string) error {
+	if dataDir == "" {
+		return nil
+	}
+	path := chapSecretsPath(dataDir)
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var all map[string]SecretRef
+	if err := json.Unmarshal(b, &all); err != nil {
+		return err
+	}
+	if _, ok := all[poolName]; !ok {
+		return nil
+	}
+	delete(all, poolName)
+	out, err := json.MarshalIndent(all, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, cifsSecretsFileMode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func readCHAPSecretRef(dataDir, poolName string) (*SecretRef, error) {
+	all, err := readCHAPSecretRefMap(dataDir)
+	if err != nil || all == nil {
+		return nil, err
+	}
+	r, ok := all[poolName]
+	if !ok {
+		return nil, nil
+	}
+	return &r, nil
+}
+
+func readCHAPSecretRefMap(dataDir string) (map[string]SecretRef, error) {
+	if dataDir == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(chapSecretsPath(dataDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var all map[string]SecretRef
+	if err := json.Unmarshal(b, &all); err != nil {
+		return nil, err
+	}
+	return all, nil
+}
+
+func buildCHAPSecretXML(poolName, targetIQN, user string) string {
+	targetXML := ""
+	if targetIQN != "" {
+		targetXML = fmt.Sprintf("\n  <usage type='iscsi'>\n    <target>%s</target>\n  </usage>", xmlEscape(targetIQN))
+	}
+	return fmt.Sprintf(`<secret ephemeral='no' private='yes'>
+  <description>iSCSI CHAP auth: pool=%s user=%s</description>%s
+</secret>`, xmlEscape(poolName), xmlEscape(user), targetXML)
+}
+
+func verifyCHAPSecretsConsistency(ctx context.Context, c *Connector) error {
+	if c == nil || !c.IsConnected() {
+		return nil
+	}
+	conn := c.Get()
+	if conn == nil {
+		return nil
+	}
+	chapSecretsMu.RLock()
+	pairs := make([]SecretRef, 0, len(chapSecrets))
+	for _, v := range chapSecrets {
+		pairs = append(pairs, v)
+	}
+	chapSecretsMu.RUnlock()
+
+	for _, ref := range pairs {
+		s, err := conn.LookupSecretByUUIDString(ref.SecretUUID)
+		if err != nil {
+			slog.Warn("chap_secret_missing_in_libvirt",
+				"pool", ref.PoolName,
+				"uuid", ref.SecretUUID,
+				"hint", "PUT /api/storage/pools/"+ref.PoolName+" with chap-needs-reauth=true to recreate")
+			continue
+		}
+		s.Free()
+	}
+	return nil
+}
+
+// LoadCHAPSecrets hydrates the in-memory chapSecrets map from disk at startup.
+func LoadCHAPSecrets(c *Connector) error {
+	if c == nil || c.cfg == nil {
+		return nil
+	}
+	return loadCHAPSecretsFromDisk(c.cfg.DataDir)
+}
+
+// VerifyCHAPSecretsConsistency is the exported wrapper for startup consistency check.
+func VerifyCHAPSecretsConsistency(ctx context.Context, c *Connector) error {
+	return verifyCHAPSecretsConsistency(ctx, c)
 }

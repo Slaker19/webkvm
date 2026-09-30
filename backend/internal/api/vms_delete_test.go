@@ -26,7 +26,7 @@ type deleteTestBackend struct {
 }
 
 func (b *deleteTestBackend) GetDomain(id string) (models.VM, error) { return b.vm, nil }
-func (b *deleteTestBackend) DeleteDomain(id string) error            { return nil }
+func (b *deleteTestBackend) DeleteDomain(id string) error           { return nil }
 func (b *deleteTestBackend) DeleteVMDiskFiles(vmName string, exact ...string) ([]string, []string, error) {
 	return []string{vmName + ".qcow2"}, nil, nil
 }

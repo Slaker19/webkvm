@@ -3,6 +3,7 @@ package libvirt
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"webkvm/internal/models"
@@ -97,8 +98,54 @@ func buildPoolXML(poolType string, req models.CreatePoolRequest) (string, error)
 			xmlEscape(req.Path),
 		), nil
 
+	case "iscsi":
+		if req.SourceHost == "" {
+			return "", fmt.Errorf("iscsi pool requires source_host")
+		}
+		targetIQN := req.SourceDevice
+		if targetIQN == "" {
+			targetIQN = req.SourceIQN
+		}
+		if targetIQN == "" {
+			return "", fmt.Errorf("iscsi pool requires source_device (target IQN)")
+		}
+
+		portAttr := ""
+		if req.SourcePort > 0 && req.SourcePort != 3260 {
+			portAttr = fmt.Sprintf(" port='%d'", req.SourcePort)
+		}
+
+		authBlock := ""
+		if req.SourceUsername != "" {
+			if req.SecretUUID == "" {
+				return "", fmt.Errorf("iscsi chap auth requires a libvirt secret (SecretUUID)")
+			}
+			authBlock = fmt.Sprintf(`    <auth type='chap' username='%s'>
+      <secret uuid='%s'/>
+    </auth>
+`, xmlEscape(req.SourceUsername), xmlEscape(req.SecretUUID))
+		}
+
+		return fmt.Sprintf(`<pool type='iscsi'>
+  <name>%s</name>
+  <source>
+    <host name='%s'%s/>
+    <device path='%s'/>
+%s  </source>
+  <target>
+    <path>%s</path>
+  </target>
+</pool>`,
+			xmlEscape(req.Name),
+			xmlEscape(req.SourceHost),
+			portAttr,
+			xmlEscape(targetIQN),
+			authBlock,
+			xmlEscape(req.Path),
+		), nil
+
 	default:
-		return "", fmt.Errorf("unsupported pool type %q (use 'dir' or 'netfs')", poolType)
+		return "", fmt.Errorf("unsupported pool type %q (use 'dir', 'netfs' or 'iscsi')", poolType)
 	}
 }
 
@@ -220,6 +267,49 @@ func extractSourceDir(xml string) string {
 	i := strings.Index(xml, marker)
 	if i < 0 {
 		const m2 = `<dir path="`
+		i = strings.Index(xml, m2)
+		if i < 0 {
+			return ""
+		}
+		i += len(m2)
+	} else {
+		i += len(marker)
+	}
+	j := strings.IndexAny(xml[i:], "'\"")
+	if j < 0 {
+		return ""
+	}
+	return xml[i : i+j]
+}
+
+// extractSourcePort returns the port from <source><host ... port='...'/> in the pool XML. Returns 0 if absent.
+func extractSourcePort(xml string) int {
+	const marker = " port='"
+	i := strings.Index(xml, marker)
+	if i < 0 {
+		const m2 = ` port="`
+		i = strings.Index(xml, m2)
+		if i < 0 {
+			return 0
+		}
+		i += len(m2)
+	} else {
+		i += len(marker)
+	}
+	j := strings.IndexAny(xml[i:], "'\"")
+	if j < 0 {
+		return 0
+	}
+	p, _ := strconv.Atoi(xml[i : i+j])
+	return p
+}
+
+// extractSourceDevice returns the device path (target IQN) from <source><device path='...'/> in the pool XML. Returns "" if absent.
+func extractSourceDevice(xml string) string {
+	const marker = "<device path='"
+	i := strings.Index(xml, marker)
+	if i < 0 {
+		const m2 = `<device path="`
 		i = strings.Index(xml, m2)
 		if i < 0 {
 			return ""

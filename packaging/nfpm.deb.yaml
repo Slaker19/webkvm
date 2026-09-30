@@ -89,3 +89,4 @@ depends:
   - f2fs-tools
 recommends:
   - incus
+  - mdadm

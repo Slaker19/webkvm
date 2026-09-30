@@ -82,7 +82,6 @@ func TestStoreCreateUpdateDelete(t *testing.T) {
 	}
 }
 
-
 func TestProvisionScriptPreservedInUpdate(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(filepath.Join(dir, "appliances.json"))

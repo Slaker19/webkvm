@@ -10,8 +10,8 @@ import (
 
 // smbEntryLine matches one smbclient `ls` output line, e.g.:
 //
-//	  VDI                                 D        0  Fri Sep 11 21:48:16 2026
-//	  hello.txt                           N       23  Fri Sep 11 20:55:27 2026
+//	VDI                                 D        0  Fri Sep 11 21:48:16 2026
+//	hello.txt                           N       23  Fri Sep 11 20:55:27 2026
 //
 // Anchored on the attribute column (a short run of D/A/H/S/R/N letters)
 // followed by size and the standard timestamp format (asctime).

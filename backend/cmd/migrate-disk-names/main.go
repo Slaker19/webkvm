@@ -1,13 +1,13 @@
 // One-shot migration: rename disk files in storage pools to the
 // new VM-name-based format. Replaces the old patterns:
 //
-//   *<unix-timestamp>.*            (e.g. "ubuntu-1-1782508261.1782283212")
-//   *-restored-YYYY-MM-DDTHH-MM-SS.* (recent v10 format)
+//	*<unix-timestamp>.*            (e.g. "ubuntu-1-1782508261.1782283212")
+//	*-restored-YYYY-MM-DDTHH-MM-SS.* (recent v10 format)
 //
 // with the canonical new format:
 //
-//   <vmName>.qcow2                 (first disk)
-//   <vmName>-2.qcow2, -3, ...      (re-imports / multi-disk)
+//	<vmName>.qcow2                 (first disk)
+//	<vmName>-2.qcow2, -3, ...      (re-imports / multi-disk)
 //
 // The migration walks every libvirt domain, finds the disk files
 // it references that do NOT match the new format, and renames

@@ -6,10 +6,23 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
-## [0.1.2-dev] — Unreleased
+## [0.1.2] — 2026-09-30
 
 ### Added
 
+- **ZFS Storage Pools & ZVols:**
+  - Management of ZFS storage pools with support for stripe, mirror, raidz1, and raidz2 topologies.
+  - Creation and lifecycle of raw block devices (ZVols) with thin provisioning (sparse) support for direct native VM attachment.
+  - Dedicated REST API endpoints: `GET /api/host/zpools`, `POST /api/host/zpools`, `GET /api/host/zvols`, `POST /api/host/zvols`, and `DELETE /api/host/zvols/{name}`.
+  - Dedicated ZFS management tab in the WebKVM Storage dashboard with pool and volume creation wizards.
+- **Linux Software RAID (mdadm):**
+  - Creation and management of host software RAID arrays supporting RAID levels 0, 1, 5, 6, and 10.
+  - Automatic persistence to `/etc/mdadm/mdadm.conf` and safe disk/mount validation checks.
+  - Dedicated REST API endpoint: `POST /api/host/raid`.
+  - Interactive RAID array creation wizard in the Storage view.
+- **Host Disk Filtering:**
+  - Automatic exclusion of squashfs, iso9660, and snap loop devices from host physical disk listings.
+  - Recognition and support for `/dev/md*` software RAID block devices.
 - **Live VM hardware & ballooning:**
   - Memory ballooning floor (`min_ram_mb`) support for dynamic memory reclaiming with guaranteed lower bounds.
   - Dedicated IOThreads (`iothreads`) support for VirtIO-SCSI storage controllers and event loop concurrency.

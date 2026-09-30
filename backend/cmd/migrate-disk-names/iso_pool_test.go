@@ -12,7 +12,7 @@ func TestIsISOPool(t *testing.T) {
 		"webkvm-isos", // current built-in library
 		"ISOS",        // pre-v2.5 built-in library
 		"isos",
-		"Lexar-isos",    // per-purpose pool from the init-disk flow
+		"Lexar-isos",  // per-purpose pool from the init-disk flow
 		"mydisk-ISOS", // same, upper-cased by hand
 		"Seagate-contenedores-isos",
 	}

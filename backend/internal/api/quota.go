@@ -56,9 +56,10 @@ func vmTotalDiskGB(vm models.VM) int64 {
 // pool rather than an unnamed path — it also ate the per-pool quota of a
 // pool the user can never write to. Mounting a 6 GB Windows ISO must not
 // cost 6 GB of anyone's quota; the image is shared, read-only, and not
-// the user's to begin with.
+// the user's to begin with. Block disks and ZFS zvols are also excluded as
+// they are admin-managed raw block devices outside pool storage quotas.
 func countsAgainstQuota(d models.DiskInfo) bool {
-	return d.Device != "cdrom" && !d.ReadOnly
+	return d.Device != "cdrom" && !d.ReadOnly && d.Type != "block" && d.BlockDev == "" && d.ZVol == ""
 }
 
 // vmTotalDiskByPool groups a VM's disk usage by storage pool.

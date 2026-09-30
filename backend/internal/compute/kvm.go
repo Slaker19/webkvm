@@ -274,6 +274,9 @@ func (b *KVMBackend) VolumeExists(poolName, volName string) (bool, error) {
 func (b *KVMBackend) FindVolumeAttachments(poolName, volName string) ([]models.VolumeAttachment, error) {
 	return b.lv.FindVolumeAttachments(poolName, volName)
 }
+func (b *KVMBackend) FindZVolAttachments(zvolName string) ([]models.VolumeAttachment, error) {
+	return b.lv.FindZVolAttachments(zvolName)
+}
 
 func (b *KVMBackend) BackingDependents(poolName, volName string) ([]string, error) {
 	return b.lv.BackingDependents(poolName, volName)

@@ -15,7 +15,8 @@ depends=('ca-certificates' 'curl' 'openssl' 'libisoburn' 'xz' 'libvirt' 'qemu-fu
          'tar' 'zstd' 'virt-install' 'dnsmasq' 'nftables' 'iptables'
          'nfs-utils' 'cifs-utils' 'smbclient' 'gptfdisk' 'parted' 'e2fsprogs'
          'xfsprogs' 'btrfs-progs' 'f2fs-tools')
-optdepends=('incus: LXC container backend (WEBKVM_INCUS_ENABLED=1)')
+optdepends=('incus: LXC container backend (WEBKVM_INCUS_ENABLED=1)'
+            'mdadm: Linux Software RAID management')
 provides=('webkvm')
 conflicts=('webkvm')
 backup=('etc/default/webkvm')

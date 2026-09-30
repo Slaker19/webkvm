@@ -11,10 +11,10 @@ import (
 
 	"go.uber.org/goleak"
 )
+
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m, goleak.IgnoreCurrent())
 }
-
 
 func TestStoreCreateAndValidate(t *testing.T) {
 	dir := t.TempDir()

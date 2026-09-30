@@ -123,14 +123,20 @@
         <div class="flex rounded-md border border-border bg-muted/40 p-0.5">
           <button
             type="button"
-            class="px-2 py-0.5 text-xs font-medium rounded transition-colors cursor-pointer {ipMode === 'dhcp' ? 'bg-background shadow-xs text-foreground font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+            class="px-2 py-0.5 text-xs font-medium rounded transition-colors cursor-pointer {ipMode ===
+            'dhcp'
+              ? 'bg-background shadow-xs text-foreground font-semibold'
+              : 'text-muted-foreground hover:text-foreground'}"
             onclick={() => (ipMode = 'dhcp')}
           >
             DHCP
           </button>
           <button
             type="button"
-            class="px-2 py-0.5 text-xs font-medium rounded transition-colors cursor-pointer {ipMode === 'static' ? 'bg-background shadow-xs text-foreground font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+            class="px-2 py-0.5 text-xs font-medium rounded transition-colors cursor-pointer {ipMode ===
+            'static'
+              ? 'bg-background shadow-xs text-foreground font-semibold'
+              : 'text-muted-foreground hover:text-foreground'}"
             onclick={() => (ipMode = 'static')}
           >
             {t('cloudInit.staticIP')}
@@ -141,7 +147,10 @@
       {#if ipMode === 'static'}
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
           <div>
-            <label for="{idPrefix}-static-ip" class="text-xs font-medium text-foreground block mb-1">
+            <label
+              for="{idPrefix}-static-ip"
+              class="text-xs font-medium text-foreground block mb-1"
+            >
               {t('cloudInit.ipAddressCIDR')} *
             </label>
             <input

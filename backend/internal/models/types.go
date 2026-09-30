@@ -122,11 +122,11 @@ type CreateVMRequest struct {
 	TPMVersion string `json:"tpm_version,omitempty"`
 	// WatchdogEnabled adds an i6300esb watchdog device (action='reset')
 	// — works on both q35 and i440fx, no chipset restriction.
-	WatchdogEnabled  *bool  `json:"watchdog_enabled,omitempty"`
+	WatchdogEnabled *bool `json:"watchdog_enabled,omitempty"`
 	// MinRAMMB sets the minimum memory floor in MB for memory ballooning.
 	MinRAMMB int64 `json:"min_ram_mb,omitempty"`
 	// IOThreads sets dedicated IOThread workers for storage/controller IO.
-	IOThreads int `json:"iothreads,omitempty"`
+	IOThreads        int    `json:"iothreads,omitempty"`
 	Firmware         string `json:"firmware,omitempty"`
 	DiskFormat       string `json:"disk_format,omitempty"`
 	VirtIOISO        string `json:"virtio_iso,omitempty"`
@@ -221,11 +221,13 @@ type UpdateVMRequest struct {
 }
 
 type DiskInfo struct {
-	Device   string `json:"device"` // disk, cdrom
-	Bus      string `json:"bus"`    // virtio, sata, scsi, ide
-	Target   string `json:"target"` // vda, sda, hda, etc.
-	Source   string `json:"source"` // file path
-	Name     string `json:"name"`   // display name (root backing file basename)
+	Device   string `json:"device"`              // disk, cdrom
+	Bus      string `json:"bus"`                 // virtio, sata, scsi, ide
+	Target   string `json:"target"`              // vda, sda, hda, etc.
+	Source   string `json:"source"`              // file path
+	BlockDev string `json:"block_dev,omitempty"` // host block device path (/dev/zvol/...)
+	ZVol     string `json:"zvol,omitempty"`      // ZFS volume identifier ("pool/vol")
+	Name     string `json:"name"`                // display name (root backing file basename)
 	Pool     string `json:"pool,omitempty"`
 	SizeGB   int64  `json:"size_gb,omitempty"`
 	ReadOnly bool   `json:"readonly"`
@@ -246,10 +248,53 @@ type VolumeAttachment struct {
 	Target string `json:"target"` // vda, sda...
 }
 
+// HostZVol represents a discovered ZFS volume on the host.
+type HostZVol struct {
+	Name    string            `json:"name"`              // "pool/vol"
+	Pool    string            `json:"pool"`              // "pool"
+	VolSize int64             `json:"volsize"`           // volume size in bytes
+	Used    int64             `json:"used"`              // allocated bytes
+	Device  string            `json:"device"`            // "/dev/zvol/pool/vol"
+	UsedBy  *VolumeAttachment `json:"used_by,omitempty"` // domain using this zvol if attached
+}
+
+// HostZPool represents a discovered ZFS pool on the host.
+type HostZPool struct {
+	Name       string   `json:"name"`
+	Size       int64    `json:"size_bytes"`
+	SizeHuman  string   `json:"size_human"`
+	Allocated  int64    `json:"allocated_bytes"`
+	AllocHuman string   `json:"alloc_human"`
+	Free       int64    `json:"free_bytes"`
+	FreeHuman  string   `json:"free_human"`
+	Health     string   `json:"health"`
+	Devices    []string `json:"devices,omitempty"`
+}
+
+type CreateZPoolRequest struct {
+	Name     string   `json:"name"`
+	Topology string   `json:"topology"` // stripe, mirror, raidz1, raidz2
+	Devices  []string `json:"devices"`
+}
+
+type CreateZVolRequest struct {
+	Pool   string `json:"pool"`
+	Name   string `json:"name"`
+	SizeGB int64  `json:"size_gb"`
+	Sparse bool   `json:"sparse"`
+}
+
+type CreateRAIDRequest struct {
+	Name    string   `json:"name,omitempty"` // e.g. "/dev/md0" or "md0"
+	Level   string   `json:"level"`          // 0, 1, 5, 6, 10 / raid0, raid1...
+	Devices []string `json:"devices"`
+}
+
 type AttachDiskRequest struct {
 	Device      string `json:"device"`                  // disk, cdrom
 	Bus         string `json:"bus"`                     // virtio, sata, scsi, ide
 	Source      string `json:"source,omitempty"`        // for cdrom: ISO path
+	ZVol        string `json:"zvol,omitempty"`          // for raw block: existing ZFS volume "pool/name"
 	SizeGB      int64  `json:"size_gb,omitempty"`       // for disk: new size
 	Pool        string `json:"pool,omitempty"`          // storage pool for new disk
 	Format      string `json:"format,omitempty"`        // for disk: qcow2, raw
@@ -525,15 +570,20 @@ type CreateSnapshotRequest struct {
 }
 
 type StoragePool struct {
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Path      string `json:"path"`
-	Purpose   string `json:"purpose"`
-	Capacity  int64  `json:"capacity"`
-	Allocated int64  `json:"allocated"`
-	Available int64  `json:"available"`
-	State     string `json:"state"`
-	Autostart bool   `json:"autostart"`
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	Path         string `json:"path"`
+	Purpose      string `json:"purpose"`
+	Capacity     int64  `json:"capacity"`
+	Allocated    int64  `json:"allocated"`
+	Available    int64  `json:"available"`
+	State        string `json:"state"`
+	Autostart    bool   `json:"autostart"`
+	SourceHost   string `json:"source_host,omitempty"`
+	SourcePort   int    `json:"source_port,omitempty"`
+	SourceDevice string `json:"source_device,omitempty"`
+	SourceDir    string `json:"source_dir,omitempty"`
+	SourceFormat string `json:"source_format,omitempty"`
 	// DeviceID identifies the underlying block device/filesystem this
 	// pool's directory lives on (the stat(2) st_dev of Path). A "dir"
 	// pool's Capacity/Available from libvirt are the FULL underlying
@@ -547,23 +597,27 @@ type StoragePool struct {
 
 type CreatePoolRequest struct {
 	Name         string `json:"name"`
-	Type         string `json:"type"`          // dir, netfs
-	Path         string `json:"path"`          // local target path (where the mount lands)
-	SourceHost   string `json:"source_host"`   // for netfs
-	SourceDir    string `json:"source_dir"`    // for netfs
-	SourceFormat string `json:"source_format"` // nfs, cifs (defaults to nfs)
+	Type         string `json:"type"`                    // dir, netfs, iscsi
+	Path         string `json:"path"`                    // local target path (where the mount lands, or /dev/disk/by-path for iscsi)
+	SourceHost   string `json:"source_host,omitempty"`   // for netfs, iscsi
+	SourcePort   int    `json:"source_port,omitempty"`   // for iscsi (default 3260)
+	SourceDevice string `json:"source_device,omitempty"` // for iscsi (Target IQN)
+	SourceIQN    string `json:"source_iqn,omitempty"`    // alias for source_device
+	SourceDir    string `json:"source_dir,omitempty"`    // for netfs
+	SourceFormat string `json:"source_format,omitempty"` // nfs, cifs (defaults to nfs)
 	Purpose      string `json:"purpose"`
 
 	// SourceUsername / SourcePassword are accepted for netfs pools
-	// with SourceFormat=cifs. Both must be set together (validated
-	// in the API handler with HTTP 400) or the backend refuses to
-	// build the <auth> block.
+	// with SourceFormat=cifs or iscsi pools with CHAP. Both must be
+	// set together (validated in the API handler with HTTP 400) or
+	// the backend refuses to build the <auth> block.
 	SourceUsername string `json:"source_username,omitempty"`
 	SourcePassword string `json:"source_password,omitempty"`
 
 	// SecretUUID is set internally by the libvirt layer after a
-	// successful defineCIFSSecret. It is never accepted from the
-	// client and never echoed back. Hidden from JSON with `json:"-"`.
+	// successful defineCIFSSecret or defineCHAPSecret. It is never
+	// accepted from the client and never echoed back. Hidden from
+	// JSON with `json:"-"`.
 	SecretUUID string `json:"-"`
 }
 
@@ -576,22 +630,27 @@ type CreatePoolRequest struct {
 type UpdatePoolRequest struct {
 	Path         *string `json:"path,omitempty"`
 	SourceHost   *string `json:"source_host,omitempty"`
+	SourcePort   *int    `json:"source_port,omitempty"`
+	SourceDevice *string `json:"source_device,omitempty"`
+	SourceIQN    *string `json:"source_iqn,omitempty"`
 	SourceDir    *string `json:"source_dir,omitempty"`
 	SourceFormat *string `json:"source_format,omitempty"`
 
-	// CIFS auth fields. Must come together (both nil or both set)
+	// CIFS/CHAP auth fields. Must come together (both nil or both set)
 	// to avoid silently misconfiguring the pool. The handler
 	// rejects mismatched values with HTTP 400.
 	SourceUsername *string `json:"source_username,omitempty"`
 	SourcePassword *string `json:"source_password,omitempty"`
 
 	// CifsNeedsReauth: when true, the backend re-creates the
-	// libvirt secret for this pool using the supplied credentials
+	// libvirt secret for this CIFS pool using the supplied credentials
 	// and updates the pool XML to reference the new secret UUID.
-	// Use this after a libvirtd reinstall, or to rotate the
-	// password without recreating the pool. Requires operator
-	// role.
 	CifsNeedsReauth bool `json:"cifs-needs-reauth,omitempty"`
+
+	// ChapNeedsReauth: when true, the backend re-creates the
+	// libvirt secret for this iSCSI pool using the supplied CHAP credentials
+	// and updates the pool XML to reference the new secret UUID.
+	ChapNeedsReauth bool `json:"chap-needs-reauth,omitempty"`
 
 	// Purpose retags what the pool is for ("disk", "iso",
 	// "container", "backup", "template"). The purpose is NOT part of
@@ -687,7 +746,7 @@ type CreateNetworkRequest struct {
 	Kind string `json:"kind"` // "nat" | "isolated" | "direct"; falls back to Forward when empty
 	// Forward is a deprecated alias for Kind ("" / "bridge" == "isolated").
 	Forward string `json:"forward"`
-	CIDR    string `json:"cidr"` // required for "nat"/"isolated", optional for "direct"
+	CIDR    string `json:"cidr"`              // required for "nat"/"isolated", optional for "direct"
 	Gateway string `json:"gateway,omitempty"` // optional default gateway
 	Bridge  string `json:"bridge,omitempty"`
 	// Interface is required for kind=="direct": the physical/wireless

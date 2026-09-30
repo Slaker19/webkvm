@@ -6,10 +6,23 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
-## [0.1.2-dev] — No publicado
+## [0.1.2] — 2026-09-30
 
 ### Añadido
 
+- **Pools de Almacenamiento ZFS y ZVols:**
+  - Gestión integral de pools de almacenamiento ZFS con soporte para topologías stripe, mirror, raidz1 y raidz2.
+  - Creación y ciclo de vida de volúmenes de bloques crudos (ZVols) con aprovisionamiento fino (*sparse*) para conexión nativa directa a VMs.
+  - Endpoints REST dedicados: `GET /api/host/zpools`, `POST /api/host/zpools`, `GET /api/host/zvols`, `POST /api/host/zvols` y `DELETE /api/host/zvols/{name}`.
+  - Pestaña de gestión ZFS dedicada en la vista de Almacenamiento con asistentes para creación de pools y volúmenes.
+- **Software RAID en Linux (`mdadm`):**
+  - Creación y gestión de arrays software RAID soportando niveles 0, 1, 5, 6 y 10.
+  - Persistencia automática en `/etc/mdadm/mdadm.conf` y validaciones de seguridad de discos y puntos de montaje.
+  - Endpoint REST dedicado: `POST /api/host/raid`.
+  - Asistente interactivo de creación de arrays RAID en la vista de Almacenamiento.
+- **Filtrado de Discos del Sistema Anfitrión:**
+  - Exclusión automática de dispositivos loop correspondientes a squashfs, iso9660 y paquetes snap en el listado de discos físicos.
+  - Reconocimiento y soporte para dispositivos de bloques `/dev/md*`.
 - **Hardware de VM en vivo y ballooning:**
   - Soporte de límite inferior de ballooning de memoria (`min_ram_mb`) para recuperación dinámica con suelo garantizado.
   - Soporte de IOThreads dedicados (`iothreads`) para controladores de almacenamiento VirtIO-SCSI y concurrencia de bucle de eventos.

@@ -13,10 +13,10 @@ import (
 
 	"go.uber.org/goleak"
 )
+
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m, goleak.IgnoreCurrent())
 }
-
 
 func TestInitWithFile_EmptyPathIsStderrOnly(t *testing.T) {
 	InitWithFile("text", "info", "")
@@ -173,13 +173,13 @@ func TestTeeHandler_ConcurrentSafe(t *testing.T) {
 
 func TestParseLevel(t *testing.T) {
 	cases := map[string]slog.Level{
-		"":         slog.LevelInfo,
-		"INFO":     slog.LevelInfo,
-		"debug":    slog.LevelDebug,
-		"WARN":     slog.LevelWarn,
-		"warning":  slog.LevelWarn,
-		"error":    slog.LevelError,
-		"err":      slog.LevelError,
+		"":          slog.LevelInfo,
+		"INFO":      slog.LevelInfo,
+		"debug":     slog.LevelDebug,
+		"WARN":      slog.LevelWarn,
+		"warning":   slog.LevelWarn,
+		"error":     slog.LevelError,
+		"err":       slog.LevelError,
 		" unknown ": slog.LevelInfo,
 	}
 	for in, want := range cases {

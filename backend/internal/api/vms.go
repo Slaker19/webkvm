@@ -27,10 +27,10 @@ import (
 	"webkvm/internal/models"
 	"webkvm/internal/safego"
 	"webkvm/internal/vmsched"
+	"webkvm/internal/vzdump"
+	"webkvm/internal/zvol"
 
 	"github.com/go-chi/chi/v5"
-
-	"webkvm/internal/vzdump"
 )
 
 func (h *Handler) ListVMs(w http.ResponseWriter, r *http.Request) {
@@ -767,6 +767,46 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.ZVol != "" {
+		_, role, _ := audit.FromRequest(r)
+		if role != models.RoleAdmin {
+			jsonErr(w, http.StatusForbidden, "attaching ZFS volumes is restricted to administrators")
+			return
+		}
+		cleanZVol := strings.TrimPrefix(strings.TrimSpace(req.ZVol), "/dev/zvol/")
+		if err := zvol.ValidName(cleanZVol); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// ZVol collision guard: 409 if another VM is already using this zvol
+		if atts, aerr := h.compute.FindZVolAttachments(cleanZVol); aerr == nil {
+			for _, a := range atts {
+				if a.VMID != id {
+					jsonErr(w, http.StatusConflict,
+						fmt.Sprintf("ZFS volume %s is already attached to VM %q (%s)", cleanZVol, a.VMName, a.Target))
+					return
+				}
+			}
+		}
+		zinfo, zerr := zvol.Resolve(r.Context(), cleanZVol)
+		if zerr != nil {
+			jsonErr(w, http.StatusBadRequest, fmt.Sprintf("invalid ZFS volume %q: %v", cleanZVol, zerr))
+			return
+		}
+		// Data inspection guard: 409 without force if zvol already holds data
+		if !req.Force {
+			if probe, perr := diskprobe.Basic(r.Context(), zinfo.Device); perr == nil && probe.HasData {
+				detail := fmt.Sprintf("ZFS volume %s already contains data (format %s, %d bytes allocated)",
+					cleanZVol, probe.Format, probe.Allocated)
+				if probe.BackingFile != "" {
+					detail += fmt.Sprintf(", backed by %s", filepath.Base(probe.BackingFile))
+				}
+				jsonErr(w, http.StatusConflict,
+					detail+"; pass force=true to attach it anyway")
+				return
+			}
+		}
+	}
 	if req.Source != "" {
 		if err := h.validateDiskSourcePath(req.Source); err != nil {
 			jsonErr(w, http.StatusForbidden, err.Error())
@@ -845,7 +885,7 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	h.audit.Log(auditFor(r, "vm.disk_attach", id, map[string]interface{}{"bus": req.Bus, "device": req.Device}))
+	h.audit.Log(auditFor(r, "vm.disk_attach", id, map[string]interface{}{"bus": req.Bus, "device": req.Device, "zvol": req.ZVol}))
 	jsonResp(w, http.StatusOK, map[string]string{"status": "attached"})
 }
 
@@ -854,6 +894,15 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 // with no device reached libvirt as an empty device (500) after the new
 // volume had already been created.
 func normalizeAttachDiskRequest(req *models.AttachDiskRequest) error {
+	if req.ZVol != "" {
+		if req.Source != "" {
+			return errors.New("cannot specify both 'source' and 'zvol'")
+		}
+		if req.Device == "cdrom" {
+			return errors.New("cannot attach ZFS volume as cdrom device")
+		}
+		req.Device = "disk"
+	}
 	if req.Device == "" {
 		req.Device = "disk"
 	}
@@ -1624,7 +1673,7 @@ func (h *Handler) ImportOVA(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireOVA bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, 100<<30) // 100GB upload cap
+	r.Body = http.MaxBytesReader(w, r.Body, 100<<30)       // 100GB upload cap
 	if err := r.ParseMultipartForm(32 << 20); err != nil { // 32MB in-memory buffer before disk spill
 		jsonErr(w, http.StatusBadRequest, "invalid multipart: "+err.Error())
 		return

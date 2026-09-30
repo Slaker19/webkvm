@@ -122,7 +122,7 @@ func TestTrustProxy(t *testing.T) {
 		{"true", true},
 		{"false", false},
 		{"garbage", false},
-		{"yes", false},  // strconv.ParseBool doesn't accept "yes"
+		{"yes", false}, // strconv.ParseBool doesn't accept "yes"
 		{"True", true},
 		{"FALSE", false},
 	}

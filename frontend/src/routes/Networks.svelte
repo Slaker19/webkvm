@@ -563,23 +563,13 @@
                 <label for="net-direct-dns1" class="block text-sm font-medium mb-1.5"
                   >{t('networks.dns1')}</label
                 >
-                <Input
-                  id="net-direct-dns1"
-                  bind:value={dns1}
-                  placeholder="1.1.1.1"
-                  class="tnum"
-                />
+                <Input id="net-direct-dns1" bind:value={dns1} placeholder="1.1.1.1" class="tnum" />
               </div>
               <div>
                 <label for="net-direct-dns2" class="block text-sm font-medium mb-1.5"
                   >{t('networks.dns2')}</label
                 >
-                <Input
-                  id="net-direct-dns2"
-                  bind:value={dns2}
-                  placeholder="8.8.8.8"
-                  class="tnum"
-                />
+                <Input id="net-direct-dns2" bind:value={dns2} placeholder="8.8.8.8" class="tnum" />
               </div>
             </div>
           </div>

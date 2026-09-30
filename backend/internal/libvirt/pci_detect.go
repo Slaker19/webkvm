@@ -344,4 +344,3 @@ func (c *Connector) GetHostPCIPreflight() (models.PCIPreflightInfo, error) {
 
 	return info, nil
 }
-

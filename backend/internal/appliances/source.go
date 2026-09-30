@@ -12,31 +12,31 @@ import (
 // arbitrary (possibly malicious) source. All entries are official project
 // mirrors / release channels.
 var officialHosts = map[string]bool{
-	"cloud-images.ubuntu.com":     true,
-	"cloud.debian.org":            true,
-	"dl.rockylinux.org":           true,
-	"cloud.centos.org":            true,
-	"download.fedoraproject.org":  true,
-	"dl.fedoraproject.org":        true,
-	"geo.mirror.pkgbuild.com":     true,
-	"download.freebsd.org":        true,
-	"download.opensuse.org":       true,
-	"dl-cdn.alpinelinux.org":      true,
-	"mirror.opnsense.org":         true,
-	"mirrors.bfsu.edu.cn":         true, // official OPNsense mirror
-	"downloads.openwrt.org":       true,
-	"repo.almalinux.org":          true, // official AlmaLinux Cloud images
+	"cloud-images.ubuntu.com":          true,
+	"cloud.debian.org":                 true,
+	"dl.rockylinux.org":                true,
+	"cloud.centos.org":                 true,
+	"download.fedoraproject.org":       true,
+	"dl.fedoraproject.org":             true,
+	"geo.mirror.pkgbuild.com":          true,
+	"download.freebsd.org":             true,
+	"download.opensuse.org":            true,
+	"dl-cdn.alpinelinux.org":           true,
+	"mirror.opnsense.org":              true,
+	"mirrors.bfsu.edu.cn":              true, // official OPNsense mirror
+	"downloads.openwrt.org":            true,
+	"repo.almalinux.org":               true, // official AlmaLinux Cloud images
 	"stable.release.flatcar-linux.net": true, // official Flatcar Container Linux
 	"beta.release.flatcar-linux.net":   true,
-	"yum.oracle.com":              true, // official Oracle Linux images
-	"github.com":                  true, // Home Assistant, VyOS nightly releases
-	"objects.githubusercontent.com": true, // GitHub release asset host
-	"downloads.vyos.io":           true,
-	"images.linuxcontainers.org":  true,
-	"nyifiles.pfsense.org":        true, // pfSense CE mirror
-	"downloads.ipfire.org":        true, // IPFire releases
-	"download.truenas.com":       true, // TrueNAS SCALE releases
-	"sourceforge.net":            true, // OpenMediaVault ISOs
+	"yum.oracle.com":                   true, // official Oracle Linux images
+	"github.com":                       true, // Home Assistant, VyOS nightly releases
+	"objects.githubusercontent.com":    true, // GitHub release asset host
+	"downloads.vyos.io":                true,
+	"images.linuxcontainers.org":       true,
+	"nyifiles.pfsense.org":             true, // pfSense CE mirror
+	"downloads.ipfire.org":             true, // IPFire releases
+	"download.truenas.com":             true, // TrueNAS SCALE releases
+	"sourceforge.net":                  true, // OpenMediaVault ISOs
 }
 
 // ValidateSourceURL ensures u is an https URL hosted on an official

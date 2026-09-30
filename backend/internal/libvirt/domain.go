@@ -2240,6 +2240,16 @@ func (c *Connector) parseDisksFiltered(xmlDesc string, disksOnly bool) []models.
 		if len(sm) > 1 {
 			source = sm[1]
 		}
+		blockDev := ""
+		blockDevRe := regexp.MustCompile(`<source\b[^>]*dev='([^']+)'`)
+		bm := blockDevRe.FindStringSubmatch(d)
+		if len(bm) > 1 {
+			blockDev = bm[1]
+		}
+		var zvolName string
+		if strings.HasPrefix(blockDev, "/dev/zvol/") {
+			zvolName = strings.TrimPrefix(blockDev, "/dev/zvol/")
+		}
 		readOnly := strings.Contains(d, "<readonly/>") || strings.Contains(d, "<readonly>")
 		pool, sizeGB := c.volPoolAndSize(source)
 		displaySource := source
@@ -2247,6 +2257,10 @@ func (c *Connector) parseDisksFiltered(xmlDesc string, disksOnly bool) []models.
 			displaySource = ds
 		} else if source != "" {
 			displaySource = rootDiskName(source)
+		} else if zvolName != "" {
+			displaySource = zvolName
+		} else if blockDev != "" {
+			displaySource = filepath.Base(blockDev)
 		}
 		wwn := ""
 		if wm := regexp.MustCompile(`<wwn>([^<]+)</wwn>`).FindStringSubmatch(d); len(wm) > 1 {
@@ -2265,6 +2279,8 @@ func (c *Connector) parseDisksFiltered(xmlDesc string, disksOnly bool) []models.
 			Bus:      bus,
 			Target:   targetDev,
 			Source:   source,
+			BlockDev: blockDev,
+			ZVol:     zvolName,
 			Name:     filepath.Base(displaySource),
 			Pool:     pool,
 			SizeGB:   sizeGB,
@@ -2339,6 +2355,12 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 	if err := validateDiskIdentifiers(req.WWN, req.Serial, req.Alias); err != nil {
 		return err
 	}
+	if req.ZVol != "" && req.Source != "" {
+		return errors.New("cannot specify both 'source' and 'zvol'")
+	}
+	if req.ZVol != "" && req.Device == "cdrom" {
+		return errors.New("cannot attach zvol as cdrom device")
+	}
 	dom, err := c.lookupDomain(id)
 	if err != nil {
 		return err
@@ -2406,6 +2428,17 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 	if req.Device == "cdrom" {
 		driverXML = "<driver name='qemu' type='raw'/>"
 		diskType = "file"
+	} else if req.ZVol != "" {
+		cleanZVol := strings.TrimPrefix(strings.TrimSpace(req.ZVol), "/dev/zvol/")
+		devPath := "/dev/zvol/" + cleanZVol
+		diskType = "block"
+		sourceXML = fmt.Sprintf("<source dev='%s'/>", xmlEscape(devPath))
+		cacheIO := req.DiskCacheIO
+		if cacheIO == nil {
+			t := true
+			cacheIO = &t
+		}
+		driverXML = fmt.Sprintf("<driver %s/>", diskDriverXMLAttrs("raw", cacheIO, req.DiskDiscard))
 	} else if req.Source != "" {
 		driverXML = fmt.Sprintf("<driver %s/>", diskDriverXMLAttrs(format, req.DiskCacheIO, req.DiskDiscard))
 		diskType = "file"

@@ -211,7 +211,7 @@ func ApplyRetention(store *Store, tgt Target) (int, error) {
 	}
 	// Determine which chains have ALL their runs marked for deletion.
 	chainAllDelete := map[string]bool{} // vmID -> all runs marked
-	chainHasKeep := map[string]bool{}    // vmID -> at least one run kept
+	chainHasKeep := map[string]bool{}   // vmID -> at least one run kept
 	for suf, vmID := range chainRuns {
 		if keep[suf] {
 			chainHasKeep[vmID] = true

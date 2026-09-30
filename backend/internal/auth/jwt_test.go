@@ -11,10 +11,10 @@ import (
 
 	"go.uber.org/goleak"
 )
+
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m, goleak.IgnoreCurrent())
 }
-
 
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
@@ -428,12 +428,12 @@ func TestMiddleware_RejectsOtherSigningMethod(t *testing.T) {
 // fakeSettings implements SettingsProvider with settable values so
 // tests can verify the Manager picks up changes without restart.
 type fakeSettings struct {
-	ttl    time.Duration
-	allow  bool
+	ttl   time.Duration
+	allow bool
 }
 
 func (f *fakeSettings) GetDuration(key string) time.Duration { return f.ttl }
-func (f *fakeSettings) GetBool(key string) bool             { return f.allow }
+func (f *fakeSettings) GetBool(key string) bool              { return f.allow }
 
 func TestManager_TokenTTL_Default(t *testing.T) {
 	m := NewManager("x", nil)

@@ -224,3 +224,80 @@ func TestUnsetCIFSSecret_NoConnectorSkipsDisk(t *testing.T) {
 		t.Fatalf("expected disk file to retain p without a connector, got: %s", b)
 	}
 }
+
+func TestBuildCHAPSecretXML(t *testing.T) {
+	got := buildCHAPSecretXML("iscsi-pool1", "iqn.2003-01.org.linux-iscsi.target:sn.123", "admin")
+	wants := []string{
+		"ephemeral='no'",
+		"private='yes'",
+		"user=admin",
+		"pool=iscsi-pool1",
+		"<usage type='iscsi'>",
+		"<target>iqn.2003-01.org.linux-iscsi.target:sn.123</target>",
+		"</usage>",
+	}
+	for _, w := range wants {
+		if !strings.Contains(got, w) {
+			t.Errorf("missing %q in:\n%s", w, got)
+		}
+	}
+}
+
+func TestPersistAndReadCHAPSecretRef(t *testing.T) {
+	dir := t.TempDir()
+	ref := &SecretRef{
+		PoolName:   "iscsi-pool1",
+		SecretUUID: "chap-uuid-123",
+		CreatedAt:  1700000000,
+	}
+	if err := persistCHAPSecretRef(dir, ref); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readCHAPSecretRef(dir, "iscsi-pool1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.SecretUUID != "chap-uuid-123" {
+		t.Fatalf("got %+v, want SecretUUID=chap-uuid-123", got)
+	}
+
+	// Remove it
+	if err := removeCHAPSecretRef(dir, "iscsi-pool1"); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := readCHAPSecretRef(dir, "iscsi-pool1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2 != nil {
+		t.Fatalf("expected nil after removal, got %+v", got2)
+	}
+}
+
+func TestLoadCHAPSecretsFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	seed := map[string]SecretRef{
+		"p1": {PoolName: "p1", SecretUUID: "u1"},
+		"p2": {PoolName: "p2", SecretUUID: "u2"},
+	}
+	b, _ := json.Marshal(seed)
+	if err := os.WriteFile(chapSecretsPath(dir), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	chapSecretsMu.Lock()
+	chapSecrets = map[string]SecretRef{}
+	chapSecretsMu.Unlock()
+
+	if err := loadCHAPSecretsFromDisk(dir); err != nil {
+		t.Fatal(err)
+	}
+	chapSecretsMu.RLock()
+	defer chapSecretsMu.RUnlock()
+	if len(chapSecrets) != 2 {
+		t.Fatalf("expected 2 loaded, got %d", len(chapSecrets))
+	}
+	if chapSecrets["p1"].SecretUUID != "u1" {
+		t.Fatalf("p1 UUID = %q, want u1", chapSecrets["p1"].SecretUUID)
+	}
+}

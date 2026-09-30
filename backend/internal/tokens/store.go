@@ -29,24 +29,24 @@ import (
 // token, hex-encoded. The Plain is never persisted — it's only in the
 // response to the create endpoint.
 type Token struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Prefix     string    `json:"prefix"`     // first 8 chars of the token, used to display
-	Hash       string    `json:"hash"`       // sha256 of the full token
-	Username   string    `json:"username"`   // owner
-	Role       string    `json:"role"`       // role at creation time
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Prefix   string `json:"prefix"`   // first 8 chars of the token, used to display
+	Hash     string `json:"hash"`     // sha256 of the full token
+	Username string `json:"username"` // owner
+	Role     string `json:"role"`     // role at creation time
 	// SessionEpoch is the owner's session epoch at creation time. The auth
 	// middleware replays it into HeaderTokenEpoch so SessionEnforcer can
 	// compare it against the account's current epoch, exactly like a JWT.
 	// Without it the header is absent, reads as 0, and every API token of
 	// an account whose epoch has ever been bumped is rejected forever —
 	// including tokens issued after the bump.
-	SessionEpoch int `json:"session_epoch"`
-	Scopes     []string  `json:"scopes"`     // future: capability list
-	CreatedAt  time.Time `json:"created_at"`
-	LastUsedAt time.Time `json:"last_used_at,omitempty"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	Revoked    bool      `json:"revoked,omitempty"`
+	SessionEpoch int       `json:"session_epoch"`
+	Scopes       []string  `json:"scopes"` // future: capability list
+	CreatedAt    time.Time `json:"created_at"`
+	LastUsedAt   time.Time `json:"last_used_at,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	Revoked      bool      `json:"revoked,omitempty"`
 }
 
 // IsExpired reports whether the token is past its expiry.
@@ -130,16 +130,16 @@ func (s *Store) Create(name, username, role string, scopes []string, ttl time.Du
 	prefix := full[:12] // "wvmb_" + 7 chars
 
 	t := &Token{
-		ID:        hash[:16],
-		Name:      name,
-		Prefix:    prefix,
-		Hash:      hash,
+		ID:           hash[:16],
+		Name:         name,
+		Prefix:       prefix,
+		Hash:         hash,
 		Username:     username,
 		Role:         role,
 		SessionEpoch: sessionEpoch,
 		Scopes:       scopes,
 		CreatedAt:    time.Now().UTC(),
-		ExpiresAt: time.Now().UTC().Add(ttl),
+		ExpiresAt:    time.Now().UTC().Add(ttl),
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

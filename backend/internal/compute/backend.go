@@ -376,6 +376,7 @@ type Backend interface {
 	DeleteStorageVolume(poolName, volName string) error
 	VolumeExists(poolName, volName string) (bool, error)
 	FindVolumeAttachments(poolName, volName string) ([]models.VolumeAttachment, error)
+	FindZVolAttachments(zvolName string) ([]models.VolumeAttachment, error)
 	// BackingDependents lists the images layered on top of this volume
 	// as linked clones. Being unattached does not make a volume unused:
 	// a clone records its backing file inside its own qcow2 header, so

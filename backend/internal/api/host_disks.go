@@ -16,7 +16,9 @@ import (
 
 	"webkvm/internal/backupstore"
 	"webkvm/internal/diskstate"
+	"webkvm/internal/mdraid"
 	"webkvm/internal/models"
+	"webkvm/internal/zvol"
 )
 
 // containsString reports whether list already holds want.
@@ -81,6 +83,7 @@ type lsblkDevice struct {
 	Serial      *string       `json:"serial"`
 	Rota        any           `json:"rota"`
 	Tran        *string       `json:"tran"`
+	RO          any           `json:"ro"`
 	Children    []lsblkDevice `json:"children,omitempty"`
 }
 
@@ -99,11 +102,12 @@ var safeMountOptionRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-\.=/:@\+]*$
 //	/dev/nvme0n1, /dev/nvme0n1p1
 //	/dev/vda, /dev/vda1
 //	/dev/hda, /dev/loop0, /dev/loop0p1
+//	/dev/md0, /dev/md127, /dev/md/data
 //
 // It deliberately does NOT accept arbitrary /dev nodes (e.g. /dev/mem,
 // /dev/console) nor any path containing shell metacharacters, since the
 // value is passed to wipefs/mkfs/parted/mount.
-var safeDiskPathRE = regexp.MustCompile(`^/dev/(sd[a-z]+[0-9]*|nvme[0-9]+n[0-9]+(p[0-9]+)?|vd[a-z]+[0-9]*|hd[a-z]+[0-9]*|loop[0-9]+(p[0-9]+)?)$`)
+var safeDiskPathRE = regexp.MustCompile(`^/dev/(sd[a-z]+[0-9]*|nvme[0-9]+n[0-9]+(p[0-9]+)?|vd[a-z]+[0-9]*|hd[a-z]+[0-9]*|loop[0-9]+(p[0-9]+)?|md[0-9]+(p[0-9]+)?|md/[a-zA-Z0-9_\-]+)$`)
 
 // filesystemSpec describes how to format a device with a given
 // filesystem: which mkfs binary to invoke and the flags that make it
@@ -233,7 +237,7 @@ func (h *Handler) ListHostDisks(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL,ROTA,TRAN")
+	cmd := exec.CommandContext(ctx, "lsblk", "-J", "-b", "-o", "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL,ROTA,TRAN,RO")
 	out, err := cmd.Output()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "failed to query host disks: "+err.Error())
@@ -255,12 +259,33 @@ func (h *Handler) ListHostDisks(w http.ResponseWriter, r *http.Request) {
 
 	disks := make([]models.HostDisk, 0, len(raw.Blockdevices))
 	for _, dev := range raw.Blockdevices {
-		if dev.Type != "disk" && dev.Type != "loop" && dev.Type != "mpath" {
+		isDisk := dev.Type == "disk" || dev.Type == "loop" || dev.Type == "mpath" || dev.Type == "md" || dev.Type == "raid" || strings.HasPrefix(dev.Type, "raid") || strings.HasPrefix(dev.Name, "md")
+		if !isDisk {
 			continue
 		}
-		// Ignore zram and tiny virtual loops if not mounted
+		// Ignore zram
 		if strings.HasPrefix(dev.Name, "zram") {
 			continue
+		}
+
+		// Filter out garbage loop devices (squashfs, iso9660, readonly, snap/temp mounts)
+		if dev.Type == "loop" {
+			if dev.FSType != nil && (*dev.FSType == "squashfs" || *dev.FSType == "iso9660") {
+				continue
+			}
+			if parseBool(dev.RO) {
+				continue
+			}
+			isSnapOrTemp := false
+			for _, m := range dev.MountPoints {
+				if strings.HasPrefix(m, "/snap") || strings.HasPrefix(m, "/var/lib/snapd") || strings.HasPrefix(m, "/tmp") {
+					isSnapOrTemp = true
+					break
+				}
+			}
+			if isSnapOrTemp {
+				continue
+			}
 		}
 
 		sizeBytes := parseSize(dev.Size)
@@ -1068,4 +1093,237 @@ func formatBytesHuman(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// ListHostZVols returns all ZFS volumes discovered on the host and cross-references
+// which VM currently attaches each one. Restricted to administrators.
+func (h *Handler) ListHostZVols(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	zvols, err := zvol.List(ctx)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "failed to list ZFS volumes: "+err.Error())
+		return
+	}
+
+	out := make([]models.HostZVol, 0, len(zvols))
+	for _, z := range zvols {
+		hz := models.HostZVol{
+			Name:    z.Name,
+			Pool:    z.Pool,
+			VolSize: z.VolSize,
+			Used:    z.Used,
+			Device:  z.Device,
+		}
+		if h.compute != nil {
+			if atts, aerr := h.compute.FindZVolAttachments(z.Name); aerr == nil && len(atts) > 0 {
+				hz.UsedBy = &atts[0]
+			}
+		}
+		out = append(out, hz)
+	}
+
+	jsonResp(w, http.StatusOK, out)
+}
+
+// ListHostZPools returns all ZFS storage pools discovered on the host.
+// Restricted to administrators.
+func (h *Handler) ListHostZPools(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	pools, err := zvol.ListPools(ctx)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "failed to list ZFS pools: "+err.Error())
+		return
+	}
+
+	out := make([]models.HostZPool, 0, len(pools))
+	for _, p := range pools {
+		out = append(out, models.HostZPool{
+			Name:       p.Name,
+			Size:       p.Size,
+			SizeHuman:  p.SizeHuman,
+			Allocated:  p.Allocated,
+			AllocHuman: p.AllocHuman,
+			Free:       p.Free,
+			FreeHuman:  p.FreeHuman,
+			Health:     p.Health,
+			Devices:    p.Devices,
+		})
+	}
+
+	jsonResp(w, http.StatusOK, out)
+}
+
+// CreateHostZPool creates a new ZFS pool on the specified host block devices.
+// Restricted to administrators.
+func (h *Handler) CreateHostZPool(w http.ResponseWriter, r *http.Request) {
+	var req models.CreateZPoolRequest
+	if err := decodeBody(r, &req); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	req.Name = strings.TrimSpace(req.Name)
+	if err := zvol.ValidPoolName(req.Name); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if len(req.Devices) == 0 {
+		jsonErr(w, http.StatusBadRequest, "at least one device is required")
+		return
+	}
+
+	for _, dev := range req.Devices {
+		dev = strings.TrimSpace(dev)
+		if !safeDiskPathRE.MatchString(dev) {
+			jsonErr(w, http.StatusBadRequest, "invalid or unsafe disk path: "+dev)
+			return
+		}
+		if err := h.assertNotSystemDisk(r.Context(), dev); err != nil {
+			diskGuardErr(w, err)
+			return
+		}
+		if err := h.assertDiskNotMounted(r.Context(), dev); err != nil {
+			diskGuardErr(w, err)
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	// Wipe existing signatures on target devices
+	for _, dev := range req.Devices {
+		_ = exec.CommandContext(ctx, "wipefs", "-a", "-f", dev).Run()
+	}
+
+	if err := zvol.CreatePool(ctx, req.Name, req.Topology, req.Devices); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.audit.Log(auditFor(r, "host.zpool_create", req.Name, map[string]any{
+		"topology": req.Topology,
+		"devices":  req.Devices,
+	}))
+
+	jsonResp(w, http.StatusCreated, map[string]any{
+		"status":   "created",
+		"name":     req.Name,
+		"topology": req.Topology,
+		"devices":  req.Devices,
+	})
+}
+
+// CreateHostZVol creates a new ZFS volume (zvol) within an existing pool.
+// Restricted to administrators.
+func (h *Handler) CreateHostZVol(w http.ResponseWriter, r *http.Request) {
+	var req models.CreateZVolRequest
+	if err := decodeBody(r, &req); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	req.Pool = strings.TrimSpace(req.Pool)
+	req.Name = strings.TrimSpace(req.Name)
+
+	if err := zvol.ValidPoolName(req.Pool); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid pool: "+err.Error())
+		return
+	}
+	if err := zvol.ValidVolumeName(req.Name); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid volume name: "+err.Error())
+		return
+	}
+	if req.SizeGB <= 0 {
+		jsonErr(w, http.StatusBadRequest, "size_gb must be greater than 0")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+
+	sizeBytes := req.SizeGB * 1024 * 1024 * 1024
+	info, err := zvol.CreateVolume(ctx, req.Pool, req.Name, sizeBytes, req.Sparse)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.audit.Log(auditFor(r, "host.zvol_create", info.Name, map[string]any{
+		"pool":    req.Pool,
+		"name":    req.Name,
+		"size_gb": req.SizeGB,
+		"sparse":  req.Sparse,
+		"device":  info.Device,
+	}))
+
+	jsonResp(w, http.StatusCreated, models.HostZVol{
+		Name:    info.Name,
+		Pool:    info.Pool,
+		VolSize: info.VolSize,
+		Used:    info.Used,
+		Device:  info.Device,
+	})
+}
+
+// CreateHostRAID initializes a software RAID array (mdadm) across specified devices.
+// Restricted to administrators.
+func (h *Handler) CreateHostRAID(w http.ResponseWriter, r *http.Request) {
+	var req models.CreateRAIDRequest
+	if err := decodeBody(r, &req); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if len(req.Devices) == 0 {
+		jsonErr(w, http.StatusBadRequest, "at least two devices are required for RAID")
+		return
+	}
+
+	for _, dev := range req.Devices {
+		dev = strings.TrimSpace(dev)
+		if !safeDiskPathRE.MatchString(dev) {
+			jsonErr(w, http.StatusBadRequest, "invalid or unsafe disk path: "+dev)
+			return
+		}
+		if err := h.assertNotSystemDisk(r.Context(), dev); err != nil {
+			diskGuardErr(w, err)
+			return
+		}
+		if err := h.assertDiskNotMounted(r.Context(), dev); err != nil {
+			diskGuardErr(w, err)
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	// Wipe existing signatures
+	for _, dev := range req.Devices {
+		_ = exec.CommandContext(ctx, "wipefs", "-a", "-f", dev).Run()
+	}
+
+	mdDev, err := mdraid.Create(ctx, req.Name, req.Level, req.Devices)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.audit.Log(auditFor(r, "host.raid_create", mdDev, map[string]any{
+		"level":   req.Level,
+		"devices": req.Devices,
+	}))
+
+	jsonResp(w, http.StatusCreated, map[string]any{
+		"status":  "created",
+		"device":  mdDev,
+		"level":   req.Level,
+		"devices": req.Devices,
+	})
 }

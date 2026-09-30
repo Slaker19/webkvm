@@ -149,8 +149,8 @@ func Deep(ctx context.Context, path, inspectorPath string) Result {
 // virtInspectorXML is the subset of virt-inspector's XML output we need.
 type virtInspectorXML struct {
 	Operatingsystems []struct {
-		Name      string `xml:"name"`
-		Distro    string `xml:"distro"`
+		Name        string `xml:"name"`
+		Distro      string `xml:"distro"`
 		Mountpoints []struct {
 			MountPoint string `xml:"mountpoint,attr"`
 			Device     string `xml:"dev,attr"`

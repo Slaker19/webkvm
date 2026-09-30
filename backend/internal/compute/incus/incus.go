@@ -1430,6 +1430,9 @@ func (b *IncusBackend) VolumeExists(poolName, volName string) (bool, error) {
 func (b *IncusBackend) FindVolumeAttachments(poolName, volName string) ([]models.VolumeAttachment, error) {
 	return nil, compute.ErrNotImplemented
 }
+func (b *IncusBackend) FindZVolAttachments(zvolName string) ([]models.VolumeAttachment, error) {
+	return nil, nil
+}
 
 // BackingDependents has no meaning here: Incus volumes are managed by
 // the daemon (zfs/btrfs/lvm/dir), not raw qcow2 files an operator can

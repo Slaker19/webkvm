@@ -8,10 +8,10 @@ import (
 
 	"go.uber.org/goleak"
 )
+
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m, goleak.IgnoreCurrent())
 }
-
 
 func TestStoreRoundtrip(t *testing.T) {
 	dir := t.TempDir()
@@ -27,12 +27,12 @@ func TestStoreRoundtrip(t *testing.T) {
 
 	// Set a few values across the 8-field Phase 1.7-bis-backup schema.
 	applied, failed, err := s.SetMany(Set{
-		"server.port":            float64(9090), // JSON numbers come as float64
-		"server.bind_addr":       "127.0.0.1",
-		"auth.token_ttl":         "12h",
-		"auth.allow_api_tokens":  false,
-		"server.trust_proxy":     true,
-		"logging.level":          "debug",
+		"server.port":           float64(9090), // JSON numbers come as float64
+		"server.bind_addr":      "127.0.0.1",
+		"auth.token_ttl":        "12h",
+		"auth.allow_api_tokens": false,
+		"server.trust_proxy":    true,
+		"logging.level":         "debug",
 	})
 	if err != nil {
 		t.Fatalf("SetMany: %v", err)

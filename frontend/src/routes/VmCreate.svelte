@@ -1721,21 +1721,24 @@
                     class="w-28 tnum"
                   />
                   <span class="text-xs text-muted-foreground">
-                    {minRamMB > 0 ? `MB (${(minRamMB / 1024).toFixed(1)} GB)` : t('vmDetail.minRamDynamic')}
+                    {minRamMB > 0
+                      ? `MB (${(minRamMB / 1024).toFixed(1)} GB)`
+                      : t('vmDetail.minRamDynamic')}
                   </span>
                 </div>
               </SettingRow>
 
-              <SettingRow label={t('vmDetail.iothreadsLabel')} helper={t('vmDetail.iothreadsHelper')}>
+              <SettingRow
+                label={t('vmDetail.iothreadsLabel')}
+                helper={t('vmDetail.iothreadsHelper')}
+              >
                 <div class="flex items-center gap-2">
-                  <Input
-                    type="number"
-                    min="0"
-                    max="16"
-                    bind:value={iothreads}
-                    class="w-24 tnum"
-                  />
-                  <span class="text-xs text-muted-foreground">{iothreads > 0 ? t('vmDetail.iothreadsDedicated') : t('vmDetail.iothreadsDisabled')}</span>
+                  <Input type="number" min="0" max="16" bind:value={iothreads} class="w-24 tnum" />
+                  <span class="text-xs text-muted-foreground"
+                    >{iothreads > 0
+                      ? t('vmDetail.iothreadsDedicated')
+                      : t('vmDetail.iothreadsDisabled')}</span
+                  >
                 </div>
               </SettingRow>
             {/if}

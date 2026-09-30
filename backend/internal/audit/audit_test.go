@@ -15,10 +15,10 @@ import (
 
 	"go.uber.org/goleak"
 )
+
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m, goleak.IgnoreCurrent())
 }
-
 
 func TestNew_CreatesDirectoryAndFile(t *testing.T) {
 	tmp := t.TempDir()

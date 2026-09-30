@@ -598,6 +598,30 @@ func (h *Handler) CreatePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isContainerPool := req.Purpose == compute.PoolPurposeContainer || req.Purpose == "lxc" || strings.HasPrefix(req.Type, "incus-") || req.Type == "container"
+	if req.Type == "iscsi" {
+		if req.Path == "" {
+			req.Path = "/dev/disk/by-path"
+		}
+		if req.SourceHost == "" {
+			jsonErr(w, http.StatusBadRequest, "source_host is required for iscsi pool")
+			return
+		}
+		targetIQN := req.SourceDevice
+		if targetIQN == "" {
+			targetIQN = req.SourceIQN
+		}
+		if targetIQN == "" {
+			jsonErr(w, http.StatusBadRequest, "source_device (target IQN) is required for iscsi pool")
+			return
+		}
+		req.SourceDevice = targetIQN
+		if (req.SourceUsername != "") != (req.SourcePassword != "") {
+			jsonErr(w, http.StatusBadRequest,
+				"iscsi chap auth requires both source_username and source_password")
+			return
+		}
+	}
+
 	// A directory pool with no path lands on the system disk, next to
 	// the built-in pools, in a folder of its own named after the pool.
 	//
@@ -643,9 +667,14 @@ func (h *Handler) CreatePool(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Purpose = one // normalized ("lxc" -> "container")
 	}
-	if req.Path != "" {
+	if req.Path != "" && req.Type != "iscsi" {
 		if err := validatePoolPath(req.Path); err != nil {
 			jsonErr(w, http.StatusBadRequest, "invalid path: "+err.Error())
+			return
+		}
+	} else if req.Path != "" && req.Type == "iscsi" {
+		if !filepath.IsAbs(req.Path) || !poolPathAllowRE.MatchString(req.Path) {
+			jsonErr(w, http.StatusBadRequest, "invalid iscsi path")
 			return
 		}
 	}
@@ -718,14 +747,14 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	// CIFS auth fields must come as a pair. Without this guard, a
+	// CIFS/CHAP auth fields must come as a pair. Without this guard, a
 	// caller could pass a new password but no username, which would
 	// produce a misconfigured auth block (or no auth at all).
 	hasUser := req.SourceUsername != nil
 	hasPass := req.SourcePassword != nil
 	if hasUser != hasPass {
 		jsonErr(w, http.StatusBadRequest,
-			"cifs auth requires both source_username and source_password")
+			"auth requires both source_username and source_password")
 		return
 	}
 	if req.Purpose != nil {
@@ -771,8 +800,8 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 			req.Purpose = &one
 		}
 		// A purpose-only no-op still has to answer with the pool,
-		// not with a CIFS error the caller never asked about.
-		if req.Purpose == nil && !req.CifsNeedsReauth && !hasUser {
+		// not with a reauth error the caller never asked about.
+		if req.Purpose == nil && !req.CifsNeedsReauth && !req.ChapNeedsReauth && !hasUser {
 			pools, _ := h.compute.ListStoragePools()
 			for _, p := range pools {
 				if p.Name == name {
@@ -789,7 +818,7 @@ func (h *Handler) UpdatePool(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	details := map[string]any{"reauth": req.CifsNeedsReauth}
+	details := map[string]any{"reauth": req.CifsNeedsReauth || req.ChapNeedsReauth}
 	if req.Purpose != nil {
 		details["purpose"] = *req.Purpose
 	}
