@@ -128,10 +128,10 @@ detect_static_for_iface() {
     gw=$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')
     dns=$(resolvectl dns "${iface}" 2>/dev/null \
         | sed -E 's/^[^:]*:[[:space:]]*//' \
-        | tr -s '[:space:]' ',' | sed 's/,$//')
+        | tr -s '[:space:]' '\n' | grep -v ':' | paste -sd ',' -)
     if [ -z "${dns}" ] || [ "${dns}" = "" ]; then
         dns=$(grep '^nameserver' /etc/resolv.conf 2>/dev/null \
-            | awk '{print $2}' | grep -v '^127\.0\.0\.53$' | paste -sd ',' -)
+            | awk '{print $2}' | grep -v '^127\.0\.0\.53$' | grep -v ':' | paste -sd ',' -)
     fi
     if [ -z "${ip}" ] || [ -z "${gw}" ]; then
         return 1
@@ -268,12 +268,13 @@ detect_static_for_iface() {
 
     dns=$(resolvectl dns "${iface}" 2>/dev/null \
         | sed -E 's/^[^:]*:[[:space:]]*//' \
-        | tr -s '[:space:]' ',' | sed 's/,$//')
+        | tr -s '[:space:]' '\n' | grep -v ':' | paste -sd ',' -)
 
     if [ -z "${dns}" ] || [ "${dns}" = "" ]; then
         dns=$(grep '^nameserver' /etc/resolv.conf 2>/dev/null \
             | awk '{print $2}' \
             | grep -v '^127\.0\.0\.53$' \
+            | grep -v ':' \
             | paste -sd ',' -)
     fi
 
@@ -408,21 +409,30 @@ disable_conflicting_dhcp_clients() {
             changed=1
         fi
     else
-        # Macvlan mode: physical interface stays managed by NM/dhcpcd.
-        # Only ensure systemd-networkd is running for macvlan + bridge.
+        # Bridge / Both / Macvlan mode:
         if systemctl is-active --quiet NetworkManager 2>/dev/null; then
-            echo "  = NetworkManager running (left active — macvlan mode)"
+            echo "  = NetworkManager running (left active — network backend)"
+            if systemctl is-active --quiet systemd-networkd 2>/dev/null; then
+                if [ -d /etc/netplan ] && grep -rqsE "renderer:[[:space:]]*NetworkManager" /etc/netplan/*.yaml 2>/dev/null; then
+                    sudo systemctl disable --now systemd-networkd systemd-networkd.socket >/dev/null 2>&1 || true
+                    echo "  - systemd-networkd: stopped and disabled (NetworkManager is active Netplan renderer)"
+                    changed=1
+                fi
+            fi
         fi
         if systemctl is-active --quiet dhcpcd 2>/dev/null; then
-            echo "  = dhcpcd running (left active — macvlan mode)"
+            echo "  = dhcpcd running"
         fi
-        if systemctl is-active --quiet systemd-networkd 2>/dev/null; then
-            :
-        elif systemctl list-unit-files systemd-networkd.service &>/dev/null; then
-            sudo systemctl enable --now systemd-networkd >/dev/null 2>&1 || true
-            echo "  + systemd-networkd: enabled and started for macvlan bridge management"
-        else
-            echo "  ! systemd-networkd not available (unexpected on this system)"
+        if ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
+            if systemctl is-active --quiet systemd-networkd 2>/dev/null; then
+                :
+            elif systemctl list-unit-files systemd-networkd.service &>/dev/null; then
+                sudo systemctl enable --now systemd-networkd >/dev/null 2>&1 || true
+                echo "  + systemd-networkd: enabled and started"
+                changed=1
+            else
+                echo "  ! systemd-networkd not available (unexpected on this system)"
+            fi
         fi
     fi
     if [ $changed -eq 0 ]; then
@@ -994,37 +1004,49 @@ apply_bridge_nmcli() {
     local br="$1" iface="$2"
     echo "  + creating bridge ${br} on ${iface} via nmcli (IP moves to the bridge)"
     # Drop any existing NM connection that manages the physical iface (e.g.
-    # cloud-init's DHCP "System eth0"), otherwise it fights the bridge for
-    # the device and the port never enslaves (eth0 keeps the IP, bridge DOWN).
-    local con
-    for con in $(nmcli -t -f NAME,DEVICE con show 2>/dev/null | grep ":${iface}$" | cut -d: -f1); do
-        echo "    - deleting existing NM connection '${con}' on ${iface}"
-        nmcli con delete "${con}" >/dev/null 2>&1 || true
-    done
-    # Enslave at the KERNEL level (same as netplan/systemd-networkd) and mark
-    # the NIC unmanaged so NetworkManager never steals it back from the bridge.
-    nmcli device set "${iface}" managed no >/dev/null 2>&1 || true
-    if ! [ -d "/sys/class/net/${br}/bridge" ]; then
-        ip link add name "${br}" type bridge
-    fi
-    ip link set "${iface}" master "${br}"
-    ip link set "${iface}" up
-    ip link set "${br}" up
-    # NM bridge connection: it only carries the bridge's IP (manual or DHCP).
-    nmcli con add type bridge con-name "${br}" ifname "${br}" >/dev/null 2>&1 \
-        || nmcli con modify "${br}" ifname "${br}" >/dev/null 2>&1 || true
+    # cloud-init's DHCP "System eth0", or "Wired connection 1"), otherwise it fights
+    # the bridge for the device and the port never enslaves.
+    # Use UUID to avoid whitespace splitting bugs in connection names.
+    local uuid
+    while IFS= read -r uuid; do
+        [ -z "${uuid}" ] && continue
+        echo "    - deleting existing NM connection UUID '${uuid}' on ${iface}"
+        nmcli con delete "${uuid}" >/dev/null 2>&1 || true
+    done < <(nmcli -t -f UUID,DEVICE con show 2>/dev/null | grep ":${iface}$" | cut -d: -f1)
+
+    # Delete existing bridge / slave connection profiles if any exist
+    nmcli con delete "${br}" >/dev/null 2>&1 || true
+    nmcli con delete "${br}-slave" >/dev/null 2>&1 || true
+
+    # Create NM bridge master profile with STP disabled
+    nmcli con add type bridge con-name "${br}" ifname "${br}" bridge.stp no >/dev/null 2>&1 || true
+
+    # Create NM bridge slave profile attached to the physical interface
+    nmcli con add type ethernet con-name "${br}-slave" ifname "${iface}" master "${br}" >/dev/null 2>&1 || true
+
     if [ -n "${BRIDGE_STATIC_IP:-}" ]; then
         nmcli con modify "${br}" ipv4.method manual ipv4.addresses "${BRIDGE_STATIC_IP}" \
             ipv4.gateway "${BRIDGE_STATIC_GW:-}" ipv4.dns "${BRIDGE_STATIC_DNS:-}" >/dev/null 2>&1 || true
     else
         nmcli con modify "${br}" ipv4.method auto ipv6.method auto >/dev/null 2>&1 || true
     fi
+
+    # Activate slave first, then master
+    nmcli con up "${br}-slave" >/dev/null 2>&1 || true
     nmcli con up "${br}" >/dev/null 2>&1 || true
+
     # Self-heal: NM's bridge activation can drop the kernel slave; re-assert
     # the enslave so the port is ALWAYS attached (verified by the caller).
     ip link set "${iface}" master "${br}" 2>/dev/null || true
     ip link set "${iface}" up 2>/dev/null || true
     ip link set "${br}" up 2>/dev/null || true
+
+    local tries=0
+    while [ $tries -lt 15 ]; do
+        [ -d "/sys/class/net/${br}/bridge" ] && return 0
+        sleep 0.5
+        tries=$((tries + 1))
+    done
     [ -d "/sys/class/net/${br}/bridge" ]
 }
 
@@ -1167,6 +1189,9 @@ network:
           via: ${BRIDGE_STATIC_GW}
       nameservers:
         addresses: [${BRIDGE_STATIC_DNS}]
+      parameters:
+        stp: false
+        forward-delay: 0
 EOF
     else
         sudo tee "${yaml}" >/dev/null <<EOF || { _netplan_rollback; return 1; }
@@ -1182,6 +1207,9 @@ network:
       interfaces: [${iface}]
       dhcp4: true
       dhcp6: true
+      parameters:
+        stp: false
+        forward-delay: 0
 EOF
     fi
     sudo chmod 600 "${yaml}" 2>/dev/null || true
@@ -1196,6 +1224,12 @@ EOF
     fi
     if [ -n "${prev}" ]; then sudo rm -f "${prev}" 2>/dev/null || true; fi
     sudo netplan apply
+    local tries=0
+    while [ $tries -lt 15 ]; do
+        [ -d "/sys/class/net/${br}/bridge" ] && return 0
+        sleep 0.5
+        tries=$((tries + 1))
+    done
     [ -d "/sys/class/net/${br}/bridge" ]
 }
 
@@ -1342,6 +1376,12 @@ IPv6AcceptRA=no
 "
     sudo systemctl enable systemd-networkd >/dev/null 2>&1 || true
     sudo systemctl restart systemd-networkd >/dev/null 2>&1 || true
+    local tries=0
+    while [ $tries -lt 15 ]; do
+        [ -d "/sys/class/net/${br}/bridge" ] && return 0
+        sleep 0.5
+        tries=$((tries + 1))
+    done
     [ -d "/sys/class/net/${br}/bridge" ]
 }
 
@@ -1420,20 +1460,21 @@ ensure_physical_bridge() {
         warn_dhcp_reservation "${br}" "${iface}"
     fi
 
-    # 3. NetworkManager + nmcli (preferred when available).
-    if command -v nmcli >/dev/null 2>&1 && systemctl is-active --quiet NetworkManager 2>/dev/null; then
-        if [ "${BRIDGE_APPLY:-0}" = "1" ] && apply_bridge_nmcli "${br}" "${iface}"; then
-            return 0
-        fi
-        echo "  = NetworkManager present but BRIDGE_APPLY!=1 — printing instructions instead of risking the SSH session"
-    fi
-
-    # 4. Netplan (modern Ubuntu/Debian) — apply only when explicitly asked.
+    # 3. Netplan (modern Ubuntu/Debian) — top priority on systems with Netplan.
+    # Netplan handles both NetworkManager (Ubuntu Desktop) and systemd-networkd (Ubuntu Server).
     if [ -d /etc/netplan ] && command -v netplan >/dev/null 2>&1; then
         if [ "${BRIDGE_APPLY:-0}" = "1" ] && apply_bridge_netplan "${br}" "${iface}"; then
             return 0
         fi
         echo "  = Netplan present but BRIDGE_APPLY!=1 — printing instructions"
+    fi
+
+    # 4. NetworkManager + nmcli (preferred on distros with pure NetworkManager and no Netplan: Fedora, RHEL, Arch).
+    if command -v nmcli >/dev/null 2>&1 && systemctl is-active --quiet NetworkManager 2>/dev/null; then
+        if [ "${BRIDGE_APPLY:-0}" = "1" ] && apply_bridge_nmcli "${br}" "${iface}"; then
+            return 0
+        fi
+        echo "  = NetworkManager present but BRIDGE_APPLY!=1 — printing instructions instead of risking the SSH session"
     fi
 
     # 5. systemd-networkd (no netplan: Arch, Debian without NetworkManager).

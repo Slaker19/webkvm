@@ -65,10 +65,10 @@ detect_static_for_iface() {
     gw=$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')
     dns=$(resolvectl dns "${iface}" 2>/dev/null \
         | sed -E 's/^[^:]*:[[:space:]]*//' \
-        | tr -s '[:space:]' ',' | sed 's/,$//')
+        | tr -s '[:space:]' '\n' | grep -v ':' | paste -sd ',' -)
     if [ -z "${dns}" ] || [ "${dns}" = "" ]; then
         dns=$(grep '^nameserver' /etc/resolv.conf 2>/dev/null \
-            | awk '{print $2}' | grep -v '^127\.0\.0\.53$' | paste -sd ',' -)
+            | awk '{print $2}' | grep -v '^127\.0\.0\.53$' | grep -v ':' | paste -sd ',' -)
     fi
     if [ -z "${ip}" ] || [ -z "${gw}" ]; then
         return 1
@@ -203,7 +203,7 @@ detect_static_for_iface() {
     # DNS: resolvectl preferred (handles systemd-resolved correctly).
     dns=$(resolvectl dns "${iface}" 2>/dev/null \
         | sed -E 's/^[^:]*:[[:space:]]*//' \
-        | tr -s '[:space:]' ',' | sed 's/,$//')
+        | tr -s '[:space:]' '\n' | grep -v ':' | paste -sd ',' -)
 
     # Fallback: /etc/resolv.conf, but skip 127.0.0.53 (systemd-resolved
     # stub resolver — NOT a real upstream DNS).
@@ -211,6 +211,7 @@ detect_static_for_iface() {
         dns=$(grep '^nameserver' /etc/resolv.conf 2>/dev/null \
             | awk '{print $2}' \
             | grep -v '^127\.0\.0\.53$' \
+            | grep -v ':' \
             | paste -sd ',' -)
     fi
 

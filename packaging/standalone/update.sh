@@ -208,10 +208,12 @@ systemctl start "${SERVICE}"
 
 # ── Health check ───────────────────────────────────────────────────────
 CONFIG_PATH="${DATA_DIR}/config.json"
+DEFAULT_PORT="$(systemctl show "${SERVICE}" -p Environment --value 2>/dev/null | tr ' ' '\n' | sed -n 's/^PORT=//p' | head -1 || true)"
+DEFAULT_PORT="${DEFAULT_PORT:-8080}"
 HEALTH_PORT=""
 # `|| HEALTH_PORT=` keeps set -e from killing the run before the health
 # check: without python3 the default port below is used instead.
-HEALTH_PORT="$(python3 - "${CONFIG_PATH}" 8080 <<'PY'
+HEALTH_PORT="$(python3 - "${CONFIG_PATH}" "${DEFAULT_PORT}" <<'PY'
 import json, pathlib, sys
 try:
     values = json.loads(pathlib.Path(sys.argv[1]).read_text()).get("values", {})
@@ -221,7 +223,7 @@ except Exception:
     print(sys.argv[2])
 PY
 )" || HEALTH_PORT=""
-HEALTH_PORT="${HEALTH_PORT:-8080}"
+HEALTH_PORT="${HEALTH_PORT:-${DEFAULT_PORT}}"
 log "waiting for health endpoint on port ${HEALTH_PORT}..."
 ok=0
 for _ in $(seq 1 30); do
