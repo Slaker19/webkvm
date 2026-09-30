@@ -54,6 +54,7 @@ import (
 	"webkvm/internal/cloudinit"
 	"webkvm/internal/compute"
 	"webkvm/internal/events"
+	"webkvm/internal/fsutil"
 	"webkvm/internal/models"
 )
 
@@ -1166,6 +1167,7 @@ func (b *IncusBackend) ListStoragePools() ([]models.StoragePool, error) {
 			sp.Allocated = int64(res.Space.Used)
 			sp.Available = int64(res.Space.Total - res.Space.Used)
 		}
+		sp.DeviceID = fsutil.DeviceID(sp.Path)
 		result = append(result, sp)
 	}
 	return result, nil
@@ -1207,11 +1209,12 @@ func (b *IncusBackend) CreateStoragePool(ctx context.Context, req models.CreateP
 	pool, _, err := b.client.GetStoragePool(req.Name)
 	if err != nil {
 		return models.StoragePool{
-			Name:    req.Name,
-			Type:    driver,
-			Purpose: compute.PoolPurposeContainer,
-			State:   "active",
-			Path:    req.Path,
+			Name:     req.Name,
+			Type:     driver,
+			Purpose:  compute.PoolPurposeContainer,
+			State:    "active",
+			Path:     req.Path,
+			DeviceID: fsutil.DeviceID(req.Path),
 		}, nil
 	}
 
@@ -1235,6 +1238,7 @@ func (b *IncusBackend) CreateStoragePool(ctx context.Context, req models.CreateP
 		sp.Allocated = int64(res.Space.Used)
 		sp.Available = int64(res.Space.Total - res.Space.Used)
 	}
+	sp.DeviceID = fsutil.DeviceID(sp.Path)
 	return sp, nil
 }
 func (b *IncusBackend) UpdateStoragePool(ctx context.Context, name string, req models.UpdatePoolRequest) (models.StoragePool, error) {

@@ -13,6 +13,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// DeviceID returns the stat(2) st_dev for path (the underlying block device/filesystem ID).
+// Returns 0 if stat fails or path is unreadable.
+func DeviceID(path string) uint64 {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0
+	}
+	return uint64(st.Dev)
+}
+
 // TryReflink attempts to clone src file into dst using the FICLONE ioctl.
 // Returns nil if successful.
 // If the underlying filesystem does not support reflink (or src and dst are on different devices),

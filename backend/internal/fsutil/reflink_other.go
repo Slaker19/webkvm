@@ -12,6 +12,11 @@ import (
 
 var ErrReflinkUnsupported = errors.New("reflink is not supported on this platform")
 
+// DeviceID returns 0 on non-Linux platforms.
+func DeviceID(path string) uint64 {
+	return 0
+}
+
 // TryReflink is a no-op on non-Linux platforms.
 func TryReflink(dst, src *os.File) error {
 	return ErrReflinkUnsupported

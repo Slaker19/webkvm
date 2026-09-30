@@ -6,6 +6,14 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.2-fix2] — 2026-09-30
+
+### Corregido
+
+- **Desduplicación y Cálculo de Capacidad en Pools de Almacenamiento:**
+  - Añadida la resolución del `DeviceID` (`st_dev`) en los pools de almacenamiento de Incus en `IncusBackend.ListStoragePools()` y `CreateStoragePool()`.
+  - Evitada la suma duplicada de capacidad y espacio usado en sistemas de archivos compartidos entre pools de KVM e Incus en el host.
+
 ## [0.1.2-fix1] — 2026-09-30
 
 ### Seguridad
@@ -129,6 +137,7 @@ virtualización Linux.
 
 ---
 
+[0.1.2-fix2]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2-fix2
 [0.1.2-fix1]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2-fix1
 [0.1.2]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.1

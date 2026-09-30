@@ -11,9 +11,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 
 	"webkvm/internal/config"
+	"webkvm/internal/fsutil"
 	"webkvm/internal/models"
 
 	"libvirt.org/go/libvirt"
@@ -35,16 +35,9 @@ func notFoundAsVolume(what string, err error) error {
 
 // deviceIDOf returns the stat(2) st_dev for path — the identifier
 // storagePoolToModel uses to let callers tell "same underlying disk"
-// pools apart from genuinely separate ones. 0 (the zero value, hence
-// omitempty on the model field) on any stat failure: never fatal to the
-// pool listing itself, just loses the double-counting protection for
-// that one pool.
+// pools apart from genuinely separate ones.
 func deviceIDOf(path string) uint64 {
-	var st syscall.Stat_t
-	if err := syscall.Stat(path, &st); err != nil {
-		return 0
-	}
-	return uint64(st.Dev)
+	return fsutil.DeviceID(path)
 }
 
 func (c *Connector) ListStoragePools() ([]models.StoragePool, error) {

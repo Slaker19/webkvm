@@ -36,3 +36,15 @@ func TestCopyFileFast_RejectsTraversal(t *testing.T) {
 		t.Error("Expected error for traversal path, got nil")
 	}
 }
+
+func TestDeviceID(t *testing.T) {
+	dir := t.TempDir()
+	dev := DeviceID(dir)
+	if dev == 0 {
+		t.Errorf("expected non-zero device ID for %s, got 0", dir)
+	}
+	devNonExistent := DeviceID(filepath.Join(dir, "non-existent-dir"))
+	if devNonExistent != 0 {
+		t.Errorf("expected 0 for non-existent path, got %d", devNonExistent)
+	}
+}
