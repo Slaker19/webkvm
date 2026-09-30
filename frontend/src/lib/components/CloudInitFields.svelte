@@ -8,6 +8,10 @@
     password = $bindable(''),
     hostname = $bindable(''),
     sshKey = $bindable(''),
+    ipMode = $bindable('dhcp'),
+    staticIP = $bindable(''),
+    gateway = $bindable(''),
+    dns = $bindable(''),
     selectedSnippetIds = $bindable([]),
     customUserData = $bindable(''),
     availableSnippets = [],
@@ -107,6 +111,71 @@
         rows="2"
         placeholder={t('vmCreate.cloudInitSSHKeyPlaceholder')}
       ></textarea>
+    </div>
+
+    <!-- Red / IP Visual Config -->
+    <div class="sm:col-span-2 pt-2 border-t border-border/60 space-y-2.5">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-semibold text-foreground flex items-center gap-1.5">
+          <Icon name="network" size={14} class="text-accent" />
+          {t('cloudInit.networkConfig')}
+        </span>
+        <div class="flex rounded-md border border-border bg-muted/40 p-0.5">
+          <button
+            type="button"
+            class="px-2 py-0.5 text-xs font-medium rounded transition-colors cursor-pointer {ipMode === 'dhcp' ? 'bg-background shadow-xs text-foreground font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+            onclick={() => (ipMode = 'dhcp')}
+          >
+            DHCP
+          </button>
+          <button
+            type="button"
+            class="px-2 py-0.5 text-xs font-medium rounded transition-colors cursor-pointer {ipMode === 'static' ? 'bg-background shadow-xs text-foreground font-semibold' : 'text-muted-foreground hover:text-foreground'}"
+            onclick={() => (ipMode = 'static')}
+          >
+            {t('cloudInit.staticIP')}
+          </button>
+        </div>
+      </div>
+
+      {#if ipMode === 'static'}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          <div>
+            <label for="{idPrefix}-static-ip" class="text-xs font-medium text-foreground block mb-1">
+              {t('cloudInit.ipAddressCIDR')} *
+            </label>
+            <input
+              id="{idPrefix}-static-ip"
+              bind:value={staticIP}
+              class="input w-full font-mono text-xs"
+              placeholder="192.168.1.50/24"
+            />
+          </div>
+          <div>
+            <label for="{idPrefix}-gateway" class="text-xs font-medium text-foreground block mb-1">
+              {t('cloudInit.gateway')}
+            </label>
+            <input
+              id="{idPrefix}-gateway"
+              bind:value={gateway}
+              class="input w-full font-mono text-xs"
+              placeholder="192.168.1.1"
+            />
+          </div>
+          <div class="sm:col-span-2">
+            <label for="{idPrefix}-dns" class="text-xs font-medium text-foreground block mb-1">
+              {t('cloudInit.dnsServers')}
+            </label>
+            <input
+              id="{idPrefix}-dns"
+              bind:value={dns}
+              class="input w-full font-mono text-xs"
+              placeholder="1.1.1.1, 8.8.8.8"
+            />
+            <p class="text-[11px] text-muted-foreground mt-1">{t('cloudInit.dnsHelper')}</p>
+          </div>
+        </div>
+      {/if}
     </div>
 
     <!-- Cloud-Init Studio / Snippets Picker -->

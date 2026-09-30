@@ -644,6 +644,7 @@ export const api = {
   listHostPCIDevices: () => request('/host/pci-devices'),
   getHostPCIPreflight: () => request('/host/pci-preflight'),
   getGuestInfo: (id) => request(`/vms/${id}/guest-info`),
+  guestFSTrim: (id) => request(`/vms/${id}/guest/fstrim`, { method: 'POST' }),
   listHostDisks: () => request('/host/disks'),
   getStorageBreakdown: () => request('/storage/pools/breakdown'),
   listFilesystems: () => request('/host/disks/filesystems'),

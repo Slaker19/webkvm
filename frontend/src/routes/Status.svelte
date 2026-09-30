@@ -814,9 +814,15 @@
 <!-- Update confirm -->
 <ConfirmDialog
   bind:open={showUpdateConfirm}
-  title={t('status.updateToTitle', { version: status?.latest_version || '' })}
-  description={t('status.updateConfirmDesc')}
-  confirmLabel={t('status.update')}
+  title={status?.update_mode === 'source'
+    ? t('status.updateFromSourceTitle')
+    : t('status.updateToTitle', { version: status?.latest_version || '' })}
+  description={status?.update_mode === 'source'
+    ? t('status.updateConfirmSourceDesc')
+    : t('status.updateConfirmDesc')}
+  confirmLabel={status?.update_mode === 'source'
+    ? t('status.updateFromSource')
+    : t('status.update')}
   variant="default"
   loading={updateLoading}
   onConfirm={doUpdate}

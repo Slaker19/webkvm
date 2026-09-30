@@ -373,6 +373,12 @@
   let ciPassword = $state('');
   let ciSSHKey = $state('');
   let ciHostname = $state('');
+  let ciIpMode = $state('dhcp');
+  let ciStaticIP = $state('');
+  let ciGateway = $state('');
+  let ciDNS = $state('');
+  let minRamMB = $state(0);
+  let iothreads = $state(0);
   let ciSnippetIds = $state([]);
   const ciSnippetId = $derived(ciSnippetIds[0] || '');
   let ciCustomUserData = $state('');
@@ -1156,6 +1162,10 @@
             boot_order: bootOrder,
             autostart: startAtBoot,
           };
+      if (!isContainer) {
+        if (minRamMB > 0) payload.min_ram_mb = minRamMB;
+        if (iothreads > 0) payload.iothreads = iothreads;
+      }
       if (!isContainer && cpuTopologyEnabled) {
         payload.cpu_sockets = cpuSockets;
         payload.cpu_cores = cpuCores;
@@ -1165,12 +1175,29 @@
         payload.existing_disk_pool = existingDiskPool;
         payload.existing_disk_name = existingDiskName;
       }
-      if (ciEnabled && isContainer) {
+      if (ciEnabled || isCloudInit) {
+        let networks = undefined;
+        if (ciIpMode === 'static' && ciStaticIP) {
+          networks = [
+            {
+              interface: 'eth0',
+              ipv4: ciStaticIP,
+              gateway4: ciGateway || undefined,
+              dns: ciDNS
+                ? ciDNS
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter(Boolean)
+                : undefined,
+            },
+          ];
+        }
         payload.cloud_init = {
-          user: ciUser || undefined,
+          user: ciUser || (isContainer ? 'root' : 'webkvm'),
           password: ciPassword || undefined,
           ssh_key: ciSSHKey || undefined,
           hostname: ciHostname || undefined,
+          networks,
           snippet_id: ciSnippetId || undefined,
           snippet_ids: ciSnippetIds.length > 0 ? ciSnippetIds : undefined,
           custom_user_data: ciCustomUserData || undefined,
@@ -1550,6 +1577,10 @@
                   bind:password={ciPassword}
                   bind:hostname={ciHostname}
                   bind:sshKey={ciSSHKey}
+                  bind:ipMode={ciIpMode}
+                  bind:staticIP={ciStaticIP}
+                  bind:gateway={ciGateway}
+                  bind:dns={ciDNS}
                   bind:selectedSnippetIds={ciSnippetIds}
                   bind:customUserData={ciCustomUserData}
                   {availableSnippets}
@@ -1583,6 +1614,10 @@
                       bind:password={ciPassword}
                       bind:hostname={ciHostname}
                       bind:sshKey={ciSSHKey}
+                      bind:ipMode={ciIpMode}
+                      bind:staticIP={ciStaticIP}
+                      bind:gateway={ciGateway}
+                      bind:dns={ciDNS}
                       bind:selectedSnippetIds={ciSnippetIds}
                       bind:customUserData={ciCustomUserData}
                       {availableSnippets}
@@ -1674,6 +1709,36 @@
                 {/if}
               </div>
             </SettingRow>
+            {#if !isContainer}
+              <SettingRow label={t('vmDetail.minRamLabel')} helper={t('vmDetail.minRamHelper')}>
+                <div class="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min="0"
+                    max={ramMB}
+                    step="256"
+                    bind:value={minRamMB}
+                    class="w-28 tnum"
+                  />
+                  <span class="text-xs text-muted-foreground">
+                    {minRamMB > 0 ? `MB (${(minRamMB / 1024).toFixed(1)} GB)` : t('vmDetail.minRamDynamic')}
+                  </span>
+                </div>
+              </SettingRow>
+
+              <SettingRow label={t('vmDetail.iothreadsLabel')} helper={t('vmDetail.iothreadsHelper')}>
+                <div class="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min="0"
+                    max="16"
+                    bind:value={iothreads}
+                    class="w-24 tnum"
+                  />
+                  <span class="text-xs text-muted-foreground">{iothreads > 0 ? t('vmDetail.iothreadsDedicated') : t('vmDetail.iothreadsDisabled')}</span>
+                </div>
+              </SettingRow>
+            {/if}
             {#if isContainer}
               <!-- LXC: storage pool and root disk size -->
               <SettingRow label={t('common.pool')} helper={t('vmCreate.containerPoolHelper')}>

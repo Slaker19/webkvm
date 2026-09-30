@@ -151,6 +151,21 @@
     }
   }
 
+  async function runGuestFSTrim() {
+    if (!vm || vm.state !== 'running') return;
+    actionLoading = 'fstrim';
+    try {
+      const res = await api.guestFSTrim(vm.id);
+      const totalTrimmed = (res.paths || []).reduce((acc, p) => acc + (p.trimmed || 0), 0);
+      toast.success(t('vmDetail.fstrimSuccess', { size: formatBytes(totalTrimmed) }));
+      await loadGuestInfo();
+    } catch (e) {
+      toast.error(e.message || t('vmDetail.fstrimError'));
+    } finally {
+      actionLoading = '';
+    }
+  }
+
   $effect(() => {
     if (activeSection === 'guest' && guestInfo === null && !guestLoading) {
       loadGuestInfo();
@@ -270,6 +285,8 @@
   let eName = $state('');
   let eVcpus = $state(2);
   let eRamMB = $state(2048);
+  let eMinRamMB = $state(0);
+  let eIOThreads = $state(0);
   let eCPUMode = $state('host-passthrough');
   let eCPUModel = $state('');
   let eCPUUnits = $state(1024);
@@ -1019,6 +1036,8 @@
     eName = vm.name;
     eVcpus = vm.vcpus;
     eRamMB = vm.ram_mb;
+    eMinRamMB = vm.min_ram_mb || 0;
+    eIOThreads = vm.iothreads || 0;
     eCPUMode = vm.cpu_mode || 'host-passthrough';
     eCPUModel = vm.cpu_model || '';
     eCPUUnits = vm.cpu_units || 1024;
@@ -1082,6 +1101,10 @@
       if (eName !== vm.name) data.name = eName;
       if (eVcpus !== vm.vcpus) data.vcpus = eVcpus;
       if (eRamMB !== vm.ram_mb) data.ram_mb = eRamMB;
+      if (!isContainerVm) {
+        if (eMinRamMB !== (vm.min_ram_mb || 0)) data.min_ram_mb = eMinRamMB;
+        if (eIOThreads !== (vm.iothreads || 0)) data.iothreads = eIOThreads;
+      }
       if (eCPUMode !== (vm.cpu_mode || 'host-passthrough')) data.cpu_mode = eCPUMode;
       if (eCPUMode === 'custom' && eCPUModel !== (vm.cpu_model || '')) data.cpu_model = eCPUModel;
       if (eCPUUnits !== (vm.cpu_units || 1024)) data.cpu_units = eCPUUnits;
@@ -2736,6 +2759,39 @@
                         </div>
                       </div>
                     </SettingRow>
+
+                    {#if !isContainerVm}
+                      <SettingRow label={t('vmDetail.minRamLabel')} helper={t('vmDetail.minRamHelper')}>
+                        <div class="flex items-center gap-2">
+                          <Input
+                            id="edit-min-ram"
+                            type="number"
+                            min="0"
+                            max={eRamMB}
+                            step="256"
+                            bind:value={eMinRamMB}
+                            class="tnum w-32 text-center font-medium"
+                          />
+                          <span class="text-xs text-muted-foreground">
+                            {eMinRamMB > 0 ? `MB (${(eMinRamMB / 1024).toFixed(1)} GB)` : t('vmDetail.minRamDynamic')}
+                          </span>
+                        </div>
+                      </SettingRow>
+
+                      <SettingRow label={t('vmDetail.iothreadsLabel')} helper={t('vmDetail.iothreadsHelper')}>
+                        <div class="flex items-center gap-2">
+                          <Input
+                            id="edit-iothreads"
+                            type="number"
+                            min="0"
+                            max="16"
+                            bind:value={eIOThreads}
+                            class="tnum w-24 text-center font-medium"
+                          />
+                          <span class="text-xs text-muted-foreground">{eIOThreads > 0 ? t('vmDetail.iothreadsDedicated') : t('vmDetail.iothreadsDisabled')}</span>
+                        </div>
+                      </SettingRow>
+                    {/if}
                   </div>
                 {:else if editTab === 'display'}
                   <div class="space-y-3 pt-1">
@@ -3904,9 +3960,31 @@
         {#snippet sec_guest()}
           <BlockCard bid="guest" title={t('vmDetail.guestTab')} anchor="guest">
             {#snippet headerActions()}
-              <Button size="xs" variant="outline" onclick={loadGuestInfo} disabled={guestLoading}>
-                {#if guestLoading}<Spinner size="xs" />{:else}{t('common.refresh')}{/if}
-              </Button>
+              <div class="flex items-center gap-1.5">
+                {#if vm?.state === 'running' && guestInfo?.available}
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onclick={runGuestFSTrim}
+                    disabled={actionLoading === 'fstrim'}
+                    title={t('vmDetail.fstrimDesc')}
+                  >
+                    {#if actionLoading === 'fstrim'}<Spinner size="xs" />{:else}<Icon
+                        name="sparkles"
+                        size={13}
+                        class="mr-1"
+                      />{t('vmDetail.fstrimBtn')}{/if}
+                  </Button>
+                {/if}
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onclick={loadGuestInfo}
+                  disabled={guestLoading}
+                >
+                  {#if guestLoading}<Spinner size="xs" />{:else}{t('common.refresh')}{/if}
+                </Button>
+              </div>
             {/snippet}
 
             {#if guestLoading && !guestInfo}
@@ -3926,7 +4004,7 @@
               </div>
             {:else}
               <!-- OS identity -->
-              {#if guestInfo.os || guestInfo.hostname}
+              {#if guestInfo.os || guestInfo.hostname || guestInfo.timezone}
                 <div class="mb-4 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
                   {#if guestInfo.os?.pretty_name || guestInfo.os?.name}
                     <div class="flex gap-2">
@@ -3955,6 +4033,32 @@
                       <span class="font-mono">{guestInfo.os.machine}</span>
                     </div>
                   {/if}
+                  {#if guestInfo.timezone?.zone}
+                    <div class="flex gap-2">
+                      <span class="text-muted-foreground shrink-0"
+                        >{t('vmDetail.guestTimezone')}</span
+                      >
+                      <span class="font-mono">{guestInfo.timezone.zone}</span>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+
+              <!-- Active Guest User Sessions -->
+              {#if guestInfo.users?.length}
+                <h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
+                  {t('vmDetail.guestUsers')}
+                </h3>
+                <div class="flex flex-wrap gap-1.5 mb-4">
+                  {#each guestInfo.users as u (u.user)}
+                    <span
+                      class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-border bg-background text-xs font-mono"
+                    >
+                      <Icon name="user" size={13} class="text-muted-foreground" />
+                      <span>{u.user}</span>
+                      {#if u.domain}<span class="text-[10px] text-muted-foreground">({u.domain})</span>{/if}
+                    </span>
+                  {/each}
                 </div>
               {/if}
 

@@ -41,6 +41,9 @@
   let dhcpStart = $state('');
   let dhcpEnd = $state('');
   let dnsText = $state('');
+  let gateway = $state('');
+  let dns1 = $state('');
+  let dns2 = $state('');
   // MTU 0 = kernel/bridge default. Reservations = fixed MAC→IP DHCP
   // leases ({ mac, ip, name }), only meaningful when DHCP is on.
   let mtu = $state(0);
@@ -159,6 +162,9 @@
     dhcpStart = '';
     dhcpEnd = '';
     dnsText = '';
+    gateway = '';
+    dns1 = '';
+    dns2 = '';
     mtu = 0;
     reservations = [];
     autostart = true;
@@ -176,6 +182,9 @@
     dhcpStart = net.dhcp_start || '';
     dhcpEnd = net.dhcp_end || '';
     dnsText = formatDNSList(net.dns);
+    gateway = net.gateway || '';
+    dns1 = (Array.isArray(net.dns) && net.dns[0]) || '';
+    dns2 = (Array.isArray(net.dns) && net.dns[1]) || '';
     mtu = net.mtu || 0;
     reservations = Array.isArray(net.reservations)
       ? net.reservations.map((r) => ({ mac: r.mac || '', ip: r.ip || '', name: r.name || '' }))
@@ -272,10 +281,17 @@
       toast.error(msg, { duration: 0 });
       return;
     }
+    if (kind === 'direct' && cidr && cidr.trim() && !cidr.includes('/')) {
+      const msg = t('networks.cidrPrefixError');
+      error = msg;
+      toast.error(msg, { duration: 0 });
+      return;
+    }
     error = '';
     saving = true;
     let payload;
     if (kind === 'direct') {
+      const dnsList = [dns1.trim(), dns2.trim()].filter(Boolean);
       payload = {
         name: name.trim(),
         kind,
@@ -283,13 +299,19 @@
         interface: directInterface,
         vlan_aware: vlanAware,
       };
+      if (cidr && cidr.trim()) payload.cidr = cidr.trim();
+      if (gateway && gateway.trim()) payload.gateway = gateway.trim();
+      if (dnsList.length > 0) payload.dns = dnsList;
+      if (Number(mtu)) payload.mtu = Number(mtu);
     } else {
+      const dnsList = dnsText ? parseDNSList(dnsText) : [dns1.trim(), dns2.trim()].filter(Boolean);
       payload = { name: name.trim(), kind, autostart, cidr: cidr || '', dhcp };
+      if (gateway && gateway.trim()) payload.gateway = gateway.trim();
       if (dhcp) {
         payload.dhcp_start = dhcpStart || preview?.dhcpStart || '';
         payload.dhcp_end = dhcpEnd || preview?.dhcpEnd || '';
       }
-      if (dnsText) payload.dns = parseDNSList(dnsText);
+      if (dnsList.length > 0) payload.dns = dnsList;
       if (Number(mtu)) payload.mtu = Number(mtu);
       if (dhcp) payload.reservations = cleanReservations();
     }
@@ -315,16 +337,23 @@
     if (!editingNet) return;
     error = '';
     saving = true;
+    const dnsList = [dns1.trim(), dns2.trim()].filter(Boolean);
     const payload = { dhcp, autostart, vlan_aware: vlanAware };
-    if (dhcp) {
-      payload.dhcp_start = dhcpStart || preview?.dhcpStart || '';
-      payload.dhcp_end = dhcpEnd || preview?.dhcpEnd || '';
+    if (kind === 'direct') {
+      if (gateway !== undefined) payload.gateway = gateway.trim();
+      payload.dns = dnsList;
+    } else {
+      if (gateway !== undefined) payload.gateway = gateway.trim();
+      if (dhcp) {
+        payload.dhcp_start = dhcpStart || preview?.dhcpStart || '';
+        payload.dhcp_end = dhcpEnd || preview?.dhcpEnd || '';
+      }
+      payload.dns = dnsText ? parseDNSList(dnsText) : dnsList;
+      // Always send the (possibly empty) set so clearing reservations is
+      // possible; the backend replaces the whole list.
+      payload.reservations = dhcp ? cleanReservations() : [];
     }
-    payload.dns = parseDNSList(dnsText);
     payload.mtu = Number(mtu) || 0;
-    // Always send the (possibly empty) set so clearing reservations is
-    // possible; the backend replaces the whole list.
-    payload.reservations = dhcp ? cleanReservations() : [];
     try {
       await api.updateNetwork(editingNet, payload);
       resetForm();
@@ -480,7 +509,7 @@
             >
             <select id="net-direct-iface" bind:value={directInterface} class="input">
               <option value="" disabled>{t('networks.selectInterfacePlaceholder')}</option>
-              {#each hostInterfaces as iface (iface)}
+              {#each hostInterfaces as iface (iface.name || iface)}
                 <option value={iface.name}
                   >{iface.name}
                   {iface.type !== 'other' ? `(${iface.type})` : ''} — {iface.state}</option
@@ -497,6 +526,63 @@
             />
             {t('networks.vlanAwareLabel')}
           </label>
+
+          <div class="pt-3 border-t border-border space-y-3">
+            <div>
+              <span class="text-sm font-medium">{t('networks.directStaticConfigTitle')}</span>
+              <p class="text-xs text-muted-foreground">{t('networks.directStaticConfigDesc')}</p>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label for="net-direct-cidr" class="block text-sm font-medium mb-1.5"
+                  >{t('networks.ipSubnet')}</label
+                >
+                <Input
+                  id="net-direct-cidr"
+                  bind:value={cidr}
+                  placeholder="192.168.1.50/24"
+                  class="tnum"
+                />
+                <p class="text-xs text-muted-foreground mt-1">{t('networks.directCidrHelp')}</p>
+              </div>
+              <div>
+                <label for="net-direct-gw" class="block text-sm font-medium mb-1.5"
+                  >{t('networks.gateway')}</label
+                >
+                <Input
+                  id="net-direct-gw"
+                  bind:value={gateway}
+                  placeholder="192.168.1.1"
+                  class="tnum"
+                />
+                <p class="text-xs text-muted-foreground mt-1">{t('networks.gatewayHelp')}</p>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label for="net-direct-dns1" class="block text-sm font-medium mb-1.5"
+                  >{t('networks.dns1')}</label
+                >
+                <Input
+                  id="net-direct-dns1"
+                  bind:value={dns1}
+                  placeholder="1.1.1.1"
+                  class="tnum"
+                />
+              </div>
+              <div>
+                <label for="net-direct-dns2" class="block text-sm font-medium mb-1.5"
+                  >{t('networks.dns2')}</label
+                >
+                <Input
+                  id="net-direct-dns2"
+                  bind:value={dns2}
+                  placeholder="8.8.8.8"
+                  class="tnum"
+                />
+              </div>
+            </div>
+          </div>
         {:else}
           <div>
             <label for="net-cidr" class="block text-sm font-medium mb-1.5">CIDR</label>
@@ -551,6 +637,57 @@
             />
             {t('networks.vlanAwareLabel')}
           </label>
+
+          <div class="pt-3 border-t border-border space-y-3">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label for="net-edit-direct-cidr" class="block text-sm font-medium mb-1.5"
+                  >{t('networks.ipSubnet')}</label
+                >
+                <Input
+                  id="net-edit-direct-cidr"
+                  value={cidr || '—'}
+                  readonly
+                  class="opacity-50 tnum"
+                />
+              </div>
+              <div>
+                <label for="net-edit-direct-gw" class="block text-sm font-medium mb-1.5"
+                  >{t('networks.gateway')}</label
+                >
+                <Input
+                  id="net-edit-direct-gw"
+                  bind:value={gateway}
+                  placeholder="192.168.1.1"
+                  class="tnum"
+                />
+              </div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label for="net-edit-direct-dns1" class="block text-sm font-medium mb-1.5"
+                  >{t('networks.dns1')}</label
+                >
+                <Input
+                  id="net-edit-direct-dns1"
+                  bind:value={dns1}
+                  placeholder="1.1.1.1"
+                  class="tnum"
+                />
+              </div>
+              <div>
+                <label for="net-edit-direct-dns2" class="block text-sm font-medium mb-1.5"
+                  >{t('networks.dns2')}</label
+                >
+                <Input
+                  id="net-edit-direct-dns2"
+                  bind:value={dns2}
+                  placeholder="8.8.8.8"
+                  class="tnum"
+                />
+              </div>
+            </div>
+          </div>
         {/if}
       {/if}
 

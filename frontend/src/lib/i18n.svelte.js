@@ -102,7 +102,7 @@ function load() {
   return 'en';
 }
 
-const messages = {
+export const messages = {
   en: {
     remoteBrowse: {
       browse: 'Browse folders',
@@ -134,6 +134,14 @@ const messages = {
       violet: 'Violet',
       amber: 'Amber',
       rose: 'Rose',
+    },
+    cloudInit: {
+      networkConfig: 'Network Configuration',
+      staticIP: 'Static IP',
+      ipAddressCIDR: 'IPv4 Address (CIDR)',
+      gateway: 'Gateway',
+      dnsServers: 'DNS Nameservers',
+      dnsHelper: 'Comma-separated IP addresses (e.g. 1.1.1.1, 8.8.8.8)',
     },
     taskDrawer: {
       toggle: 'Tasks & Background Jobs',
@@ -838,6 +846,19 @@ const messages = {
       guestArch: 'Architecture',
       guestFilesystems: 'Filesystems (as seen by the guest)',
       guestInterfaces: 'Network interfaces',
+      guestUsers: 'Active Sessions / Users',
+      guestTimezone: 'Timezone',
+      fstrimBtn: 'TRIM Disks',
+      fstrimDesc: 'Trigger guest-side fstrim across all filesystems',
+      fstrimSuccess: 'TRIM completed successfully: {size} reclaimed',
+      fstrimError: 'Failed to execute TRIM inside guest',
+      minRamLabel: 'Minimum RAM (Floor)',
+      minRamHelper: 'Guaranteed memory floor for VirtIO memory ballooning',
+      minRamDynamic: 'Dynamic (Equals Max RAM)',
+      iothreadsLabel: 'Dedicated IOThreads',
+      iothreadsHelper: 'Assign dedicated QEMU event loop threads for disk/SCSI IO',
+      iothreadsDedicated: 'Dedicated IOThread loop enabled',
+      iothreadsDisabled: 'Disabled (Main QEMU thread)',
       noActiveSchedule: 'No schedule active',
       noSnapshotsScheduled: 'No snapshots scheduled',
       retentionCustom: 'Custom',
@@ -1725,6 +1746,15 @@ const messages = {
         "Enslaves the chosen NIC into a new Linux bridge with this name — exactly like the host's own vmbr0. VMs and containers on it share the real LAN.",
       selectInterfaceError: 'Select a physical interface for direct networks',
       directBoundTo: 'Bridged to physical interface',
+      directStaticConfigTitle: 'Static IP Configuration (Optional)',
+      directStaticConfigDesc:
+        'Optionally assign a static IP/subnet, gateway, and DNS servers to the direct bridge.',
+      ipSubnet: 'IP / Subnet (CIDR)',
+      directCidrHelp:
+        'Static IPv4 address and prefix for the bridge (e.g. 192.168.1.50/24). Leave empty to keep existing IP or use L2 bridge.',
+      gatewayHelp: 'Default gateway IP address (e.g. 192.168.1.1).',
+      dns1: 'Primary DNS (DNS 1)',
+      dns2: 'Secondary DNS (DNS 2 - Optional)',
       enableDhcp: 'Enable DHCP',
       gateway: 'Gateway',
       dhcpStart: 'DHCP Start',
@@ -2407,8 +2437,11 @@ const messages = {
         'The backend will restart in a few seconds and the page will disconnect briefly. Active VM consoles will close.',
       restart: 'Restart',
       updateToTitle: 'Update to v{version}?',
+      updateFromSourceTitle: 'Rebuild from source?',
       updateConfirmDesc:
-        'This will pull the latest code from GitHub, rebuild the backend, and restart the service. VMs keep running.',
+        'This will download the verified release, install it and restart the service. VMs keep running.',
+      updateConfirmSourceDesc:
+        'This will pull the latest code from the checkout, rebuild the backend and restart the service. VMs keep running.',
       backupNowTitle: 'Backup now?',
       backupNowDesc:
         'Creates a tar.gz of the data dir (excludes disks and logs) and writes it to the configured SMB share. The operation may take a few minutes on large data dirs.',
@@ -3284,6 +3317,14 @@ const messages = {
       amber: 'Ámbar',
       rose: 'Rosa',
     },
+    cloudInit: {
+      networkConfig: 'Configuración de Red',
+      staticIP: 'IP Estática',
+      ipAddressCIDR: 'Dirección IPv4 (CIDR)',
+      gateway: 'Puerta de Enlace',
+      dnsServers: 'Servidores DNS',
+      dnsHelper: 'Direcciones IP separadas por coma (ej. 1.1.1.1, 8.8.8.8)',
+    },
     taskDrawer: {
       toggle: 'Tareas y Trabajos en Segundo Plano',
       title: 'Tareas y Trabajos',
@@ -3997,6 +4038,19 @@ const messages = {
       guestArch: 'Arquitectura',
       guestFilesystems: 'Sistemas de archivos (vistos por el invitado)',
       guestInterfaces: 'Interfaces de red',
+      guestUsers: 'Sesiones activas / Usuarios',
+      guestTimezone: 'Zona horaria',
+      fstrimBtn: 'TRIM Discos',
+      fstrimDesc: 'Ejecutar fstrim en todos los sistemas de archivos del huésped',
+      fstrimSuccess: 'TRIM completado con éxito: {size} liberados',
+      fstrimError: 'Error al ejecutar TRIM en el huésped',
+      minRamLabel: 'RAM Mínima (Floor)',
+      minRamHelper: 'Garantía mínima de memoria para VirtIO ballooning',
+      minRamDynamic: 'Dinámica (Igual a RAM Máx)',
+      iothreadsLabel: 'IOThreads Dedicados',
+      iothreadsHelper: 'Asignar hilos dedicados de event-loop QEMU para E/S de disco/SCSI',
+      iothreadsDedicated: 'Bucle IOThread dedicado activado',
+      iothreadsDisabled: 'Desactivado (Hilo principal QEMU)',
       noActiveSchedule: 'Sin programación activa',
       noSnapshotsScheduled: 'Sin instantáneas programadas',
       retentionCustom: 'Personalizada',
@@ -4899,6 +4953,15 @@ const messages = {
         'Esclaviza la NIC elegida en un bridge Linux nuevo con este nombre — igual que el propio vmbr0 del host. Las VMs y contenedores en ella comparten la LAN real.',
       selectInterfaceError: 'Selecciona una interfaz física para redes directas',
       directBoundTo: 'Puenteado a la interfaz física',
+      directStaticConfigTitle: 'Configuración de IP Estática (Opcional)',
+      directStaticConfigDesc:
+        'Asigna opcionalmente una IP/subred estática, puerta de enlace y servidores DNS al bridge directo.',
+      ipSubnet: 'IP / Subred (CIDR)',
+      directCidrHelp:
+        'Dirección IPv4 estática y prefijo para el bridge (p. ej. 192.168.1.50/24). Déjalo vacío para mantener la IP actual o usar bridge L2.',
+      gatewayHelp: 'Dirección IP de la puerta de enlace predeterminada (p. ej. 192.168.1.1).',
+      dns1: 'DNS Primario (DNS 1)',
+      dns2: 'DNS Secundario (DNS 2 - Opcional)',
       enableDhcp: 'Activar DHCP',
       gateway: 'Puerta de enlace',
       dhcpStart: 'Inicio DHCP',
@@ -5594,8 +5657,11 @@ const messages = {
         'El backend se reiniciará en unos segundos y la página se desconectará brevemente. Las consolas de VM activas se cerrarán.',
       restart: 'Reiniciar',
       updateToTitle: '¿Actualizar a v{version}?',
+      updateFromSourceTitle: '¿Recompilar desde el código fuente?',
       updateConfirmDesc:
-        'Descargará el código más reciente de GitHub, recompilará el backend y reiniciará el servicio. Las VMs siguen en marcha.',
+        'Se descargará la versión verificada, se instalará y se reiniciará el servicio. Las VMs siguen en marcha.',
+      updateConfirmSourceDesc:
+        'Se actualizará el código del checkout, se recompilará el backend y se reiniciará el servicio. Las VMs siguen en marcha.',
       backupNowTitle: '¿Respaldar ahora?',
       backupNowDesc:
         'Crea un tar.gz del directorio de datos (excluye discos y registros) y lo escribe en la compartición SMB configurada. Puede tardar unos minutos en directorios grandes.',
@@ -6479,6 +6545,14 @@ const messages = {
       amber: 'Àmbre',
       rose: 'Rosa',
     },
+    cloudInit: {
+      networkConfig: 'Configuració de Xarxa',
+      staticIP: 'IP Estàtica',
+      ipAddressCIDR: 'Adreça IPv4 (CIDR)',
+      gateway: "Porta d'Enllaç",
+      dnsServers: 'Servidors DNS',
+      dnsHelper: 'Adreces IP separades per coma (ex. 1.1.1.1, 8.8.8.8)',
+    },
     taskDrawer: {
       toggle: 'Tasques i Treballs en Segon Pla',
       title: 'Tasques i Treballs',
@@ -7191,6 +7265,19 @@ const messages = {
       guestArch: 'Arquitectura',
       guestFilesystems: 'Sistemes de fitxers (vistos pel convidat)',
       guestInterfaces: 'Interfícies de xarxa',
+      guestUsers: 'Sessions actives / Usuaris',
+      guestTimezone: 'Zona horària',
+      fstrimBtn: 'TRIM Discs',
+      fstrimDesc: "Executar fstrim a tots els sistemes de fitxers de l'hoste",
+      fstrimSuccess: 'TRIM completat amb èxit: {size} alliberats',
+      fstrimError: "Error en executar TRIM a l'hoste",
+      minRamLabel: 'RAM Mínima (Floor)',
+      minRamHelper: 'Garantia mínima de memòria per a VirtIO ballooning',
+      minRamDynamic: 'Dinàmica (Igual a RAM Màx)',
+      iothreadsLabel: 'IOThreads Dedicats',
+      iothreadsHelper: "Assignar fils dedicats d'event-loop QEMU per a E/S de disc/SCSI",
+      iothreadsDedicated: 'Bucle IOThread dedicat activat',
+      iothreadsDisabled: 'Desactivat (Fil principal QEMU)',
       noActiveSchedule: 'Sense programació activa',
       noSnapshotsScheduled: 'Sense instantànies programades',
       retentionCustom: 'Personalitzada',
@@ -8093,6 +8180,15 @@ const messages = {
         "Esclavitza la NIC triada en un bridge de Linux nou amb aquest nom — igual que el propi vmbr0 de l'host. Les VMs i contenidors hi comparteixen la LAN real.",
       selectInterfaceError: 'Selecciona una interfície física per a xarxes directes',
       directBoundTo: 'Connectat a la interfície física',
+      directStaticConfigTitle: 'Configuració d’IP Estàtica (Opcional)',
+      directStaticConfigDesc:
+        'Assigna opcionalment una IP/subxarxa estàtica, porta d’enllaç i servidors DNS al bridge directe.',
+      ipSubnet: 'IP / Subxarxa (CIDR)',
+      directCidrHelp:
+        'Adreça IPv4 estàtica i prefix per al bridge (p. ex. 192.168.1.50/24). Deixa-ho buit per mantenir la IP actual o utilitzar bridge L2.',
+      gatewayHelp: 'Adreça IP de la porta d’enllaç predeterminada (p. ex. 192.168.1.1).',
+      dns1: 'DNS Primari (DNS 1)',
+      dns2: 'DNS Secundari (DNS 2 - Opcional)',
       enableDhcp: 'Activa DHCP',
       gateway: "Porta d'enllaç",
       dhcpStart: 'Inici DHCP',
@@ -8788,8 +8884,11 @@ const messages = {
         'El backend es reiniciarà en uns segons i la pàgina es desconnectarà breument. Les consoles de VM actives es tancaran.',
       restart: 'Reinicia',
       updateToTitle: '¿Actualitzar a v{version}?',
+      updateFromSourceTitle: '¿Recompilar des del codi font?',
       updateConfirmDesc:
-        'Descarregarà el codi més recent de GitHub, recompilarà el backend i reiniciarà el servei. Les VMs continuen en marxa.',
+        "Es descarregarà la versió verificada, s'instal·larà i es reiniciarà el servei. Les VMs continuen en marxa.",
+      updateConfirmSourceDesc:
+        "S'actualitzarà el codi del checkout, es recompilarà el backend i es reiniciarà el servei. Les VMs continuen en marxa.",
       backupNowTitle: '¿Fes còpia ara?',
       backupNowDesc:
         "Crea un tar.gz del directori de dades (exclou discs i registres) i l'escriu a la compartició SMB configurada. Pot trigar uns minuts en directoris grans.",
