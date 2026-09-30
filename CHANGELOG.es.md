@@ -6,6 +6,15 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.2-fix1] — 2026-09-30
+
+### Seguridad
+
+- **Blindaje contra Path Injection:**
+  - Reforzada la validación y sanitización de rutas en `zvol.Resolve` y `mdraid.ensureDeviceNode` mediante `filepath.Clean`, límites de prefijo explícitos y comprobaciones regex localizadas.
+- **Actualización de Dependencias Vulnerables:**
+  - Corregidas las alertas de Dependabot (CVE-2026-102277 / GHSA-q2hr-2g5m-vwhr) fijando las versiones parcheadas de `brace-expansion` (`1.1.21` y `5.0.12`) mediante *overrides* de npm en las herramientas de desarrollo del frontend.
+
 ## [0.1.2] — 2026-09-30
 
 ### Añadido
@@ -120,6 +129,8 @@ virtualización Linux.
 
 ---
 
+[0.1.2-fix1]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2-fix1
+[0.1.2]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.0
 [0.0.1]: https://github.com/Slaker19/webkvm/releases/tag/v0.0.1

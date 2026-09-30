@@ -88,8 +88,14 @@ func Resolve(ctx context.Context, name string) (Info, error) {
 		return Info{}, err
 	}
 
-	// Verify the /dev/zvol block device node exists.
-	devPath := DevicePath(name)
+	// Verify the /dev/zvol block device node exists safely within /dev/zvol
+	devPath := filepath.Clean(DevicePath(name))
+	if !strings.HasPrefix(devPath, "/dev/zvol/") || strings.Contains(devPath, "..") {
+		return Info{}, fmt.Errorf("invalid zvol device path %q", devPath)
+	}
+	if !safeZVolNameRE.MatchString(strings.TrimPrefix(devPath, "/dev/zvol/")) {
+		return Info{}, fmt.Errorf("invalid zvol name format in %q", devPath)
+	}
 	fi, err := os.Stat(devPath)
 	if err != nil {
 		return Info{}, fmt.Errorf("zvol block device %s not found: %w", devPath, err)

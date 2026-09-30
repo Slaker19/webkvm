@@ -6,6 +6,15 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
+## [0.1.2-fix1] — 2026-09-30
+
+### Security
+
+- **Path Injection Hardening:**
+  - Strengthened path traversal defenses in `zvol.Resolve` and `mdraid.ensureDeviceNode` using `filepath.Clean`, explicit prefix boundaries, and localized regex checks.
+- **Dependency Vulnerability Fixes:**
+  - Resolved Dependabot alerts (CVE-2026-102277 / GHSA-q2hr-2g5m-vwhr) by locking `brace-expansion` dependencies to patched versions (`1.1.21` and `5.0.12`) via npm overrides.
+
 ## [0.1.2] — 2026-09-30
 
 ### Added
@@ -117,6 +126,8 @@ virtualisation host.
 
 ---
 
+[0.1.2-fix1]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2-fix1
+[0.1.2]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.0
 [0.0.1]: https://github.com/Slaker19/webkvm/releases/tag/v0.0.1

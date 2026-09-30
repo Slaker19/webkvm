@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -130,6 +131,10 @@ func Create(ctx context.Context, mdDevice, level string, devices []string) (stri
 }
 
 func ensureDeviceNode(ctx context.Context, mdDevice string) {
+	mdDevice = filepath.Clean(strings.TrimSpace(mdDevice))
+	if !safeMDDeviceRE.MatchString(mdDevice) || !strings.HasPrefix(mdDevice, "/dev/md") || strings.Contains(mdDevice, "..") {
+		return
+	}
 	if _, err := os.Stat(mdDevice); err == nil {
 		return
 	}
