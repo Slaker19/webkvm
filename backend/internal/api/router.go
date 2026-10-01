@@ -20,6 +20,7 @@ import (
 	"webkvm/internal/libvirt"
 	"webkvm/internal/metrics"
 	"webkvm/internal/models"
+	"webkvm/internal/netguard"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
 	"webkvm/internal/tokens"
@@ -38,6 +39,7 @@ func NewRouter(
 	authMgr *auth.Manager,
 	globalRateLimiter *auth.GlobalRateLimiter,
 	loginLimiter *auth.LoginRateLimiter,
+	jail *netguard.Jail,
 	us *user.Store,
 	hub *events.Hub,
 	metrics *libvirt.MetricsCollector,
@@ -108,6 +110,7 @@ func NewRouter(
 		compute:       compute,
 		auth:          authMgr,
 		loginLimiter:  loginLimiter,
+		jail:          jail,
 		userStore:     us,
 		cfg:           cfg,
 		hub:           hub,
@@ -260,6 +263,7 @@ func NewRouter(
 				r.Get("/logs", h.GetVMLogs)
 
 				r.Post("/clone", h.CloneVM)
+				r.Post("/batch-clone", h.BatchCloneVM)
 				// Relocating an instance's storage to another pool.
 				// Same permission level as a clone: both copy the whole
 				// disk, neither can reach outside the caller's pools.
@@ -315,6 +319,7 @@ func NewRouter(
 				r.Use(h.requireCapability("console"))
 				r.Get("/graphics", h.GetGraphics)
 				r.Get("/vnc", h.VNCProxy)
+				r.Get("/spice-ws", h.SPICEProxy)
 				r.Get("/serial", h.SerialProxy)
 				r.Post("/console-ticket", h.VMConsoleTicket)
 				r.Post("/vnc-ticket", h.VNCTicket)
@@ -555,6 +560,10 @@ func NewRouter(
 			r.Post("/capabilities/refresh", h.RefreshCapabilities)
 			r.Post("/disks/wipe", h.WipeHostDisk)
 			r.Post("/disks/initialize-directory", h.InitHostDiskDirectory)
+			r.Get("/disks/smart", h.ProbeHostDiskSMART)
+			r.Post("/disks/selftest", h.RunHostDiskSelfTest)
+			r.Post("/zpools/{name}/scrub", h.ScrubHostZPool)
+			r.Post("/raid/{device}/sync", h.SyncHostRAID)
 		})
 	})
 
@@ -598,6 +607,8 @@ func NewRouter(
 		r.Put("/", h.SetSettings)
 		r.Post("/reset", h.ResetSettings)
 		r.Post("/apply-live", h.ApplyLiveSettings)
+		r.Get("/jail", h.ListJailedIPs)
+		r.Post("/jail/unban", h.UnbanJailedIP)
 	})
 
 	// Notifications / alerts. Config reads are for any authenticated

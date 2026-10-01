@@ -145,6 +145,7 @@
   let cpuMode = $state('host-passthrough');
   let cpuModel = $state('');
   let videoModel = $state('virtio');
+  let graphicsType = $state('both');
   let network = $state('');
   let iso = $state('');
   let loading = $state(false);
@@ -1083,6 +1084,7 @@
         }
         const deployPayload = {
           name,
+          type: 'vm',
           pool: storagePool || undefined,
           network: network || undefined,
           vcpus,
@@ -1105,6 +1107,9 @@
         // navigating away immediately shows success even when the deploy
         // later fails.
         const res = await api.deployAppliance(selectedAppliance.id, deployPayload);
+        if (res?.warning) {
+          toast.warning(res.warning);
+        }
         if (res?.job_id) {
           await api.waitJob(res.job_id);
         }
@@ -1140,6 +1145,7 @@
             cpu_units: cpuUnits !== 1024 ? cpuUnits : undefined,
             kvm_hidden: kvmHidden ? true : undefined,
             video_model: videoModel,
+            graphics_type: graphicsType,
             audio_model: audioModel !== 'none' ? audioModel : undefined,
             network,
             network_model: networkModel,
@@ -1204,6 +1210,9 @@
         };
       }
       const result = await api.createVM(payload);
+      if (result?.warning) {
+        toast.warning(result.warning);
+      }
       if (result && result.id && selectedGroups.length > 0) {
         try {
           await api.updateVMMeta(result.id, { groups: selectedGroups });
@@ -2037,6 +2046,18 @@
                           : ''}
                       </option>
                     {/each}
+                  </select>
+                </SettingRow>
+
+                <SettingRow
+                  label="Consola Gráfica"
+                  helper="Selecciona los servidores de consola gráfica a habilitar (VNC, SPICE, ambos o ninguno)"
+                >
+                  <select bind:value={graphicsType} class="input max-w-xs">
+                    <option value="both">Ambas activas (noVNC + SPICE)</option>
+                    <option value="vnc">Solo noVNC (RFB estándar)</option>
+                    <option value="spice">Solo SPICE (Alto rendimiento / Web SPICE)</option>
+                    <option value="none">Desactivadas (Sin consola gráfica / Headless)</option>
                   </select>
                 </SettingRow>
               </div>

@@ -247,6 +247,10 @@ func (c *Combined) UpdateVMMeta(uuid string, upd models.VMMetaUpdate) (models.VM
 func (c *Combined) GetVNCInfo(id string) (GraphicsInfo, error) {
 	return c.route(id).GetVNCInfo(id)
 }
+
+func (c *Combined) GetSPICEInfo(id string) (GraphicsInfo, error) {
+	return c.route(id).GetSPICEInfo(id)
+}
 func (c *Combined) GetDomainIP(id string) string { return c.route(id).GetDomainIP(id) }
 func (c *Combined) GetDomainXML(id string) (string, error) {
 	return c.route(id).GetDomainXML(id)

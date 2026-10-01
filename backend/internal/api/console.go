@@ -87,6 +87,35 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// ListJailedIPs returns all currently banned IPs.
+func (h *Handler) ListJailedIPs(w http.ResponseWriter, r *http.Request) {
+	if h.jail == nil {
+		jsonResp(w, http.StatusOK, []any{})
+		return
+	}
+	jsonResp(w, http.StatusOK, h.jail.ListBanned())
+}
+
+// UnbanJailedIP unbans an IP manually.
+func (h *Handler) UnbanJailedIP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IP string `json:"ip"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if h.jail == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "jail not initialized")
+		return
+	}
+	if err := h.jail.Unban(req.IP); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jsonResp(w, http.StatusOK, map[string]string{"status": "unbanned", "ip": req.IP})
+}
+
 func (h *Handler) GetGraphics(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	info, err := h.compute.GetVNCInfo(id)
@@ -95,6 +124,137 @@ func (h *Handler) GetGraphics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResp(w, http.StatusOK, info)
+}
+
+// SPICEProxy proxies SPICE client connections over WebSocket to the local QEMU SPICE port.
+func (h *Handler) SPICEProxy(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	info, err := h.compute.GetSPICEInfo(id)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	spiceHost := h.cfg.VNCProxyHost
+	if spiceHost == "" {
+		spiceHost = "127.0.0.1"
+	}
+	spiceAddr := net.JoinHostPort(spiceHost, strconv.Itoa(info.Port))
+	slog.Info("spice_proxy_dialing", "vm_id", id, "spice_port", info.Port, "spice_addr", spiceAddr)
+
+	responseHeader := http.Header{}
+	if len(r.Header.Values("Sec-WebSocket-Protocol")) > 0 {
+		responseHeader.Set("Sec-WebSocket-Protocol", "binary")
+	}
+
+	ws, err := upgrader.Upgrade(w, r, responseHeader)
+	if err != nil {
+		slog.Error("spice_proxy_upgrade_failed", "err", err)
+		jsonErr(w, http.StatusInternalServerError, "websocket upgrade failed")
+		return
+	}
+
+	tcpConn, err := net.DialTimeout("tcp", spiceAddr, 10*time.Second)
+	if err != nil {
+		slog.Error("spice_proxy_dial_failed", "addr", spiceAddr, "err", err)
+		_ = ws.Close()
+		return
+	}
+
+	if tc, ok := tcpConn.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(15 * time.Second)
+	}
+
+	const (
+		pongWait   = 60 * time.Second
+		pingPeriod = 20 * time.Second
+		writeWait  = 10 * time.Second
+	)
+
+	_ = ws.SetReadDeadline(time.Now().Add(pongWait))
+	ws.SetPongHandler(func(string) error {
+		_ = ws.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	var writeMu sync.Mutex
+	closeAll := func() {
+		closeOnce.Do(func() {
+			close(done)
+			_ = ws.Close()
+			_ = tcpConn.Close()
+		})
+	}
+
+	ws.SetCloseHandler(func(code int, text string) error {
+		closeAll()
+		return nil
+	})
+
+	go func() {
+		defer safego.Recover("spice_ping_ticker")
+		ticker := time.NewTicker(pingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				writeMu.Lock()
+				_ = ws.SetWriteDeadline(time.Now().Add(writeWait))
+				err := ws.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(writeWait))
+				writeMu.Unlock()
+				if err != nil {
+					closeAll()
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer safego.Recover("spice_ws_to_tcp")
+		defer closeAll()
+		for {
+			msgType, data, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+			if msgType == websocket.BinaryMessage || msgType == websocket.TextMessage {
+				_ = tcpConn.SetWriteDeadline(time.Now().Add(writeWait))
+				if _, err := tcpConn.Write(data); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	go func() {
+		defer safego.Recover("spice_tcp_to_ws")
+		defer closeAll()
+		buf := make([]byte, 32768)
+		for {
+			n, err := tcpConn.Read(buf)
+			if n > 0 {
+				writeMu.Lock()
+				_ = ws.SetWriteDeadline(time.Now().Add(writeWait))
+				werr := ws.WriteMessage(websocket.BinaryMessage, buf[:n])
+				writeMu.Unlock()
+				if werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	<-done
 }
 
 func (h *Handler) VNCProxy(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +413,7 @@ func (h *Handler) ConsolePage(w http.ResponseWriter, r *http.Request) {
 :root{--indigo-400:#818cf8;--indigo-500:#6366f1;--indigo-600:#4f46e5;--indigo-700:#4338ca;--slate-800:#1e293b;--slate-850:#0f1729;--slate-900:#020617;--slate-950:#010101}
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{background:var(--slate-900);overflow:hidden;height:100%%;width:100%%;font-family:system-ui,-apple-system,sans-serif}
-#screen{width:100%%;height:100%%;display:flex;align-items:center;justify-content:center;overflow:hidden}
+#screen, #spice-area, #spice-screen{width:100%%;height:100%%;display:flex;align-items:center;justify-content:center;overflow:hidden}
 canvas{display:block;margin:auto;max-width:100%%;max-height:100%%;object-fit:contain}
 /* ---- sidebar ---- */
 #sidebar{position:fixed;left:0;top:50%%;transform:translateY(-50%%);display:flex;flex-direction:column;gap:2px;padding:6px;border-radius:0 12px 12px 0;background:rgba(2,6,23,.75);backdrop-filter:blur(16px);border:1px solid rgba(99,102,241,.1);border-left:none;box-shadow:4px 0 24px rgba(0,0,0,.3);z-index:20;opacity:0;transition:opacity .3s}
@@ -398,6 +558,9 @@ body.embedded #status{bottom:8px;right:8px;padding:3px 8px;font-size:10px}
       <span>Teclado Virtual</span>
     </div>
     <div class="vk-actions">
+      <button class="vk-action-btn" id="vkLayoutBtn" title="Cambiar distribución (Español / English)">
+        <span id="vkLayoutLabel" style="font-weight:700;font-size:10px;">ES</span>
+      </button>
       <button class="vk-action-btn" id="vkOpacityBtn" title="Cambiar transparencia">
         <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" width="13" height="13"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
         <span id="vkOpacityLabel">50%%</span>
@@ -425,9 +588,14 @@ body.embedded #status{bottom:8px;right:8px;padding:3px 8px;font-size:10px}
   <div class="vk-board" id="vkBoard"></div>
 </div>
 <div id="screen"></div>
+<div id="spice-area" style="display:none;width:100%%;height:100%%;position:relative;overflow:hidden;background:#020617;">
+  <div id="spice-screen" style="width:100%%;height:100%%;display:flex;align-items:center;justify-content:center;overflow:hidden;"></div>
+  <div id="message-div" style="display:none;"></div>
+</div>
 <div id="status"><span class="dot connecting"></span>Connecting</div>
 <script type="module">
 import RFB from '/static/novnc.mjs';
+import { SpiceMainConn, sendCtrlAltDel, sendSpiceKey, handle_keydown, handle_keyup, fit_spice_canvas, handle_resize } from '/static/spice.mjs';
 
 history.pushState(null, null, location.href);
 window.onpopstate = function () {
@@ -440,12 +608,13 @@ var port = window.location.port || (window.location.protocol === 'https:' ? '443
 var searchParams = new URLSearchParams(window.location.search);
 var vt = searchParams.get('vt') || '';
 var isEmbedded = searchParams.get('embedded') === '1';
+var consoleMode = searchParams.get('mode') || 'vnc'; // 'vnc' or 'spice'
 if (isEmbedded) {
     document.body.classList.add('embedded');
 }
-var url = wsProto + '//' + host + ':' + port + '/api/vms/%s/vnc?vt=' + encodeURIComponent(vt);
+var url = wsProto + '//' + host + ':' + port + '/api/vms/%s/' + (consoleMode === 'spice' ? 'spice-ws' : 'vnc') + '?vt=' + encodeURIComponent(vt);
 
-var rfb = null, connected = false, activePanel = null, vmId = '%s';
+var rfb = null, spiceConn = null, connected = false, activePanel = null, vmId = '%s';
 var reconnectAttempts = 0, everConnected = false, autoRetry = true;
 var statusEl = document.getElementById('status');
 var sidebar = document.getElementById('sidebar');
@@ -462,6 +631,22 @@ function updateStatus(state, msg) {
 }
 
 function sendKeyCombo(keys) {
+    if (consoleMode === 'spice') {
+        if (!spiceConn || !connected) return;
+        if (keys.length === 3 && keys[2][0] === 0xffff) {
+            sendCtrlAltDel(spiceConn);
+            return;
+        }
+        for (var i = 0; i < keys.length; i++) {
+            sendSpiceKey(spiceConn, keys[i][1], true);
+        }
+        setTimeout(function () {
+            for (var i = keys.length - 1; i >= 0; i--) {
+                sendSpiceKey(spiceConn, keys[i][1], false);
+            }
+        }, 80);
+        return;
+    }
     if (!rfb || !connected) return;
     for (var i = 0; i < keys.length; i++)
         rfb.sendKey(keys[i][0], keys[i][1], true);
@@ -498,48 +683,51 @@ var vkModifiers = {
     caps: false
 };
 
-var vkRows = [
-    // Row 0: Function row
+var currentVkLayout = localStorage.getItem('webkvm_vk_layout') || (navigator.language && navigator.language.startsWith('es') ? 'es' : 'us');
+
+var vkFnRow = [
+    { main: 'Esc', sym: 0xff1b, code: 'Escape', cls: 'fn w-12' },
+    { main: 'F1', sym: 0xffbe, code: 'F1', cls: 'fn' },
+    { main: 'F2', sym: 0xffbf, code: 'F2', cls: 'fn' },
+    { main: 'F3', sym: 0xffc0, code: 'F3', cls: 'fn' },
+    { main: 'F4', sym: 0xffc1, code: 'F4', cls: 'fn' },
+    { main: 'F5', sym: 0xffc2, code: 'F5', cls: 'fn' },
+    { main: 'F6', sym: 0xffc3, code: 'F6', cls: 'fn' },
+    { main: 'F7', sym: 0xffc4, code: 'F7', cls: 'fn' },
+    { main: 'F8', sym: 0xffc5, code: 'F8', cls: 'fn' },
+    { main: 'F9', sym: 0xffc6, code: 'F9', cls: 'fn' },
+    { main: 'F10', sym: 0xffc7, code: 'F10', cls: 'fn' },
+    { main: 'F11', sym: 0xffc8, code: 'F11', cls: 'fn' },
+    { main: 'F12', sym: 0xffc9, code: 'F12', cls: 'fn' },
+    { main: 'PrtSc', sym: 0xff61, code: 'PrintScreen', cls: 'fn' },
+    { main: 'Del', sym: 0xffff, code: 'Delete', cls: 'fn w-12' }
+];
+
+var vkRowsES = [
+    vkFnRow,
+    // Row 1: Numbers & symbols (ES ISO)
     [
-        { main: 'Esc', sym: 0xff1b, code: 'Escape', cls: 'fn w-12' },
-        { main: 'F1', sym: 0xffbe, code: 'F1', cls: 'fn' },
-        { main: 'F2', sym: 0xffbf, code: 'F2', cls: 'fn' },
-        { main: 'F3', sym: 0xffc0, code: 'F3', cls: 'fn' },
-        { main: 'F4', sym: 0xffc1, code: 'F4', cls: 'fn' },
-        { main: 'F5', sym: 0xffc2, code: 'F5', cls: 'fn' },
-        { main: 'F6', sym: 0xffc3, code: 'F6', cls: 'fn' },
-        { main: 'F7', sym: 0xffc4, code: 'F7', cls: 'fn' },
-        { main: 'F8', sym: 0xffc5, code: 'F8', cls: 'fn' },
-        { main: 'F9', sym: 0xffc6, code: 'F9', cls: 'fn' },
-        { main: 'F10', sym: 0xffc7, code: 'F10', cls: 'fn' },
-        { main: 'F11', sym: 0xffc8, code: 'F11', cls: 'fn' },
-        { main: 'F12', sym: 0xffc9, code: 'F12', cls: 'fn' },
-        { main: 'PrtSc', sym: 0xff61, code: 'PrintScreen', cls: 'fn' },
-        { main: 'Del', sym: 0xffff, code: 'Delete', cls: 'fn w-12' }
-    ],
-    // Row 1: Numbers & symbols
-    [
-        { main: '\u0060', shift: '~', sym: 0x60, shiftSym: 0x7e, code: 'Backquote' },
-        { main: '1', shift: '!', sym: 0x31, shiftSym: 0x21, code: 'Digit1' },
-        { main: '2', shift: '@', sym: 0x32, shiftSym: 0x40, code: 'Digit2' },
-        { main: '3', shift: '#', sym: 0x33, shiftSym: 0x23, code: 'Digit3' },
-        { main: '4', shift: '$', sym: 0x34, shiftSym: 0x24, code: 'Digit4' },
+        { main: 'º', shift: 'ª', altgr: '\\', sym: 0xba, shiftSym: 0xaa, altgrSym: 0x5c, code: 'Backquote' },
+        { main: '1', shift: '!', altgr: '|', sym: 0x31, shiftSym: 0x21, altgrSym: 0x7c, code: 'Digit1' },
+        { main: '2', shift: '"', altgr: '@', sym: 0x32, shiftSym: 0x22, altgrSym: 0x40, code: 'Digit2' },
+        { main: '3', shift: '·', altgr: '#', sym: 0x33, shiftSym: 0xb7, altgrSym: 0x23, code: 'Digit3' },
+        { main: '4', shift: '$', altgr: '~', sym: 0x34, shiftSym: 0x24, altgrSym: 0x7e, code: 'Digit4' },
         { main: '5', shift: '%%', sym: 0x35, shiftSym: 0x25, code: 'Digit5' },
-        { main: '6', shift: '^', sym: 0x36, shiftSym: 0x5e, code: 'Digit6' },
-        { main: '7', shift: '&', sym: 0x37, shiftSym: 0x26, code: 'Digit7' },
-        { main: '8', shift: '*', sym: 0x38, shiftSym: 0x2a, code: 'Digit8' },
-        { main: '9', shift: '(', sym: 0x39, shiftSym: 0x28, code: 'Digit9' },
-        { main: '0', shift: ')', sym: 0x30, shiftSym: 0x29, code: 'Digit0' },
-        { main: '-', shift: '_', sym: 0x2d, shiftSym: 0x5f, code: 'Minus' },
-        { main: '=', shift: '+', sym: 0x3d, shiftSym: 0x2b, code: 'Equal' },
+        { main: '6', shift: '&', altgr: '¬', sym: 0x36, shiftSym: 0x26, altgrSym: 0xac, code: 'Digit6' },
+        { main: '7', shift: '/', sym: 0x37, shiftSym: 0x2f, code: 'Digit7' },
+        { main: '8', shift: '(', sym: 0x38, shiftSym: 0x28, code: 'Digit8' },
+        { main: '9', shift: ')', sym: 0x39, shiftSym: 0x29, code: 'Digit9' },
+        { main: '0', shift: '=', sym: 0x30, shiftSym: 0x3d, code: 'Digit0' },
+        { main: '\'', shift: '?', sym: 0x27, shiftSym: 0x3f, code: 'Minus' },
+        { main: '¡', shift: '¿', sym: 0xa1, shiftSym: 0xbf, code: 'Equal' },
         { main: '⌫ Backspace', sym: 0xff08, code: 'Backspace', cls: 'mod w-18' }
     ],
-    // Row 2: QWERTY
+    // Row 2: QWERTY (ES ISO)
     [
         { main: 'Tab', sym: 0xff09, code: 'Tab', cls: 'mod w-14' },
         { main: 'q', shift: 'Q', sym: 0x71, shiftSym: 0x51, code: 'KeyQ' },
         { main: 'w', shift: 'W', sym: 0x77, shiftSym: 0x57, code: 'KeyW' },
-        { main: 'e', shift: 'E', sym: 0x65, shiftSym: 0x45, code: 'KeyE' },
+        { main: 'e', shift: 'E', altgr: '€', sym: 0x65, shiftSym: 0x45, altgrSym: 0x20ac, code: 'KeyE' },
         { main: 'r', shift: 'R', sym: 0x72, shiftSym: 0x52, code: 'KeyR' },
         { main: 't', shift: 'T', sym: 0x74, shiftSym: 0x54, code: 'KeyT' },
         { main: 'y', shift: 'Y', sym: 0x79, shiftSym: 0x59, code: 'KeyY' },
@@ -547,11 +735,11 @@ var vkRows = [
         { main: 'i', shift: 'I', sym: 0x69, shiftSym: 0x49, code: 'KeyI' },
         { main: 'o', shift: 'O', sym: 0x6f, shiftSym: 0x4f, code: 'KeyO' },
         { main: 'p', shift: 'P', sym: 0x70, shiftSym: 0x50, code: 'KeyP' },
-        { main: '[', shift: '{', sym: 0x5b, shiftSym: 0x7b, code: 'BracketLeft' },
-        { main: ']', shift: '}', sym: 0x5d, shiftSym: 0x7d, code: 'BracketRight' },
-        { main: '\\', shift: '|', sym: 0x5c, shiftSym: 0x7c, code: 'Backslash', cls: 'w-12' }
+        { main: '\u0060', shift: '^', altgr: '[', sym: 0x60, shiftSym: 0x5e, altgrSym: 0x5b, code: 'BracketLeft' },
+        { main: '+', shift: '*', altgr: ']', sym: 0x2b, shiftSym: 0x2a, altgrSym: 0x5d, code: 'BracketRight' },
+        { main: 'ç', shift: 'Ç', altgr: '}', sym: 0xe7, shiftSym: 0xc7, altgrSym: 0x7d, code: 'Backslash', cls: 'w-12' }
     ],
-    // Row 3: Home row
+    // Row 3: Home row (ES ISO with Ñ)
     [
         { main: 'Caps Lock', sym: 0xffe5, code: 'CapsLock', mod: 'caps', cls: 'mod w-16' },
         { main: 'a', shift: 'A', sym: 0x61, shiftSym: 0x41, code: 'KeyA' },
@@ -563,13 +751,14 @@ var vkRows = [
         { main: 'j', shift: 'J', sym: 0x6a, shiftSym: 0x4a, code: 'KeyJ' },
         { main: 'k', shift: 'K', sym: 0x6b, shiftSym: 0x4b, code: 'KeyK' },
         { main: 'l', shift: 'L', sym: 0x6c, shiftSym: 0x4c, code: 'KeyL' },
-        { main: ';', shift: ':', sym: 0x3b, shiftSym: 0x3a, code: 'Semicolon' },
-        { main: '\'', shift: '"', sym: 0x27, shiftSym: 0x22, code: 'Quote' },
+        { main: 'ñ', shift: 'Ñ', sym: 0xf1, shiftSym: 0xd1, code: 'Semicolon' },
+        { main: '´', shift: '¨', altgr: '{', sym: 0xb4, shiftSym: 0xa8, altgrSym: 0x7b, code: 'Quote' },
         { main: '⏎ Enter', sym: 0xff0d, code: 'Enter', cls: 'mod w-20' }
     ],
-    // Row 4: Shift row
+    // Row 4: Shift row (ES ISO with < >)
     [
-        { main: '⇧ Shift', sym: 0xffe1, code: 'ShiftLeft', mod: 'shift', cls: 'mod w-22' },
+        { main: '⇧ Shift', sym: 0xffe1, code: 'ShiftLeft', mod: 'shift', cls: 'mod w-18' },
+        { main: '<', shift: '>', sym: 0x3c, shiftSym: 0x3e, code: 'IntlBackslash' },
         { main: 'z', shift: 'Z', sym: 0x7a, shiftSym: 0x5a, code: 'KeyZ' },
         { main: 'x', shift: 'X', sym: 0x78, shiftSym: 0x58, code: 'KeyX' },
         { main: 'c', shift: 'C', sym: 0x63, shiftSym: 0x43, code: 'KeyC' },
@@ -577,9 +766,9 @@ var vkRows = [
         { main: 'b', shift: 'B', sym: 0x62, shiftSym: 0x42, code: 'KeyB' },
         { main: 'n', shift: 'N', sym: 0x6e, shiftSym: 0x4e, code: 'KeyN' },
         { main: 'm', shift: 'M', sym: 0x6d, shiftSym: 0x4d, code: 'KeyM' },
-        { main: ',', shift: '<', sym: 0x2c, shiftSym: 0x3c, code: 'Comma' },
-        { main: '.', shift: '>', sym: 0x2e, shiftSym: 0x3e, code: 'Period' },
-        { main: '/', shift: '?', sym: 0x2f, shiftSym: 0x3f, code: 'Slash' },
+        { main: ',', shift: ';', sym: 0x2c, shiftSym: 0x3b, code: 'Comma' },
+        { main: '.', shift: ':', sym: 0x2e, shiftSym: 0x3a, code: 'Period' },
+        { main: '-', shift: '_', sym: 0x2d, shiftSym: 0x5f, code: 'Slash' },
         { main: '⇧ Shift', sym: 0xffe2, code: 'ShiftRight', mod: 'shift', cls: 'mod w-16' },
         { main: '▲', sym: 0xff52, code: 'ArrowUp', cls: 'fn w-12' }
     ],
@@ -596,10 +785,94 @@ var vkRows = [
     ]
 ];
 
+var vkRowsUS = [
+    vkFnRow,
+    // Row 1: Numbers & symbols (US)
+    [
+        { main: '\u0060', shift: '~', sym: 0x60, shiftSym: 0x7e, code: 'Backquote' },
+        { main: '1', shift: '!', sym: 0x31, shiftSym: 0x21, code: 'Digit1' },
+        { main: '2', shift: '@', sym: 0x32, shiftSym: 0x40, code: 'Digit2' },
+        { main: '3', shift: '#', sym: 0x33, shiftSym: 0x23, code: 'Digit3' },
+        { main: '4', shift: '$', sym: 0x34, shiftSym: 0x24, code: 'Digit4' },
+        { main: '5', shift: '%%', sym: 0x35, shiftSym: 0x25, code: 'Digit5' },
+        { main: '6', shift: '^', sym: 0x36, shiftSym: 0x5e, code: 'Digit6' },
+        { main: '7', shift: '&', sym: 0x37, shiftSym: 0x26, code: 'Digit7' },
+        { main: '8', shift: '*', sym: 0x38, shiftSym: 0x2a, code: 'Digit8' },
+        { main: '9', shift: '(', sym: 0x39, shiftSym: 0x28, code: 'Digit9' },
+        { main: '0', shift: ')', sym: 0x30, shiftSym: 0x29, code: 'Digit0' },
+        { main: '-', shift: '_', sym: 0x2d, shiftSym: 0x5f, code: 'Minus' },
+        { main: '=', shift: '+', sym: 0x3d, shiftSym: 0x2b, code: 'Equal' },
+        { main: '⌫ Backspace', sym: 0xff08, code: 'Backspace', cls: 'mod w-18' }
+    ],
+    // Row 2: QWERTY (US)
+    [
+        { main: 'Tab', sym: 0xff09, code: 'Tab', cls: 'mod w-14' },
+        { main: 'q', shift: 'Q', sym: 0x71, shiftSym: 0x51, code: 'KeyQ' },
+        { main: 'w', shift: 'W', sym: 0x77, shiftSym: 0x57, code: 'KeyW' },
+        { main: 'e', shift: 'E', sym: 0x65, shiftSym: 0x45, code: 'KeyE' },
+        { main: 'r', shift: 'R', sym: 0x72, shiftSym: 0x52, code: 'KeyR' },
+        { main: 't', shift: 'T', sym: 0x74, shiftSym: 0x54, code: 'KeyT' },
+        { main: 'y', shift: 'Y', sym: 0x79, shiftSym: 0x59, code: 'KeyY' },
+        { main: 'u', shift: 'U', sym: 0x75, shiftSym: 0x55, code: 'KeyU' },
+        { main: 'i', shift: 'I', sym: 0x69, shiftSym: 0x49, code: 'KeyI' },
+        { main: 'o', shift: 'O', sym: 0x6f, shiftSym: 0x4f, code: 'KeyO' },
+        { main: 'p', shift: 'P', sym: 0x70, shiftSym: 0x50, code: 'KeyP' },
+        { main: '[', shift: '{', sym: 0x5b, shiftSym: 0x7b, code: 'BracketLeft' },
+        { main: ']', shift: '}', sym: 0x5d, shiftSym: 0x7d, code: 'BracketRight' },
+        { main: '\\', shift: '|', sym: 0x5c, shiftSym: 0x7c, code: 'Backslash', cls: 'w-12' }
+    ],
+    // Row 3: Home row (US)
+    [
+        { main: 'Caps Lock', sym: 0xffe5, code: 'CapsLock', mod: 'caps', cls: 'mod w-16' },
+        { main: 'a', shift: 'A', sym: 0x61, shiftSym: 0x41, code: 'KeyA' },
+        { main: 's', shift: 'S', sym: 0x73, shiftSym: 0x53, code: 'KeyS' },
+        { main: 'd', shift: 'D', sym: 0x64, shiftSym: 0x44, code: 'KeyD' },
+        { main: 'f', shift: 'F', sym: 0x66, shiftSym: 0x46, code: 'KeyF' },
+        { main: 'g', shift: 'G', sym: 0x67, shiftSym: 0x47, code: 'KeyG' },
+        { main: 'h', shift: 'H', sym: 0x68, shiftSym: 0x48, code: 'KeyH' },
+        { main: 'j', shift: 'J', sym: 0x6a, shiftSym: 0x4a, code: 'KeyJ' },
+        { main: 'k', shift: 'K', sym: 0x6b, shiftSym: 0x4b, code: 'KeyK' },
+        { main: 'l', shift: 'L', sym: 0x6c, shiftSym: 0x4c, code: 'KeyL' },
+        { main: ';', shift: ':', sym: 0x3b, shiftSym: 0x3a, code: 'Semicolon' },
+        { main: '\'', shift: '"', sym: 0x27, shiftSym: 0x22, code: 'Quote' },
+        { main: '⏎ Enter', sym: 0xff0d, code: 'Enter', cls: 'mod w-20' }
+    ],
+    // Row 4: Shift row (US)
+    [
+        { main: '⇧ Shift', sym: 0xffe1, code: 'ShiftLeft', mod: 'shift', cls: 'mod w-22' },
+        { main: 'z', shift: 'Z', sym: 0x7a, shiftSym: 0x5a, code: 'KeyZ' },
+        { main: 'x', shift: 'X', sym: 0x78, shiftSym: 0x58, code: 'KeyX' },
+        { main: 'c', shift: 'C', sym: 0x63, shiftSym: 0x43, code: 'KeyC' },
+        { main: 'v', shift: 'V', sym: 0x76, shiftSym: 0x56, code: 'KeyV' },
+        { main: 'b', shift: 'B', sym: 0x62, shiftSym: 0x42, code: 'KeyB' },
+        { main: 'n', shift: 'N', sym: 0x6e, shiftSym: 0x4e, code: 'KeyN' },
+        { main: 'm', shift: 'M', sym: 0x6d, shiftSym: 0x4d, code: 'KeyM' },
+        { main: ',', shift: '<', sym: 0x2c, shiftSym: 0x3c, code: 'Comma' },
+        { main: '.', shift: '>', sym: 0x2e, shiftSym: 0x3e, code: 'Period' },
+        { main: '/', shift: '?', sym: 0x2f, shiftSym: 0x3f, code: 'Slash' },
+        { main: '⇧ Shift', sym: 0xffe2, code: 'ShiftRight', mod: 'shift', cls: 'mod w-16' },
+        { main: '▲', sym: 0xff52, code: 'ArrowUp', cls: 'fn w-12' }
+    ],
+    // Row 5: Bottom row (US)
+    [
+        { main: 'Ctrl', sym: 0xffe3, code: 'ControlLeft', mod: 'ctrl', cls: 'mod w-14' },
+        { main: '⊞ Win', sym: 0xffeb, code: 'MetaLeft', mod: 'super', cls: 'mod w-12' },
+        { main: 'Alt', sym: 0xffe9, code: 'AltLeft', mod: 'alt', cls: 'mod w-12' },
+        { main: 'Space', sym: 0x20, code: 'Space', cls: 'w-space' },
+        { main: 'AltGr', sym: 0xffea, code: 'AltRight', mod: 'altgr', cls: 'mod w-12' },
+        { main: '◄', sym: 0xff51, code: 'ArrowLeft', cls: 'fn w-12' },
+        { main: '▼', sym: 0xff54, code: 'ArrowDown', cls: 'fn w-12' },
+        { main: '►', sym: 0xff53, code: 'ArrowRight', cls: 'fn w-12' }
+    ]
+];
+
 function renderVKeyboard() {
     vkBoard.innerHTML = '';
     var isShift = vkModifiers.shift;
     var isCaps = vkModifiers.caps;
+    var isAltGr = vkModifiers.altgr;
+
+    var vkRows = currentVkLayout === 'es' ? vkRowsES : vkRowsUS;
 
     for (var r = 0; r < vkRows.length; r++) {
         var rowEl = document.createElement('div');
@@ -617,7 +890,10 @@ function renderVKeyboard() {
             var displayMain = item.main;
             var displaySub = item.shift || '';
 
-            if (item.shift) {
+            if (isAltGr && item.altgr) {
+                displayMain = item.altgr;
+                displaySub = item.main;
+            } else if (item.shift) {
                 if (isShift) {
                     displayMain = item.shift;
                     displaySub = item.main;
@@ -652,7 +928,7 @@ function renderVKeyboard() {
 }
 
 function handleVkKey(keyDef) {
-    if (!rfb || !connected) return;
+    if (!connected) return;
 
     if (keyDef.mod) {
         vkModifiers[keyDef.mod] = !vkModifiers[keyDef.mod];
@@ -661,8 +937,32 @@ function handleVkKey(keyDef) {
     }
 
     var isShift = vkModifiers.shift || (vkModifiers.caps && keyDef.code && keyDef.code.startsWith('Key'));
-    var sym = isShift && keyDef.shiftSym ? keyDef.shiftSym : keyDef.sym;
+    var isAltGr = vkModifiers.altgr;
+    var sym = isAltGr && keyDef.altgrSym ? keyDef.altgrSym : (isShift && keyDef.shiftSym ? keyDef.shiftSym : keyDef.sym);
     var code = keyDef.code;
+
+    if (consoleMode === 'spice') {
+        if (!spiceConn) return;
+        if (vkModifiers.ctrl) sendSpiceKey(spiceConn, 'ControlLeft', true);
+        if (vkModifiers.alt) sendSpiceKey(spiceConn, 'AltLeft', true);
+        if (vkModifiers.super) sendSpiceKey(spiceConn, 'MetaLeft', true);
+        if (vkModifiers.altgr) sendSpiceKey(spiceConn, 'AltRight', true);
+        if (vkModifiers.shift) sendSpiceKey(spiceConn, 'ShiftLeft', true);
+
+        sendSpiceKey(spiceConn, code, true);
+        setTimeout(function () {
+            sendSpiceKey(spiceConn, code, false);
+            if (vkModifiers.shift) { sendSpiceKey(spiceConn, 'ShiftLeft', false); vkModifiers.shift = false; }
+            if (vkModifiers.ctrl) { sendSpiceKey(spiceConn, 'ControlLeft', false); vkModifiers.ctrl = false; }
+            if (vkModifiers.alt) { sendSpiceKey(spiceConn, 'AltLeft', false); vkModifiers.alt = false; }
+            if (vkModifiers.super) { sendSpiceKey(spiceConn, 'MetaLeft', false); vkModifiers.super = false; }
+            if (vkModifiers.altgr) { sendSpiceKey(spiceConn, 'AltRight', false); vkModifiers.altgr = false; }
+            renderVKeyboard();
+        }, 50);
+        return;
+    }
+
+    if (!rfb) return;
 
     // Send modifiers down
     if (vkModifiers.ctrl) rfb.sendKey(0xffe3, 'ControlLeft', true);
@@ -681,11 +981,15 @@ function handleVkKey(keyDef) {
         if (vkModifiers.super) { rfb.sendKey(0xffeb, 'MetaLeft', false); vkModifiers.super = false; }
         if (vkModifiers.altgr) { rfb.sendKey(0xffea, 'AltRight', false); vkModifiers.altgr = false; }
         renderVKeyboard();
-    }, 45);
+    }, 50);
 }
 
 function handleVkMacro(macro) {
-    if (!rfb || !connected) return;
+    if (consoleMode === 'spice' && macro === 'cad') {
+        if (spiceConn) sendCtrlAltDel(spiceConn);
+        return;
+    }
+    if (!connected) return;
     switch (macro) {
         case 'cad':
             sendKeyCombo([[0xffe3, 'ControlLeft'], [0xffe9, 'AltLeft'], [0xffff, 'Delete']]);
@@ -780,6 +1084,20 @@ if (vkOpacityBtn) {
     };
 }
 
+var vkLayoutBtn = document.getElementById('vkLayoutBtn');
+var vkLayoutLabel = document.getElementById('vkLayoutLabel');
+if (vkLayoutBtn) {
+    vkLayoutBtn.onclick = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        currentVkLayout = currentVkLayout === 'es' ? 'us' : 'es';
+        localStorage.setItem('webkvm_vk_layout', currentVkLayout);
+        if (vkLayoutLabel) vkLayoutLabel.textContent = currentVkLayout.toUpperCase();
+        renderVKeyboard();
+    };
+    if (vkLayoutLabel) vkLayoutLabel.textContent = currentVkLayout.toUpperCase();
+}
+
 renderVKeyboard();
 
 /* ---- keys panel ---- */
@@ -834,6 +1152,18 @@ document.addEventListener('keydown', function (e) {
         doPaste(ctrlSym, ctrlCode);
     });
     function doPaste(kSym, kCode) {
+        if (consoleMode === 'spice') {
+            if (!spiceConn || !connected) return;
+            sendSpiceKey(spiceConn, 'ControlLeft', true);
+            sendSpiceKey(spiceConn, 'KeyV', true);
+            setTimeout(function () {
+                if (!spiceConn || !connected) return;
+                sendSpiceKey(spiceConn, 'KeyV', false);
+                sendSpiceKey(spiceConn, 'ControlLeft', false);
+            }, 50);
+            return;
+        }
+        if (!rfb || !connected) return;
         rfb.sendKey(kSym, kCode, true);
         rfb.sendKey(0x56, 'KeyV', true);
         setTimeout(function () {
@@ -843,6 +1173,54 @@ document.addEventListener('keydown', function (e) {
         }, 50);
     }
 }, true);
+
+var spAreaEl = document.getElementById('spice-area');
+if (spAreaEl) {
+    spAreaEl.addEventListener('mousedown', function () {
+        var c = document.querySelector('#spice-screen canvas');
+        if (c) c.focus();
+    });
+}
+
+window.addEventListener('keydown', function (e) {
+    if (consoleMode === 'spice' && spiceConn && connected) {
+        var tag = document.activeElement && document.activeElement.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (e.target && e.target.tagName === 'CANVAS') return;
+        var canvas = document.querySelector('#spice-screen canvas');
+        if (canvas) {
+            handle_keydown.call(canvas, e);
+        }
+    }
+}, true);
+
+window.addEventListener('keyup', function (e) {
+    if (consoleMode === 'spice' && spiceConn && connected) {
+        var tag = document.activeElement && document.activeElement.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (e.target && e.target.tagName === 'CANVAS') return;
+        var canvas = document.querySelector('#spice-screen canvas');
+        if (canvas) {
+            handle_keyup.call(canvas, e);
+        }
+    }
+}, true);
+
+window.addEventListener('resize', function () {
+    if (consoleMode === 'spice' && spiceConn) {
+        fit_spice_canvas(spiceConn);
+        handle_resize();
+    }
+});
+
+document.addEventListener('fullscreenchange', function () {
+    if (consoleMode === 'spice' && spiceConn) {
+        setTimeout(function () {
+            fit_spice_canvas(spiceConn);
+            handle_resize();
+        }, 60);
+    }
+});
 
 /* ---- settings panel ---- */
 document.getElementById('btnToggleSettings').onclick = function () {
@@ -897,13 +1275,18 @@ document.getElementById('btnToggleInfo').onclick = function () {
     var infoHtml =
       '<div class="irow"><span class="ilabel">Status</span><span class="ivalue" id="infoStatus">Disconnected</span></div>' +
       '<div class="irow"><span class="ilabel">VM</span><span class="ivalue">' + '%s' + '</span></div>' +
-      '<div class="irow"><span class="ilabel">Protocol</span><span class="ivalue">RFB 003.008</span></div>' +
+      '<div class="irow"><span class="ilabel">Protocol</span><span class="ivalue">' + (consoleMode === 'spice' ? 'SPICE (WebSocket)' : 'RFB 003.008 (noVNC)') + '</span></div>' +
       '<div class="irow"><span class="ilabel">Screen</span><span class="ivalue" id="infoRes">Waiting...</span></div>';
     openPanel('info', 'Connection Info', infoHtml);
-    if (connected && rfb) {
+    if (connected) {
         document.getElementById('infoStatus').textContent = 'Connected';
-        if (rfb._fb_width && rfb._fb_height)
+        if (consoleMode === 'spice') {
+            var c = document.querySelector('#spice-screen canvas');
+            if (c && c.width && c.height)
+                document.getElementById('infoRes').textContent = c.width + 'x' + c.height;
+        } else if (rfb && rfb._fb_width && rfb._fb_height) {
             document.getElementById('infoRes').textContent = rfb._fb_width + 'x' + rfb._fb_height;
+        }
     }
 };
 
@@ -912,6 +1295,54 @@ document.getElementById('panelClose').onclick = closePanel;
 
 /* ---- connect ---- */
 function connect() {
+    if (consoleMode === 'spice') {
+        document.getElementById('screen').style.display = 'none';
+        var spArea = document.getElementById('spice-area');
+        spArea.style.display = 'block';
+        if (spiceConn) { try { spiceConn.stop(); } catch(e) {} spiceConn = null; }
+        updateStatus('connecting', 'Connecting SPICE');
+        try {
+            spiceConn = new SpiceMainConn({
+                uri: url,
+                screen_id: 'spice-screen',
+                dump_id: 'debug-div',
+                message_id: 'message-div',
+                password: '',
+                onagent: function() {
+                    handle_resize();
+                },
+                onerror: function(err) {
+                    connected = false;
+                    updateStatus('error', 'Disconnected');
+                    document.getElementById('btnReconnect').style.display = '';
+                    if (activePanel === 'info') document.getElementById('infoStatus').textContent = 'Disconnected';
+                    if (autoRetry) {
+                        reconnectAttempts++;
+                        var wait = isEmbedded ? 2500 : Math.min(2000 * Math.pow(2, reconnectAttempts - 1), 10000);
+                        updateStatus('connecting', 'Reconnecting in ' + Math.round(wait / 1000) + 's');
+                        setTimeout(function () { if (autoRetry) connect(); }, wait);
+                    }
+                },
+                onsuccess: function() {
+                    connected = true;
+                    everConnected = true;
+                    reconnectAttempts = 0;
+                    updateStatus('ok', 'Connected');
+                    document.getElementById('btnReconnect').style.display = 'none';
+                    if (activePanel === 'info') document.getElementById('infoStatus').textContent = 'Connected';
+                    setTimeout(function() {
+                        fit_spice_canvas(spiceConn);
+                        handle_resize();
+                    }, 100);
+                }
+            });
+        } catch(e) {
+            console.error(e);
+            updateStatus('error', 'Error: ' + e.message);
+        }
+        return;
+    }
+
     if (rfb) { try { rfb.disconnect(); } catch(e) {} rfb = null; }
     updateStatus('connecting', 'Connecting');
     rfb = new RFB(document.getElementById('screen'), url, {
@@ -1038,10 +1469,13 @@ administrative session:i:1
 
 func (h *Handler) DownloadSPICE(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	info, err := h.compute.GetVNCInfo(id)
+	info, err := h.compute.GetSPICEInfo(id)
 	if err != nil {
-		jsonErr(w, http.StatusNotFound, err.Error())
-		return
+		info, err = h.compute.GetVNCInfo(id)
+		if err != nil {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
 	}
 	spiceContent := fmt.Sprintf(`[virt-viewer]
 type=%s

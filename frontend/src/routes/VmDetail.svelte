@@ -49,6 +49,7 @@
   import { Card } from '$lib/components/ui/card';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import DeleteVmDialog from '$lib/components/DeleteVmDialog.svelte';
+  import BatchCloneModal from '$lib/components/BatchCloneModal.svelte';
   import * as Dialog from '$lib/components/ui/dialog';
   import Chart from '$lib/components/Chart.svelte';
   import Switch from '$lib/components/Switch.svelte';
@@ -337,6 +338,7 @@
   let eVideoModel = $state('virtio');
   let eAudioModel = $state('none');
   let eSerialPort = $state(true);
+  let eGraphicsType = $state('both');
   let eAutostart = $state(false);
   let eSelectedGroups = $state([]);
   let eNetwork = $state('default');
@@ -427,6 +429,7 @@
 
   // Clone state
   let showClone = $state(false);
+  let showBatchClone = $state(false);
   let cName = $state('');
   let cPool = $state('webkvm-disks');
   let cLinked = $state(false);
@@ -591,6 +594,7 @@
   const sectionTabs = $derived(
     [
       { id: 'overview', label: t('vmDetail.overview') },
+      { id: 'terminal', label: isContainerVm ? 'Terminal Shell' : 'Consola Serie' },
       { id: 'hardware', label: t('vmDetail.hardware') },
       !isContainerVm ? { id: 'cloudinit', label: 'Cloud-Init' } : null,
       { id: 'disks', label: t('vmDetail.disks') },
@@ -604,10 +608,8 @@
     ].filter(Boolean)
   );
 
-  // Serial console lives in the Overview tab; switch to it (if we're
-  // elsewhere) before scrolling so the target isn't display:none.
   function gotoSerial() {
-    activeSection = 'overview';
+    activeSection = 'terminal';
     queueMicrotask(() => {
       document.getElementById('vm-serial-block')?.scrollIntoView({
         behavior: 'smooth',
@@ -616,11 +618,12 @@
     });
   }
 
-  async function openConsole() {
+  async function openConsole(mode = 'vnc') {
     try {
       const { vnc_ticket } = await api.getVNCTicket(vmId);
+      const modeParam = mode === 'spice' ? '&mode=spice' : '';
       window.open(
-        `/console/${vmId}?vt=${encodeURIComponent(vnc_ticket)}`,
+        `/console/${vmId}?vt=${encodeURIComponent(vnc_ticket)}${modeParam}`,
         '_blank',
         'noopener,noreferrer'
       );
@@ -705,6 +708,7 @@
   }
 
   onDestroy(() => {
+    unsubscribeEvents();
     clearAllTimers();
   });
 
@@ -1050,6 +1054,7 @@
     eVideoModel = vm.video_model || 'virtio';
     eAudioModel = vm.audio_model || 'none';
     eSerialPort = vm.serial_port !== false;
+    eGraphicsType = vm.graphics_type || 'both';
     eNetwork = vm.networks?.[0]?.network || vmNetworks[0]?.name || 'default';
     eNetworkModel = vm.networks?.[0]?.model || 'virtio';
     eChipset = vm.chipset || 'q35';
@@ -1118,6 +1123,7 @@
       if (eVideoModel !== (vm.video_model || 'virtio')) data.video_model = eVideoModel;
       if (eAudioModel !== (vm.audio_model || 'none')) data.audio_model = eAudioModel;
       if (eSerialPort !== (vm.serial_port !== false)) data.serial_port = eSerialPort;
+      if (eGraphicsType !== (vm.graphics_type || 'both')) data.graphics_type = eGraphicsType;
       if (eNetwork !== (vm.networks?.[0]?.network || vmNetworks[0]?.name || 'default'))
         data.network = eNetwork;
       if (eNetworkModel !== (vm.networks?.[0]?.model || 'virtio'))
@@ -2216,10 +2222,11 @@
     return `${y}-${m}-${day} ${hh}:${mm}`;
   }
 
-  // Deep-link from Storage: ?tab=snapshots opens the Snapshots tab.
+  // Deep-link from external routes: ?tab=snapshots or ?tab=hardware
   $effect(() => {
     const r = getRoute();
     if (r.query?.tab === 'snapshots') activeSection = 'snaps';
+    if (r.query?.tab === 'hardware') activeSection = 'hardware';
   });
 </script>
 
@@ -2906,6 +2913,19 @@
                       </SettingRow>
 
                       <SettingRow
+                        label="Servidores Gráficos de Consola"
+                        helper="Activa o desactiva las consolas gráficas (VNC, SPICE o ambas simultáneamente)"
+                      >
+                        <select bind:value={eGraphicsType} class="input max-w-xs">
+                          <option value="both">Ambas activas (noVNC + SPICE)</option>
+                          <option value="vnc">Solo noVNC (RFB estándar)</option>
+                          <option value="spice">Solo SPICE (Alto rendimiento / Web SPICE)</option>
+                          <option value="none">Desactivadas (Sin consola gráfica / Headless)</option
+                          >
+                        </select>
+                      </SettingRow>
+
+                      <SettingRow
                         label={t('vmCreate.serialPort')}
                         helper={t('vmCreate.serialPortHelper')}
                       >
@@ -3161,6 +3181,21 @@
                         'display',
                         vm.video_model || 'virtio',
                         true
+                      )}
+                      {@render hwRow(
+                        'tv',
+                        'Consola Gráfica',
+                        vm.graphics_type === 'vnc'
+                          ? 'Solo noVNC'
+                          : vm.graphics_type === 'spice'
+                            ? 'Solo SPICE'
+                            : vm.graphics_type === 'none'
+                              ? t('common.disabled')
+                              : 'noVNC + SPICE',
+                        'display',
+                        vm.graphics_type === 'none' ? t('common.off') : vm.graphics_type || 'both',
+                        false,
+                        vm.graphics_type === 'none' ? 'muted' : 'accent'
                       )}
                       {@render hwRow(
                         'volume-2',
@@ -4744,7 +4779,10 @@
 
         {#snippet sec_serial()}
           <div id="vm-serial-block">
-            <BlockCard bid="serial" title={t('vmDetail.serialConsoleTitle')}>
+            <BlockCard
+              bid="serial"
+              title={isContainerVm ? 'Terminal Shell (xterm)' : t('vmDetail.serialConsoleTitle')}
+            >
               <TerminalPanel mode="vm" {vmId} />
             </BlockCard>
           </div>
@@ -4758,9 +4796,11 @@
         <div class="space-y-5 {activeSection === 'overview' ? '' : 'hidden'}">
           {@render sec_overview()}
           {@render sec_metrics()}
-          {@render sec_serial()}
           {@render sec_firewall()}
           {@render sec_schedule()}
+        </div>
+        <div class="space-y-5 {activeSection === 'terminal' ? '' : 'hidden'}">
+          {@render sec_serial()}
         </div>
         <div class={activeSection === 'hardware' ? '' : 'hidden'}>
           {@render sec_hardware()}
@@ -4894,16 +4934,49 @@
             {t('vmDetail.actions')}
           </h2>
           <div class="space-y-2">
-            {#if !isContainerVm}
-              <Button onclick={openConsole} class="w-full">
+            {#if isContainerVm}
+              <Button onclick={gotoSerial} class="w-full">
                 <Terminal class="w-4 h-4 mr-1.5" />
-                {t('vmDetail.openConsole')}
+                Terminal Shell (xterm)
               </Button>
+            {:else}
+              {#if (vm.graphics_type || 'both') === 'both'}
+                <div class="grid grid-cols-2 gap-2">
+                  <Button onclick={() => openConsole('vnc')} class="w-full text-xs">
+                    <Terminal class="w-3.5 h-3.5 mr-1" />
+                    noVNC
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onclick={() => openConsole('spice')}
+                    class="w-full text-xs"
+                  >
+                    <Terminal class="w-3.5 h-3.5 mr-1" />
+                    SPICE
+                  </Button>
+                </div>
+              {:else if vm.graphics_type === 'spice'}
+                <Button
+                  variant="secondary"
+                  onclick={() => openConsole('spice')}
+                  class="w-full text-xs"
+                >
+                  <Terminal class="w-3.5 h-3.5 mr-1" />
+                  Consola SPICE
+                </Button>
+              {:else if vm.graphics_type === 'vnc'}
+                <Button onclick={() => openConsole('vnc')} class="w-full text-xs">
+                  <Terminal class="w-3.5 h-3.5 mr-1" />
+                  Consola noVNC
+                </Button>
+              {/if}
+              {#if vm.serial_port !== false}
+                <Button variant="outline" onclick={gotoSerial} class="w-full">
+                  <Terminal class="w-4 h-4 mr-1.5" />
+                  {t('vmDetail.serialConsole')}
+                </Button>
+              {/if}
             {/if}
-            <Button variant="outline" onclick={gotoSerial} class="w-full">
-              <Terminal class="w-4 h-4 mr-1.5" />
-              {t('vmDetail.serialConsole')}
-            </Button>
             {#if appInfo}
               <Button variant="outline" onclick={showAppCredentials} class="w-full">
                 <KeyRound class="w-4 h-4 mr-1.5" />
@@ -4943,6 +5016,14 @@
                 >
                   <CopyPlus class="w-4 h-4 mr-1.5" />
                   {t('vmDetail.cloneVM')}
+                </Button>
+                <Button
+                  variant="outline"
+                  onclick={() => (showBatchClone = true)}
+                  class="w-full text-xs"
+                >
+                  <CopyPlus class="w-4 h-4 mr-1.5" />
+                  Clonado por Lotes...
                 </Button>
               {/if}
               {#if movePoolOptions.length > 0}
@@ -5569,6 +5650,15 @@
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
+
+<BatchCloneModal
+  {vmId}
+  open={showBatchClone}
+  onClose={() => (showBatchClone = false)}
+  onSuccess={() => {
+    navigate('/vms');
+  }}
+/>
 
 <!-- Move storage to another pool. Not a clone: the same instance ends
      up with its disks somewhere else, and the originals are removed

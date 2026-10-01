@@ -81,7 +81,9 @@ func (h *Handler) EventsSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-keepAlive.C:
 			// SSE comment line keeps the connection open
-			fmt.Fprintf(w, ": keep-alive\n\n")
+			if _, err := fmt.Fprintf(w, ": keep-alive\n\n"); err != nil {
+				return
+			}
 			flusher.Flush()
 		case e, ok := <-ch:
 			if !ok {
@@ -112,7 +114,9 @@ func (h *Handler) EventsSSE(w http.ResponseWriter, r *http.Request) {
 			if evt == "" {
 				evt = "message"
 			}
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id, evt, data)
+			if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id, evt, data); err != nil {
+				return
+			}
 			flusher.Flush()
 		}
 	}

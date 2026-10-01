@@ -6,6 +6,35 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.3] — 2026-10-01
+
+### Añadido
+
+- **Consola SPICE y Proxy Streaming:**
+  - Cliente web nativo SPICE (`spice.mjs`) con autoescalado fluido para ajuste total al viewport preservando aspect ratio y soporte de redimensionamiento dinámico con agente SPICE (`VD_AGENT_MONITORS_CONFIG`).
+  - Mapeo de hardware Scancode Set 1 tanto en teclado físico como en teclado virtual (distribuciones ES ISO y US ANSI) con filtrado de Ctrl sintético por `AltGr` y cobertura de teclas extendidas (`º`, `\`, `ç`, `ñ`, `< >`, acentos).
+  - Normalización precisa de coordenadas de ratón relativas y absolutas vía `getBoundingClientRect()`.
+  - Proxy WebSocket bidireccional de alto rendimiento para SPICE con latidos ping/pong y prevención de fuga de goroutines.
+- **Telemetría y Diagnóstico S.M.A.R.T.:**
+  - Monitorización paralela en segundo plano de discos físicos con `smartctl`, visualizando atributos S.M.A.R.T., temperaturas, horas de uso, sectores reasignados y registros de error en un modal dedicado.
+- **Aislamiento de Seguridad NetGuard Jail:**
+  - Módulo de protección ante ataques de fuerza bruta y listas negras de aislamiento de IPs con desbloqueo automatizado e inspección en tiempo real (`SecurityJailTab.svelte`).
+- **Clonación Masiva de Máquinas Virtuales:**
+  - Asistente de clonación múltiple para replicar VMs rápidamente con prefijos de nombre personalizados e indexación secuencial.
+
+### Corregido
+
+- **Despliegue Cloud-Init en Pools de Discos y Compatibilidad Gráfica:**
+  - Corregido el fallo silencioso y rechazo 400 (`purpose "disk", expected "container"`) al desplegar VMs Cloud-Init en pools libvirt como `webkvm-disks`, asegurando el parámetro `type: "vm"` en la carga del asistente.
+  - Añadida compatibilidad con el estado de finalización `"completed"` en el rastreador de trabajos (`waitJob`), resolviendo bloqueos infinitos de espera en la interfaz web tras la creación de instancias.
+  - Degradación segura automática a gráficos VNC (`resolveGraphicsType`) cuando la versión del binario QEMU del host (como QEMU 10) no tiene soporte compilado de gráficos SPICE.
+  - Corrección de la longitud de contraseña autogenerada en el modal de despliegue de la tienda de aplicaciones para ajustarse a los límites de Cloud-Init (entre 6 y 12 caracteres).
+- **Selector de Idiomas en Barra Lateral Compacta y Flotante:**
+  - Corregido el bucle de parpadeo, desajuste y cierre involuntario del desplegable de idiomas al abrirlo en modos compacto (*rail*) y autoexpandible (*hover*).
+  - La barra lateral retiene su visibilidad expandida mientras cualquier menú flotante esté abierto y evita cierres por pérdida de foco.
+  - En modo compacto (*rail*), el desplegable abre hacia la derecha (`side="right"`, `align="end"`), evitando el recorte fuera de la pantalla a la izquierda.
+  - Eliminada la restricción de ancho forzado a nivel de ancla en los componentes primitivos de menú desplegable de Tailwind v4.
+
 ## [0.1.2-fix2] — 2026-09-30
 
 ### Corregido
@@ -137,6 +166,7 @@ virtualización Linux.
 
 ---
 
+[0.1.3]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.3
 [0.1.2-fix2]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2-fix2
 [0.1.2-fix1]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2-fix1
 [0.1.2]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2

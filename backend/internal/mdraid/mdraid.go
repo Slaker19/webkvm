@@ -160,6 +160,34 @@ func ensureModules(ctx context.Context, level string) {
 	}
 }
 
+// SyncAction initiates or cancels a consistency check or repair on the specified MD RAID device.
+// action can be "check", "repair", or "idle".
+func SyncAction(ctx context.Context, mdDevice, action string) error {
+	clean := filepath.Clean(strings.TrimSpace(mdDevice))
+	if !strings.HasPrefix(clean, "/dev/") {
+		clean = "/dev/" + clean
+	}
+	if !safeMDDeviceRE.MatchString(clean) || strings.Contains(clean, "..") {
+		return fmt.Errorf("invalid MD device %q", mdDevice)
+	}
+
+	devName := filepath.Base(clean)
+	syncActionFile := filepath.Join("/sys/block", devName, "md", "sync_action")
+
+	action = strings.ToLower(strings.TrimSpace(action))
+	switch action {
+	case "check", "repair", "idle":
+	default:
+		return fmt.Errorf("invalid sync action %q (must be 'check', 'repair', or 'idle')", action)
+	}
+
+	if _, err := os.Stat(syncActionFile); err != nil {
+		return fmt.Errorf("RAID array %s is not active or sync_action sysfs node not found", clean)
+	}
+
+	return os.WriteFile(syncActionFile, []byte(action+"\n"), 0644)
+}
+
 func persistConfig(ctx context.Context) {
 	out, err := exec.CommandContext(ctx, "mdadm", "--detail", "--scan").Output()
 	if err != nil || len(out) == 0 {

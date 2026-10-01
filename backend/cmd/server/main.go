@@ -33,6 +33,7 @@ import (
 	"webkvm/internal/netstore"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
+	"webkvm/internal/smart"
 	"webkvm/internal/tokens"
 	"webkvm/internal/user"
 	"webkvm/internal/vmsched"
@@ -40,7 +41,7 @@ import (
 
 // Set by -ldflags at build time. Defaults are used for `go run`.
 var (
-	Version   = "0.1.2-fix2"
+	Version   = "0.1.3"
 	BuildTime = "unknown"
 )
 
@@ -561,6 +562,37 @@ func main() {
 				}
 				return out
 			},
+			StorageHealth: func() []notify.StorageAlert {
+				var alerts []notify.StorageAlert
+				// Check SMART status of physical block devices
+				if smart.IsAvailable() {
+					for _, dev := range smart.ListPhysicalDisks() {
+						info, err := smart.Probe(eventCtx, dev)
+						if err == nil && info.Available {
+							if info.Status == "FAILED" {
+								alerts = append(alerts, notify.StorageAlert{
+									Level:   "critical",
+									Subject: "SMART Failure on " + dev,
+									Message: fmt.Sprintf("Disk %s (%s) reported SMART status FAILED. Imminent hardware failure!", dev, info.Model),
+								})
+							} else if info.TemperatureC >= 60 {
+								alerts = append(alerts, notify.StorageAlert{
+									Level:   "warning",
+									Subject: "High Temperature on " + dev,
+									Message: fmt.Sprintf("Disk %s (%s) temperature reached %d°C.", dev, info.Model, info.TemperatureC),
+								})
+							} else if info.ReallocatedSectors > 50 {
+								alerts = append(alerts, notify.StorageAlert{
+									Level:   "warning",
+									Subject: "Reallocated Sectors on " + dev,
+									Message: fmt.Sprintf("Disk %s has %d reallocated sectors.", dev, info.ReallocatedSectors),
+								})
+							}
+						}
+					}
+				}
+				return alerts
+			},
 		}
 		engine := notify.NewEngine(notifier, sources, time.Duration(60)*time.Second, time.Hour, logger)
 		go engine.Run(eventCtx)
@@ -734,7 +766,10 @@ func main() {
 		}
 	}
 
-	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter, incusMetrics)
+	jail := netguard.NewJail(5, 5*time.Minute, 15*time.Minute, logger)
+	go jail.Janitor(eventCtx)
+
+	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, jail, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter, incusMetrics)
 
 	srv := &http.Server{
 		Addr:    net.JoinHostPort(cfg.BindAddr, fmt.Sprintf("%d", cfg.Port)),

@@ -562,8 +562,9 @@ export const api = {
       // driving a progress bar can settle it at 100% instead of leaving
       // it wherever the last intermediate tick landed.
       opts.onPoll?.(job);
-      if (job.status === 'done') return job.result ?? job;
-      if (job.status === 'error') throw new ApiError(job.error || 'Job failed', 500, 'job_error');
+      if (job.status === 'done' || job.status === 'completed') return job.result ?? job;
+      if (job.status === 'error')
+        throw new ApiError(job.error || job.message || 'Job failed', 500, 'job_error');
       if (Date.now() - started > timeout) {
         throw new ApiError('Job timed out', 504, 'job_timeout');
       }
@@ -661,10 +662,43 @@ export const api = {
     request('/host/disks/wipe', { method: 'POST', body: JSON.stringify({ disk_path: diskPath }) }),
   initHostDiskDirectory: (data) =>
     request('/host/disks/initialize-directory', { method: 'POST', body: JSON.stringify(data) }),
+  getHostDiskSMART: (diskPath, refresh = false) =>
+    request(
+      `/host/disks/smart?path=${encodeURIComponent(diskPath)}${refresh ? '&refresh=true' : ''}`
+    ),
+  runHostDiskSelfTest: (diskPath, type) =>
+    request('/host/disks/selftest', {
+      method: 'POST',
+      body: JSON.stringify({ disk_path: diskPath, type }),
+    }),
+  runSMARTTest: (diskPath, type) =>
+    request('/host/disks/selftest', {
+      method: 'POST',
+      body: JSON.stringify({ disk_path: diskPath, type }),
+    }),
+  scrubHostZpool: (name, action = 'start') =>
+    request(`/host/zpools/${encodeURIComponent(name)}/scrub`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
+  scrubZpool: (name, action = 'start') =>
+    request(`/host/zpools/${encodeURIComponent(name)}/scrub`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
+  syncHostRaid: (device, action = 'check') =>
+    request(`/host/raid/${encodeURIComponent(device)}/sync`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
 
   // --- graphics ---
   getRDPUrl: (id) => `${BASE}/vms/${id}/rdp`,
   getSPICEUrl: (id) => `${BASE}/vms/${id}/spice`,
+  getSPICEWsUrl: (id, ticket) => {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}/api/vms/${id}/spice-ws?vt=${encodeURIComponent(ticket || '')}`;
+  },
 
   // --- disks ---
   listDisks: (vmId) => request(`/vms/${vmId}/disks`),
@@ -772,6 +806,8 @@ export const api = {
   // --- clone / export / import ---
   cloneVM: (vmId, data) =>
     request(`/vms/${vmId}/clone`, { method: 'POST', body: JSON.stringify(data) }),
+  batchCloneVM: (vmId, data) =>
+    request(`/vms/${vmId}/batch-clone`, { method: 'POST', body: JSON.stringify(data) }),
   // Move an instance's storage to another pool of the same hypervisor.
   // Cold only, and answered with a job like moveVolume above.
   moveVMStorage: (vmId, pool) =>
@@ -923,6 +959,9 @@ export const api = {
   // --- Settings (config store) ---
   getSettingsSchema: () => request('/settings/schema'),
   getSettings: () => request('/settings'),
+  listJailedIPs: () => request('/settings/jail'),
+  unbanJailedIP: (ip) =>
+    request('/settings/jail/unban', { method: 'POST', body: JSON.stringify({ ip }) }),
   setSettings: (values) =>
     request('/settings', { method: 'PUT', body: JSON.stringify({ values }) }),
   resetSettings: () => request('/settings/reset', { method: 'POST' }),

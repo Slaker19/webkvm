@@ -541,7 +541,7 @@ func vncTicketAllowedPath(path string) (vmID string, ok bool) {
 		return "", false
 	}
 	rest := strings.TrimPrefix(path, "/api/vms/")
-	for _, suffix := range []string{"/vnc", "/clipboard"} {
+	for _, suffix := range []string{"/vnc", "/spice-ws", "/clipboard"} {
 		if strings.HasSuffix(rest, suffix) && strings.Count(rest, "/") == 1 {
 			return strings.TrimSuffix(rest, suffix), true
 		}

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"webkvm/internal/backupstore"
+	"webkvm/internal/hostcaps"
 	"webkvm/internal/models"
 
 	"github.com/google/uuid"
@@ -282,6 +283,20 @@ func tpmModelAndVersion(reqVersion *string) (model, version string) {
 		return "tpm-tis", "1.2"
 	}
 	return "tpm-crb", "2.0"
+}
+
+func resolveGraphicsType(requested string) string {
+	gType := strings.ToLower(strings.TrimSpace(requested))
+	caps := hostcaps.Get()
+	if caps.Parsed && !caps.SPICESupported {
+		if gType == "both" || gType == "spice" || gType == "" {
+			return "vnc"
+		}
+	}
+	if gType == "" {
+		return "both"
+	}
+	return gType
 }
 
 func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) {
@@ -572,6 +587,37 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
     `
 	}
 
+	graphicsXML := ""
+	gType := resolveGraphicsType(req.GraphicsType)
+	switch gType {
+	case "vnc":
+		graphicsXML = `<graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
+      <listen type='address' address='0.0.0.0'/>
+    </graphics>`
+	case "spice":
+		graphicsXML = `<channel type='spicevmc'>
+      <target type='virtio' name='com.redhat.spice.0'/>
+    </channel>
+    <graphics type='spice' port='-1' autoport='yes' listen='127.0.0.1'>
+      <listen type='address' address='127.0.0.1'/>
+      <image compression='auto_glz'/>
+    </graphics>`
+	case "both":
+		graphicsXML = `<channel type='spicevmc'>
+      <target type='virtio' name='com.redhat.spice.0'/>
+    </channel>
+    <graphics type='spice' port='-1' autoport='yes' listen='127.0.0.1'>
+      <listen type='address' address='127.0.0.1'/>
+      <image compression='auto_glz'/>
+    </graphics>
+    <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
+      <listen type='address' address='0.0.0.0'/>
+    </graphics>`
+	case "none":
+		// no graphics device
+		graphicsXML = ""
+	}
+
 	diskDriverAttrs := diskDriverXMLAttrs(diskFormat, req.DiskCacheIO, req.DiskDiscard)
 
 	uuidStr := uuid.New().String()
@@ -632,13 +678,11 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
     %s<channel type='unix'>
       <target type='virtio' name='org.qemu.guest_agent.0'/>
     </channel>
-    <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
-      <listen type='address' address='0.0.0.0'/>
-    </graphics>
+    %s
     %s
     %s
   </devices>
-</domain>`, xmlEscape(req.Name), uuidStr, title, memoryXML, req.VCPUs, iothreadsXML, cputuneXML, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, xmlEscape(diskFullPath), xmlEscape(targetDev), xmlEscape(diskBus), isoXML, virtioISOXML, interfaceXMLWithVLAN(req.Network, networkModel, req.VLANTag), serialXML, videoXML, devicesExtra)
+</domain>`, xmlEscape(req.Name), uuidStr, title, memoryXML, req.VCPUs, iothreadsXML, cputuneXML, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, xmlEscape(diskFullPath), xmlEscape(targetDev), xmlEscape(diskBus), isoXML, virtioISOXML, interfaceXMLWithVLAN(req.Network, networkModel, req.VLANTag), serialXML, graphicsXML, videoXML, devicesExtra)
 
 	dom, err := c.conn.DomainDefineXML(xmlConfig)
 	if err != nil {
@@ -1355,6 +1399,45 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 			xmlDesc = regexp.MustCompile(`<console\b[^>]*>[\s\S]*?</console>\s*`).ReplaceAllString(xmlDesc, "")
 		}
 	}
+	if req.GraphicsType != nil {
+		gType := resolveGraphicsType(*req.GraphicsType)
+		// Remove existing graphics & spicevmc channels
+		xmlDesc = regexp.MustCompile(`<graphics\b[^>]*>[\s\S]*?</graphics>\s*`).ReplaceAllString(xmlDesc, "")
+		xmlDesc = regexp.MustCompile(`<channel type='spicevmc'>[\s\S]*?</channel>\s*`).ReplaceAllString(xmlDesc, "")
+
+		var newGraphics string
+		switch gType {
+		case "vnc":
+			newGraphics = `<graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
+      <listen type='address' address='0.0.0.0'/>
+    </graphics>`
+		case "spice":
+			newGraphics = `<channel type='spicevmc'>
+      <target type='virtio' name='com.redhat.spice.0'/>
+    </channel>
+    <graphics type='spice' port='-1' autoport='yes' listen='127.0.0.1'>
+      <listen type='address' address='127.0.0.1'/>
+      <image compression='auto_glz'/>
+    </graphics>`
+		case "both":
+			newGraphics = `<channel type='spicevmc'>
+      <target type='virtio' name='com.redhat.spice.0'/>
+    </channel>
+    <graphics type='spice' port='-1' autoport='yes' listen='127.0.0.1'>
+      <listen type='address' address='127.0.0.1'/>
+      <image compression='auto_glz'/>
+    </graphics>
+    <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
+      <listen type='address' address='0.0.0.0'/>
+    </graphics>`
+		case "none":
+			// Leave graphics stripped
+			newGraphics = ""
+		}
+		if newGraphics != "" {
+			xmlDesc = strings.Replace(xmlDesc, "</devices>", "    "+newGraphics+"\n  </devices>", 1)
+		}
+	}
 	if req.OSType != nil || req.OSVersion != nil {
 		title := extractTagValue(xmlDesc, "title")
 		if req.OSType != nil {
@@ -1592,6 +1675,17 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 		}
 	}
 
+	hasVNC := strings.Contains(xmlDesc, "<graphics type='vnc'") || strings.Contains(xmlDesc, `<graphics type="vnc"`)
+	hasSPICE := strings.Contains(xmlDesc, "<graphics type='spice'") || strings.Contains(xmlDesc, `<graphics type="spice"`)
+	graphicsType := "none"
+	if hasVNC && hasSPICE {
+		graphicsType = "both"
+	} else if hasSPICE {
+		graphicsType = "spice"
+	} else if hasVNC {
+		graphicsType = "vnc"
+	}
+
 	vm := models.VM{
 		ID:              uuidStr,
 		Name:            name,
@@ -1627,9 +1721,10 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 		CPUUnits:   cpuUnits,
 		KVMHidden:  kvmHidden,
 		VideoModel: videoModel,
-		AudioModel: audioModel,
-		SerialPort: serialPort,
-		BootOrder:  bootOrderFromXML(xmlDesc),
+		AudioModel:   audioModel,
+		SerialPort:   serialPort,
+		GraphicsType: graphicsType,
+		BootOrder:    bootOrderFromXML(xmlDesc),
 	}
 
 	diskGB := extractDiskSize(xmlDesc)
@@ -1826,6 +1921,14 @@ func (c *Connector) GetDomainIP(id string) string {
 }
 
 func (c *Connector) GetVNCInfo(id string) (GraphicsInfo, error) {
+	return c.GetGraphicsInfo(id, "vnc")
+}
+
+func (c *Connector) GetSPICEInfo(id string) (GraphicsInfo, error) {
+	return c.GetGraphicsInfo(id, "spice")
+}
+
+func (c *Connector) GetGraphicsInfo(id, preferredType string) (GraphicsInfo, error) {
 	dom, err := c.lookupDomain(id)
 	if err != nil {
 		return GraphicsInfo{}, err
@@ -1838,14 +1941,28 @@ func (c *Connector) GetVNCInfo(id string) (GraphicsInfo, error) {
 	}
 
 	graphicsRe := regexp.MustCompile(`<graphics[^>]+>`)
-	graphicsMatch := graphicsRe.FindString(xmlDesc)
-	if graphicsMatch == "" {
+	matches := graphicsRe.FindAllString(xmlDesc, -1)
+	if len(matches) == 0 {
 		return GraphicsInfo{}, fmt.Errorf("no graphics device found")
 	}
 
-	gType := attrValue(graphicsMatch, "type")
-	portStr := attrValue(graphicsMatch, "port")
-	host := attrValue(graphicsMatch, "listen")
+	var targetMatch string
+	for _, m := range matches {
+		if preferredType != "" && attrValue(m, "type") == preferredType {
+			targetMatch = m
+			break
+		}
+	}
+	if targetMatch == "" {
+		if preferredType != "" {
+			return GraphicsInfo{}, fmt.Errorf("graphics device of type %s not configured on VM", preferredType)
+		}
+		targetMatch = matches[0]
+	}
+
+	gType := attrValue(targetMatch, "type")
+	portStr := attrValue(targetMatch, "port")
+	host := attrValue(targetMatch, "listen")
 
 	port := 5900
 	if portStr != "" {

@@ -58,6 +58,7 @@ type VM struct {
 	VideoModel string   `json:"video_model,omitempty"`
 	AudioModel string   `json:"audio_model,omitempty"`
 	SerialPort bool     `json:"serial_port"`
+	GraphicsType string `json:"graphics_type,omitempty"` // "vnc", "spice", "both"
 	BootOrder  string   `json:"boot_order,omitempty"`
 	Privileged bool     `json:"privileged"`
 	Nesting    bool     `json:"nesting"`
@@ -153,6 +154,8 @@ type CreateVMRequest struct {
 	// SerialPort adds an emulated PTY serial console (<serial> and <console>).
 	// Default is true (enabled).
 	SerialPort *bool `json:"serial_port,omitempty"`
+	// GraphicsType is "vnc", "spice", "both", or "none" (default: "both").
+	GraphicsType string `json:"graphics_type,omitempty"`
 	// BootOrder is the primary boot device for KVM domains:
 	// "disk", "cdrom" or "network". Empty keeps the default (disk).
 	BootOrder string `json:"boot_order,omitempty"`
@@ -212,6 +215,7 @@ type UpdateVMRequest struct {
 	MinRAMMB        *int64   `json:"min_ram_mb,omitempty"`
 	IOThreads       *int     `json:"iothreads,omitempty"`
 	SerialPort      *bool    `json:"serial_port,omitempty"`
+	GraphicsType    *string  `json:"graphics_type,omitempty"` // "vnc", "spice", or "both"
 	Firmware        *string  `json:"firmware,omitempty"`
 	BootOrder       *string  `json:"boot_order,omitempty"`
 	Autostart       *bool    `json:"autostart,omitempty"`
@@ -424,6 +428,23 @@ type HostDisk struct {
 	MountPools []string `json:"mount_pools,omitempty"`
 	// MountDetail is a short human-readable reason, empty when free.
 	MountDetail string `json:"mount_detail,omitempty"`
+	// SMART health and telemetry summary, populated when available.
+	SMART *HostDiskSMART `json:"smart,omitempty"`
+}
+
+// HostDiskSMART describes the S.M.A.R.T. health and telemetry status for a disk.
+type HostDiskSMART struct {
+	Available          bool   `json:"available"`
+	Healthy            bool   `json:"healthy"`
+	Status             string `json:"status"` // "PASSED", "WARNING", "FAILED", "UNKNOWN"
+	TemperatureC       int    `json:"temperature_c"`
+	PowerOnHours       int64  `json:"power_on_hours"`
+	PowerCycles        int64  `json:"power_cycles"`
+	WearPercentage     int    `json:"wear_percentage"`          // 0-100%, -1 if N/A
+	DataWrittenBytes   uint64 `json:"data_written_bytes"`       // in bytes (TBW)
+	ReallocatedSectors int64  `json:"reallocated_sectors"`     // -1 if N/A
+	PendingSectors     int64  `json:"pending_sectors"`         // -1 if N/A
+	CriticalWarning    int    `json:"critical_warning"`        // NVMe bitmask
 }
 
 // HostPartition describes a single partition within a HostDisk.

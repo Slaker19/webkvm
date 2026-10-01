@@ -23,6 +23,7 @@
   import SettingsTab from '$lib/components/SettingsTab.svelte';
   import NotificationsTab from '$lib/components/NotificationsTab.svelte';
   import SnippetsTab from '$lib/components/SnippetsTab.svelte';
+  import SecurityJailTab from '$lib/components/SecurityJailTab.svelte';
   import { Skeleton } from '$lib/components/ui/skeleton';
   import { t } from '../lib/i18n.svelte.js';
 
@@ -204,10 +205,11 @@
     })),
     { name: 'notifications', label: t('settings.notifications') },
     { name: 'snippets', label: t('settings.snippets') },
+    { name: 'jail', label: 'Seguridad (Jail)' },
   ]);
 </script>
 
-<div class="p-4 sm:p-6 w-full max-w-4xl mx-auto">
+<div class="p-4 sm:p-6 w-full max-w-7xl mx-auto">
   <PageHeader title={t('settings.title')} subtitle={t('settings.subtitle', { n: tabs.length })}>
     {#snippet actions()}
       {#if isDirty}
@@ -217,7 +219,7 @@
         <Button onclick={save} disabled={saving}>
           {saving ? t('settings.saving') : t('settings.saveChanges')}
         </Button>
-      {:else if activeTab !== 'notifications' && activeTab !== 'snippets'}
+      {:else if activeTab !== 'notifications' && activeTab !== 'snippets' && activeTab !== 'jail'}
         <Button variant="outline" onclick={() => (confirmingReset = true)} disabled={loading}>
           {t('settings.resetAll')}
         </Button>
@@ -282,26 +284,34 @@
       </div>
     {/if}
 
-    <div class="flex gap-1 mb-4 border-b border-border overflow-x-auto">
-      {#each tabs as tab (tab.name)}
-        <button
-          class="px-3 py-2 text-sm font-medium border-b-2 transition-colors -mb-px whitespace-nowrap {activeTab ===
-          tab.name
-            ? 'border-accent text-foreground'
-            : 'border-transparent text-muted-foreground hover:text-foreground'}"
-          onclick={() => (activeTab = tab.name)}
-        >
-          {tab.label}
-        </button>
-      {/each}
-    </div>
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-6 items-start">
+      <nav
+        class="flex flex-row md:flex-col gap-1 overflow-x-auto pb-2 md:pb-0 border-b md:border-b-0 md:border-r border-border md:pr-4"
+      >
+        {#each tabs as tab (tab.name)}
+          <button
+            class="flex items-center gap-2.5 px-3 py-2 text-xs font-medium rounded-lg text-left transition-all whitespace-nowrap {activeTab ===
+            tab.name
+              ? 'bg-accent/15 text-accent font-semibold border-l-2 md:border-l-2 border-accent'
+              : 'text-muted-foreground hover:bg-muted/30 hover:text-foreground'}"
+            onclick={() => (activeTab = tab.name)}
+          >
+            <span>{tab.label}</span>
+          </button>
+        {/each}
+      </nav>
 
-    {#if activeTab === 'notifications'}
-      <NotificationsTab />
-    {:else if activeTab === 'snippets'}
-      <SnippetsTab />
-    {:else}
-      <SettingsTab fields={activeFields} {values} {editing} {errors} onChange={setEdit} />
-    {/if}
+      <div class="md:col-span-3">
+        {#if activeTab === 'notifications'}
+          <NotificationsTab />
+        {:else if activeTab === 'snippets'}
+          <SnippetsTab />
+        {:else if activeTab === 'jail'}
+          <SecurityJailTab />
+        {:else}
+          <SettingsTab fields={activeFields} {values} {editing} {errors} onChange={setEdit} />
+        {/if}
+      </div>
+    </div>
   {/if}
 </div>

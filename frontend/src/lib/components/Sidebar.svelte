@@ -36,7 +36,10 @@
   // keyboard focus is inside it, and retracts on leave. 'full' is always
   // expanded; 'rail' never is (icon-only, with a title tooltip per item).
   let hovering = $state(false);
-  const showLabels = $derived(mode === 'full' || (mode === 'hover' && hovering));
+  let languageMenuOpen = $state(false);
+  const showLabels = $derived(
+    mode === 'full' || (mode === 'hover' && (hovering || languageMenuOpen))
+  );
   // Rail mode floats the expanded panel over the page (absolute,
   // shadowed) instead of pushing content when hovered — the wrapping
   // flex item in Layout.svelte only ever reserves rail width for
@@ -284,9 +287,13 @@
     : 'relative'} border-r border-border flex flex-col shrink-0 h-screen bg-card transition-[width,box-shadow] duration-150 ease-out overflow-hidden"
   style="width: {showLabels ? '224px' : '56px'}"
   onmouseenter={() => mode === 'hover' && (hovering = true)}
-  onmouseleave={() => mode === 'hover' && (hovering = false)}
+  onmouseleave={() => mode === 'hover' && !languageMenuOpen && (hovering = false)}
   onfocusin={() => mode === 'hover' && (hovering = true)}
-  onfocusout={() => mode === 'hover' && (hovering = false)}
+  onfocusout={(e) => {
+    if (mode !== 'hover' || languageMenuOpen) return;
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    hovering = false;
+  }}
 >
   <div class="p-4 border-b border-border">
     <div class="flex items-center gap-3">
@@ -357,7 +364,12 @@
 
   <div class="p-2 border-t border-border space-y-1">
     <div class={showLabels ? 'px-0.5' : 'flex justify-center'}>
-      <LanguageSelector compact={!showLabels} side="top" align={showLabels ? 'start' : 'center'} />
+      <LanguageSelector
+        bind:open={languageMenuOpen}
+        compact={!showLabels}
+        side={showLabels ? 'top' : 'right'}
+        align={showLabels ? 'start' : 'end'}
+      />
     </div>
     <button
       onclick={() => go('/account')}

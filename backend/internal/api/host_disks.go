@@ -12,13 +12,17 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"webkvm/internal/backupstore"
 	"webkvm/internal/diskstate"
 	"webkvm/internal/mdraid"
 	"webkvm/internal/models"
+	"webkvm/internal/smart"
 	"webkvm/internal/zvol"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // containsString reports whether list already holds want.
@@ -50,6 +54,38 @@ func mountDetail(s diskstate.State) string {
 		return s.Reason()
 	}
 	return ""
+}
+
+// probeDiskSMART retrieves SMART telemetry for physical disks.
+func probeDiskSMART(ctx context.Context, devPath, devType string) *models.HostDiskSMART {
+	if devType != "disk" {
+		return nil
+	}
+	info, err := smart.Probe(ctx, devPath)
+	if err != nil {
+		if !smart.IsAvailable() {
+			return nil
+		}
+		return &models.HostDiskSMART{
+			Available: false,
+			Healthy:   false,
+			Status:    "UNKNOWN",
+		}
+	}
+
+	return &models.HostDiskSMART{
+		Available:          info.Available,
+		Healthy:            info.Healthy,
+		Status:             info.Status,
+		TemperatureC:       info.TemperatureC,
+		PowerOnHours:       info.PowerOnHours,
+		PowerCycles:        info.PowerCycles,
+		WearPercentage:     info.WearPercentage,
+		DataWrittenBytes:   info.DataWrittenBytes,
+		ReallocatedSectors: info.ReallocatedSectors,
+		PendingSectors:     info.PendingSectors,
+		CriticalWarning:    info.CriticalWarning,
+	}
 }
 
 // errDiskProbeUnavailable signals that a safety probe (lsblk) could not
@@ -376,6 +412,19 @@ func (h *Handler) ListHostDisks(w http.ResponseWriter, r *http.Request) {
 			MountDetail:  mountDetail(ms),
 		})
 	}
+
+	// Probe SMART telemetry concurrently across all disks to minimize response latency
+	var smartWG sync.WaitGroup
+	for i := range disks {
+		if disks[i].Type == "disk" {
+			smartWG.Add(1)
+			go func(idx int) {
+				defer smartWG.Done()
+				disks[idx].SMART = probeDiskSMART(ctx, disks[idx].Path, disks[idx].Type)
+			}(i)
+		}
+	}
+	smartWG.Wait()
 
 	jsonResp(w, http.StatusOK, disks)
 }
@@ -1325,5 +1374,150 @@ func (h *Handler) CreateHostRAID(w http.ResponseWriter, r *http.Request) {
 		"device":  mdDev,
 		"level":   req.Level,
 		"devices": req.Devices,
+	})
+}
+
+// ScrubHostZPool triggers a scrub (start or stop) on a ZFS pool.
+// Restricted to administrators.
+func (h *Handler) ScrubHostZPool(w http.ResponseWriter, r *http.Request) {
+	poolName := chi.URLParam(r, "name")
+	if err := zvol.ValidPoolName(poolName); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid pool name: "+err.Error())
+		return
+	}
+
+	var req struct {
+		Action string `json:"action"` // "start" or "stop"
+	}
+	if err := decodeBody(r, &req); err != nil {
+		// Default to "start" if body is empty or not provided
+		req.Action = "start"
+	}
+
+	req.Action = strings.ToLower(strings.TrimSpace(req.Action))
+	if req.Action == "" {
+		req.Action = "start"
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	if err := zvol.ScrubPool(ctx, poolName, req.Action); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.audit.Log(auditFor(r, "host.zpool_scrub", poolName, map[string]any{
+		"action": req.Action,
+	}))
+
+	jsonResp(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"pool":   poolName,
+		"action": req.Action,
+	})
+}
+
+// SyncHostRAID triggers or cancels a check/repair on a Linux MD RAID array.
+// Restricted to administrators.
+func (h *Handler) SyncHostRAID(w http.ResponseWriter, r *http.Request) {
+	device := chi.URLParam(r, "device")
+	var req struct {
+		Action string `json:"action"` // "check", "repair", "idle"
+	}
+	if err := decodeBody(r, &req); err != nil {
+		req.Action = "check"
+	}
+
+	req.Action = strings.ToLower(strings.TrimSpace(req.Action))
+	if req.Action == "" {
+		req.Action = "check"
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if err := mdraid.SyncAction(ctx, device, req.Action); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.audit.Log(auditFor(r, "host.raid_sync", device, map[string]any{
+		"action": req.Action,
+	}))
+
+	jsonResp(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"device": device,
+		"action": req.Action,
+	})
+}
+
+// ProbeHostDiskSMART triggers a fresh SMART query for a specific disk.
+// Restricted to administrators.
+func (h *Handler) ProbeHostDiskSMART(w http.ResponseWriter, r *http.Request) {
+	diskPath := r.URL.Query().Get("path")
+	if diskPath == "" {
+		jsonErr(w, http.StatusBadRequest, "path query parameter is required")
+		return
+	}
+
+	clean, err := smart.ValidateDevice(diskPath)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Invalidate cache if refresh requested
+	if r.URL.Query().Get("refresh") == "true" {
+		smart.InvalidateCache(clean)
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	info, err := smart.Probe(ctx, clean)
+	if err != nil && !info.Available {
+		jsonErr(w, http.StatusInternalServerError, "SMART probe failed: "+err.Error())
+		return
+	}
+
+	jsonResp(w, http.StatusOK, info)
+}
+
+// RunHostDiskSelfTest initiates a SMART self-test on a disk.
+// Restricted to administrators.
+func (h *Handler) RunHostDiskSelfTest(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DiskPath string `json:"disk_path"`
+		Type     string `json:"type"` // "short", "long", "abort"
+	}
+	if err := decodeBody(r, &req); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	clean, err := smart.ValidateDevice(req.DiskPath)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	if err := smart.RunSelfTest(ctx, clean, req.Type); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.audit.Log(auditFor(r, "host.disk_selftest", clean, map[string]any{
+		"type": req.Type,
+	}))
+
+	jsonResp(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"device": clean,
+		"type":   req.Type,
 	})
 }

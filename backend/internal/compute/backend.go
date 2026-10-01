@@ -422,6 +422,7 @@ type Backend interface {
 	SetVMMeta(uuid string, meta models.VMMeta) error
 	UpdateVMMeta(uuid string, upd models.VMMetaUpdate) (models.VMMeta, error)
 	GetVNCInfo(id string) (GraphicsInfo, error)
+	GetSPICEInfo(id string) (GraphicsInfo, error)
 	GetDomainIP(id string) string
 	GetDomainXML(id string) (string, error)
 	GuestGetClipboard(id string) (string, error)

@@ -10,6 +10,8 @@
 @import '@fontsource/inter/700.css';
 
 @custom-variant dark (&:where(.dark, .dark *));
+@custom-variant data-open (&:where([data-state="open"], [data-open]));
+@custom-variant data-closed (&:where([data-state="closed"], [data-closed]));
 
 @theme inline {
   --color-background: var(--background);

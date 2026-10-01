@@ -11,6 +11,7 @@ import (
 	"webkvm/internal/appliances"
 	"webkvm/internal/audit"
 	"webkvm/internal/auth"
+	"webkvm/internal/netguard"
 	"webkvm/internal/backupstore"
 	"webkvm/internal/cloudinit"
 	"webkvm/internal/compute"
@@ -38,6 +39,7 @@ type Handler struct {
 	compute      compute.Backend
 	auth         *auth.Manager
 	loginLimiter *auth.LoginRateLimiter
+	jail         *netguard.Jail
 	userStore    *user.Store
 	cfg          *config.Config
 	hub          *events.Hub

@@ -219,11 +219,16 @@ func (m *Manager) buildRulesetWith(host HostFirewall, all []VMFirewall) string {
 	b.WriteString("table ip webkvm\n")
 	b.WriteString("delete table ip webkvm\n")
 	b.WriteString("table ip webkvm {\n")
+	b.WriteString("\tset jail_blacklist {\n")
+	b.WriteString("\t\ttype ipv4_addr\n")
+	b.WriteString("\t\tflags timeout\n")
+	b.WriteString("\t}\n")
 
 	// Input chain: policy accept, safety rails first (anti-lockout,
 	// non-deletable), then per-VM rules, then host input rules.
 	b.WriteString("\tchain input {\n")
 	b.WriteString("\t\ttype filter hook input priority filter; policy accept;\n")
+	b.WriteString("\t\tip saddr @jail_blacklist drop\n")
 	for _, p := range HostPorts(m.webPort) {
 		fmt.Fprintf(&b, "\t\ttcp dport %d accept\n", p)
 	}

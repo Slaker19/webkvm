@@ -40,6 +40,15 @@ type PoolInfo struct {
 	FreeHuman  string   `json:"free_human"`
 	Health     string   `json:"health"`
 	Devices    []string `json:"devices,omitempty"`
+	Scrub      *PoolScrub `json:"scrub,omitempty"`
+}
+
+// PoolScrub details the scrub status of a ZFS pool.
+type PoolScrub struct {
+	State      string `json:"state"` // "none", "scanning", "scrubbing", "resilvering", "finished", "canceled"
+	Percentage int    `json:"percentage"`
+	Errors     int64  `json:"errors"`
+	Message    string `json:"message,omitempty"`
 }
 
 // ValidPoolName validates a ZFS pool identifier.
@@ -114,9 +123,10 @@ func ListPools(ctx context.Context) ([]PoolInfo, error) {
 
 	pools := parseZpoolListOutput(out)
 
-	// Fetch devices for each pool using zpool status
+	// Fetch devices and scrub status for each pool using zpool status
 	for i := range pools {
 		pools[i].Devices = getPoolDevices(cctx, pools[i].Name)
+		pools[i].Scrub = getPoolScrub(cctx, pools[i].Name)
 	}
 
 	return pools, nil
@@ -279,6 +289,95 @@ func CreateVolume(ctx context.Context, pool, name string, sizeBytes int64, spars
 	time.Sleep(200 * time.Millisecond)
 
 	return Resolve(ctx, fullName)
+}
+
+// ScrubPool starts or stops a scrub on the named ZFS pool.
+// action must be "start" or "stop".
+func ScrubPool(ctx context.Context, poolName, action string) error {
+	if err := ValidPoolName(poolName); err != nil {
+		return err
+	}
+	if !IsPoolAvailable() {
+		return errors.New("zpool command not found on host")
+	}
+
+	var args []string
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "start":
+		args = []string{"scrub", poolName}
+	case "stop", "cancel":
+		args = []string{"scrub", "-s", poolName}
+	default:
+		return fmt.Errorf("invalid scrub action %q: must be 'start' or 'stop'", action)
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(cctx, "zpool", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("zpool scrub %s: %s (%w)", action, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+var scrubPercentRE = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)%\s+done`)
+
+func getPoolScrub(ctx context.Context, poolName string) *PoolScrub {
+	cmd := exec.CommandContext(ctx, "zpool", "status", poolName)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	inScan := false
+	scanText := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "scan:") {
+			inScan = true
+			scanText = strings.TrimPrefix(line, "scan:")
+			continue
+		}
+		if inScan {
+			if strings.HasPrefix(line, "config:") || strings.HasPrefix(line, "errors:") || strings.HasPrefix(line, "state:") {
+				break
+			}
+			scanText += " " + line
+		}
+	}
+
+	scanText = strings.TrimSpace(scanText)
+	if scanText == "" || strings.Contains(scanText, "none requested") {
+		return &PoolScrub{State: "none"}
+	}
+
+	scrub := &PoolScrub{
+		Message: scanText,
+		State:   "finished",
+	}
+
+	lower := strings.ToLower(scanText)
+	if strings.Contains(lower, "scrub in progress") {
+		scrub.State = "scrubbing"
+	} else if strings.Contains(lower, "resilver in progress") {
+		scrub.State = "resilvering"
+	} else if strings.Contains(lower, "scrub canceled") {
+		scrub.State = "canceled"
+	}
+
+	if match := scrubPercentRE.FindStringSubmatch(scanText); len(match) > 1 {
+		if p, err := strconv.ParseFloat(match[1], 64); err == nil {
+			scrub.Percentage = int(p)
+		}
+	}
+
+	if strings.Contains(scanText, "with 0 errors") {
+		scrub.Errors = 0
+	}
+
+	return scrub
 }
 
 func formatBytes(b int64) string {

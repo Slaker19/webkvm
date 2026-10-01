@@ -14,13 +14,17 @@
   let {
     variant = 'dropdown',
     compact = false,
-    side = 'top',
-    align = 'start',
+    side,
+    align,
+    open = $bindable(false),
     class: className = '',
   } = $props();
 
   const currentLocale = $derived(getLocale());
   const activeLocaleObj = $derived(LOCALES.find((l) => l.code === currentLocale) || LOCALES[0]);
+
+  const resolvedSide = $derived(side ?? (compact ? 'right' : 'top'));
+  const resolvedAlign = $derived(align ?? (compact ? 'end' : 'start'));
 </script>
 
 {#if variant === 'cards'}
@@ -65,7 +69,7 @@
     {/each}
   </div>
 {:else}
-  <DropdownMenu.Root>
+  <DropdownMenu.Root bind:open>
     <DropdownMenu.Trigger
       class={cn(
         'inline-flex items-center rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring select-none cursor-pointer',
@@ -74,27 +78,28 @@
           : 'w-full justify-between gap-2 px-2.5 py-1.5 text-muted-foreground hover:text-foreground hover:bg-muted border border-transparent hover:border-border/60',
         className
       )}
-      title={t('common.language')}
+      title={compact && !open ? t('common.language') : undefined}
       aria-label={t('common.language')}
     >
-      <div class="flex items-center gap-2 min-w-0">
-        <Globe class="w-4 h-4 shrink-0 text-muted-foreground/80" />
+      <div class="flex items-center gap-2 min-w-0 pointer-events-none">
+        <Globe class="w-4 h-4 shrink-0 text-muted-foreground/80 pointer-events-none" />
         {#if !compact}
           <span class="truncate font-medium">{activeLocaleObj.label}</span>
         {/if}
       </div>
       {#if !compact}
-        {#if side === 'top'}
-          <ChevronUp class="w-3.5 h-3.5 shrink-0 text-muted-foreground/60" />
+        {#if resolvedSide === 'top'}
+          <ChevronUp class="w-3.5 h-3.5 shrink-0 text-muted-foreground/60 pointer-events-none" />
         {:else}
-          <ChevronDown class="w-3.5 h-3.5 shrink-0 text-muted-foreground/60" />
+          <ChevronDown class="w-3.5 h-3.5 shrink-0 text-muted-foreground/60 pointer-events-none" />
         {/if}
       {/if}
     </DropdownMenu.Trigger>
 
     <DropdownMenu.Content
-      {side}
-      {align}
+      side={resolvedSide}
+      align={resolvedAlign}
+      sideOffset={6}
       class="min-w-[12rem] max-h-64 overflow-y-auto p-1 shadow-lg border border-border bg-popover text-popover-foreground rounded-xl z-50"
     >
       <DropdownMenu.Group>

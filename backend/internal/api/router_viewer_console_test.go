@@ -74,7 +74,7 @@ func liveRouter(t *testing.T, username, role string, perms *models.UserPermissio
 
 	r := NewRouter(
 		&config.Config{DataDir: dir},
-		nil, &viewerBackend{owner: username}, authMgr, nil, nil, us, nil,
+		nil, &viewerBackend{owner: username}, authMgr, nil, nil, nil, us, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil,
 	)

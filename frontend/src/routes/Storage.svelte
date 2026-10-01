@@ -24,6 +24,7 @@
   import LocalFolderBrowser from '$lib/components/LocalFolderBrowser.svelte';
   import ErrorModal from '$lib/components/ErrorModal.svelte';
   import CreateVolumeInlineForm from '$lib/components/CreateVolumeInlineForm.svelte';
+  import SmartModal from '$lib/components/SmartModal.svelte';
   import * as Dialog from '$lib/components/ui/dialog';
   import { navigate } from '$lib/router.svelte.js';
   import { t, htmlVar } from '../lib/i18n.svelte.js';
@@ -149,6 +150,9 @@
   // Host Physical Disks state
   let hostDisks = $state([]);
   let hostDisksLoading = $state(false);
+  let selectedSmartDisk = $state(null);
+  let showSmartModal = $state(false);
+  let scrubbingPool = $state({});
   // Automount units with no .mount sibling: they hide the real contents
   // of their mountpoint behind a failing autofs.
   let orphanMounts = $state([]);
@@ -323,6 +327,21 @@
       zvols = [];
     } finally {
       zfsLoading = false;
+    }
+  }
+
+  async function handleScrub(poolName, action = 'start') {
+    scrubbingPool[poolName] = true;
+    try {
+      await api.scrubZpool(poolName, action);
+      toast.success(
+        action === 'stop' ? `Scrub cancelado para ${poolName}` : `Scrub iniciado para ${poolName}`
+      );
+      await loadZfsData();
+    } catch (e) {
+      toast.error('Error en ZFS scrub: ' + e.message);
+    } finally {
+      scrubbingPool[poolName] = false;
     }
   }
 
@@ -2176,6 +2195,45 @@
                         >
                           {disk.transport || (disk.rotational ? 'HDD' : 'SSD')}
                         </span>
+                        {#if disk.smart}
+                          <div class="mt-1 flex items-center gap-1.5 flex-wrap">
+                            <span
+                              class="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold uppercase border {disk
+                                .smart.status === 'PASSED'
+                                ? 'bg-success/15 text-success border-success/30'
+                                : disk.smart.status === 'WARNING'
+                                  ? 'bg-warning/15 text-warning border-warning/30'
+                                  : disk.smart.status === 'FAILED'
+                                    ? 'bg-destructive/15 text-destructive border-destructive/30'
+                                    : 'bg-muted text-muted-foreground border-border'}"
+                              title={disk.smart.healthy
+                                ? 'S.M.A.R.T. Saludable'
+                                : 'Atención / Fallo S.M.A.R.T.'}
+                            >
+                              SMART: {disk.smart.status}
+                            </span>
+                            {#if disk.smart.temperature_c > 0}
+                              <span
+                                class="text-[10px] font-mono {disk.smart.temperature_c >= 55
+                                  ? 'text-destructive font-bold'
+                                  : disk.smart.temperature_c >= 45
+                                    ? 'text-warning font-semibold'
+                                    : 'text-muted-foreground'}"
+                                title="Temperatura"
+                              >
+                                {disk.smart.temperature_c}°C
+                              </span>
+                            {/if}
+                            {#if disk.smart.wear_percentage >= 0}
+                              <span
+                                class="text-[10px] font-mono text-muted-foreground"
+                                title="Desgaste acumulado SSD"
+                              >
+                                {disk.smart.wear_percentage}% uso
+                              </span>
+                            {/if}
+                          </div>
+                        {/if}
                       </td>
                       <td class="p-3 text-right font-mono font-bold text-foreground"
                         >{disk.size_human}</td
@@ -2218,6 +2276,17 @@
                       {#if hostDiskStatus(disk).key === 'free'}
                         <td class="p-3 pr-4 text-right">
                           <div class="flex items-center justify-end gap-1.5">
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              class="!h-7 !text-xs gap-1"
+                              onclick={() => {
+                                selectedSmartDisk = disk;
+                                showSmartModal = true;
+                              }}
+                            >
+                              SMART
+                            </Button>
                             {#if auth.isAdmin()}
                               <Button
                                 size="xs"
@@ -2246,11 +2315,24 @@
                         </td>
                       {:else}
                         <td class="p-3 pr-4 text-right">
-                          <span class="text-[11px] text-muted-foreground/80 italic">
-                            {hostDiskStatus(disk).key === 'system'
-                              ? t('storage.diskProtected')
-                              : hostDiskStatus(disk).label}
-                          </span>
+                          <div class="flex items-center justify-end gap-2">
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              class="!h-7 !text-xs gap-1"
+                              onclick={() => {
+                                selectedSmartDisk = disk;
+                                showSmartModal = true;
+                              }}
+                            >
+                              SMART
+                            </Button>
+                            <span class="text-[11px] text-muted-foreground/80 italic">
+                              {hostDiskStatus(disk).key === 'system'
+                                ? t('storage.diskProtected')
+                                : hostDiskStatus(disk).label}
+                            </span>
+                          </div>
                         </td>
                       {/if}
                     </tr>
@@ -2345,15 +2427,26 @@
                         </td>
                         {#if auth.isAdmin()}
                           <td class="p-3 text-right">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              class="!h-7 !text-[11px] gap-1"
-                              onclick={() => openCreateZVolDialog(pool.name)}
-                            >
-                              <Icon name="plus" size={11} />
-                              {t('storage.createZVolBtn')}
-                            </Button>
+                            <div class="flex items-center justify-end gap-1.5">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                class="!h-7 !text-[11px] gap-1"
+                                disabled={scrubbingPool[pool.name]}
+                                onclick={() => handleScrub(pool.name, 'start')}
+                              >
+                                Scrub
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                class="!h-7 !text-[11px] gap-1"
+                                onclick={() => openCreateZVolDialog(pool.name)}
+                              >
+                                <Icon name="plus" size={11} />
+                                {t('storage.createZVolBtn')}
+                              </Button>
+                            </div>
                           </td>
                         {/if}
                       </tr>
@@ -4812,3 +4905,12 @@
 />
 
 <ErrorModal bind:open={showStorageError} title={storageErrorTitle} message={storageErrorMessage} />
+
+<SmartModal
+  disk={selectedSmartDisk}
+  open={showSmartModal}
+  onClose={() => {
+    showSmartModal = false;
+    selectedSmartDisk = null;
+  }}
+/>

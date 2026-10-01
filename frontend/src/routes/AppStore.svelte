@@ -231,7 +231,7 @@
     deployRamMB = app.ram_mb || 2048;
     deployDiskGB = app.disk_gb || 10;
     deployUser = 'ubuntu';
-    deployPassword = Math.random().toString(36).slice(-10) + 'A1!';
+    deployPassword = Math.random().toString(36).slice(-8) + 'A1!';
     // An imported script declares whether it needs hardware
     // acceleration (Jellyfin, Plex, Frigate…). Pre-ticking the box for
     // those turns a detail the operator would have to know into one the

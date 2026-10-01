@@ -169,3 +169,27 @@ func TestRequireInTruncatesLongLists(t *testing.T) {
 		t.Errorf("error message not truncated, has too many entries: %q", msg)
 	}
 }
+
+func TestResolveGraphicsType(t *testing.T) {
+	// "none" always stays "none"
+	if got := resolveGraphicsType("none"); got != "none" {
+		t.Errorf("resolveGraphicsType('none') = %q, want 'none'", got)
+	}
+	// "vnc" always stays "vnc"
+	if got := resolveGraphicsType("vnc"); got != "vnc" {
+		t.Errorf("resolveGraphicsType('vnc') = %q, want 'vnc'", got)
+	}
+	caps := hostcaps.Get()
+	if caps.Parsed && !caps.SPICESupported {
+		// When host does not support SPICE, "spice", "both", or "" must degrade to "vnc"
+		if got := resolveGraphicsType(""); got != "vnc" {
+			t.Errorf("resolveGraphicsType('') = %q, want 'vnc' when SPICE unsupported", got)
+		}
+		if got := resolveGraphicsType("both"); got != "vnc" {
+			t.Errorf("resolveGraphicsType('both') = %q, want 'vnc' when SPICE unsupported", got)
+		}
+		if got := resolveGraphicsType("spice"); got != "vnc" {
+			t.Errorf("resolveGraphicsType('spice') = %q, want 'vnc' when SPICE unsupported", got)
+		}
+	}
+}

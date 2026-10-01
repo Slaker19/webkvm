@@ -26,7 +26,7 @@ func realRouterRoutes(t *testing.T) map[string]bool {
 
 	r := NewRouter(
 		&config.Config{DataDir: t.TempDir()},
-		nil, nil, authMgr, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, authMgr, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 

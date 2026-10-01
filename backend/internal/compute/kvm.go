@@ -437,6 +437,10 @@ func (b *KVMBackend) GetVNCInfo(id string) (GraphicsInfo, error) {
 	gi, err := b.lv.GetVNCInfo(id)
 	return GraphicsInfo{Type: gi.Type, Port: gi.Port, WebSocket: gi.WebSocket, Host: gi.Host}, err
 }
+func (b *KVMBackend) GetSPICEInfo(id string) (GraphicsInfo, error) {
+	gi, err := b.lv.GetSPICEInfo(id)
+	return GraphicsInfo{Type: gi.Type, Port: gi.Port, WebSocket: gi.WebSocket, Host: gi.Host}, err
+}
 func (b *KVMBackend) GetDomainIP(id string) string { return b.lv.GetDomainIP(id) }
 func (b *KVMBackend) GetDomainXML(id string) (string, error) {
 	return b.lv.GetDomainXML(id)

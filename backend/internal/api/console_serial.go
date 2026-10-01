@@ -112,6 +112,13 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	var wsDead atomic.Bool
+	var serialWriteMu sync.Mutex
+	writeWS := func(msgType int, data []byte) error {
+		serialWriteMu.Lock()
+		defer serialWriteMu.Unlock()
+		_ = ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		return ws.WriteMessage(msgType, data)
+	}
 	slog.Info("serial_proxy_connected", "vm_id", id)
 
 	// Session loop: the web session OUTLIVES guest reboots. When the
@@ -137,12 +144,12 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 				time.Sleep(750 * time.Millisecond)
 			}
 			if !ok {
-				ws.WriteMessage(websocket.TextMessage,
+				_ = writeWS(websocket.TextMessage,
 					[]byte("\r\n[console unavailable: the VM is powered off]\r\n"))
 				return
 			}
 			appendBoot := []byte("\r\n\x1b[90m[session resumed after VM reboot]\x1b[0m\r\n")
-			_ = ws.WriteMessage(websocket.TextMessage, appendBoot)
+			_ = writeWS(websocket.TextMessage, appendBoot)
 			slog.Info("serial_reacquired_after_reboot", "vm_id", id, "attempt", attempt)
 		}
 
@@ -167,7 +174,7 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 					errc <- err
 					return
 				}
-				if err := ws.WriteMessage(websocket.TextMessage, buf[:n]); err != nil {
+				if err := writeWS(websocket.TextMessage, buf[:n]); err != nil {
 					errc <- err
 					return
 				}
@@ -208,7 +215,14 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 		if stream != nil {
 			_ = stream.Finish()
 		}
-		if wsDead.Load() || reason == nil {
+		if wsDead.Load() || reason == nil || errors.Is(reason, websocket.ErrCloseSent) {
+			break
+		}
+		// If read on websocket failed, the client is disconnected.
+		// Do not loop spawning new libvirt streams for a closed websocket.
+		if websocket.IsCloseError(reason, websocket.CloseNormalClosure, websocket.CloseGoingAway, 4409) ||
+			websocket.IsUnexpectedCloseError(reason) || strings.Contains(reason.Error(), "closed network connection") ||
+			strings.Contains(reason.Error(), "use of closed network connection") {
 			break
 		}
 		// Stream-side failure (guest rebooting): loop and reattach.

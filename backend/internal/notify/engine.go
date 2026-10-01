@@ -23,6 +23,17 @@ type Sources struct {
 	// LastBackupResult reports the most recent backup status per
 	// target. Optional.
 	LastBackupResult func() map[string]string // targetID -> "success"|"error"|""
+
+	// StorageHealth reports degrading or failing disks or pools. Optional.
+	// Returns a list of alert items (level, subject, message).
+	StorageHealth func() []StorageAlert
+}
+
+// StorageAlert describes a health alert for a disk or pool.
+type StorageAlert struct {
+	Level   string // "warning" or "critical"
+	Subject string
+	Message string
 }
 
 // AlertEngine periodically evaluates conditions and emits alerts. It
@@ -119,6 +130,14 @@ func (e *AlertEngine) evaluate() {
 			if status == "error" {
 				e.emit("warning", "Backup failed: "+targetID, "A backup run for target "+targetID+" failed.")
 			}
+		}
+	}
+
+	// Storage health & SMART alerts.
+	if e.sources.StorageHealth != nil {
+		alerts := e.sources.StorageHealth()
+		for _, a := range alerts {
+			e.emit(a.Level, a.Subject, a.Message)
 		}
 	}
 }

@@ -198,6 +198,19 @@
       };
       ws.onmessage = (e) => {
         if (term) {
+          let text = '';
+          if (typeof e.data === 'string') {
+            text = e.data;
+          } else if (e.data instanceof ArrayBuffer) {
+            text = new TextDecoder().decode(e.data);
+          }
+          if (
+            text.includes('[console unavailable: the VM is powered off') ||
+            text.includes('[this VM has no serial console device')
+          ) {
+            status = 'closed';
+            autoRetry = false;
+          }
           if (typeof e.data === 'string') {
             term.write(e.data);
           } else if (e.data instanceof ArrayBuffer) {

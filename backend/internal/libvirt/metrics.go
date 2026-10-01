@@ -273,17 +273,17 @@ func (m *MetricsCollector) collectOne(dom *libvirt.Domain, uuid string, st *vmMe
 			elapsed := now.Sub(st.lastSampleTime).Seconds()
 			if elapsed > 0 {
 				delta := float64(int64(abs) - int64(st.lastCPUAbs))
-				// nanoseconds -> fraction of 1 CPU; multiply by 100 for %.
-				// Assume 1 vCPU for normalization when vcpu count is unknown;
-				// we'll refine when vcpus is exposed here.
-				pct := (delta / 1e9) / elapsed * 100
+				// nanoseconds -> fraction of 1 CPU; divide by vCPUs for [0, 100]% range
+				vcpus := 1
+				if info, ierr := dom.GetInfo(); ierr == nil && info.NrVirtCpu > 0 {
+					vcpus = int(info.NrVirtCpu)
+				}
+				pct := ((delta / 1e9) / elapsed * 100) / float64(vcpus)
 				if pct < 0 {
 					pct = 0
 				}
-				if pct > 100*128 {
-					// libvirt timeouts / counter resets can produce huge jumps;
-					// clamp to a sane upper bound (128 vCPUs at 100%).
-					pct = 0
+				if pct > 100 {
+					pct = 100
 				}
 				st.cpu.push(models.MetricsSample{T: now.Unix(), V: pct})
 			}

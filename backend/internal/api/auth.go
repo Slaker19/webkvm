@@ -21,6 +21,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check perimeter jail before attempting authentication
+	_, _, ip := audit.FromRequest(r)
+	if h.jail != nil && h.jail.IsBanned(ip) {
+		jsonErr(w, http.StatusForbidden, "IP address temporarily banned due to excessive failed attempts")
+		return
+	}
+
 	// Rate-limit per (ip, user) pair.
 	if ok, retry := h.loginLimiter.Allow(r, req.Username); !ok {
 		auth.WriteRateLimited(w, retry)
@@ -31,6 +38,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		h.loginLimiter.RecordFailure(r, req.Username)
 		_, _, ip := audit.FromRequest(r)
+		if h.jail != nil {
+			h.jail.RecordFailure(ip, "failed login for "+req.Username)
+		}
 		h.audit.Log(audit.Entry{
 			// User carries the asserted identity so the user filter
 			// finds this account's failed logins (it may not exist).
@@ -77,7 +87,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	auth.SetSessionCookie(w, token, h.auth.SecureCookies(), int(h.auth.TokenTTL().Seconds()))
 	auth.SetCSRFCookie(w, csrf, h.auth.SecureCookies(), int(h.auth.TokenTTL().Seconds()))
 
-	_, _, ip := audit.FromRequest(r)
+	_, _, ip = audit.FromRequest(r)
 	h.audit.Log(audit.Entry{
 		User: u.Username, Role: u.Role, IP: ip, Action: "auth.login",
 		Resource: u.Username,

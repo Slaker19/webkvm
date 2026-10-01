@@ -20,10 +20,12 @@
     let lo = Math.min(...ys);
     let hi = Math.max(...ys);
     if (lo > 0) lo = 0;
-    if (yMax != null) hi = yMax;
+    if (yMax != null) {
+      hi = Math.max(hi, yMax);
+    }
     if (hi <= lo) hi = lo + 1;
     const stepX = xs.length > 1 ? width / (xs.length - 1) : 0;
-    const mapY = (v) => height - ((v - lo) / (hi - lo)) * height;
+    const mapY = (v) => Math.max(0, Math.min(height, height - ((v - lo) / (hi - lo)) * height));
     let d = '';
     for (let i = 0; i < points.length; i++) {
       const x = i * stepX;
@@ -40,7 +42,7 @@
   width="100%"
   {height}
   preserveAspectRatio="none"
-  class="overflow-visible"
+  class="overflow-hidden"
 >
   {#if path.d}
     <path d={path.fill} fill={color} fill-opacity={fillOpacity} stroke="none" />

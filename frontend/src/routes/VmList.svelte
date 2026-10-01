@@ -564,21 +564,28 @@ apt-get update -y
   // Per-VM metric series for sparklines (Phase 21). Keyed by VM id.
   let metricsByVm = $state({});
 
+  let sparklinesLoading = false;
   async function loadSparklines() {
-    // Only request for VMs that are running; others stay empty (no chart).
-    const running = vms.filter((v) => v.state === 'running');
-    const updates = {};
-    await Promise.all(
-      running.map(async (v) => {
-        try {
-          const m = await api.getVMMetrics(v.id);
-          updates[v.id] = m;
-        } catch {
-          // Don't fail the whole load on one VM.
-        }
-      })
-    );
-    metricsByVm = { ...metricsByVm, ...updates };
+    if (sparklinesLoading) return;
+    sparklinesLoading = true;
+    try {
+      // Only request for VMs that are running; others stay empty (no chart).
+      const running = vms.filter((v) => v.state === 'running');
+      const updates = {};
+      await Promise.all(
+        running.map(async (v) => {
+          try {
+            const m = await api.getVMMetrics(v.id);
+            updates[v.id] = m;
+          } catch {
+            // Don't fail the whole load on one VM.
+          }
+        })
+      );
+      metricsByVm = { ...metricsByVm, ...updates };
+    } finally {
+      sparklinesLoading = false;
+    }
   }
 
   const last30 = (arr) => (Array.isArray(arr) ? arr.slice(-30) : []);
@@ -2041,7 +2048,7 @@ apt-get update -y
                         onclick={() => quickAction(vm, 'serial')}
                       >
                         <Icon name="terminal" size={14} />
-                        Serial Console
+                        {isContainer(vm) ? 'Terminal Web (xterm)' : 'Serial Console'}
                       </button>
                       <button
                         type="button"

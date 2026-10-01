@@ -1932,6 +1932,9 @@ func (b *IncusBackend) setMetaConfig(uuid string, fn func(map[string]string), et
 func (b *IncusBackend) GetVNCInfo(id string) (compute.GraphicsInfo, error) {
 	return compute.GraphicsInfo{}, compute.ErrNotImplemented
 }
+func (b *IncusBackend) GetSPICEInfo(id string) (compute.GraphicsInfo, error) {
+	return compute.GraphicsInfo{}, compute.ErrNotImplemented
+}
 func (b *IncusBackend) GetDomainIP(id string) string { return "" }
 func (b *IncusBackend) GetDomainXML(id string) (string, error) {
 	return "", compute.ErrNotImplemented

@@ -113,4 +113,28 @@ describe('401 handling', () => {
     expect(auth.status).toBe('out');
     expect(lastReason()).toBe(null);
   });
+
+  it('waitJob resolves on both done and completed status', async () => {
+    auth.setSession('admin', 'admin');
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => {
+        call++;
+        if (call === 1) return json(200, { id: 'job-1', status: 'running' });
+        return json(200, { id: 'job-1', status: 'completed', result: { ok: true } });
+      })
+    );
+    const res = await api.waitJob('job-1', { delay: 1 });
+    expect(res).toEqual({ ok: true });
+  });
+
+  it('waitJob throws on job error status', async () => {
+    auth.setSession('admin', 'admin');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => json(200, { id: 'job-2', status: 'error', error: 'storage error' }))
+    );
+    await expect(api.waitJob('job-2', { delay: 1 })).rejects.toThrow('storage error');
+  });
 });

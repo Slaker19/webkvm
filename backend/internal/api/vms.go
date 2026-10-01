@@ -1182,6 +1182,89 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusAccepted, map[string]string{"job": job.ID})
 }
 
+// BatchCloneVM initiates parallel or batch cloning of a source VM into N replicas.
+func (h *Handler) BatchCloneVM(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req struct {
+		BaseName string `json:"base_name"`
+		Prefix   string `json:"prefix"`
+		Count    int    `json:"count"`
+		Pool     string `json:"pool"`
+		Network  string `json:"network"`
+		Linked   bool   `json:"linked"`
+		Start    int    `json:"start"` // default: 1
+	}
+	if err := decodeBody(r, &req); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.BaseName == "" && req.Prefix != "" {
+		req.BaseName = req.Prefix
+	}
+	req.BaseName = strings.TrimSpace(req.BaseName)
+	if req.BaseName == "" {
+		jsonErr(w, http.StatusBadRequest, "base_name is required")
+		return
+	}
+	if req.Count <= 0 || req.Count > 50 {
+		jsonErr(w, http.StatusBadRequest, "count must be between 1 and 50")
+		return
+	}
+	if req.Start <= 0 {
+		req.Start = 1
+	}
+
+	owner, role, ip := audit.FromRequest(r)
+	if role != models.RoleAdmin {
+		src, err := h.compute.GetDomain(id)
+		if err != nil {
+			jsonErr(w, http.StatusServiceUnavailable, "cannot verify quota: "+err.Error())
+			return
+		}
+		diskGB := vmTotalDiskGB(src)
+		if err := h.checkQuota(owner, int64(req.Count), int64(src.VCPUs)*int64(req.Count), src.RAMMB*int64(req.Count), diskGB*int64(req.Count)); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+
+	jOwner := jobOwner(r)
+	job := submitJob(jOwner, fmt.Sprintf("batch-clone:%s[%d]", req.BaseName, req.Count), func() (any, error) {
+		cloned := make([]models.VM, 0, req.Count)
+		for i := 0; i < req.Count; i++ {
+			instanceName := fmt.Sprintf("%s-%02d", req.BaseName, req.Start+i)
+			cloneReq := models.CloneVMRequest{
+				Name:    instanceName,
+				Pool:    req.Pool,
+				Network: req.Network,
+				Linked:  req.Linked,
+			}
+			vm, err := h.compute.CloneDomain(id, cloneReq)
+			if err != nil {
+				return cloned, fmt.Errorf("failed creating %s: %w", instanceName, err)
+			}
+			notShared := false
+			upd := models.VMMetaUpdate{Shared: &notShared}
+			if owner != "" {
+				upd.OwnerID = &owner
+			}
+			_, _ = h.compute.UpdateVMMeta(vm.ID, upd)
+			cloned = append(cloned, vm)
+		}
+		h.audit.Log(audit.Entry{
+			User:     owner,
+			Role:     role,
+			IP:       ip,
+			Action:   "vm.batch_clone",
+			Resource: id,
+			Detail:   map[string]interface{}{"count": req.Count, "base_name": req.BaseName},
+		})
+		return cloned, nil
+	})
+
+	jsonResp(w, http.StatusAccepted, map[string]string{"job": job.ID})
+}
+
 func (h *Handler) GetBootDevice(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	device, err := h.compute.GetBootDevice(id)
