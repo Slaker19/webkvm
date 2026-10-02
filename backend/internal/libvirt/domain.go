@@ -1455,6 +1455,15 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 	}
 	defer newDom.Free()
 
+	// Live memory adjustment (ballooning) if domain is currently running
+	if state, _, err := newDom.GetState(); err == nil && state == libvirt.DOMAIN_RUNNING {
+		if req.MinRAMMB != nil && *req.MinRAMMB > 0 {
+			_ = newDom.SetMemoryFlags(uint64(*req.MinRAMMB)*1024, libvirt.DOMAIN_MEM_LIVE)
+		} else if req.RAMMB != nil && *req.RAMMB > 0 {
+			_ = newDom.SetMemoryFlags(uint64(*req.RAMMB)*1024, libvirt.DOMAIN_MEM_LIVE)
+		}
+	}
+
 	// Autostart is not part of the domain XML — it is libvirtd's own
 	// flag (virDomainSetAutostart), so it must be applied on the handle
 	// after the redefine. Without this, PATCH {"autostart":false}

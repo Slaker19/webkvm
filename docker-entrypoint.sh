@@ -64,5 +64,22 @@ if [ ! -f "${CERT_DIR}/webkvm.crt" ] || [ ! -f "${CERT_DIR}/webkvm.key" ]; then
   persist_setting "server.tls_key" "${CERT_DIR}/webkvm.key"
 fi
 
+# Pre-flight host & virtualization diagnostics
+if [ ! -S "/var/run/libvirt/libvirt-sock" ]; then
+  log "WARNING: /var/run/libvirt/libvirt-sock is not a socket or is missing. Make sure libvirtd is active on the host and mounted."
+else
+  log "libvirt socket detected at /var/run/libvirt/libvirt-sock"
+fi
+
+if [ -e "/dev/kvm" ]; then
+  log "KVM acceleration device (/dev/kvm) detected"
+else
+  log "NOTICE: /dev/kvm not found; hardware-assisted virtualization might not be available."
+fi
+
+if [ -e "/dev/zfs" ]; then
+  log "ZFS kernel driver (/dev/zfs) detected"
+fi
+
 log "starting webkvm ($(webkvm version 2>/dev/null || echo 'unknown version'))"
 exec webkvm "$@"

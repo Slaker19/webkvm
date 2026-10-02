@@ -154,3 +154,59 @@ func TestNilSourcesAreSkipped(t *testing.T) {
 		t.Errorf("no sources wired should produce no alerts, got %v", subjects(n.Events()))
 	}
 }
+
+// TestStorageHealthAlertsFired verifies that storage degradation and SMART alerts
+// are detected, dispatched, and deduped properly.
+func TestStorageHealthAlertsFired(t *testing.T) {
+	e, n := newTestEngine(t, Sources{
+		StorageHealth: func() []StorageAlert {
+			return []StorageAlert{
+				{
+					Level:   "critical",
+					Subject: "SMART Failure on /dev/sda",
+					Message: "Disk /dev/sda reported SMART status FAILED.",
+				},
+				{
+					Level:   "critical",
+					Subject: "ZFS Pool tank is DEGRADED",
+					Message: "ZFS Pool tank is in DEGRADED state!",
+				},
+				{
+					Level:   "critical",
+					Subject: "Software RAID Array Degraded",
+					Message: "mdadm array /dev/md0 is running degraded.",
+				},
+			}
+		},
+	})
+
+	e.Evaluate()
+
+	got := subjects(n.Events())
+	if len(got) != 3 {
+		t.Fatalf("expected 3 storage alerts, got %d: %v", len(got), got)
+	}
+
+	var sawSMART, sawZFS, sawRAID bool
+	for _, s := range got {
+		if strings.Contains(s, "SMART") {
+			sawSMART = true
+		}
+		if strings.Contains(s, "ZFS") {
+			sawZFS = true
+		}
+		if strings.Contains(s, "RAID") {
+			sawRAID = true
+		}
+	}
+
+	if !sawSMART || !sawZFS || !sawRAID {
+		t.Errorf("missing expected storage alert categories in %v", got)
+	}
+
+	// Verify deduplication on subsequent evaluation
+	e.Evaluate()
+	if len(n.Events()) != 3 {
+		t.Errorf("expected storage alerts to be deduped to 3, got %d", len(n.Events()))
+	}
+}

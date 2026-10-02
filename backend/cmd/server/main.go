@@ -37,6 +37,7 @@ import (
 	"webkvm/internal/tokens"
 	"webkvm/internal/user"
 	"webkvm/internal/vmsched"
+	"webkvm/internal/zvol"
 )
 
 // Set by -ldflags at build time. Defaults are used for `go run`.
@@ -564,7 +565,7 @@ func main() {
 			},
 			StorageHealth: func() []notify.StorageAlert {
 				var alerts []notify.StorageAlert
-				// Check SMART status of physical block devices
+				// 1. Check SMART status of physical block devices
 				if smart.IsAvailable() {
 					for _, dev := range smart.ListPhysicalDisks() {
 						info, err := smart.Probe(eventCtx, dev)
@@ -574,6 +575,12 @@ func main() {
 									Level:   "critical",
 									Subject: "SMART Failure on " + dev,
 									Message: fmt.Sprintf("Disk %s (%s) reported SMART status FAILED. Imminent hardware failure!", dev, info.Model),
+								})
+							} else if info.CriticalWarning > 0 {
+								alerts = append(alerts, notify.StorageAlert{
+									Level:   "critical",
+									Subject: "NVMe Critical Warning on " + dev,
+									Message: fmt.Sprintf("NVMe drive %s reported critical hardware warning flags (0x%x).", dev, info.CriticalWarning),
 								})
 							} else if info.TemperatureC >= 60 {
 								alerts = append(alerts, notify.StorageAlert{
@@ -587,10 +594,45 @@ func main() {
 									Subject: "Reallocated Sectors on " + dev,
 									Message: fmt.Sprintf("Disk %s has %d reallocated sectors.", dev, info.ReallocatedSectors),
 								})
+							} else if info.PendingSectors > 0 {
+								alerts = append(alerts, notify.StorageAlert{
+									Level:   "warning",
+									Subject: "Pending Sectors on " + dev,
+									Message: fmt.Sprintf("Disk %s has %d uncorrectable pending sectors waiting for reallocation.", dev, info.PendingSectors),
+								})
 							}
 						}
 					}
 				}
+
+				// 2. Check ZFS pool health (DEGRADED, FAULTED)
+				if zvol.IsPoolAvailable() {
+					if pools, err := zvol.ListPools(eventCtx); err == nil {
+						for _, p := range pools {
+							h := strings.ToUpper(strings.TrimSpace(p.Health))
+							if h == "DEGRADED" || h == "FAULTED" || h == "UNAVAIL" {
+								alerts = append(alerts, notify.StorageAlert{
+									Level:   "critical",
+									Subject: fmt.Sprintf("ZFS Pool %s is %s", p.Name, h),
+									Message: fmt.Sprintf("ZFS Pool %q is in %s state! One or more vdev devices have failed or degraded.", p.Name, h),
+								})
+							}
+						}
+					}
+				}
+
+				// 3. Check MDADM software RAID degradation via /proc/mdstat
+				if mdstatBytes, err := os.ReadFile("/proc/mdstat"); err == nil {
+					mdstatStr := string(mdstatBytes)
+					if strings.Contains(mdstatStr, "[U_") || strings.Contains(mdstatStr, "_U]") || strings.Contains(mdstatStr, "degraded") {
+						alerts = append(alerts, notify.StorageAlert{
+							Level:   "critical",
+							Subject: "Software RAID Array Degraded",
+							Message: "One or more mdadm software RAID arrays are running in a degraded state with missing member disks.",
+						})
+					}
+				}
+
 				return alerts
 			},
 		}

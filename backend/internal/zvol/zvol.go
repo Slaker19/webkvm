@@ -97,13 +97,13 @@ func Resolve(ctx context.Context, name string) (Info, error) {
 		return Info{}, fmt.Errorf("invalid zvol name format in %q", devPath)
 	}
 	var fi os.FileInfo
-	for attempt := 0; attempt < 10; attempt++ {
+	for attempt := 0; attempt < 25; attempt++ {
 		fi, err = os.Stat(devPath)
 		if err == nil {
 			break
 		}
 		_ = exec.CommandContext(cctx, "udevadm", "settle", "--timeout=1").Run()
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 	}
 	if err != nil {
 		return Info{}, fmt.Errorf("zvol block device %s not found: %w", devPath, err)

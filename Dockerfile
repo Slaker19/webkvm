@@ -1,26 +1,64 @@
-# WebKVM — container image
+# WebKVM — Container Image
 #
-# This image does NOT bundle libvirtd/QEMU: it is a thin client that talks
-# to the libvirtd ALREADY running on the host (see docker-compose.yml). VMs
-# are started by the host's libvirtd, never inside this container, so no
-# /dev/kvm, libvirt-daemon-system or qemu-system-x86 is needed here — only
-# the client-side tools the webkvm binary itself shells out to.
-#
-# The binary is prebuilt (same artifact the native installer uses) and only
-# copied in here, never compiled inside the image — see backend/webkvm.
-# Base pinned to an LTS for reproducible builds (rolling moves under us).
+# Multi-stage build:
+# Stage 1: Build the Svelte SPA frontend assets
+# Stage 2: Build the Go backend binary with CGO & libvirt on Ubuntu 24.04
+# Stage 3: Minimal, secure runtime image based on Ubuntu 24.04
+
+# ==============================================================================
+# Stage 1: Build Frontend
+# ==============================================================================
+FROM node:22-bookworm-slim AS frontend-builder
+
+WORKDIR /src/frontend
+COPY frontend/package*.json ./
+RUN npm ci --prefer-offline --no-audit 2>/dev/null || npm install --no-audit
+
+COPY frontend/ ./
+RUN npm run build
+
+# ==============================================================================
+# Stage 2: Build Backend
+# ==============================================================================
+FROM ubuntu:24.04 AS backend-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      git \
+      build-essential \
+      pkg-config \
+      libvirt-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go matching host architecture (amd64 / arm64)
+RUN ARCH=$(dpkg --print-architecture) && \
+    curl -fsSL "https://go.dev/dl/go1.26.0.linux-${ARCH}.tar.gz" | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+WORKDIR /src/backend
+# Cache Go dependencies layer
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+
+# Copy backend source
+COPY backend/ ./
+
+# Copy compiled frontend assets from Stage 1 into backend embedded FS
+COPY --from=frontend-builder /src/frontend/dist ./internal/frontend/dist
+
+ARG VERSION=0.1.3
+RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/webkvm ./cmd/server
+
+# ==============================================================================
+# Stage 3: Minimal Runtime Image
+# ==============================================================================
 FROM ubuntu:24.04
 
-# Every binary the backend shells out to must exist here (see the
-# exec.Command inventory): ip, nft, iptables, qemu-img, virsh, xz,
-# xorriso, tar, mountpoint/umount (util-linux), sysctl (procps),
-# /bin/login (login — Host Terminal), curl (HEALTHCHECK below).
-# gdisk/parted/e2fsprogs/xfsprogs/btrfs-progs/f2fs-tools: the Storage >
-# Host Disks format/mount flow (host_disks.go) shells out to sgdisk,
-# parted/partprobe and one mkfs.* per entry in the curated filesystem
-# catalog — needed here too, since a physical disk passed through to
-# this container (e.g. --device=/dev/sdb) is formatted from inside it,
-# not on the host.
+# Runtime dependencies: client-side tools required for libvirt, storage,
+# networking and system operations.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
@@ -50,7 +88,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       zfsutils-linux \
     && rm -rf /var/lib/apt/lists/*
 
-COPY backend/webkvm /usr/local/bin/webkvm
+COPY --from=backend-builder /out/webkvm /usr/local/bin/webkvm
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/webkvm /usr/local/bin/docker-entrypoint.sh
 
