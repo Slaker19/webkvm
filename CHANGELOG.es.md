@@ -10,6 +10,16 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
 ### Añadido
 
+- **Construcción Multi-Stage en Contenedor y Diagnósticos de Inicio:**
+  - `Dockerfile` multi-stage con compilación aislada del frontend Svelte (Node 22 slim) y del backend Go 1.26 con CGO y cabeceras libvirt en Ubuntu 24.04, garantizando paridad binaria y compatibilidad de bibliotecas `glibc` con independencia de la máquina anfitriona.
+  - Optimización de caché de capas para reconstrucciones ultrarrápidas (~15 segundos).
+  - Diagnósticos *pre-flight* en `docker-entrypoint.sh` comprobando la presencia del socket libvirt, aceleración por hardware KVM (`/dev/kvm`) y el módulo del kernel ZFS (`/dev/zfs`).
+- **Ajuste Dinámico de Memoria en Caliente (*Live Memory Ballooning*):**
+  - Modificación dinámica de la memoria de máquinas virtuales en ejecución (`SetMemoryFlags` con `DOMAIN_MEM_LIVE`) a través de la API sin requerir apagado o reinicio de la instancia.
+- **Alertas Proactivas de Degradación de Almacenamiento:**
+  - Motor `AlertEngine` ampliado para supervisar atributos de salud S.M.A.R.T., sectores pendientes no corregibles y alertas críticas de hardware en unidades NVMe (`CriticalWarning`).
+  - Generación automática de alertas críticas ante pools ZFS en estado degradado o dañado (`DEGRADED`, `FAULTED`, `UNAVAIL`).
+  - Detección automática en `/proc/mdstat` ante arreglos Software RAID (`mdadm`) corriendo en estado degradado con discos ausentes.
 - **Consola SPICE y Proxy Streaming:**
   - Cliente web nativo SPICE (`spice.mjs`) con autoescalado fluido para ajuste total al viewport preservando aspect ratio y soporte de redimensionamiento dinámico con agente SPICE (`VD_AGENT_MONITORS_CONFIG`).
   - Mapeo de hardware Scancode Set 1 tanto en teclado físico como en teclado virtual (distribuciones ES ISO y US ANSI) con filtrado de Ctrl sintético por `AltGr` y cobertura de teclas extendidas (`º`, `\`, `ç`, `ñ`, `< >`, acentos).
@@ -24,6 +34,8 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
 ### Corregido
 
+- **Resolución de Dispositivos ZFS ZVol en Contenedores:**
+  - Añadido bucle de reintento y sincronización adaptativa con `udevadm settle` en `zvol.Resolve()` para localizar de manera fiable los nodos de bloque `/dev/zvol` creados asíncronamente en entornos con Docker.
 - **Despliegue Cloud-Init en Pools de Discos y Compatibilidad Gráfica:**
   - Corregido el fallo silencioso y rechazo 400 (`purpose "disk", expected "container"`) al desplegar VMs Cloud-Init en pools libvirt como `webkvm-disks`, asegurando el parámetro `type: "vm"` en la carga del asistente.
   - Añadida compatibilidad con el estado de finalización `"completed"` en el rastreador de trabajos (`waitJob`), resolviendo bloqueos infinitos de espera en la interfaz web tras la creación de instancias.
