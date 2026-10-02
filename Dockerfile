@@ -47,6 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       btrfs-progs \
       f2fs-tools \
       mdadm \
+      zfsutils-linux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/webkvm /usr/local/bin/webkvm

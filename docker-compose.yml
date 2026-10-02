@@ -31,6 +31,9 @@ services:
       # definitions store this as an absolute directory path, so the
       # container must see it exactly where the host's libvirtd sees it.
       - /opt/webkvm:/opt/webkvm
+      # Host device nodes — enables format/mount, SMART queries, mdadm RAID,
+      # and ZFS zvols/zpools created by the host to propagate into the container.
+      - /dev:/dev:rslave
       # Host's libvirt socket — lets LIBVIRT_URI=qemu:///system reach the
       # host's libvirtd exactly like the native install does.
       - /var/run/libvirt:/var/run/libvirt
