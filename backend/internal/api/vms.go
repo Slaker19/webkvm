@@ -1309,8 +1309,8 @@ func (h *Handler) SetBootDevice(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "device is required")
 		return
 	}
-	if req.Device != "disk" && req.Device != "cdrom" && req.Device != "network" {
-		jsonErr(w, http.StatusBadRequest, "device must be one of: disk, cdrom, network")
+	if req.Device != "disk" && req.Device != "hd" && req.Device != "cdrom" && req.Device != "network" {
+		jsonErr(w, http.StatusBadRequest, "device must be one of: disk, hd, cdrom, network")
 		return
 	}
 	if err := h.compute.SetBootDevice(id, req.Device); err != nil {

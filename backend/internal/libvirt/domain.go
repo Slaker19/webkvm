@@ -3855,12 +3855,18 @@ func (c *Connector) GetBootDevice(id string) (string, error) {
 // device value is interpolated straight into the domain XML, so it is
 // whitelisted first: without that an operator could close the <boot>
 // attribute and inject arbitrary elements into the domain definition
-// (the same values UpdateDomain accepts for boot_order).
+// (the same values UpdateDomain accepts for boot_order). Accepts either
+// "hd" (libvirt schema) or "disk" (API alias), normalising to "hd".
 func (c *Connector) SetBootDevice(id string, device string) error {
 	switch device {
-	case "disk", "cdrom", "network":
+	case "disk", "hd", "cdrom", "network":
 	default:
-		return fmt.Errorf("boot device must be one of: disk, cdrom, network")
+		return fmt.Errorf("boot device must be one of: disk, hd, cdrom, network")
+	}
+
+	libvirtDev := device
+	if libvirtDev == "disk" {
+		libvirtDev = "hd"
 	}
 
 	dom, err := c.lookupDomain(id)
@@ -3874,7 +3880,7 @@ func (c *Connector) SetBootDevice(id string, device string) error {
 		return err
 	}
 
-	newBoot := fmt.Sprintf("<boot dev='%s'/>", xmlEscape(device))
+	newBoot := fmt.Sprintf("<boot dev='%s'/>", xmlEscape(libvirtDev))
 	re := regexp.MustCompile(`<boot dev='[^']*'/>`)
 	if re.MatchString(xmlDesc) {
 		xmlDesc = re.ReplaceAllString(xmlDesc, newBoot)
