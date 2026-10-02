@@ -18,11 +18,13 @@ services:
     restart: unless-stopped
     network_mode: host
     privileged: true
+    pid: host
     environment:
       - DATA_DIR=/opt/webkvm
       - LIBVIRT_URI=qemu:///system
       - BIND_ADDR=0.0.0.0
       - PORT=8080
+      - SYSTEMD_IGNORE_CHROOT=1
     volumes:
       # Persistent state: users, settings, certs, disk/ISO pools. Kept at
       # the SAME path inside and outside the container — libvirt's pool
@@ -35,6 +37,8 @@ services:
       # Host's systemd socket + journal — used for `journalctl`/
       # `systemctl restart webkvm` (service logs/restart).
       - /run/systemd:/run/systemd
+      - /etc/systemd/system:/etc/systemd/system
+      - /etc/webkvm:/etc/webkvm
       - /var/log/journal:/var/log/journal:ro
       # Host's user database, read-only — lets the Host Terminal feature
       # authenticate real host accounts via the container's own /bin/login

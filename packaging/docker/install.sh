@@ -289,6 +289,7 @@ install_docker
 detect_compose
 
 install -d -m 0755 "${DATA_DIR}"
+install -d -m 0755 "/etc/webkvm"
 
 cd "${REPO_DIR}"
 if [[ "${BUILD_SOURCE}" == 1 ]]; then
