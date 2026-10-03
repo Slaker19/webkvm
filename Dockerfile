@@ -50,7 +50,8 @@ COPY backend/ ./
 COPY --from=frontend-builder /src/frontend/dist ./internal/frontend/dist
 
 ARG VERSION=0.1.5
-RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/webkvm ./cmd/server
+RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/webkvm ./cmd/server && \
+    CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/webkvm-cli ./cmd/cli
 
 # ==============================================================================
 # Stage 3: Minimal Runtime Image
@@ -89,8 +90,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=backend-builder /out/webkvm /usr/local/bin/webkvm
+COPY --from=backend-builder /out/webkvm-cli /usr/local/bin/webkvm-cli
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/webkvm /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/webkvm /usr/local/bin/webkvm-cli /usr/local/bin/docker-entrypoint.sh
 
 ENV DATA_DIR=/opt/webkvm \
     BIND_ADDR=0.0.0.0 \
