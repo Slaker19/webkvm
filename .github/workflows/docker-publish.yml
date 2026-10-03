@@ -76,6 +76,8 @@ jobs:
           context: .
           load: true
           push: false
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
           tags: |
             slaker1908/webkvm:${{ steps.ver.outputs.version }}
             slaker1908/webkvm:latest
