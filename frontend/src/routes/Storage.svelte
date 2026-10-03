@@ -2414,7 +2414,9 @@
                             class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium {pool.health ===
                             'ONLINE'
                               ? 'bg-success/15 text-success'
-                              : 'bg-warning/15 text-warning'}"
+                              : pool.health === 'DEGRADED'
+                                ? 'bg-warning/15 text-warning font-semibold'
+                                : 'bg-destructive/15 text-destructive font-semibold'}"
                           >
                             {pool.health}
                           </span>

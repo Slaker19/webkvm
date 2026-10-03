@@ -6,7 +6,7 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
-## [0.1.3] — 2026-10-01
+## [0.1.4] — 2026-10-03
 
 ### Añadido
 
@@ -14,12 +14,31 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
   - `Dockerfile` multi-stage con compilación aislada del frontend Svelte (Node 22 slim) y del backend Go 1.26 con CGO y cabeceras libvirt en Ubuntu 24.04, garantizando paridad binaria y compatibilidad de bibliotecas `glibc` con independencia de la máquina anfitriona.
   - Optimización de caché de capas para reconstrucciones ultrarrápidas (~15 segundos).
   - Diagnósticos *pre-flight* en `docker-entrypoint.sh` comprobando la presencia del socket libvirt, aceleración por hardware KVM (`/dev/kvm`) y el módulo del kernel ZFS (`/dev/zfs`).
+  - Integración de comprobación de salud (`HEALTHCHECK`) y configuración de paridad (`pid: host`, unidades systemd, `/dev:rslave`).
 - **Ajuste Dinámico de Memoria en Caliente (*Live Memory Ballooning*):**
   - Modificación dinámica de la memoria de máquinas virtuales en ejecución (`SetMemoryFlags` con `DOMAIN_MEM_LIVE`) a través de la API sin requerir apagado o reinicio de la instancia.
+  - Indicador visual en los ajustes de configuración de la VM avisando cuando el ajuste en caliente está disponible en instancias en ejecución.
 - **Alertas Proactivas de Degradación de Almacenamiento:**
   - Motor `AlertEngine` ampliado para supervisar atributos de salud S.M.A.R.T., sectores pendientes no corregibles y alertas críticas de hardware en unidades NVMe (`CriticalWarning`).
   - Generación automática de alertas críticas ante pools ZFS en estado degradado o dañado (`DEGRADED`, `FAULTED`, `UNAVAIL`).
   - Detección automática en `/proc/mdstat` ante arreglos Software RAID (`mdadm`) corriendo en estado degradado con discos ausentes.
+  - Refinado semáforo visual de estado de pools ZFS distinguiendo `ONLINE`, `DEGRADED` y `FAULTED`/`UNAVAIL`.
+- **Internacionalización Completa (i18n):**
+  - Soporte multiidioma íntegro (Español, Inglés y Catalán) para los componentes recién incorporados: modal de telemetría S.M.A.R.T. (`SmartModal`), pestaña de aislamiento NetGuard Jail (`SecurityJailTab`) y asistente de clonación masiva (`BatchCloneModal`).
+
+### Corregido
+
+- **Resolución de Dispositivos ZFS ZVol en Contenedores:**
+  - Añadido bucle de reintento y sincronización adaptativa con `udevadm settle` en `zvol.Resolve()` para localizar de manera fiable los nodos de bloque `/dev/zvol` creados asíncronamente en entornos con Docker.
+- **Compatibilidad de Dispositivos de Arranque de VM:**
+  - Aceptación y mapeo correcto en el esquema XML de dominios libvirt de `"hd"` y `"disk"` como tipos de dispositivo de arranque válidos.
+- **Análisis Estático y Asignación de Slices (CodeQL):**
+  - Neutralizada la alerta de severidad alta por propagación de datos en el clonador por lotes redimensionando dinámicamente con `var cloned []models.VM`.
+
+## [0.1.3] — 2026-10-01
+
+### Añadido
+
 - **Consola SPICE y Proxy Streaming:**
   - Cliente web nativo SPICE (`spice.mjs`) con autoescalado fluido para ajuste total al viewport preservando aspect ratio y soporte de redimensionamiento dinámico con agente SPICE (`VD_AGENT_MONITORS_CONFIG`).
   - Mapeo de hardware Scancode Set 1 tanto en teclado físico como en teclado virtual (distribuciones ES ISO y US ANSI) con filtrado de Ctrl sintético por `AltGr` y cobertura de teclas extendidas (`º`, `\`, `ç`, `ñ`, `< >`, acentos).
@@ -178,6 +197,7 @@ virtualización Linux.
 
 ---
 
+[0.1.4]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.4
 [0.1.3]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.3
 [0.1.2-fix2]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2-fix2
 [0.1.2-fix1]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2-fix1

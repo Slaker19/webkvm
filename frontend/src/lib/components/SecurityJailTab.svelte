@@ -4,6 +4,7 @@
   import { toast } from '$lib/components/ui/toast';
   import { Button } from '$lib/components/ui/button';
   import { Card } from '$lib/components/ui/card';
+  import { t } from '$lib/i18n.svelte.js';
 
   let banned = $state([]);
   let loading = $state(false);
@@ -13,7 +14,7 @@
     try {
       banned = (await api.listJailedIPs()) || [];
     } catch (e) {
-      toast.error('Error cargando lista de IPs bloqueadas: ' + e.message);
+      toast.error(t('securityJail.loadError', { error: e.message }));
     } finally {
       loading = false;
     }
@@ -22,10 +23,10 @@
   async function unban(ip) {
     try {
       await api.unbanJailedIP(ip);
-      toast.success(`IP ${ip} desbloqueada`);
+      toast.success(t('securityJail.unbanSuccess', { ip }));
       await load();
     } catch (e) {
-      toast.error('Error al desbloquear IP: ' + e.message);
+      toast.error(t('securityJail.unbanError', { error: e.message }));
     }
   }
 
@@ -41,18 +42,20 @@
   <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
     <Card class="p-4 border border-border bg-card/60">
       <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-        Estado Perimetral
+        {t('securityJail.perimeterStatus')}
       </div>
       <div class="mt-2 flex items-center gap-2">
         <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-        <span class="text-base font-semibold text-foreground">nftables Activo</span>
+        <span class="text-base font-semibold text-foreground"
+          >{t('securityJail.nftablesActive')}</span
+        >
       </div>
-      <div class="mt-1 text-xs text-muted-foreground">Protección delegada al kernel Linux</div>
+      <div class="mt-1 text-xs text-muted-foreground">{t('securityJail.kernelProtection')}</div>
     </Card>
 
     <Card class="p-4 border border-border bg-card/60">
       <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-        IPs Bloqueadas
+        {t('securityJail.blockedIPs')}
       </div>
       <div
         class="mt-2 text-2xl font-bold font-mono {banned.length > 0
@@ -61,17 +64,17 @@
       >
         {banned.length}
       </div>
-      <div class="mt-1 text-xs text-muted-foreground">En conjunto de descarte inmediato</div>
+      <div class="mt-1 text-xs text-muted-foreground">{t('securityJail.immediateDrop')}</div>
     </Card>
 
     <Card class="p-4 border border-border bg-card/60">
       <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-        Redes Protegidas
+        {t('securityJail.protectedNetworks')}
       </div>
       <div class="mt-2 text-xs font-mono text-foreground font-semibold">
         127.0.0.0/8, 10.0.0.0/8, 192.168.0.0/16
       </div>
-      <div class="mt-1 text-xs text-muted-foreground">Whitelist inmune a bloqueos automáticos</div>
+      <div class="mt-1 text-xs text-muted-foreground">{t('securityJail.whitelistImmune')}</div>
     </Card>
   </div>
 
@@ -80,11 +83,10 @@
     <div class="flex items-center justify-between">
       <div>
         <h3 class="text-sm font-semibold text-foreground">
-          Registro de Aislamiento Activo (Kernel Jail)
+          {t('securityJail.title')}
         </h3>
         <p class="text-xs text-muted-foreground">
-          Cualquier IP con 5 intentos erróneos de inicio de sesión es descartada a nivel kernel por
-          15 minutos.
+          {t('securityJail.desc')}
         </p>
       </div>
       <Button
@@ -107,7 +109,7 @@
             d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
           />
         </svg>
-        Actualizar
+        {t('securityJail.refresh')}
       </Button>
     </div>
 
@@ -116,15 +118,15 @@
         <table class="w-full text-left text-xs">
           <thead class="bg-muted/40 border-b border-border text-muted-foreground font-medium">
             <tr>
-              <th class="p-3">Dirección IP</th>
-              <th class="p-3">Motivo de Bloqueo</th>
-              <th class="p-3">Intentos Registrados</th>
-              <th class="p-3">Hora de Bloqueo</th>
-              <th class="p-3">Expira</th>
-              <th class="p-3 text-right">Acción</th>
+              <th class="p-3">{t('securityJail.colIp')}</th>
+              <th class="p-3">{t('securityJail.colReason')}</th>
+              <th class="p-3">{t('securityJail.colAttempts')}</th>
+              <th class="p-3">{t('securityJail.colBannedAt')}</th>
+              <th class="p-3">{t('securityJail.colExpires')}</th>
+              <th class="p-3 text-right">{t('securityJail.colAction')}</th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-border">
+          <tbody class="divide-y border-border">
             {#if banned.length === 0}
               <tr>
                 <td colspan="6" class="p-6 text-center text-muted-foreground">
@@ -143,9 +145,9 @@
                       />
                     </svg>
                     <span class="font-medium text-foreground"
-                      >Sin amenazas perimetrales activas</span
+                      >{t('securityJail.noThreatsTitle')}</span
                     >
-                    <span class="text-[11px]">No hay direcciones IP bloqueadas actualmente.</span>
+                    <span class="text-[11px]">{t('securityJail.noThreatsDesc')}</span>
                   </div>
                 </td>
               </tr>
@@ -153,7 +155,9 @@
               {#each banned as item (item.ip)}
                 <tr class="hover:bg-muted/20 transition-colors">
                   <td class="p-3 font-mono font-semibold text-destructive">{item.ip}</td>
-                  <td class="p-3 text-foreground">{item.reason || 'Fuerza bruta'}</td>
+                  <td class="p-3 text-foreground"
+                    >{item.reason || t('securityJail.reasonBruteForce')}</td
+                  >
                   <td class="p-3 font-mono">{item.fail_count}</td>
                   <td class="p-3 text-muted-foreground font-mono">
                     {new Date(item.banned_at).toLocaleTimeString()}
@@ -168,7 +172,7 @@
                       class="!h-7 !text-[11px] text-destructive hover:bg-destructive/10"
                       onclick={() => unban(item.ip)}
                     >
-                      Desbloquear
+                      {t('securityJail.unban')}
                     </Button>
                   </td>
                 </tr>

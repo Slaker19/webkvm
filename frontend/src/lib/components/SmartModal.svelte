@@ -3,6 +3,7 @@
   import { toast } from '$lib/components/ui/toast';
   import { Button } from '$lib/components/ui/button';
   import { Card } from '$lib/components/ui/card';
+  import { t } from '$lib/i18n.svelte.js';
 
   let { disk = null, open = false, onClose = () => {} } = $props();
 
@@ -35,10 +36,10 @@
     testing = true;
     try {
       await api.runSMARTTest(disk.path, type);
-      toast.success(`Autotest ${type} iniciado en ${disk.path}`);
+      toast.success(t('smart.testStarted', { type, path: disk.path }));
       setTimeout(refresh, 2000);
     } catch (e) {
-      toast.error('Error al iniciar autotest: ' + e.message);
+      toast.error(t('smart.testError', { error: e.message }));
     } finally {
       testing = false;
     }
@@ -57,13 +58,13 @@
       <div class="flex items-start justify-between border-b border-border pb-3">
         <div>
           <h2 class="text-base font-bold text-foreground flex items-center gap-2">
-            <span>Telemetría S.M.A.R.T.</span>
+            <span>{t('smart.title')}</span>
             <span class="font-mono text-sm px-2 py-0.5 rounded bg-muted text-muted-foreground"
               >{disk.path}</span
             >
           </h2>
           <p class="text-xs text-muted-foreground mt-0.5">
-            {disk.model || 'Dispositivo de almacenamiento'} &bull; {disk.size_human || ''}
+            {disk.model || t('smart.storageDevice')} &bull; {disk.size_human || ''}
           </p>
         </div>
         <div class="flex items-center gap-1.5">
@@ -101,19 +102,19 @@
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Card class="p-3 border border-border bg-card/50 text-center">
             <span class="text-[10px] text-muted-foreground uppercase font-semibold"
-              >Salud Global</span
+              >{t('smart.overallHealth')}</span
             >
             <div
               class="mt-1 font-mono font-bold text-sm {activeSmart.healthy
                 ? 'text-success'
                 : 'text-destructive'}"
             >
-              {activeSmart.status || 'DESCONOCIDO'}
+              {activeSmart.status || t('smart.unknown')}
             </div>
           </Card>
           <Card class="p-3 border border-border bg-card/50 text-center">
             <span class="text-[10px] text-muted-foreground uppercase font-semibold"
-              >Temperatura</span
+              >{t('smart.temperature')}</span
             >
             <div
               class="mt-1 font-mono font-bold text-sm {activeSmart.temperature_c >= 55
@@ -122,20 +123,20 @@
                   ? 'text-warning'
                   : 'text-foreground'}"
             >
-              {activeSmart.temperature_c > 0 ? activeSmart.temperature_c + ' °C' : 'N/D'}
+              {activeSmart.temperature_c > 0 ? activeSmart.temperature_c + ' °C' : t('smart.na')}
             </div>
           </Card>
           <Card class="p-3 border border-border bg-card/50 text-center">
             <span class="text-[10px] text-muted-foreground uppercase font-semibold"
-              >Horas Encendido</span
+              >{t('smart.powerOnHours')}</span
             >
             <div class="mt-1 font-mono font-bold text-sm text-foreground">
-              {activeSmart.power_on_hours > 0 ? activeSmart.power_on_hours + ' h' : 'N/D'}
+              {activeSmart.power_on_hours > 0 ? activeSmart.power_on_hours + ' h' : t('smart.na')}
             </div>
           </Card>
           <Card class="p-3 border border-border bg-card/50 text-center">
             <span class="text-[10px] text-muted-foreground uppercase font-semibold"
-              >Sectores Reasignados</span
+              >{t('smart.reallocatedSectors')}</span
             >
             <div
               class="mt-1 font-mono font-bold text-sm {activeSmart.reallocated_sectors > 0
@@ -150,8 +151,10 @@
         {#if activeSmart.wear_percentage >= 0}
           <div class="p-3 rounded-lg border border-border bg-muted/20 space-y-1.5">
             <div class="flex justify-between text-xs font-semibold">
-              <span>Desgaste de Memoria Flash (SSD/NVMe)</span>
-              <span class="font-mono">{activeSmart.wear_percentage}% usado</span>
+              <span>{t('smart.flashWear')}</span>
+              <span class="font-mono"
+                >{t('smart.usedPct', { pct: activeSmart.wear_percentage })}</span
+              >
             </div>
             <div class="w-full h-2 rounded-full bg-muted overflow-hidden">
               <div
@@ -169,8 +172,7 @@
         <div
           class="p-6 text-center text-xs text-muted-foreground border border-dashed border-border rounded-lg"
         >
-          No hay telemetría S.M.A.R.T. activa reportada para este disco o el controlador emula un
-          dispositivo virtual.
+          {t('smart.noData')}
         </div>
       {/if}
 
@@ -178,7 +180,7 @@
         class="border-t border-border pt-4 flex flex-col sm:flex-row items-center justify-between gap-3"
       >
         <div class="text-[11px] text-muted-foreground">
-          Autodiagnóstico del hardware en segundo plano
+          {t('smart.diagTitle')}
         </div>
         <div class="flex items-center gap-2">
           <Button
@@ -188,7 +190,7 @@
             onclick={() => triggerTest('short')}
             disabled={testing}
           >
-            Test Corto (~2 min)
+            {t('smart.testShort')}
           </Button>
           <Button
             variant="outline"
@@ -197,7 +199,7 @@
             onclick={() => triggerTest('extended')}
             disabled={testing}
           >
-            Test Extendido
+            {t('smart.testExtended')}
           </Button>
           <Button
             variant="destructive"
@@ -206,9 +208,9 @@
             onclick={() => triggerTest('abort')}
             disabled={testing}
           >
-            Abortar Test
+            {t('smart.testAbort')}
           </Button>
-          <Button size="sm" class="!h-8 !text-xs" onclick={onClose}>Cerrar</Button>
+          <Button size="sm" class="!h-8 !text-xs" onclick={onClose}>{t('smart.close')}</Button>
         </div>
       </div>
     </div>

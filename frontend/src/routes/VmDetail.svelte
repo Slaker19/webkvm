@@ -2787,7 +2787,12 @@
                       </SettingRow>
                     {/if}
 
-                    <SettingRow label={t('vmDetail.ramLabel')} helper={t('vmCreate.ramHelper')}>
+                    <SettingRow
+                      label={t('vmDetail.ramLabel')}
+                      helper={vm.status === 'running'
+                        ? `${t('vmCreate.ramHelper')} • ${t('vmDetail.liveBallooningActive')}`
+                        : t('vmCreate.ramHelper')}
+                    >
                       <div class="space-y-2 max-w-md flex flex-col items-end">
                         <div class="flex flex-wrap items-center justify-end gap-2">
                           <Input

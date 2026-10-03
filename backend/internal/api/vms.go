@@ -1230,7 +1230,7 @@ func (h *Handler) BatchCloneVM(w http.ResponseWriter, r *http.Request) {
 
 	jOwner := jobOwner(r)
 	job := submitJob(jOwner, fmt.Sprintf("batch-clone:%s[%d]", req.BaseName, req.Count), func() (any, error) {
-		cloned := make([]models.VM, 0, req.Count)
+		var cloned []models.VM
 		for i := 0; i < req.Count; i++ {
 			instanceName := fmt.Sprintf("%s-%02d", req.BaseName, req.Start+i)
 			cloneReq := models.CloneVMRequest{

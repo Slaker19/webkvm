@@ -6,7 +6,7 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
-## [0.1.3] — 2026-10-01
+## [0.1.4] — 2026-10-03
 
 ### Added
 
@@ -14,12 +14,31 @@ Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
   - Multi-stage `Dockerfile` with isolated Svelte frontend compilation (Node 22 slim) and CGO/libvirt backend build (Ubuntu 24.04 with Go 1.26), ensuring full binary and glibc compatibility regardless of host environment.
   - Layer caching optimization for fast rebuilds (~15 seconds).
   - Pre-flight diagnostic checks in `docker-entrypoint.sh` verifying libvirt socket connectivity, hardware virtualization acceleration (`/dev/kvm`), and ZFS kernel module availability (`/dev/zfs`).
+  - Container health check integration (`HEALTHCHECK`) and host parity configuration (`pid: host`, systemd units, `/dev:rslave`).
 - **Live Memory Ballooning:**
   - Dynamic memory adjustment on running virtual machines (`SetMemoryFlags` with `DOMAIN_MEM_LIVE`) without requiring VM shutdown or reboot.
+  - User interface indicator in VM settings alerting when live memory ballooning is active on running instances.
 - **Proactive Storage Degradation Alerts:**
   - Expanded `AlertEngine` monitoring physical drive S.M.A.R.T. health, uncorrectable pending sectors, and NVMe critical hardware warnings (`CriticalWarning`).
   - Automatic critical alerts for degraded, faulted, or unavailable ZFS storage pools (`zpool`).
   - Automatic detection of degraded software RAID arrays (`mdadm`) via `/proc/mdstat`.
+  - Refined ZFS pool status indicators with color-coded severity (`ONLINE`, `DEGRADED`, `FAULTED`/`UNAVAIL`).
+- **Comprehensive Internationalization (i18n):**
+  - Full multilingual support (English, Español, Català) for newly added components: S.M.A.R.T. Telemetry modal (`SmartModal`), NetGuard Security Jail tab (`SecurityJailTab`), and Batch VM Cloning modal (`BatchCloneModal`).
+
+### Fixed
+
+- **ZFS ZVol Device Resolution in Containers:**
+  - Added adaptive retry and synchronization loop with `udevadm settle` in `zvol.Resolve()` to reliably locate `/dev/zvol` and block device nodes created asynchronously in containerized environments.
+- **VM Boot Device Compatibility:**
+  - Accepted `"hd"` and `"disk"` as valid boot device identifiers, mapping seamlessly to the libvirt XML domain schema.
+- **Static Analysis & Slice Allocation (CodeQL):**
+  - Eliminated high-severity taint tracking alert in batch clone handler by dynamically sizing result slice with `var cloned []models.VM`.
+
+## [0.1.3] — 2026-10-01
+
+### Added
+
 - **SPICE Console & Streaming Proxy:**
   - Full Web SPICE console client (`spice.mjs`) with dynamic auto-scaling viewport fit, aspect ratio preservation, and vdagent monitor resizing (`VD_AGENT_MONITORS_CONFIG`).
   - Scancode Set 1 hardware keyboard mapping for physical and virtual keyboards (ES ISO and US ANSI layouts) with `AltGr` synthetic Ctrl suppression and extended key coverage (`º`, `\`, `ç`, `ñ`, `< >`, accents).
@@ -34,8 +53,6 @@ Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
 ### Fixed
 
-- **ZFS ZVol Device Resolution in Containers:**
-  - Added adaptive retry and synchronization loop with `udevadm settle` in `zvol.Resolve()` to reliably locate `/dev/zvol` and block device nodes created asynchronously in containerized environments.
 - **Cloud-Init VM Deployment on Storage Pools & Graphics Compatibility:**
   - Resolved 400 Bad Request error (`purpose "disk", expected "container"`) and silent failure when deploying Cloud-Init VMs on libvirt pools such as `webkvm-disks` by explicitly passing `type: "vm"` in the wizard payload.
   - Added support for `"completed"` terminal job status in client-side job polling (`waitJob`), preventing infinite loading spinners upon instance provisioning.
@@ -175,6 +192,7 @@ virtualisation host.
 
 ---
 
+[0.1.4]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.4
 [0.1.3]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.3
 [0.1.2-fix2]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2-fix2
 [0.1.2-fix1]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2-fix1
