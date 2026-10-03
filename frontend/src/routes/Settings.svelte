@@ -24,6 +24,7 @@
   import NotificationsTab from '$lib/components/NotificationsTab.svelte';
   import SnippetsTab from '$lib/components/SnippetsTab.svelte';
   import SecurityJailTab from '$lib/components/SecurityJailTab.svelte';
+  import Icon from '$lib/components/Icon.svelte';
   import { Skeleton } from '$lib/components/ui/skeleton';
   import { t } from '../lib/i18n.svelte.js';
 
@@ -38,6 +39,33 @@
   let confirmingReset = $state(false);
   let resetting = $state(false);
   let activeTab = $state('server');
+  let copiedUrl = $state(false);
+  let copiedYaml = $state(false);
+
+  function copyEndpointUrl() {
+    const url = `${window.location.origin}/metrics`;
+    navigator.clipboard.writeText(url).then(() => {
+      copiedUrl = true;
+      setTimeout(() => (copiedUrl = false), 2000);
+    });
+  }
+
+  function copyPrometheusYaml() {
+    const host = window.location.host;
+    const yaml = `scrape_configs:
+  - job_name: 'webkvm'
+    metrics_path: '/metrics'
+    scheme: 'https'
+    tls_config:
+      insecure_skip_verify: true
+    bearer_token: 'YOUR_API_TOKEN'
+    static_configs:
+      - targets: ['${host}']`;
+    navigator.clipboard.writeText(yaml).then(() => {
+      copiedYaml = true;
+      setTimeout(() => (copiedYaml = false), 2000);
+    });
+  }
 
   onMount(async () => {
     try {
@@ -310,6 +338,67 @@
           <SecurityJailTab />
         {:else}
           <SettingsTab fields={activeFields} {values} {editing} {errors} onChange={setEdit} />
+          {#if activeTab === 'metrics'}
+            <div class="mt-6 border border-border rounded-lg p-5 bg-card space-y-4">
+              <div>
+                <h3 class="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <Icon name="activity" size={16} class="text-accent" />
+                  {t('settings.prometheusHelperTitle')}
+                </h3>
+                <p class="text-xs text-muted-foreground mt-1">
+                  {t('settings.prometheusHelperDesc')}
+                </p>
+              </div>
+
+              <div class="space-y-1.5">
+                <label for="metrics-url-input" class="text-xs font-medium text-muted-foreground"
+                  >{t('settings.prometheusEndpointUrl')}</label
+                >
+                <div class="flex items-center gap-2">
+                  <input
+                    id="metrics-url-input"
+                    type="text"
+                    readonly
+                    class="input text-xs font-mono bg-muted/30 flex-1"
+                    value={typeof window !== 'undefined'
+                      ? `${window.location.origin}/metrics`
+                      : '/metrics'}
+                  />
+                  <Button size="sm" variant="outline" onclick={copyEndpointUrl}>
+                    <Icon name={copiedUrl ? 'check' : 'copy'} size={14} class="mr-1.5" />
+                    {copiedUrl ? t('common.copied') : t('common.copy')}
+                  </Button>
+                </div>
+              </div>
+
+              <div class="space-y-1.5">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-medium text-muted-foreground"
+                    >{t('settings.prometheusSampleConfig')}</span
+                  >
+                  <Button size="xs" variant="ghost" onclick={copyPrometheusYaml}>
+                    <Icon name={copiedYaml ? 'check' : 'copy'} size={12} class="mr-1" />
+                    {copiedYaml ? t('common.copied') : t('common.copy')}
+                  </Button>
+                </div>
+                <pre
+                  class="p-3 rounded-md bg-muted/40 border border-border text-xs font-mono overflow-x-auto text-foreground/90 leading-relaxed"><code
+                    >{`scrape_configs:
+  - job_name: 'webkvm'
+    metrics_path: '/metrics'
+    scheme: 'https'
+    tls_config:
+      insecure_skip_verify: true
+    bearer_token: 'YOUR_API_TOKEN' # omit if unauthenticated scraping is enabled
+    static_configs:
+      - targets: ['${typeof window !== 'undefined' ? window.location.host : 'localhost:8080'}']`}</code
+                  ></pre>
+                <p class="text-xs text-muted-foreground">
+                  {t('settings.prometheusAuthNote')}
+                </p>
+              </div>
+            </div>
+          {/if}
         {/if}
       </div>
     </div>

@@ -6,6 +6,25 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
+## [0.1.5] — 2026-10-03
+
+### Added
+
+- **Native Prometheus / OpenMetrics Exporter (`/metrics` & `/api/metrics/prometheus`):**
+  - Standard Prometheus text format scraping endpoints exposing complete operational telemetry.
+  - Process and build metadata (`webkvm_info`, `webkvm_up`).
+  - System host metrics (CPU usage %, RAM total/used/free bytes, disk capacity and utilization, network rx/tx bandwidth, and system uptime).
+  - VM state aggregates and per-instance live telemetry (`webkvm_vms_total`, `webkvm_vms_state`, `webkvm_vm_status`, `webkvm_vm_vcpus`, `webkvm_vm_cpu_usage_percent`, `webkvm_vm_memory_allocated_bytes`, `webkvm_vm_memory_used_bytes`, `webkvm_vm_disk_size_bytes`, `webkvm_vm_uptime_seconds`, and live disk I/O and network transfer rates).
+  - Storage pool metrics (capacity, allocation, availability, and active status per pool).
+- **Flexible Exporter Authentication & Security:**
+  - Support for standard `Authorization: Bearer <token>` and `?token=` query parameters (accepting API tokens and session credentials).
+  - Hot-reloadable setting `metrics.allow_unauthenticated` enabling seamless scraping on trusted private LANs.
+  - Hot-reloadable setting `metrics.prometheus_enabled` allowing operators to toggle the scraping endpoint on or off.
+- **Prometheus Scraper UI & Integration Guide:**
+  - Dedicated Prometheus integration card in Settings under the new Metrics section.
+  - One-click copy for the full `/metrics` endpoint URL and complete ready-to-use `prometheus.yml` scrape configuration job snippet.
+  - Complete internationalization across English, Spanish, and Catalan.
+
 ## [0.1.4] — 2026-10-03
 
 ### Added

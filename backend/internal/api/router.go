@@ -156,6 +156,8 @@ func NewRouter(
 		r.Get("/api/branding", h.GetBranding)
 	})
 	r.Get("/api/health", h.Health)
+	r.Get("/metrics", h.PrometheusMetrics)
+	r.Get("/api/metrics/prometheus", h.PrometheusMetrics)
 	r.Get("/api/alerts/active", h.ListActiveAlerts)
 	r.Get("/api/tags", h.ListAllTags)
 	r.Get("/api/events", h.EventsSSE)
@@ -167,7 +169,7 @@ func NewRouter(
 	fh := frontendHandler()
 	r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		p := req.URL.Path
-		if strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/console") || strings.HasPrefix(p, "/serial") || strings.HasPrefix(p, "/host-terminal") || strings.HasPrefix(p, "/static/") {
+		if strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/console") || strings.HasPrefix(p, "/serial") || strings.HasPrefix(p, "/host-terminal") || strings.HasPrefix(p, "/static/") || p == "/metrics" {
 			http.NotFound(w, req)
 			return
 		}

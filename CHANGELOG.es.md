@@ -6,6 +6,25 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.5] — 2026-10-03
+
+### Añadido
+
+- **Exportador Nativo de Métricas Prometheus / OpenMetrics (`/metrics` y `/api/metrics/prometheus`):**
+  - Endpoints estándar en formato texto Prometheus que exponen la telemetría operativa completa del sistema.
+  - Metadatos del proceso y versión instalada (`webkvm_info`, `webkvm_up`).
+  - Métricas del anfitrión (uso de CPU %, memoria RAM total/usada/libre en bytes, capacidad y ocupación de disco, tasas de red de subida y bajada, y tiempo de actividad del sistema).
+  - Agregados de máquinas y contenedores por estado y telemetría por instancia (`webkvm_vms_total`, `webkvm_vms_state`, `webkvm_vm_status`, `webkvm_vm_vcpus`, `webkvm_vm_cpu_usage_percent`, `webkvm_vm_memory_allocated_bytes`, `webkvm_vm_memory_used_bytes`, `webkvm_vm_disk_size_bytes`, `webkvm_vm_uptime_seconds`, y tasas de I/O de disco y ancho de banda de red en vivo).
+  - Métricas de storage pools (capacidad, asignación, disponibilidad y estado activo por pool).
+- **Seguridad y Autenticación Flexible para Scrapers:**
+  - Soporte nativo para encabezado estándar `Authorization: Bearer <token>` y parámetro URL `?token=` (compatible con tokens de API y credenciales de sesión).
+  - Parámetro de configuración en caliente `metrics.allow_unauthenticated` para permitir scraping sin autenticación en redes privadas y LANs de confianza.
+  - Parámetro de configuración en caliente `metrics.prometheus_enabled` para activar o pausar el endpoint según requerimientos del operador.
+- **Asistente de Integración y Scraping en la Interfaz Web:**
+  - Nueva tarjeta informativa de Prometheus en los Ajustes dentro de la sección de Métricas.
+  - Copia rápida en un clic de la URL directa del endpoint `/metrics` y del bloque de configuración YAML para `prometheus.yml`.
+  - Internacionalización completa y simétrica en Español, Inglés y Catalán.
+
 ## [0.1.4] — 2026-10-03
 
 ### Añadido

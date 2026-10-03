@@ -291,6 +291,7 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		// static assets, and VM cover images (guarded by an unguessable
 		// UUID in the URL).
 		if path == "/api/auth/login" || path == "/api/auth/login/2fa" || path == "/api/health" ||
+			path == "/metrics" || path == "/api/metrics/prometheus" ||
 			strings.HasPrefix(path, "/static/") ||
 			strings.HasPrefix(path, "/api/covers/") ||
 			// Media images are embedded in <img src> tags, which cannot set

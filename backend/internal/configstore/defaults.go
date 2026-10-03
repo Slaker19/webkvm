@@ -269,5 +269,25 @@ func DefaultSchema() Schema {
 			Placeholder: "/api/media/custom:icon.png/raw",
 			HotReload:   true,
 		},
+
+		// --- Metrics / Observability ----------------------------------------
+		{
+			Key:         "metrics.prometheus_enabled",
+			Section:     "Metrics",
+			Label:       "Enable Prometheus metrics",
+			Description: "Expose Prometheus / OpenMetrics scraping endpoints at /metrics and /api/metrics/prometheus. Applies immediately.",
+			Type:        FieldBool,
+			Default:     true,
+			HotReload:   true,
+		},
+		{
+			Key:         "metrics.allow_unauthenticated",
+			Section:     "Metrics",
+			Label:       "Allow unauthenticated scraping",
+			Description: "Allow scraping /metrics without an API token (recommended for trusted local LANs where Prometheus scrapers do not support custom Authorization headers). When disabled, an API token (Bearer or ?token=) is required. Applies immediately.",
+			Type:        FieldBool,
+			Default:     false,
+			HotReload:   true,
+		},
 	}}
 }
