@@ -331,14 +331,35 @@
   }
 
   async function handleScrub(poolName, action = 'start') {
+    const taskId = `zpool-scrub:${poolName}`;
+    upsertTask({
+      id: taskId,
+      kind: 'storage',
+      title: `ZFS Scrub: ${poolName}`,
+      pct: 50,
+      message:
+        action === 'stop'
+          ? 'Deteniendo verificación...'
+          : 'Ejecutando verificación de integridad...',
+      status: 'running',
+    });
     scrubbingPool[poolName] = true;
     try {
       await api.scrubZpool(poolName, action);
+      finishTask(
+        taskId,
+        'success',
+        action === 'stop'
+          ? `Scrub cancelado para ${poolName}`
+          : `Scrub en progreso para ${poolName}`,
+        100
+      );
       toast.success(
         action === 'stop' ? `Scrub cancelado para ${poolName}` : `Scrub iniciado para ${poolName}`
       );
       await loadZfsData();
     } catch (e) {
+      finishTask(taskId, 'error', e.message || 'Error en ZFS scrub', 50);
       toast.error('Error en ZFS scrub: ' + e.message);
     } finally {
       scrubbingPool[poolName] = false;
@@ -369,16 +390,27 @@
     const min = minDisksForTopology(createZPoolTopology);
     if (!createZPoolName || createZPoolDisks.length < min) return;
     creatingZPool = true;
+    const taskId = 'zpool-create:' + createZPoolName.trim();
+    upsertTask({
+      id: taskId,
+      kind: 'storage',
+      title: `Creando ZPool: ${createZPoolName.trim()} (${createZPoolTopology})`,
+      pct: 35,
+      message: 'Creando conjunto ZFS y configuración...',
+      status: 'running',
+    });
     try {
       await api.createHostZpool({
         name: createZPoolName.trim(),
         topology: createZPoolTopology,
         devices: createZPoolDisks,
       });
+      finishTask(taskId, 'success', `ZPool ${createZPoolName.trim()} creado con éxito`, 100);
       showCreateZPool = false;
       await loadZfsData();
       await loadHostDisks();
     } catch (e) {
+      finishTask(taskId, 'error', e.message || 'Error al crear ZPool', 35);
       showStorageErr('Create ZFS Pool Error', e);
     } finally {
       creatingZPool = false;
@@ -435,16 +467,28 @@
     const min = minDisksForRaid(createRaidLevel);
     if (createRaidDisks.length < min) return;
     creatingRaid = true;
+    const raidDevName = createRaidDevice.trim() || `md-${createRaidLevel}`;
+    const taskId = 'raid-create:' + Date.now();
+    upsertTask({
+      id: taskId,
+      kind: 'storage',
+      title: `Creando arreglo RAID ${createRaidLevel}: ${raidDevName}`,
+      pct: 30,
+      message: 'Construyendo arreglo de discos en el host...',
+      status: 'running',
+    });
     try {
       const res = await api.createHostRaid({
         name: createRaidDevice.trim() || undefined,
         level: createRaidLevel,
         devices: createRaidDisks,
       });
+      finishTask(taskId, 'success', `Arreglo RAID ${res.device} creado`, 100);
       showCreateRaid = false;
       await loadHostDisks();
       alert(t('storage.raidCreatedSuccess', { device: res.device }));
     } catch (e) {
+      finishTask(taskId, 'error', e.message || 'Error al crear RAID', 30);
       showStorageErr('Create RAID Error', e);
     } finally {
       creatingRaid = false;
@@ -629,6 +673,18 @@
   async function performInitDisk() {
     if (!initDiskPath || !initDiskName.trim()) return;
     initDiskBusy = true;
+    const taskId = 'disk-init:' + initDiskPath;
+    upsertTask({
+      id: taskId,
+      kind: 'storage',
+      title: `Inicializando disco: ${initDiskPath} (${initDiskName.trim()})`,
+      pct: 25,
+      message:
+        initDiskMode === 'format'
+          ? 'Formateando y preparando punto de montaje...'
+          : 'Montando y preparando punto de montaje...',
+      status: 'running',
+    });
     try {
       const res = await api.initHostDiskDirectory({
         disk_path: initDiskPath,
@@ -648,6 +704,10 @@
         subfolders: initDiskSelectedSubfolders,
         register_backup_target:
           initDiskRegisterBackup && initDiskSelectedSubfolders.includes('backups'),
+      });
+      updateTask(taskId, {
+        pct: 85,
+        message: 'Registrando pools de almacenamiento y persistencia...',
       });
       // El registro de pools es best-effort: el disco ya está
       // formateado y montado, así que un pool que falla NO aborta la
@@ -678,10 +738,12 @@
       } else {
         toast.success(t('storage.diskInitialized'));
       }
+      finishTask(taskId, 'success', 'Disco inicializado y montado con éxito', 100);
       showInitDisk = false;
       await loadHostDisks();
       await load();
     } catch (e) {
+      finishTask(taskId, 'error', e.message || 'Error al inicializar disco', 25);
       toast.error(e.message);
     } finally {
       initDiskBusy = false;
@@ -696,12 +758,23 @@
       variant: 'destructive',
       onConfirm: async () => {
         confirmState.loading = true;
+        const taskId = 'disk-wipe:' + disk.path;
+        upsertTask({
+          id: taskId,
+          kind: 'storage',
+          title: `Borrando disco: ${disk.path}`,
+          pct: 20,
+          message: 'Limpiando firmas de sistema de archivos y particiones...',
+          status: 'running',
+        });
         try {
           await api.wipeHostDisk(disk.path);
+          finishTask(taskId, 'success', `Disco ${disk.path} borrado con éxito`, 100);
           confirmState.open = false;
           toast.success(t('storage.diskWiped'));
           await loadHostDisks();
         } catch (e) {
+          finishTask(taskId, 'error', e.message || 'Error al borrar disco', 20);
           toast.error(e.message);
         } finally {
           confirmState.loading = false;
@@ -1195,6 +1268,8 @@
         copy: moveVolCopy,
       });
       await api.waitJob(res.id, {
+        title: `Mover volumen: ${moveVolName} (${moveVolSrcPool} ➔ ${moveVolDestPool})`,
+        kind: 'storage',
         // Copying a large disk across devices can run for hours; the
         // default ceiling would report a failure on a healthy job.
         timeout: 4 * 60 * 60 * 1000,

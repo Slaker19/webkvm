@@ -42,7 +42,7 @@ import (
 
 // Set by -ldflags at build time. Defaults are used for `go run`.
 var (
-	Version   = "0.1.5"
+	Version   = "0.1.6"
 	BuildTime = "unknown"
 )
 
@@ -402,6 +402,25 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("nodes_loaded", "path", nodesReg.Path(), "count", len(nodesReg.List()))
+
+	serverBootTime := time.Now()
+	nodesReg.SetLocalProber(func() (string, string, int64, int64, int64, string, error) {
+		status := "online"
+		lvStatus := "ok"
+		if lv == nil || lv.Get() == nil {
+			lvStatus = "down"
+			status = "degraded"
+		}
+		var stat syscall.Statfs_t
+		var free, total int64
+		if err := syscall.Statfs(cfg.DataDir, &stat); err == nil {
+			free = int64(stat.Bavail) * int64(stat.Bsize)
+			total = int64(stat.Blocks) * int64(stat.Bsize)
+		}
+		uptime := int64(time.Since(serverBootTime).Seconds())
+		return status, cfg.Version, uptime, free, total, lvStatus, nil
+	})
+	go nodesReg.StartHealthMonitor(eventCtx, 30*time.Second)
 
 	// Event hub for SSE broadcasts (VM state changes)
 	hub := events.NewHub()
@@ -808,8 +827,17 @@ func main() {
 		}
 	}
 
-	jail := netguard.NewJail(5, 5*time.Minute, 15*time.Minute, logger)
+	jail, err := netguard.New(cfg.DataDir, logger)
+	if err != nil {
+		logger.Warn("jail_init_failed", "err", err)
+	}
+	if notifier != nil {
+		jail.SetAlertFunc(func(level, subject, msg string) {
+			notifier.Record(level, subject, msg)
+		})
+	}
 	go jail.Janitor(eventCtx)
+	go jail.StartSSHWatcher(eventCtx)
 
 	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, jail, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter, incusMetrics)
 

@@ -224,6 +224,61 @@ func TestNewIncusBackendMissingSocket(t *testing.T) {
 // compute.Backend is implemented by *IncusBackend (compile-time check).
 var _ compute.Backend = (*IncusBackend)(nil)
 
+func TestIncusDevicesMapping(t *testing.T) {
+	inst := &api.Instance{
+		Name:   "ct1",
+		Status: "Running",
+		Type:   "container",
+		InstancePut: api.InstancePut{
+			Config: map[string]string{
+				"limits.cpu":    "4",
+				"limits.memory": "2GiB",
+			},
+			Devices: map[string]map[string]string{
+				"root": {
+					"type": "disk",
+					"pool": "default",
+					"size": "20GiB",
+				},
+				"data": {
+					"type":   "disk",
+					"source": "/var/data",
+					"path":   "/mnt/data",
+					"size":   "50GiB",
+				},
+				"shared-docs": {
+					"type":     "disk",
+					"source":   "/home/user/docs",
+					"path":     "/mnt/docs",
+					"readonly": "true",
+				},
+				"usb-yubikey": {
+					"type":      "usb",
+					"vendorid":  "1050",
+					"productid": "0407",
+				},
+			},
+		},
+	}
+
+	vm := instanceToVM(inst)
+	if len(vm.Disks) != 2 {
+		t.Fatalf("expected 2 disks, got %d", len(vm.Disks))
+	}
+	if len(vm.SharedFolders) != 1 {
+		t.Fatalf("expected 1 shared folder, got %d", len(vm.SharedFolders))
+	}
+	if vm.SharedFolders[0].Tag != "docs" || !vm.SharedFolders[0].ReadOnly || vm.SharedFolders[0].HostPath != "/home/user/docs" {
+		t.Errorf("unexpected shared folder: %+v", vm.SharedFolders[0])
+	}
+	if len(vm.USBDevices) != 1 {
+		t.Fatalf("expected 1 USB device, got %d", len(vm.USBDevices))
+	}
+	if vm.USBDevices[0].VendorID != "0x1050" || vm.USBDevices[0].ProductID != "0x0407" {
+		t.Errorf("unexpected USB device: %+v", vm.USBDevices[0])
+	}
+}
+
 func TestValidateProfiles(t *testing.T) {
 	if err := validateProfiles([]string{"default"}); err != nil {
 		t.Errorf("default profile should be valid: %v", err)

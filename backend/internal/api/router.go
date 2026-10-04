@@ -101,6 +101,7 @@ func NewRouter(
 		"/api/users/me/password",
 		"/api/health",
 		"/api/system/cert",
+		"/api/alerts/webhook",
 	))
 
 	snippetsStore, _ := cloudinit.NewSnippetStore(cfg.DataDir)
@@ -134,6 +135,7 @@ func NewRouter(
 		metricHist:    metricHist,
 		alerter:       alerter,
 		incusMetrics:  incusMetrics,
+		webauthn:      auth.NewWebAuthnManager(cfg),
 		StartedAt:     time.Now(),
 	}
 
@@ -158,7 +160,12 @@ func NewRouter(
 	r.Get("/api/health", h.Health)
 	r.Get("/metrics", h.PrometheusMetrics)
 	r.Get("/api/metrics/prometheus", h.PrometheusMetrics)
+	r.Get("/api/metrics/grafana-dashboard", h.GrafanaDashboard)
+	r.Get("/api/metrics/alert-rules", h.AlertRules)
+	r.Post("/api/alerts/webhook", h.AlertmanagerWebhook)
 	r.Get("/api/alerts/active", h.ListActiveAlerts)
+	r.Get("/api/alerts/incidents", h.ListIncidents)
+	r.With(auth.RequireRole(modelsRoleAdmin())).Delete("/api/alerts/incidents/resolved", h.ClearResolvedIncidents)
 	r.Get("/api/tags", h.ListAllTags)
 	r.Get("/api/events", h.EventsSSE)
 	r.Post("/api/events/ticket", h.EventsTicket)
@@ -179,7 +186,9 @@ func NewRouter(
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Post("/login", h.Login)
 		r.Post("/login/2fa", h.Login2FA)
-		// Logout/refresh/me/2fa are authenticated; the auth middleware
+		r.Post("/webauthn/login/begin", h.WebAuthnLoginBegin)
+		r.Post("/webauthn/login/finish", h.WebAuthnLoginFinish)
+		// Logout/refresh/me/2fa/webauthn are authenticated; the auth middleware
 		// already enforces the JWT.
 		r.Post("/logout", h.Logout)
 		r.Post("/refresh", h.Refresh)
@@ -187,12 +196,21 @@ func NewRouter(
 		r.Post("/2fa/setup", h.Setup2FA)
 		r.Post("/2fa/enable", h.Enable2FA)
 		r.Post("/2fa/disable", h.Disable2FA)
+
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAtLeast("viewer"))
+			r.Post("/webauthn/register/begin", h.WebAuthnRegisterBegin)
+			r.Post("/webauthn/register/finish", h.WebAuthnRegisterFinish)
+			r.Get("/webauthn/credentials", h.WebAuthnListCredentials)
+			r.Put("/webauthn/credentials/{id}", h.WebAuthnUpdateCredential)
+			r.Delete("/webauthn/credentials/{id}", h.WebAuthnDeleteCredential)
+		})
 	})
 
-	// Async jobs (VM clone / snapshot / downloads). Read-only job
-	// lookup; the jobs are created by the respective endpoints.
+	// Async jobs (VM clone / snapshot / downloads).
 	r.Route("/api/jobs", func(r chi.Router) {
 		r.Use(auth.RequireAtLeast("viewer"))
+		r.Get("/", h.ListJobs)
 		r.Get("/{id}", h.GetDownloadJob)
 	})
 
@@ -297,6 +315,10 @@ func NewRouter(
 				r.With(h.requireCapability("control_power")).Post("/power/{action}", h.PowerVMNow)
 				r.Post("/reset-password", h.ResetVMPassword)
 				r.Post("/guest/fstrim", h.VMGuestFSTrim)
+				r.Post("/guest/exec", h.VMGuestExec)
+				r.Post("/guest/freeze", h.VMGuestFSFreeze)
+				r.Get("/guest/freeze-status", h.VMGuestFSFreezeStatus)
+				r.Post("/guest/sync-time", h.VMGuestSyncTime)
 
 				// Exporting streams every byte of the VM's disks. That is
 				// a data-exfiltration path rather than a console one, so
@@ -566,6 +588,9 @@ func NewRouter(
 			r.Post("/disks/selftest", h.RunHostDiskSelfTest)
 			r.Post("/zpools/{name}/scrub", h.ScrubHostZPool)
 			r.Post("/raid/{device}/sync", h.SyncHostRAID)
+			r.Post("/interfaces/{name}/configure", h.ConfigureHostInterface)
+			r.Post("/bonds", h.CreateHostBond)
+			r.Delete("/bonds/{name}", h.DeleteHostBond)
 		})
 	})
 
@@ -610,7 +635,15 @@ func NewRouter(
 		r.Post("/reset", h.ResetSettings)
 		r.Post("/apply-live", h.ApplyLiveSettings)
 		r.Get("/jail", h.ListJailedIPs)
+		r.Post("/jail/ban", h.ManualBanIP)
 		r.Post("/jail/unban", h.UnbanJailedIP)
+		r.Get("/jail/whitelist", h.GetJailWhitelist)
+		r.Post("/jail/whitelist", h.AddJailWhitelist)
+		r.Delete("/jail/whitelist", h.RemoveJailWhitelist)
+		r.Get("/jail/config", h.GetJailConfig)
+		r.Put("/jail/config", h.UpdateJailConfig)
+		r.Post("/jail/custom", h.AddCustomJail)
+		r.Delete("/jail/custom/{id}", h.DeleteCustomJail)
 	})
 
 	// Notifications / alerts. Config reads are for any authenticated
@@ -662,7 +695,10 @@ func NewRouter(
 	r.Route("/api/nodes", func(r chi.Router) {
 		r.Use(auth.RequireRole(modelsRoleAdmin()))
 		r.Get("/", h.ListNodes)
+		r.Get("/summary", h.GetClusterSummary)
+		r.Post("/ping-all", h.PingAllNodes)
 		r.Get("/{id}", h.GetNode)
+		r.Post("/{id}/ping", h.PingNode)
 		r.Group(func(r chi.Router) {
 			r.Post("/", h.CreateNode)
 			r.Put("/{id}", h.UpdateNode)

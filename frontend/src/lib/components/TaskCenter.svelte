@@ -33,37 +33,78 @@
   let focusedTask = $derived(tasks.find((x) => x.id === focusedId) || null);
   let activeCount = $derived(getActiveCount());
 
-  // Global poller: keeps backup / restore tasks in sync even when the
-  // user has navigated away from the Backup page. The Backup page also
-  // registers its tasks with a nicer title; upsertTask merges, so the
-  // poll never clobbers an existing title.
+  // Global poller: keeps backup / restore tasks and backend async jobs
+  // (clones, snapshots, migrations, downloads) in sync even when the
+  // user has navigated away or refreshed.
   onMount(() => {
     const iv = setInterval(async () => {
       try {
-        const r = await api.listBackupJobs();
-        for (const j of r.jobs || []) {
-          const id = 'job:' + j.id;
-          if (j.status === 'running') {
-            upsertTask({
-              id,
-              kind: j.vm_id ? 'restore' : 'backup',
-              title: j.vm_name || j.target_id || t('taskCenter.backupDefault'),
-              pct: j.progress ?? 0,
-              stage: j.stage || '',
-              stage_vars: j.stage_vars || {},
-              message: j.message || '',
-              status: 'running',
-              target_id: j.target_id || '',
-            });
-          } else if (j.status === 'success' || j.status === 'error') {
-            finishTask(
-              id,
-              j.status,
-              j.destination
-                ? t('taskCenter.extractedTo', { dest: j.destination })
-                : j.message || j.error || '',
-              j.progress ?? (j.status === 'success' ? 100 : 0)
-            );
+        const [backupRes, jobsRes] = await Promise.allSettled([
+          api.listBackupJobs(),
+          api.listJobs(),
+        ]);
+
+        if (backupRes.status === 'fulfilled' && backupRes.value?.jobs) {
+          for (const j of backupRes.value.jobs) {
+            const id = 'job:' + j.id;
+            if (j.status === 'running') {
+              upsertTask({
+                id,
+                kind: j.vm_id ? 'restore' : 'backup',
+                title: j.vm_name || j.target_id || t('taskCenter.backupDefault'),
+                pct: j.progress ?? 0,
+                stage: j.stage || '',
+                stage_vars: j.stage_vars || {},
+                message: j.message || '',
+                status: 'running',
+                target_id: j.target_id || '',
+              });
+            } else if (j.status === 'success' || j.status === 'error') {
+              finishTask(
+                id,
+                j.status,
+                j.destination
+                  ? t('taskCenter.extractedTo', { dest: j.destination })
+                  : j.message || j.error || '',
+                j.progress ?? (j.status === 'success' ? 100 : 0)
+              );
+            }
+          }
+        }
+
+        if (jobsRes.status === 'fulfilled' && jobsRes.value?.jobs) {
+          for (const j of jobsRes.value.jobs) {
+            const id = 'async:' + j.id;
+            const pct = Math.min(100, Math.max(0, Math.round(j.progress || 0)));
+            if (j.status === 'running' || j.status === 'queued') {
+              let title = j.name || 'Operación en segundo plano';
+              let kind = 'general';
+              if (title.startsWith('clone:')) {
+                kind = 'clone';
+                title = `Clonando VM: ${title.slice(6)}`;
+              } else if (title.startsWith('batch-clone:')) {
+                kind = 'clone';
+                title = `Clonado en lote: ${title.slice(12)}`;
+              } else if (title.startsWith('snapshot:')) {
+                kind = 'snapshot';
+                title = `Creando instantánea: ${title.slice(9)}`;
+              } else if (title.startsWith('move ')) {
+                kind = 'storage';
+                title = `Moviendo disco: ${title.slice(5)}`;
+              }
+              upsertTask({
+                id,
+                kind,
+                title,
+                pct,
+                message: j.message || (j.status === 'queued' ? 'En cola...' : `${pct}%`),
+                status: 'running',
+              });
+            } else if (j.status === 'done' || j.status === 'completed') {
+              finishTask(id, 'success', j.message || 'Completado con éxito', 100);
+            } else if (j.status === 'error') {
+              finishTask(id, 'error', j.error || j.message || 'Error en la operación', pct);
+            }
           }
         }
       } catch {

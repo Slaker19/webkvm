@@ -330,9 +330,13 @@ apt-get update -y
           toast.success(t('vms.forceoffDone', { name: vm.alias || vm.name }));
           break;
         case 'clone': {
-          const res = await api.cloneVM(vm.id, { name: `${vm.name}-clone` });
-          const cloned = await api.waitJob(res.job);
-          const cloneName = cloned?.name || `${vm.name}-clone`;
+          const cloneTargetName = `${vm.name}-clone`;
+          const res = await api.cloneVM(vm.id, { name: cloneTargetName });
+          const cloned = await api.waitJob(res.job, {
+            title: `Clonando VM: ${vm.alias || vm.name} ➔ ${cloneTargetName}`,
+            kind: 'clone',
+          });
+          const cloneName = cloned?.name || cloneTargetName;
           toast.success(t('vms.cloned', { name: cloneName }));
           if (cloned?.id) navigate('/vms/' + cloned.id);
           else await loadVMs();

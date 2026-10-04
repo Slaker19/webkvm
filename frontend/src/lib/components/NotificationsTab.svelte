@@ -19,12 +19,16 @@
   let hasTelegramToken = $state(false);
   let hasSMTPUser = $state(false);
   let hasSMTPPassword = $state(false);
+  let hasNtfyToken = $state(false);
+  let hasGotifyToken = $state(false);
 
   // Secret inputs: empty = keep existing (never clear by accident).
   let webhookSecret = $state('');
   let telegramBotToken = $state('');
   let smtpUser = $state('');
   let smtpPassword = $state('');
+  let ntfyToken = $state('');
+  let gotifyToken = $state('');
   let clearSecrets = $state(false);
 
   let events = $state([]);
@@ -37,6 +41,8 @@
       hasTelegramToken = s.has_telegram_token;
       hasSMTPUser = s.has_smtp_user;
       hasSMTPPassword = s.has_smtp_password;
+      hasNtfyToken = s.has_ntfy_token;
+      hasGotifyToken = s.has_gotify_token;
       events = e.events || [];
     } catch (err) {
       toast.error(err.message);
@@ -58,16 +64,22 @@
       if (telegramBotToken) body.telegram_bot_token = telegramBotToken;
       if (smtpUser) body.smtp_user = smtpUser;
       if (smtpPassword) body.smtp_password = smtpPassword;
+      if (ntfyToken) body.ntfy_token = ntfyToken;
+      if (gotifyToken) body.gotify_token = gotifyToken;
       const s = await api.updateNotifyConfig(body);
       cfg = s.config || {};
       hasWebhookSecret = s.has_webhook_secret;
       hasTelegramToken = s.has_telegram_token;
       hasSMTPUser = s.has_smtp_user;
       hasSMTPPassword = s.has_smtp_password;
+      hasNtfyToken = s.has_ntfy_token;
+      hasGotifyToken = s.has_gotify_token;
       webhookSecret = '';
       telegramBotToken = '';
       smtpUser = '';
       smtpPassword = '';
+      ntfyToken = '';
+      gotifyToken = '';
       clearSecrets = false;
       toast.success(t('settings.notificationsSaved'));
     } catch (err) {
@@ -239,6 +251,109 @@
           bind:value={cfg.slack_webhook_url}
           placeholder="https://hooks.slack.com/services/…"
         />
+      </div>
+    </div>
+
+    <!-- Ntfy Channel -->
+    <div class="border border-border rounded-lg p-4 space-y-3 bg-card">
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-medium flex items-center gap-2">
+          <span
+            class="w-2 h-2 rounded-full {cfg.ntfy_enabled && cfg.ntfy_topic
+              ? 'bg-success'
+              : 'bg-muted-foreground'}"
+          ></span>
+          {t('settings.ntfyChannel')}
+        </span>
+        <span
+          class="text-xs px-2 py-0.5 rounded-full {hasNtfyToken
+            ? 'bg-success/10 text-success'
+            : 'bg-muted text-muted-foreground'}"
+        >
+          {hasNtfyToken ? t('settings.secretConfigured') : t('settings.secretNotConfigured')}
+        </span>
+      </div>
+
+      <Switch
+        bind:checked={cfg.ntfy_enabled}
+        label={t('settings.ntfyEnabled')}
+        description={t('settings.ntfyEnabledDesc')}
+      />
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div class="space-y-1.5">
+          <Label for="ntfy-url">{t('settings.ntfyServerUrl')}</Label>
+          <Input id="ntfy-url" bind:value={cfg.ntfy_server_url} placeholder="https://ntfy.sh" />
+          <p class="text-xs text-muted-foreground">{t('settings.ntfyServerUrlHint')}</p>
+        </div>
+        <div class="space-y-1.5">
+          <Label for="ntfy-topic">{t('settings.ntfyTopic')}</Label>
+          <Input id="ntfy-topic" bind:value={cfg.ntfy_topic} placeholder="webkvm-alerts" />
+          <p class="text-xs text-muted-foreground">{t('settings.ntfyTopicHint')}</p>
+        </div>
+      </div>
+
+      <div class="space-y-1.5">
+        <Label for="ntfy-token">{t('settings.ntfyToken')}</Label>
+        <Input
+          id="ntfy-token"
+          type="password"
+          bind:value={ntfyToken}
+          placeholder={hasNtfyToken ? t('settings.secretKeepPlaceholder') : ''}
+          autocomplete="new-password"
+        />
+        <p class="text-xs text-muted-foreground">{t('settings.ntfyTokenHint')}</p>
+      </div>
+    </div>
+
+    <!-- Gotify Channel -->
+    <div class="border border-border rounded-lg p-4 space-y-3 bg-card">
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-medium flex items-center gap-2">
+          <span
+            class="w-2 h-2 rounded-full {cfg.gotify_enabled &&
+            cfg.gotify_server_url &&
+            (hasGotifyToken || gotifyToken)
+              ? 'bg-success'
+              : 'bg-muted-foreground'}"
+          ></span>
+          {t('settings.gotifyChannel')}
+        </span>
+        <span
+          class="text-xs px-2 py-0.5 rounded-full {hasGotifyToken
+            ? 'bg-success/10 text-success'
+            : 'bg-muted text-muted-foreground'}"
+        >
+          {hasGotifyToken ? t('settings.secretConfigured') : t('settings.secretNotConfigured')}
+        </span>
+      </div>
+
+      <Switch
+        bind:checked={cfg.gotify_enabled}
+        label={t('settings.gotifyEnabled')}
+        description={t('settings.gotifyEnabledDesc')}
+      />
+
+      <div class="space-y-1.5">
+        <Label for="gotify-url">{t('settings.gotifyServerUrl')}</Label>
+        <Input
+          id="gotify-url"
+          bind:value={cfg.gotify_server_url}
+          placeholder="https://gotify.example.com"
+        />
+        <p class="text-xs text-muted-foreground">{t('settings.gotifyServerUrlHint')}</p>
+      </div>
+
+      <div class="space-y-1.5">
+        <Label for="gotify-token">{t('settings.gotifyToken')}</Label>
+        <Input
+          id="gotify-token"
+          type="password"
+          bind:value={gotifyToken}
+          placeholder={hasGotifyToken ? t('settings.secretKeepPlaceholder') : ''}
+          autocomplete="new-password"
+        />
+        <p class="text-xs text-muted-foreground">{t('settings.gotifyTokenHint')}</p>
       </div>
     </div>
 

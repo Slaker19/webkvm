@@ -173,7 +173,7 @@ func gatewayFromCIDR(cidr string) string {
 // rule for it means "nat"; otherwise "isolated".
 func inferKind(name string, realSlaves []string) (kind, iface string) {
 	for _, s := range realSlaves {
-		if isPhysicalInterface(s) {
+		if isPhysicalOrBondInterface(s) {
 			return "direct", s
 		}
 	}
@@ -328,16 +328,32 @@ func (c *Connector) createDirectNetwork(name string, req models.CreateNetworkReq
 		return models.Network{}, err
 	}
 
+	rollback := func(reason error) (models.Network, error) {
+		exec.Command("ip", "link", "set", iface, "nomaster").Run()
+		if moved != "" {
+			_ = restoreIPv4FromBridge(name, iface, moved)
+		}
+		exec.Command("ip", "link", "set", name, "down").Run()
+		exec.Command("ip", "link", "del", name).Run()
+		return models.Network{}, reason
+	}
+
 	if cidr != "" && cidr != moved {
 		if out, aerr := exec.Command("ip", "addr", "add", cidr, "dev", name).CombinedOutput(); aerr != nil {
-			exec.Command("ip", "link", "set", iface, "nomaster").Run()
-			exec.Command("ip", "link", "del", name).Run()
-			return models.Network{}, fmt.Errorf("assign %s to %q: %v (%s)", cidr, name, aerr, strings.TrimSpace(string(out)))
+			return rollback(fmt.Errorf("assign %s to %q: %v (%s)", cidr, name, aerr, strings.TrimSpace(string(out))))
+		}
+	}
+
+	if gateway != "" {
+		if out, rerr := exec.Command("ip", "route", "append", "default", "via", gateway, "dev", name, "metric", "1024").CombinedOutput(); rerr != nil {
+			return rollback(fmt.Errorf("set gateway %s for %q: %v (%s)", gateway, name, rerr, strings.TrimSpace(string(out))))
 		}
 	}
 
 	if req.MTU > 0 {
-		_ = applyBridgeMTU(name, req.MTU)
+		if err := applyBridgeMTU(name, req.MTU); err != nil {
+			return rollback(err)
+		}
 	}
 
 	if netStoreVar != nil {
@@ -806,7 +822,7 @@ func (c *Connector) DeleteNetwork(id string) error {
 		if s == dummy {
 			continue
 		}
-		if isPhysicalInterface(s) {
+		if isPhysicalOrBondInterface(s) {
 			physical = append(physical, s)
 			continue
 		}
@@ -853,6 +869,61 @@ func (c *Connector) UpdateNetwork(name string, req models.UpdateNetworkRequest) 
 	if !isLinuxBridge(name) {
 		return models.Network{}, fmt.Errorf("bridge %q not found: %w", name, ErrNetworkNotFound)
 	}
+
+	// Attach requested slave interfaces (e.g. adding enx... to vmbr0)
+	var attachedSlaves []string
+	physicalCount := 0
+	for _, sl := range readBridgeSlaves(name) {
+		if isPhysicalOrBondInterface(sl) {
+			physicalCount++
+		}
+	}
+
+	for _, sl := range req.AddSlaves {
+		sl = strings.TrimSpace(sl)
+		if !validIfaceName(sl) || strings.Contains(sl, "/") || strings.Contains(sl, "..") {
+			return models.Network{}, fmt.Errorf("invalid interface name %q", sl)
+		}
+		if _, err := os.Stat("/sys/class/net/" + sl); err != nil {
+			return models.Network{}, fmt.Errorf("interface %q not found", sl)
+		}
+		if isLinuxBridge(sl) {
+			return models.Network{}, fmt.Errorf("%q is itself a bridge", sl)
+		}
+		if isPhysicalOrBondInterface(sl) {
+			physicalCount++
+		}
+		// When multiple physical uplinks are attached to the same bridge,
+		// enable STP (Spanning Tree Protocol) to avoid catastrophic Layer 2 broadcast storms.
+		if physicalCount > 1 {
+			_ = exec.Command("ip", "link", "set", name, "type", "bridge", "stp_state", "1").Run()
+		}
+
+		// Flush IP from slave interface before enslaving to prevent ARP/routing conflict
+		_ = exec.Command("ip", "addr", "flush", "dev", sl).Run()
+
+		// Bring slave up and enslave to bridge
+		_ = exec.Command("ip", "link", "set", sl, "up").Run()
+		if out, err := exec.Command("ip", "link", "set", sl, "master", name).CombinedOutput(); err != nil {
+			// Rollback newly attached slaves
+			for _, prev := range attachedSlaves {
+				_ = exec.Command("ip", "link", "set", prev, "nomaster").Run()
+			}
+			return models.Network{}, fmt.Errorf("attach %s to %s: %v (%s)", sl, name, err, strings.TrimSpace(string(out)))
+		}
+		attachedSlaves = append(attachedSlaves, sl)
+	}
+
+	// Detach requested slave interfaces
+	for _, sl := range req.RemoveSlaves {
+		sl = strings.TrimSpace(sl)
+		if validIfaceName(sl) {
+			if out, err := exec.Command("ip", "link", "set", sl, "nomaster").CombinedOutput(); err != nil {
+				return models.Network{}, fmt.Errorf("detach %s from %s: %v (%s)", sl, name, err, strings.TrimSpace(string(out)))
+			}
+		}
+	}
+
 	if req.VLanAware != nil {
 		val := "0"
 		if *req.VLanAware {

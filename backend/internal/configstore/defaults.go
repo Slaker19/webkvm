@@ -289,5 +289,14 @@ func DefaultSchema() Schema {
 			Default:     false,
 			HotReload:   true,
 		},
+		{
+			Key:         "alerts.webhook_secret",
+			Section:     "Metrics",
+			Label:       "Alertmanager Webhook Secret",
+			Description: "Optional shared secret required to ingest alerts from Alertmanager. Pass via Authorization Bearer token, X-Webhook-Secret header, or ?secret= parameter. Applies immediately.",
+			Type:        FieldString,
+			Default:     "",
+			HotReload:   true,
+		},
 	}}
 }

@@ -125,3 +125,21 @@ func (h *Handler) PrometheusMetrics(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(output)
 }
+
+// GrafanaDashboard returns a pre-configured Grafana dashboard JSON file for WebKVM.
+func (h *Handler) GrafanaDashboard(w http.ResponseWriter, r *http.Request) {
+	data := metrics.GenerateGrafanaDashboard()
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"webkvm-grafana-dashboard.json\"")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// AlertRules returns Prometheus / Alertmanager alerting rules YAML for WebKVM.
+func (h *Handler) AlertRules(w http.ResponseWriter, r *http.Request) {
+	data := metrics.GenerateAlertRules()
+	w.Header().Set("Content-Type", "application/x-yaml; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"webkvm-alert-rules.yml\"")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}

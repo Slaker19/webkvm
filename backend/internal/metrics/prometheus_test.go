@@ -52,7 +52,7 @@ func TestPrometheusExporter_NaNAndInf(t *testing.T) {
 
 func TestRenderPrometheus_Full(t *testing.T) {
 	data := PrometheusData{
-		Version: "0.1.5",
+		Version: "0.1.6",
 		Host: &HostTelemetry{
 			CPUUsage:  15.5,
 			UsedRAM:   4000000000,
@@ -122,7 +122,7 @@ func TestRenderPrometheus_Full(t *testing.T) {
 	body := string(res)
 
 	checks := []string{
-		`webkvm_info{version="0.1.5"} 1`,
+		`webkvm_info{version="0.1.6"} 1`,
 		`webkvm_up 1`,
 		`webkvm_host_cpu_usage_percent 15.5`,
 		`webkvm_host_memory_total_bytes 16000000000`,

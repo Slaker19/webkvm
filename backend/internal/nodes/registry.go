@@ -3,24 +3,24 @@
 // one created from the LIBVIRT_URI env var at startup. Remote nodes
 // are added via the API (or a future UI) and may use any libvirt
 // URI the host can reach (qemu:///system, qemu+ssh://user@host/system,
-// qemu+tcp://host:16509/system, etc.).
-//
-// This package only stores the configuration; it does NOT open
-// libvirt connections. The libvirt.Connector is the long-lived
-// connection holder, and a future refactor will key its connection
-// map by node ID. For Phase 1.7 we ship the registry + API + UI;
-// "real" multi-host comes in Phase 1.11 (cluster).
+// qemu+tcp://host:16509/system, https://host:8080, etc.).
 package nodes
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -34,7 +34,7 @@ const (
 	NodeTypeRemote NodeType = "remote"
 )
 
-// Node is a registered libvirt host.
+// Node is a registered libvirt or WebKVM host.
 type Node struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -43,21 +43,41 @@ type Node struct {
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	// Note: there's no "last_seen" yet because we don't open the
-	// connection in this package. The /api/system/status endpoint
-	// exposes libvirt connectivity for the *local* node, and the
-	// multi-host implementation will populate per-node status.
+
+	// Dynamic health & telemetry fields (kept in memory, updated by prober)
+	Status        string     `json:"status"` // "online", "offline", "degraded", "unknown"
+	LatencyMs     int64      `json:"latency_ms"`
+	LastSeen      *time.Time `json:"last_seen,omitempty"`
+	LastError     string     `json:"last_error,omitempty"`
+	Version       string     `json:"version,omitempty"`
+	UptimeSec     int64      `json:"uptime_sec,omitempty"`
+	DiskFree      int64      `json:"disk_free,omitempty"`
+	DiskTotal     int64      `json:"disk_total,omitempty"`
+	LibvirtStatus string     `json:"libvirt_status,omitempty"`
 }
 
 // IsLocal reports whether this node is the local libvirt instance.
 func (n *Node) IsLocal() bool { return n.Type == NodeTypeLocal }
 
-// Registry is the in-memory + on-disk store of nodes. Safe for
-// concurrent use.
+// ClusterSummary provides aggregated statistics across all fleet nodes.
+type ClusterSummary struct {
+	TotalNodes     int   `json:"total_nodes"`
+	OnlineNodes    int   `json:"online_nodes"`
+	OfflineNodes   int   `json:"offline_nodes"`
+	AvgLatencyMs   int64 `json:"avg_latency_ms"`
+	TotalDiskFree  int64 `json:"total_disk_free"`
+	TotalDiskTotal int64 `json:"total_disk_total"`
+}
+
+// LocalProberFunc returns dynamic health telemetry for the local node.
+type LocalProberFunc func() (status, version string, uptime, diskFree, diskTotal int64, libvirtStatus string, err error)
+
+// Registry is the in-memory + on-disk store of nodes. Safe for concurrent use.
 type Registry struct {
-	mu    sync.RWMutex
-	path  string
-	nodes map[string]*Node
+	mu          sync.RWMutex
+	path        string
+	nodes       map[string]*Node
+	localProber LocalProberFunc
 }
 
 // New loads (or creates) the registry at {dataDir}/nodes.json.
@@ -80,6 +100,13 @@ func New(dataDir, localURI string) (*Registry, error) {
 	return r, nil
 }
 
+// SetLocalProber configures the callback that fetches local system status.
+func (r *Registry) SetLocalProber(fn LocalProberFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.localProber = fn
+}
+
 // Path returns the on-disk location. Useful for logs.
 func (r *Registry) Path() string { return r.path }
 
@@ -96,6 +123,9 @@ func (r *Registry) load() error {
 		return fmt.Errorf("parse %s: %w", r.path, err)
 	}
 	for _, n := range list {
+		if n.Status == "" {
+			n.Status = "unknown"
+		}
 		r.nodes[n.ID] = n
 	}
 	return nil
@@ -125,6 +155,9 @@ func (r *Registry) ensureLocal(uri string) {
 				n.URI = uri
 				n.UpdatedAt = time.Now().UTC()
 			}
+			if n.Status == "" {
+				n.Status = "online"
+			}
 			return
 		}
 	}
@@ -136,6 +169,7 @@ func (r *Registry) ensureLocal(uri string) {
 		Enabled:   true,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
+		Status:    "online",
 	}
 }
 
@@ -162,9 +196,7 @@ func (r *Registry) Get(id string) (Node, bool) {
 	return *n, true
 }
 
-// Create adds a new remote node. Returns the new node. The ID is
-// auto-generated. localURI is the URI of the local node — added
-// nodes must not collide with it.
+// Create adds a new remote node.
 func (r *Registry) Create(name, uri string) (Node, error) {
 	name = trimAll(name)
 	if name == "" {
@@ -190,6 +222,7 @@ func (r *Registry) Create(name, uri string) (Node, error) {
 		URI:       uri,
 		Type:      NodeTypeRemote,
 		Enabled:   true,
+		Status:    "unknown",
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -201,8 +234,7 @@ func (r *Registry) Create(name, uri string) (Node, error) {
 	return *node, nil
 }
 
-// Update modifies a remote node. The local node's URI follows the
-// LIBVIRT_URI env var; attempts to update it are rejected.
+// Update modifies a remote node.
 func (r *Registry) Update(id, name, uri string, enabled *bool) (Node, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -244,12 +276,226 @@ func (r *Registry) Delete(id string) error {
 	return r.save()
 }
 
+// ProbeNode pings a single node, calculates latency and updates dynamic telemetry.
+func (r *Registry) ProbeNode(id string) (Node, error) {
+	r.mu.RLock()
+	n, ok := r.nodes[id]
+	r.mu.RUnlock()
+	if !ok {
+		return Node{}, errors.New("node not found")
+	}
+
+	start := time.Now()
+	now := time.Now().UTC()
+
+	if n.IsLocal() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		n.Status = "online"
+		n.LatencyMs = 0
+		n.LastSeen = &now
+		n.LastError = ""
+		if r.localProber != nil {
+			status, version, uptime, diskFree, diskTotal, libvirtStatus, err := r.localProber()
+			if err != nil {
+				n.Status = "degraded"
+				n.LastError = err.Error()
+			} else {
+				if status != "" {
+					n.Status = status
+				}
+				n.Version = version
+				n.UptimeSec = uptime
+				n.DiskFree = diskFree
+				n.DiskTotal = diskTotal
+				n.LibvirtStatus = libvirtStatus
+			}
+		}
+		return *n, nil
+	}
+
+	if !n.Enabled {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		n.Status = "offline"
+		n.LastError = "node is disabled"
+		return *n, nil
+	}
+
+	// Remote node probe
+	uriStr := strings.TrimSpace(n.URI)
+	targetURL := ""
+	tcpHostPort := ""
+
+	if strings.HasPrefix(uriStr, "http://") || strings.HasPrefix(uriStr, "https://") {
+		targetURL = strings.TrimRight(uriStr, "/") + "/api/health"
+	} else if strings.HasPrefix(uriStr, "qemu+ssh://") || strings.HasPrefix(uriStr, "qemu+tcp://") {
+		// e.g. qemu+ssh://alvin@192.168.1.215/system
+		clean := strings.TrimPrefix(uriStr, "qemu+ssh://")
+		clean = strings.TrimPrefix(clean, "qemu+tcp://")
+		parts := strings.SplitN(clean, "/", 2)
+		hostPart := parts[0]
+		if atIdx := strings.LastIndex(hostPart, "@"); atIdx != -1 {
+			hostPart = hostPart[atIdx+1:]
+		}
+		host := hostPart
+		port := "22"
+		if strings.HasPrefix(uriStr, "qemu+tcp://") {
+			port = "16509"
+		}
+		if h, p, err := net.SplitHostPort(hostPart); err == nil {
+			host = h
+			port = p
+		}
+		tcpHostPort = net.JoinHostPort(host, port)
+		// Check HTTPS WebKVM first on standard ports
+		targetURL = fmt.Sprintf("https://%s:8080/api/health", host)
+	} else if host, port, err := net.SplitHostPort(uriStr); err == nil {
+		targetURL = fmt.Sprintf("https://%s:%s/api/health", host, port)
+		tcpHostPort = net.JoinHostPort(host, port)
+	} else {
+		// Bare IP or hostname
+		targetURL = fmt.Sprintf("https://%s:8080/api/health", uriStr)
+		tcpHostPort = net.JoinHostPort(uriStr, "22")
+	}
+
+	// 1. Try WebKVM HTTP/HTTPS API probe if applicable
+	if targetURL != "" {
+		client := &http.Client{
+			Timeout: 4 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+				DisableKeepAlives: true,
+			},
+		}
+		resp, err := client.Get(targetURL)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				var health struct {
+					Status    string `json:"status"`
+					Version   string `json:"version"`
+					Uptime    int64  `json:"uptime"`
+					DiskFree  int64  `json:"disk_free"`
+					DiskTotal int64  `json:"disk_total"`
+					Libvirt   string `json:"libvirt"`
+				}
+				_ = json.Unmarshal(body, &health)
+
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				n.Status = "online"
+				n.LatencyMs = time.Since(start).Milliseconds()
+				n.LastSeen = &now
+				n.LastError = ""
+				n.Version = health.Version
+				n.UptimeSec = health.Uptime
+				n.DiskFree = health.DiskFree
+				n.DiskTotal = health.DiskTotal
+				n.LibvirtStatus = health.Libvirt
+				return *n, nil
+			}
+		}
+	}
+
+	// 2. Fallback to TCP handshake if HTTP API is not active
+	if tcpHostPort != "" {
+		conn, err := net.DialTimeout("tcp", tcpHostPort, 3*time.Second)
+		if err == nil {
+			_ = conn.Close()
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			n.Status = "online"
+			n.LatencyMs = time.Since(start).Milliseconds()
+			n.LastSeen = &now
+			n.LastError = ""
+			n.LibvirtStatus = "reachable"
+			return *n, nil
+		}
+	}
+
+	// Unreachable
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n.Status = "offline"
+	n.LatencyMs = 0
+	n.LastError = "connection timed out or refused"
+	return *n, fmt.Errorf("probe failed for %s: %s", n.Name, n.LastError)
+}
+
+// ProbeAll concurrently pings all nodes and updates their states.
+func (r *Registry) ProbeAll() []Node {
+	r.mu.RLock()
+	ids := make([]string, 0, len(r.nodes))
+	for id := range r.nodes {
+		ids = append(ids, id)
+	}
+	r.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func(nodeID string) {
+			defer wg.Done()
+			_, _ = r.ProbeNode(nodeID)
+		}(id)
+	}
+	wg.Wait()
+	return r.List()
+}
+
+// StartHealthMonitor periodically probes all fleet nodes in the background.
+func (r *Registry) StartHealthMonitor(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	// Initial probe on startup
+	go r.ProbeAll()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.ProbeAll()
+		}
+	}
+}
+
+// ClusterSummary aggregates total nodes, status and capacity across all fleet members.
+func (r *Registry) ClusterSummary() ClusterSummary {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var summary ClusterSummary
+	summary.TotalNodes = len(r.nodes)
+
+	var latencySum int64
+	var onlineCount int64
+
+	for _, n := range r.nodes {
+		if n.Status == "online" {
+			summary.OnlineNodes++
+			onlineCount++
+			latencySum += n.LatencyMs
+		} else {
+			summary.OfflineNodes++
+		}
+		summary.TotalDiskFree += n.DiskFree
+		summary.TotalDiskTotal += n.DiskTotal
+	}
+
+	if onlineCount > 0 {
+		summary.AvgLatencyMs = latencySum / onlineCount
+	}
+
+	return summary
+}
+
 func trimAll(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		s = s[:len(s)-1]
-	}
-	return s
+	return strings.Join(strings.Fields(s), " ")
 }

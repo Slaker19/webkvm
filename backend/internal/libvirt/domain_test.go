@@ -278,6 +278,7 @@ func TestParseNetworksVLAN(t *testing.T) {
         <tag id='200'/>
       </vlan>
       <model type='virtio'/>
+      <link state='down'/>
     </interface>
   </devices>
 </domain>`
@@ -287,6 +288,9 @@ func TestParseNetworksVLAN(t *testing.T) {
 	}
 	if ifaces[0].VLANTag == nil || *ifaces[0].VLANTag != 200 {
 		t.Errorf("expected VLAN tag 200, got %+v", ifaces[0].VLANTag)
+	}
+	if ifaces[0].LinkState != "down" {
+		t.Errorf("expected link state 'down', got %q", ifaces[0].LinkState)
 	}
 }
 

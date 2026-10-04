@@ -7,12 +7,15 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import LanguageSelector from '$lib/components/LanguageSelector.svelte';
+  import * as webauthnJson from '@github/webauthn-json';
+  import { Fingerprint } from '@lucide/svelte';
 
   let username = $state('');
   let password = $state('');
   let showPassword = $state(false);
   let error = $state('');
   let loading = $state(false);
+  let passkeyLoading = $state(false);
 
   // 2FA state
   let mfaRequired = $state(false);
@@ -20,6 +23,38 @@
   let totpCode = $state('');
 
   let sessionExpired = $derived(getRoute()?.query?.reason === 'session_expired');
+
+  async function handlePasskeyLogin() {
+    if (loading || passkeyLoading) return;
+    error = '';
+    passkeyLoading = true;
+    try {
+      if (!webauthnJson.supported()) {
+        throw new Error(t('login.passkeyNotSupported'));
+      }
+      const beginRes = await api.webauthnLoginBegin(username.trim() || undefined);
+      const credential = await webauthnJson.get({ publicKey: beginRes.publicKey });
+      const res = await api.webauthnLoginFinish({
+        session_id: beginRes.session_id,
+        response: credential,
+      });
+
+      auth.setSession(res.username, res.role, res.must_change_password, res.csrf);
+      if (res.must_change_password) {
+        navigate('/account');
+      } else {
+        navigate('/vms');
+      }
+    } catch (e) {
+      if (e.name === 'NotAllowedError') {
+        error = t('login.passkeyCancelled');
+      } else {
+        error = e.message || t('login.passkeyFailed');
+      }
+    } finally {
+      passkeyLoading = false;
+    }
+  }
 
   async function handleLogin(e) {
     e?.preventDefault();
@@ -203,7 +238,7 @@
           </div>
         {/if}
 
-        <Button type="submit" disabled={loading} class="w-full mt-2">
+        <Button type="submit" disabled={loading || passkeyLoading} class="w-full mt-2">
           {#if loading}
             <Icon name="spinner" size={16} class="animate-spin" />
             {t('login.signingIn')}
@@ -213,6 +248,33 @@
             {t('login.signIn')}
           {/if}
         </Button>
+
+        {#if !mfaRequired}
+          <div class="relative my-3">
+            <div class="absolute inset-0 flex items-center">
+              <span class="w-full border-t border-border"></span>
+            </div>
+            <div class="relative flex justify-center text-[10px] uppercase">
+              <span class="bg-card px-2 text-muted-foreground">{t('login.orSignInWith')}</span>
+            </div>
+          </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            disabled={loading || passkeyLoading}
+            onclick={handlePasskeyLogin}
+            class="w-full border-border/80 hover:border-accent/50 hover:bg-accent/5 text-foreground"
+          >
+            {#if passkeyLoading}
+              <Icon name="spinner" size={16} class="animate-spin mr-2" />
+              {t('login.signingInPasskey')}
+            {:else}
+              <Fingerprint class="w-4 h-4 mr-2 text-accent" />
+              {t('login.signInPasskey')}
+            {/if}
+          </Button>
+        {/if}
 
         {#if mfaRequired}
           <button

@@ -31,15 +31,15 @@ var reservedPoolNames = map[string]bool{
 
 // PoolInfo describes a discovered ZFS pool.
 type PoolInfo struct {
-	Name       string   `json:"name"`
-	Size       int64    `json:"size_bytes"`
-	SizeHuman  string   `json:"size_human"`
-	Allocated  int64    `json:"allocated_bytes"`
-	AllocHuman string   `json:"alloc_human"`
-	Free       int64    `json:"free_bytes"`
-	FreeHuman  string   `json:"free_human"`
-	Health     string   `json:"health"`
-	Devices    []string `json:"devices,omitempty"`
+	Name       string     `json:"name"`
+	Size       int64      `json:"size_bytes"`
+	SizeHuman  string     `json:"size_human"`
+	Allocated  int64      `json:"allocated_bytes"`
+	AllocHuman string     `json:"alloc_human"`
+	Free       int64      `json:"free_bytes"`
+	FreeHuman  string     `json:"free_human"`
+	Health     string     `json:"health"`
+	Devices    []string   `json:"devices,omitempty"`
 	Scrub      *PoolScrub `json:"scrub,omitempty"`
 }
 

@@ -527,8 +527,10 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 
 	var controllerXML string
 	if chipset == "q35" {
-		controllerXML = `<controller type='pci' model='pcie-root'/>
-    <controller type='pci' model='pcie-root-port'/>`
+		controllerXML = `<controller type='pci' model='pcie-root'/>`
+		for i := 1; i <= 14; i++ {
+			controllerXML += fmt.Sprintf("\n    <controller type='pci' model='pcie-root-port' index='%d'/>", i)
+		}
 	} else {
 		controllerXML = `<controller type='pci' model='pci-root'/>
     <controller type='pci' model='pci-bridge'/>`
@@ -1462,6 +1464,9 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 		} else if req.RAMMB != nil && *req.RAMMB > 0 {
 			_ = newDom.SetMemoryFlags(uint64(*req.RAMMB)*1024, libvirt.DOMAIN_MEM_LIVE)
 		}
+		if req.VCPUs != nil && *req.VCPUs > 0 {
+			_ = newDom.SetVcpusFlags(uint(*req.VCPUs), libvirt.DOMAIN_VCPU_LIVE)
+		}
 	}
 
 	// Autostart is not part of the domain XML — it is libvirtd's own
@@ -1722,14 +1727,14 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 		// on error — a missing autostart flag in the UI is less
 		// surprising than a domain that silently restarts on
 		// every boot.
-		Autostart:  autostartEnabledOrFalse(dom),
-		Firmware:   firmware,
-		CPUMode:    cpuMode,
-		CPUModel:   cpuModel,
-		CPUFlags:   cpuFlags,
-		CPUUnits:   cpuUnits,
-		KVMHidden:  kvmHidden,
-		VideoModel: videoModel,
+		Autostart:    autostartEnabledOrFalse(dom),
+		Firmware:     firmware,
+		CPUMode:      cpuMode,
+		CPUModel:     cpuModel,
+		CPUFlags:     cpuFlags,
+		CPUUnits:     cpuUnits,
+		KVMHidden:    kvmHidden,
+		VideoModel:   videoModel,
 		AudioModel:   audioModel,
 		SerialPort:   serialPort,
 		GraphicsType: graphicsType,
@@ -2453,6 +2458,13 @@ func parseNetworks(xmlDesc string) []models.NetIface {
 				iface.VLANTag = &tagVal
 			}
 		}
+		// link state from <link state='up|down'/>
+		linkRe := regexp.MustCompile(`<link\b[^>]*state='([^']+)'`)
+		if lm := linkRe.FindStringSubmatch(i); len(lm) > 1 {
+			iface.LinkState = lm[1]
+		} else {
+			iface.LinkState = "up"
+		}
 		ifaces = append(ifaces, iface)
 	}
 	return ifaces
@@ -2653,10 +2665,10 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 </disk>`, xmlEscape(diskType), driverXML, sourceXML, xmlEscape(devLetter), xmlEscape(busType), addressXML)
 	}
 
-	flags := libvirt.DOMAIN_DEVICE_MODIFY_CURRENT | libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+	flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
 	domState, _, err := dom.GetState()
-	if err == nil && domState != libvirt.DOMAIN_RUNNING {
-		flags = libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+	if err == nil && (domState == libvirt.DOMAIN_RUNNING || domState == libvirt.DOMAIN_PAUSED) {
+		flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
 	}
 	if err := dom.AttachDeviceFlags(devXML, flags); err != nil {
 		if createdVol != "" {
@@ -2676,10 +2688,12 @@ func (c *Connector) DetachDisk(id, target string) error {
 	}
 	defer dom.Free()
 
-	flags := libvirt.DOMAIN_DEVICE_MODIFY_CURRENT | libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
 	domState, _, err := dom.GetState()
-	if err == nil && domState != libvirt.DOMAIN_RUNNING {
-		flags = libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+	isRunning := err == nil && (domState == libvirt.DOMAIN_RUNNING || domState == libvirt.DOMAIN_PAUSED)
+
+	flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+	if isRunning {
+		flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
 	}
 
 	xmlDesc, err := dom.GetXMLDesc(0)
@@ -2688,9 +2702,17 @@ func (c *Connector) DetachDisk(id, target string) error {
 	}
 
 	diskStartRe := regexp.MustCompile(`<disk\b`)
-	targetRe := regexp.MustCompile(`<target\b[^>]*dev='` + regexp.QuoteMeta(target) + `'[^>]*/>`)
+	targetRe := regexp.MustCompile(`<target\b[^>]*dev=['"]` + regexp.QuoteMeta(target) + `['"][^>]*/>`)
 
 	loc := targetRe.FindStringIndex(xmlDesc)
+	if loc == nil && isRunning {
+		// Fallback to inactive XML if domain is running but disk was only defined in persistent config
+		if inactiveXML, ierr := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE); ierr == nil {
+			xmlDesc = inactiveXML
+			loc = targetRe.FindStringIndex(xmlDesc)
+			flags = libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+		}
+	}
 	if loc == nil {
 		return fmt.Errorf("disk with target '%s' not found", target)
 	}
@@ -2708,7 +2730,16 @@ func (c *Connector) DetachDisk(id, target string) error {
 	end = loc[1] + end + 7
 
 	diskXML := xmlDesc[start:end]
-	return dom.DetachDeviceFlags(diskXML, flags)
+	if err := dom.DetachDeviceFlags(diskXML, flags); err != nil {
+		// If detaching with LIVE|CONFIG failed because device wasn't live, retry CONFIG only
+		if (flags & libvirt.DOMAIN_DEVICE_MODIFY_LIVE) != 0 {
+			if cerr := dom.DetachDeviceFlags(diskXML, libvirt.DOMAIN_DEVICE_MODIFY_CONFIG); cerr == nil {
+				return nil
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 // ChangeDiskBus switches an existing disk or cdrom to a different bus
@@ -3462,10 +3493,10 @@ func (c *Connector) AttachNetworkIface(id string, req models.AttachNetRequest) e
 
 	ifaceXML := interfaceXMLWithVLAN(req.Network, model, req.VLANTag)
 
-	flags := libvirt.DOMAIN_DEVICE_MODIFY_CURRENT | libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+	flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
 	domState, _, err := dom.GetState()
-	if err == nil && domState != libvirt.DOMAIN_RUNNING {
-		flags = libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+	if err == nil && (domState == libvirt.DOMAIN_RUNNING || domState == libvirt.DOMAIN_PAUSED) {
+		flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
 	}
 	return dom.AttachDeviceFlags(ifaceXML, flags)
 }
@@ -3504,30 +3535,44 @@ func (c *Connector) DetachNetworkIface(id, mac string) error {
 	}
 	defer dom.Free()
 
+	domState, _, err := dom.GetState()
+	isRunning := err == nil && (domState == libvirt.DOMAIN_RUNNING || domState == libvirt.DOMAIN_PAUSED)
+	flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+	if isRunning {
+		flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
+	}
+
 	xmlDesc, err := dom.GetXMLDesc(0)
 	if err != nil {
 		return fmt.Errorf("get xml: %w", err)
 	}
 
 	ifaceXML := findInterfaceBlockByMAC(xmlDesc, mac)
+	if ifaceXML == "" && isRunning {
+		// Fallback to inactive XML
+		if inactiveXML, ierr := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE); ierr == nil {
+			ifaceXML = findInterfaceBlockByMAC(inactiveXML, mac)
+			flags = libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+		}
+	}
 	if ifaceXML == "" {
 		return fmt.Errorf("network interface with mac '%s' not found", mac)
 	}
 
-	flags := libvirt.DOMAIN_DEVICE_MODIFY_CURRENT | libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
-	domState, _, err := dom.GetState()
-	if err == nil && domState != libvirt.DOMAIN_RUNNING {
-		flags = libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+	if err := dom.DetachDeviceFlags(ifaceXML, flags); err != nil {
+		if (flags & libvirt.DOMAIN_DEVICE_MODIFY_LIVE) != 0 {
+			if cerr := dom.DetachDeviceFlags(ifaceXML, libvirt.DOMAIN_DEVICE_MODIFY_CONFIG); cerr == nil {
+				return nil
+			}
+		}
+		return err
 	}
-	return dom.DetachDeviceFlags(ifaceXML, flags)
+	return nil
 }
 
 // UpdateNetworkIface updates an existing network interface on a domain.
-// The VM must be shutoff — live updates of MAC/VLAN/network are unreliable
-// across virtio drivers and rejected here. If newMAC collides with any
-// interface on any other VM, returns an error and the change is not
-// applied. The caller can use CheckMACCollision first to preflight and
-// surface a friendlier error.
+// When running, link state changes and network/bridge updates are applied in live.
+// MAC address modification requires VM shutoff.
 func (c *Connector) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIfaceRequest) error {
 	dom, err := c.lookupDomain(id)
 	if err != nil {
@@ -3535,10 +3580,12 @@ func (c *Connector) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIf
 	}
 	defer dom.Free()
 
-	// Enforce shutoff: live virtio updates are unreliable.
 	domState, _, _ := dom.GetState()
-	if domState == libvirt.DOMAIN_RUNNING || domState == libvirt.DOMAIN_PAUSED {
-		return fmt.Errorf("VM must be shut off to edit network interface")
+	isRunning := domState == libvirt.DOMAIN_RUNNING || domState == libvirt.DOMAIN_PAUSED
+
+	// Enforce shutoff only if changing MAC address.
+	if isRunning && req.MAC != nil && *req.MAC != "" && *req.MAC != oldMAC {
+		return fmt.Errorf("VM must be shut off to change MAC address")
 	}
 
 	// Fleet-wide MAC collision check (skipped when not changing MAC).
@@ -3588,6 +3635,34 @@ func (c *Connector) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIf
 			// Insert before closing </interface>.
 			updated = strings.Replace(updated, "</interface>", vlanBlock+"</interface>", 1)
 		}
+	}
+
+	// Patch Link state: "up" or "down"
+	if req.LinkState != nil && *req.LinkState != "" {
+		ls := strings.ToLower(strings.TrimSpace(*req.LinkState))
+		if ls != "up" && ls != "down" {
+			return fmt.Errorf("invalid link state %q: must be 'up' or 'down'", *req.LinkState)
+		}
+		linkRe := regexp.MustCompile(`<link\b[^>]*state='[^']*'[^>]*/>`)
+		linkXML := fmt.Sprintf("<link state='%s'/>", ls)
+		if linkRe.MatchString(updated) {
+			updated = linkRe.ReplaceAllString(updated, linkXML)
+		} else {
+			updated = strings.Replace(updated, "</interface>", linkXML+"\n  </interface>", 1)
+		}
+	}
+
+	if isRunning {
+		flags := libvirt.DOMAIN_DEVICE_MODIFY_LIVE | libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
+		if err := dom.UpdateDeviceFlags(updated, flags); err != nil {
+			// If live update failed in-place, hot-swap transparently (detach then re-attach)
+			_ = dom.DetachDeviceFlags(ifaceXML, flags)
+			if aerr := dom.AttachDeviceFlags(updated, flags); aerr != nil {
+				_ = dom.AttachDeviceFlags(ifaceXML, flags)
+				return fmt.Errorf("live interface update failed: %w", aerr)
+			}
+		}
+		return nil
 	}
 
 	return dom.UpdateDeviceFlags(updated, libvirt.DOMAIN_DEVICE_MODIFY_CONFIG)

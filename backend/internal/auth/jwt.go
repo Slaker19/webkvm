@@ -290,8 +290,12 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		// Genuinely public: the login endpoint, the health probe, embedded
 		// static assets, and VM cover images (guarded by an unguessable
 		// UUID in the URL).
-		if path == "/api/auth/login" || path == "/api/auth/login/2fa" || path == "/api/health" ||
+		if path == "/api/auth/login" || path == "/api/auth/login/2fa" ||
+			path == "/api/auth/webauthn/login/begin" || path == "/api/auth/webauthn/login/finish" ||
+			path == "/api/health" ||
 			path == "/metrics" || path == "/api/metrics/prometheus" ||
+			path == "/api/metrics/grafana-dashboard" || path == "/api/metrics/alert-rules" ||
+			path == "/api/alerts/webhook" ||
 			strings.HasPrefix(path, "/static/") ||
 			strings.HasPrefix(path, "/api/covers/") ||
 			// Media images are embedded in <img src> tags, which cannot set

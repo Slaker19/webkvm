@@ -264,6 +264,18 @@ func (c *Combined) GetGuestInfo(id string) (GuestInfo, error) {
 func (c *Combined) FSTrim(id string) (GuestFSTrimResult, error) {
 	return c.route(id).FSTrim(id)
 }
+func (c *Combined) GuestExec(id, path string, args []string, timeoutSec int) (GuestExecResult, error) {
+	return c.route(id).GuestExec(id, path, args, timeoutSec)
+}
+func (c *Combined) FSFreeze(id string, freeze bool) (int, error) {
+	return c.route(id).FSFreeze(id, freeze)
+}
+func (c *Combined) FSFreezeStatus(id string) (string, error) {
+	return c.route(id).FSFreezeStatus(id)
+}
+func (c *Combined) GuestSyncTime(id string) error {
+	return c.route(id).GuestSyncTime(id)
+}
 func (c *Combined) GuestSetClipboard(id, text string) error {
 	return c.route(id).GuestSetClipboard(id, text)
 }

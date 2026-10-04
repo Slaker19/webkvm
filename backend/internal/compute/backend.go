@@ -235,6 +235,14 @@ type GuestFSTrimResult struct {
 	Paths []GuestTrimmedPath `json:"paths"`
 }
 
+// GuestExecResult holds the outcome of executing a command in the guest.
+type GuestExecResult struct {
+	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	Exited   bool   `json:"exited"`
+}
+
 // GuestInfo bundles the guest-agent telemetry for one instance.
 // Available=false with a populated Error means the agent isn't
 // installed or isn't answering — an expected state, not a failure.
@@ -429,6 +437,10 @@ type Backend interface {
 	GuestSetClipboard(id, text string) error
 	GetGuestInfo(id string) (GuestInfo, error)
 	FSTrim(id string) (GuestFSTrimResult, error)
+	GuestExec(id, path string, args []string, timeoutSec int) (GuestExecResult, error)
+	FSFreeze(id string, freeze bool) (int, error)
+	FSFreezeStatus(id string) (string, error)
+	GuestSyncTime(id string) error
 
 	// --- Backup / export / OVA / import ---
 	ExportDomain(ctx context.Context, id string, opts ExportBackupOptions, w io.Writer) (backupstore.ProducerResult, error)

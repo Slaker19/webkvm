@@ -11,7 +11,6 @@ import (
 	"webkvm/internal/appliances"
 	"webkvm/internal/audit"
 	"webkvm/internal/auth"
-	"webkvm/internal/netguard"
 	"webkvm/internal/backupstore"
 	"webkvm/internal/cloudinit"
 	"webkvm/internal/compute"
@@ -23,6 +22,7 @@ import (
 	"webkvm/internal/helperscripts"
 	"webkvm/internal/libvirt"
 	"webkvm/internal/metrics"
+	"webkvm/internal/netguard"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
 	"webkvm/internal/tokens"
@@ -67,6 +67,7 @@ type Handler struct {
 	// incusMetrics collects CPU/RAM/Net for LXD containers (v1.4 Fase 4.1).
 	// GET /vms/{id}/metrics routes to it when the instance is a container.
 	incusMetrics *incus.MetricsCollector
+	webauthn     *auth.WebAuthnManager
 	StartedAt    time.Time
 
 	// Per-name serialization of appliance deployments. Two

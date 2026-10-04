@@ -33,13 +33,15 @@ func (h *Handler) UpdateNotifyConfig(w http.ResponseWriter, r *http.Request) {
 		TelegramBotToken string        `json:"telegram_bot_token"`
 		SMTPUser         string        `json:"smtp_user"`
 		SMTPPassword     string        `json:"smtp_password"`
+		NtfyToken        string        `json:"ntfy_token"`
+		GotifyToken      string        `json:"gotify_token"`
 		ClearSecret      bool          `json:"clear_secret"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
-	if err := h.notifier.Update(req.Config, req.WebhookSecret, req.TelegramBotToken, req.SMTPUser, req.SMTPPassword, req.ClearSecret); err != nil {
+	if err := h.notifier.Update(req.Config, req.WebhookSecret, req.TelegramBotToken, req.SMTPUser, req.SMTPPassword, req.NtfyToken, req.GotifyToken, req.ClearSecret); err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -50,6 +52,8 @@ func (h *Handler) UpdateNotifyConfig(w http.ResponseWriter, r *http.Request) {
 			"telegram_enabled": req.Config.TelegramEnabled,
 			"slack_enabled":    req.Config.SlackEnabled,
 			"smtp_enabled":     req.Config.SMTPEnabled,
+			"ntfy_enabled":     req.Config.NtfyEnabled,
+			"gotify_enabled":   req.Config.GotifyEnabled,
 		}))
 	}
 	jsonResp(w, http.StatusOK, h.notifier.Status())

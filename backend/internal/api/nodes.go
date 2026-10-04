@@ -106,5 +106,42 @@ func (h *Handler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// PingNode triggers an immediate probe and returns the node with updated latency and status.
+func (h *Handler) PingNode(w http.ResponseWriter, r *http.Request) {
+	if h.nodes == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "nodes registry not initialized")
+		return
+	}
+	id := chiURLParam(r, "id")
+	node, err := h.nodes.ProbeNode(id)
+	if err != nil {
+		jsonResp(w, http.StatusOK, node)
+		return
+	}
+	jsonResp(w, http.StatusOK, node)
+}
+
+// PingAllNodes triggers an immediate probe of all fleet nodes concurrently.
+func (h *Handler) PingAllNodes(w http.ResponseWriter, r *http.Request) {
+	if h.nodes == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "nodes registry not initialized")
+		return
+	}
+	list := h.nodes.ProbeAll()
+	jsonResp(w, http.StatusOK, map[string]any{
+		"nodes":   list,
+		"summary": h.nodes.ClusterSummary(),
+	})
+}
+
+// GetClusterSummary returns aggregated telemetry across all fleet nodes.
+func (h *Handler) GetClusterSummary(w http.ResponseWriter, r *http.Request) {
+	if h.nodes == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "nodes registry not initialized")
+		return
+	}
+	jsonResp(w, http.StatusOK, h.nodes.ClusterSummary())
+}
+
 // helper used by system.go to expose the local node
 type nodesListResult = []nodes.Node

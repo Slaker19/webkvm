@@ -438,6 +438,15 @@
     launching = true;
     try {
       if (launchType === 'container') {
+        const taskId = 'create:container:' + Date.now();
+        upsertTask({
+          id: taskId,
+          kind: 'general',
+          title: `Creando contenedor: ${launchName.trim()}`,
+          pct: 25,
+          message: 'Aprovisionando contenedor...',
+          status: 'running',
+        });
         const payload = {
           name: launchName.trim(),
           type: 'container',
@@ -447,7 +456,14 @@
           ram_mb: 2048,
           disk_gb: 10,
         };
-        const res = await api.createVM(payload);
+        let res;
+        try {
+          res = await api.createVM(payload);
+          finishTask(taskId, 'success', 'Contenedor creado correctamente', 100);
+        } catch (err) {
+          finishTask(taskId, 'error', err.message || 'Error al crear contenedor', 25);
+          throw err;
+        }
         toast.success(`Contenedor ${res.name} creado con éxito!`);
         quickLaunchItem = null;
         navigate(`/vms/${res.id}`);

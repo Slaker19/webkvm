@@ -514,6 +514,31 @@ func (b *KVMBackend) GuestSetClipboard(id, text string) error {
 	return b.lv.GuestSetClipboard(id, text)
 }
 
+func (b *KVMBackend) GuestExec(id, path string, args []string, timeoutSec int) (GuestExecResult, error) {
+	res, err := b.lv.GuestExec(id, path, args, timeoutSec)
+	if err != nil {
+		return GuestExecResult{}, err
+	}
+	return GuestExecResult{
+		ExitCode: res.ExitCode,
+		Stdout:   res.Stdout,
+		Stderr:   res.Stderr,
+		Exited:   res.Exited,
+	}, nil
+}
+
+func (b *KVMBackend) FSFreeze(id string, freeze bool) (int, error) {
+	return b.lv.FSFreeze(id, freeze)
+}
+
+func (b *KVMBackend) FSFreezeStatus(id string) (string, error) {
+	return b.lv.FSFreezeStatus(id)
+}
+
+func (b *KVMBackend) GuestSyncTime(id string) error {
+	return b.lv.GuestSyncTime(id)
+}
+
 // --- Backup / export / OVA / import ---
 
 func (b *KVMBackend) ExportDomain(ctx context.Context, id string, opts ExportBackupOptions, w io.Writer) (backupstore.ProducerResult, error) {

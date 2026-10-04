@@ -41,6 +41,27 @@
   let activeTab = $state('server');
   let copiedUrl = $state(false);
   let copiedYaml = $state(false);
+  let copiedAlertRules = $state(false);
+
+  function downloadGrafanaDashboard() {
+    window.open('/api/metrics/grafana-dashboard', '_blank');
+  }
+
+  function downloadAlertRules() {
+    window.open('/api/metrics/alert-rules', '_blank');
+  }
+
+  async function copyAlertRules() {
+    try {
+      const res = await fetch('/api/metrics/alert-rules');
+      const text = await res.text();
+      await navigator.clipboard.writeText(text);
+      copiedAlertRules = true;
+      setTimeout(() => (copiedAlertRules = false), 2000);
+    } catch {
+      toast.error('Failed to copy alert rules');
+    }
+  }
 
   function copyEndpointUrl() {
     const url = `${window.location.origin}/metrics`;
@@ -396,6 +417,54 @@
                 <p class="text-xs text-muted-foreground">
                   {t('settings.prometheusAuthNote')}
                 </p>
+              </div>
+
+              <!-- Observability Assets (Grafana & Alertmanager) -->
+              <div class="pt-4 border-t border-border grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Grafana card -->
+                <div class="p-4 rounded-md border border-border bg-card/60 space-y-2">
+                  <div class="flex items-center gap-2">
+                    <Icon name="activity" size={16} class="text-accent" />
+                    <span class="text-xs font-semibold text-foreground"
+                      >{t('settings.grafanaDashboardTitle')}</span
+                    >
+                  </div>
+                  <p class="text-xs text-muted-foreground leading-relaxed">
+                    {t('settings.grafanaDashboardDesc')}
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    class="w-full mt-2"
+                    onclick={downloadGrafanaDashboard}
+                  >
+                    <Icon name="download" size={14} class="mr-1.5" />
+                    {t('settings.grafanaDashboardDownload')}
+                  </Button>
+                </div>
+
+                <!-- Alertmanager rules card -->
+                <div class="p-4 rounded-md border border-border bg-card/60 space-y-2">
+                  <div class="flex items-center gap-2">
+                    <Icon name="alertCircle" size={16} class="text-accent" />
+                    <span class="text-xs font-semibold text-foreground"
+                      >{t('settings.alertRulesTitle')}</span
+                    >
+                  </div>
+                  <p class="text-xs text-muted-foreground leading-relaxed">
+                    {t('settings.alertRulesDesc')}
+                  </p>
+                  <div class="flex items-center gap-2 mt-2">
+                    <Button size="sm" variant="outline" class="flex-1" onclick={downloadAlertRules}>
+                      <Icon name="download" size={14} class="mr-1.5" />
+                      {t('settings.alertRulesDownload')}
+                    </Button>
+                    <Button size="sm" variant="ghost" onclick={copyAlertRules}>
+                      <Icon name={copiedAlertRules ? 'check' : 'copy'} size={14} class="mr-1" />
+                      {copiedAlertRules ? t('common.copied') : t('common.copy')}
+                    </Button>
+                  </div>
+                </div>
               </div>
             </div>
           {/if}

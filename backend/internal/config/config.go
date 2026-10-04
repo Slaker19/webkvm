@@ -91,6 +91,14 @@ type Config struct {
 	// IncusSocket is the unix socket of the Incus (or legacy LXD)
 	// daemon. Empty = auto-detect (Incus paths first, then LXD snap/apt).
 	IncusSocket string
+
+	// WebAuthnRPID configures the WebAuthn Relying Party ID (domain name).
+	// If empty, it is automatically derived from the request Host.
+	WebAuthnRPID string
+
+	// WebAuthnRPOrigins configures permitted origins for WebAuthn.
+	// If empty, derived from request scheme and Host.
+	WebAuthnRPOrigins []string
 }
 
 // Load assembles the config from environment variables. For the JWT
@@ -151,7 +159,22 @@ func Load() (*Config, error) {
 		SecureCookies:        envBoolFrom("WEBKVM_COOKIE_SECURE", true, dotenv),
 		IncusEnabled:         envBoolFrom("WEBKVM_INCUS_ENABLED", false, dotenv),
 		IncusSocket:          envStrFrom("INCUS_SOCKET", "", dotenv),
+		WebAuthnRPID:         envStrFrom("WEBAUTHN_RP_ID", "", dotenv),
+		WebAuthnRPOrigins:    parseOrigins(envStrFrom("WEBAUTHN_RP_ORIGIN", "", dotenv)),
 	}, nil
+}
+
+func parseOrigins(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if t := strings.TrimSpace(part); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // resolveJWTSecret returns a secret to use, never the default

@@ -6,6 +6,7 @@
   import CloudInitPreviewDialog from '$lib/components/CloudInitPreviewDialog.svelte';
   import { onMount, untrack } from 'svelte';
   import { api, auth } from '$lib/stores/auth.svelte.js';
+  import { upsertTask, updateTask, finishTask } from '$lib/stores/tasks.svelte.js';
   import {
     loadCapabilities,
     supports,
@@ -1209,7 +1210,28 @@
           custom_user_data: ciCustomUserData || undefined,
         };
       }
-      const result = await api.createVM(payload);
+      const creationTaskId = 'create:' + Date.now();
+      const entityLabel = isContainer ? 'Contenedor' : 'VM';
+      upsertTask({
+        id: creationTaskId,
+        kind: 'general',
+        title: `Creando ${entityLabel}: ${name || 'nueva instancia'}`,
+        pct: 20,
+        message: 'Aprovisionando recursos y almacenamiento...',
+        status: 'running',
+      });
+
+      let result;
+      try {
+        result = await api.createVM(payload);
+        updateTask(creationTaskId, {
+          pct: 70,
+          message: 'Configurando redes y metadatos...',
+        });
+      } catch (err) {
+        finishTask(creationTaskId, 'error', err.message || 'Error al crear', 20);
+        throw err;
+      }
       if (result?.warning) {
         toast.warning(result.warning);
       }
@@ -1275,8 +1297,10 @@
         // cloud-init preview uses), so never show an empty "User" field.
         createdUsername = ciUser || (isContainer ? 'root' : '');
         createdPassword = result.password;
+        finishTask(creationTaskId, 'success', 'Instancia creada con credenciales generadas', 100);
         showPasswordModal = true;
       } else {
+        finishTask(creationTaskId, 'success', `${entityLabel} creada correctamente`, 100);
         toast.success(t('vmCreate.vmCreated', { name }));
         navigate('/vms');
       }

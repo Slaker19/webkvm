@@ -1911,6 +1911,21 @@ func (h *Handler) GetDownloadJob(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusOK, job)
 }
 
+// ListJobs returns all active and recent async jobs owned by or visible to the user.
+func (h *Handler) ListJobs(w http.ResponseWriter, r *http.Request) {
+	jobsMu.RLock()
+	defer jobsMu.RUnlock()
+
+	out := make([]models.DownloadJob, 0, len(isoJobs))
+	for _, j := range isoJobs {
+		if j.Owner != "" && !h.isJobOwnerOrAdmin(r, j.Owner) {
+			continue
+		}
+		out = append(out, *j)
+	}
+	jsonResp(w, http.StatusOK, map[string]any{"jobs": out})
+}
+
 // isJobOwnerOrAdmin reports whether the request comes from the job's
 // owner or from an admin (who needs to diagnose other people's failed
 // transfers).

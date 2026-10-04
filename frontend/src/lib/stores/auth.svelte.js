@@ -302,6 +302,34 @@ export const api = {
       // answer is a form error.
       credentialCheck: (body) => body?.error === 'contraseña incorrecta',
     }),
+
+  // --- WebAuthn / Passkeys ---
+  webauthnRegisterBegin: () => request('/auth/webauthn/register/begin', { method: 'POST' }),
+  webauthnRegisterFinish: (data) =>
+    request('/auth/webauthn/register/finish', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  webauthnListCredentials: () => request('/auth/webauthn/credentials'),
+  webauthnUpdateCredential: (id, name) =>
+    request(`/auth/webauthn/credentials/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name }),
+    }),
+  webauthnDeleteCredential: (id) =>
+    request(`/auth/webauthn/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  webauthnLoginBegin: (username) =>
+    request('/auth/webauthn/login/begin', {
+      method: 'POST',
+      body: JSON.stringify({ username: username || '' }),
+      credentialCheck: true,
+    }),
+  webauthnLoginFinish: (data) =>
+    request('/auth/webauthn/login/finish', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      credentialCheck: true,
+    }),
   logoutApi: () => request('/auth/logout', { method: 'POST', skipAuthRedirect: true }),
   refresh: () => request('/auth/refresh', { method: 'POST' }),
   me: () => request('/auth/me'),
@@ -548,24 +576,66 @@ export const api = {
   },
 
   getDownloadJob: (jobId) => request(`/storage/jobs/${jobId}`),
+  listJobs: () => request('/jobs'),
 
-  // Async job tracking for long operations (VM clone / snapshot). The
-  // endpoints return 202 + {job}; waitJob polls until the job reaches a
+  // Async job tracking for long operations (VM clone / snapshot / migrations).
+  // The endpoints return 202 + {job}; waitJob polls until the job reaches a
   // terminal state and returns its result (or throws the job's error).
+  // Automatically synchronizes with the global Task Center so all jobs
+  // display a real progress bar in the UI.
   waitJob: async (jobId, opts = {}) => {
     const delay = opts.delay ?? 800;
     const timeout = opts.timeout ?? 10 * 60 * 1000;
     const started = Date.now();
+    const taskId = 'async:' + jobId;
+
+    // Lazily import tasks store to avoid circular imports
+    let tasksModule = null;
+    try {
+      tasksModule = await import('./tasks.svelte.js');
+    } catch {
+      /* ignore if in restricted test environment */
+    }
+
     for (;;) {
       const job = await request(`/jobs/${jobId}`);
-      // onPoll sees every poll, including the terminal one, so a caller
-      // driving a progress bar can settle it at 100% instead of leaving
-      // it wherever the last intermediate tick landed.
       opts.onPoll?.(job);
-      if (job.status === 'done' || job.status === 'completed') return job.result ?? job;
-      if (job.status === 'error')
-        throw new ApiError(job.error || job.message || 'Job failed', 500, 'job_error');
+
+      const pct = Math.min(100, Math.max(0, Math.round(job.progress || 0)));
+      if (tasksModule) {
+        let title = opts.title || job.name || 'Operación en segundo plano';
+        if (title.startsWith('clone:')) title = `Clonando VM: ${title.slice(6)}`;
+        else if (title.startsWith('batch-clone:')) title = `Clonado en lote: ${title.slice(12)}`;
+        else if (title.startsWith('snapshot:')) title = `Creando instantánea: ${title.slice(9)}`;
+        else if (title.startsWith('move ')) title = `Moviendo disco: ${title.slice(5)}`;
+
+        tasksModule.upsertTask({
+          id: taskId,
+          kind: opts.kind || 'general',
+          title,
+          pct,
+          message: job.message || `${pct}%`,
+          status: 'running',
+        });
+      }
+
+      if (job.status === 'done' || job.status === 'completed') {
+        if (tasksModule) {
+          tasksModule.finishTask(taskId, 'success', job.message || 'Completado con éxito', 100);
+        }
+        return job.result ?? job;
+      }
+      if (job.status === 'error') {
+        const errMsg = job.error || job.message || 'Job failed';
+        if (tasksModule) {
+          tasksModule.finishTask(taskId, 'error', errMsg, pct);
+        }
+        throw new ApiError(errMsg, 500, 'job_error');
+      }
       if (Date.now() - started > timeout) {
+        if (tasksModule) {
+          tasksModule.finishTask(taskId, 'error', 'Operación expiró por tiempo límite', pct);
+        }
         throw new ApiError('Job timed out', 504, 'job_timeout');
       }
       await new Promise((resolve) => setTimeout(resolve, delay));
@@ -641,11 +711,22 @@ export const api = {
   getHostInfo: () => request('/host'),
   getHostStats: () => request('/host/stats'),
   listHostInterfaces: () => request('/host/interfaces'),
+  configureHostInterface: (name, data) =>
+    request(`/host/interfaces/${name}/configure`, { method: 'POST', body: JSON.stringify(data) }),
+  createHostBond: (data) => request('/host/bonds', { method: 'POST', body: JSON.stringify(data) }),
+  deleteHostBond: (name) =>
+    request(`/host/bonds/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   listHostUSBDevices: () => request('/host/usb-devices'),
   listHostPCIDevices: () => request('/host/pci-devices'),
   getHostPCIPreflight: () => request('/host/pci-preflight'),
   getGuestInfo: (id) => request(`/vms/${id}/guest-info`),
   guestFSTrim: (id) => request(`/vms/${id}/guest/fstrim`, { method: 'POST' }),
+  guestExec: (id, data) =>
+    request(`/vms/${id}/guest/exec`, { method: 'POST', body: JSON.stringify(data) }),
+  guestFSFreeze: (id, freeze) =>
+    request(`/vms/${id}/guest/freeze`, { method: 'POST', body: JSON.stringify({ freeze }) }),
+  guestFSFreezeStatus: (id) => request(`/vms/${id}/guest/freeze-status`),
+  guestSyncTime: (id) => request(`/vms/${id}/guest/sync-time`, { method: 'POST' }),
   listHostDisks: () => request('/host/disks'),
   listHostZVols: () => request('/host/zvols'),
   listHostZpools: () => request('/host/zpools'),
@@ -962,6 +1043,20 @@ export const api = {
   listJailedIPs: () => request('/settings/jail'),
   unbanJailedIP: (ip) =>
     request('/settings/jail/unban', { method: 'POST', body: JSON.stringify({ ip }) }),
+  manualBanIP: (body) =>
+    request('/settings/jail/ban', { method: 'POST', body: JSON.stringify(body) }),
+  getJailWhitelist: () => request('/settings/jail/whitelist'),
+  addJailWhitelist: (body) =>
+    request('/settings/jail/whitelist', { method: 'POST', body: JSON.stringify(body) }),
+  removeJailWhitelist: (cidr) =>
+    request('/settings/jail/whitelist', { method: 'DELETE', body: JSON.stringify({ cidr }) }),
+  getJailConfig: () => request('/settings/jail/config'),
+  updateJailConfig: (cfg) =>
+    request('/settings/jail/config', { method: 'PUT', body: JSON.stringify(cfg) }),
+  addCustomJail: (body) =>
+    request('/settings/jail/custom', { method: 'POST', body: JSON.stringify(body) }),
+  deleteCustomJail: (id) =>
+    request(`/settings/jail/custom/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   setSettings: (values) =>
     request('/settings', { method: 'PUT', body: JSON.stringify({ values }) }),
   resetSettings: () => request('/settings/reset', { method: 'POST' }),
@@ -1014,6 +1109,9 @@ export const api = {
   // --- Nodes (libvirt hosts) ---
   listNodes: () => request('/nodes'),
   getNode: (id) => request(`/nodes/${id}`),
+  pingNode: (id) => request(`/nodes/${id}/ping`, { method: 'POST' }),
+  pingAllNodes: () => request('/nodes/ping-all', { method: 'POST' }),
+  getClusterSummary: () => request('/nodes/summary'),
   createNode: (name, uri) =>
     request('/nodes', { method: 'POST', body: JSON.stringify({ name, uri }) }),
   updateNode: (id, data) => request(`/nodes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
@@ -1081,6 +1179,8 @@ export const api = {
   setVMAlerterRules: (id, rules) =>
     request(`/vms/${id}/alerts`, { method: 'PUT', body: JSON.stringify({ rules }) }),
   listActiveAlerts: () => request('/alerts/active'),
+  listIncidents: () => request('/alerts/incidents'),
+  clearResolvedIncidents: () => request('/alerts/incidents/resolved', { method: 'DELETE' }),
   // --- Dashboard (V13-D-04) ---
   hostMetrics: () => request('/host/metrics'),
   importHostFirewall: (firewall) =>

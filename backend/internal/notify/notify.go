@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/smtp"
 	"net/url"
@@ -55,6 +56,15 @@ type Config struct {
 	SlackEnabled    bool   `json:"slack_enabled"`
 	SlackWebhookURL string `json:"slack_webhook_url,omitempty"`
 
+	// Ntfy channel.
+	NtfyEnabled   bool   `json:"ntfy_enabled"`
+	NtfyServerURL string `json:"ntfy_server_url,omitempty"`
+	NtfyTopic     string `json:"ntfy_topic,omitempty"`
+
+	// Gotify channel.
+	GotifyEnabled   bool   `json:"gotify_enabled"`
+	GotifyServerURL string `json:"gotify_server_url,omitempty"`
+
 	// SMTP channel.
 	SMTPEnabled  bool   `json:"smtp_enabled"`
 	SMTPHost     string `json:"smtp_host,omitempty"`
@@ -75,6 +85,8 @@ type secrets struct {
 	TelegramBotToken string `json:"telegram_bot_token,omitempty"`
 	SMTPUser         string `json:"smtp_user,omitempty"`
 	SMTPPassword     string `json:"smtp_password,omitempty"`
+	NtfyToken        string `json:"ntfy_token,omitempty"`
+	GotifyToken      string `json:"gotify_token,omitempty"`
 }
 
 // AlertEvent is one emitted alert, kept in a bounded ring for the UI.
@@ -95,7 +107,8 @@ type Notifier struct {
 	events   []AlertEvent
 	eventMax int
 
-	logger *slog.Logger
+	logger     *slog.Logger
+	httpClient *http.Client
 }
 
 // New loads the config + secrets. Callers wire the config from their
@@ -110,11 +123,29 @@ func New(dataDir string, cfg Config, logger *slog.Logger) (*Notifier, error) {
 		events:      make([]AlertEvent, 0, 32),
 		eventMax:    200,
 		logger:      logger,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+			},
+		},
 	}
 	if err := n.loadSecrets(); err != nil {
 		return nil, err
 	}
 	return n, nil
+}
+
+func (n *Notifier) client() *http.Client {
+	if n.httpClient != nil {
+		return n.httpClient
+	}
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+		},
+	}
 }
 
 // loadSecrets reads the secrets file (0600). A missing file is fine.
@@ -162,6 +193,8 @@ type Status struct {
 	HasTelegramToken bool   `json:"has_telegram_token"`
 	HasSMTPUser      bool   `json:"has_smtp_user"`
 	HasSMTPPassword  bool   `json:"has_smtp_password"`
+	HasNtfyToken     bool   `json:"has_ntfy_token"`
+	HasGotifyToken   bool   `json:"has_gotify_token"`
 }
 
 // Status returns the safe view (no secrets) plus booleans.
@@ -174,14 +207,16 @@ func (n *Notifier) Status() Status {
 		HasTelegramToken: n.sec.TelegramBotToken != "",
 		HasSMTPUser:      n.sec.SMTPUser != "",
 		HasSMTPPassword:  n.sec.SMTPPassword != "",
+		HasNtfyToken:     n.sec.NtfyToken != "",
+		HasGotifyToken:   n.sec.GotifyToken != "",
 	}
 }
 
 // Update applies a config mutation. Secret fields that arrive empty are
 // treated as "keep the existing value" so a form submit never clears a
 // stored credential by accident.
-func (n *Notifier) Update(cfg Config, webhookSecret, telegramBotToken, smtpUser, smtpPassword string, clearSecret bool) error {
-	if err := validateConfig(cfg, telegramBotToken, n.sec.TelegramBotToken); err != nil {
+func (n *Notifier) Update(cfg Config, webhookSecret, telegramBotToken, smtpUser, smtpPassword, ntfyToken, gotifyToken string, clearSecret bool) error {
+	if err := validateConfig(cfg, telegramBotToken, n.sec.TelegramBotToken, gotifyToken, n.sec.GotifyToken); err != nil {
 		return err
 	}
 	n.mu.Lock()
@@ -192,6 +227,8 @@ func (n *Notifier) Update(cfg Config, webhookSecret, telegramBotToken, smtpUser,
 		n.sec.TelegramBotToken = ""
 		n.sec.SMTPUser = ""
 		n.sec.SMTPPassword = ""
+		n.sec.NtfyToken = ""
+		n.sec.GotifyToken = ""
 	} else {
 		// Empty means "keep"; non-empty overwrites.
 		if webhookSecret != "" {
@@ -206,13 +243,19 @@ func (n *Notifier) Update(cfg Config, webhookSecret, telegramBotToken, smtpUser,
 		if smtpPassword != "" {
 			n.sec.SMTPPassword = smtpPassword
 		}
+		if ntfyToken != "" {
+			n.sec.NtfyToken = ntfyToken
+		}
+		if gotifyToken != "" {
+			n.sec.GotifyToken = gotifyToken
+		}
 	}
 	return n.saveSecrets()
 }
 
 // validateConfig enforces safe values: only https webhook URLs, valid ports,
 // and TLS requirements for SMTP.
-func validateConfig(cfg Config, newTelegramToken, existingTelegramToken string) error {
+func validateConfig(cfg Config, newTelegramToken, existingTelegramToken, newGotifyToken, existingGotifyToken string) error {
 	if cfg.WebhookEnabled && cfg.WebhookURL != "" {
 		if !strings.HasPrefix(cfg.WebhookURL, "https://") {
 			return errors.New("webhook URL must use https:// (plain http is refused for safety)")
@@ -226,6 +269,25 @@ func validateConfig(cfg Config, newTelegramToken, existingTelegramToken string) 
 	if cfg.SlackEnabled && cfg.SlackWebhookURL != "" {
 		if !strings.HasPrefix(cfg.SlackWebhookURL, "https://") {
 			return errors.New("slack webhook URL must use https://")
+		}
+	}
+	if cfg.NtfyEnabled {
+		if cfg.NtfyTopic == "" {
+			return errors.New("ntfy topic is required when Ntfy is enabled")
+		}
+		if cfg.NtfyServerURL != "" && !strings.HasPrefix(cfg.NtfyServerURL, "http://") && !strings.HasPrefix(cfg.NtfyServerURL, "https://") {
+			return errors.New("ntfy server URL must begin with http:// or https://")
+		}
+	}
+	if cfg.GotifyEnabled {
+		if cfg.GotifyServerURL == "" {
+			return errors.New("gotify server URL is required when Gotify is enabled")
+		}
+		if !strings.HasPrefix(cfg.GotifyServerURL, "http://") && !strings.HasPrefix(cfg.GotifyServerURL, "https://") {
+			return errors.New("gotify server URL must begin with http:// or https://")
+		}
+		if newGotifyToken == "" && existingGotifyToken == "" {
+			return errors.New("gotify application token is required when Gotify is enabled")
 		}
 	}
 	if cfg.TelegramEnabled {
@@ -308,6 +370,16 @@ func (n *Notifier) deliver(level, subject, message string) {
 	if cfg.SlackEnabled && cfg.SlackWebhookURL != "" {
 		go n.sendSlack(cfg.SlackWebhookURL, level, subject, message)
 	}
+	if cfg.NtfyEnabled && cfg.NtfyTopic != "" {
+		serverURL := cfg.NtfyServerURL
+		if serverURL == "" {
+			serverURL = "https://ntfy.sh"
+		}
+		go n.sendNtfy(serverURL, cfg.NtfyTopic, sec.NtfyToken, level, subject, message)
+	}
+	if cfg.GotifyEnabled && cfg.GotifyServerURL != "" && sec.GotifyToken != "" {
+		go n.sendGotify(cfg.GotifyServerURL, sec.GotifyToken, level, subject, message)
+	}
 	if cfg.SMTPEnabled && cfg.SMTPHost != "" && sec.SMTPPassword != "" {
 		go n.sendEmail(cfg, sec, subject, message)
 	}
@@ -330,7 +402,7 @@ func (n *Notifier) sendWebhook(targetURL, secret string, payload map[string]any)
 	if secret != "" {
 		req.Header.Set("Authorization", "Bearer "+secret)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := n.client()
 	resp, err := client.Do(req)
 	if err != nil {
 		n.logger.Warn("notify_webhook_delivery_failed", "err", err)
@@ -376,7 +448,7 @@ func (n *Notifier) sendDiscord(webhookURL, level, subject, message string) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := n.client()
 	resp, err := client.Do(req)
 	if err != nil {
 		n.logger.Warn("notify_discord_delivery_failed", "err", err)
@@ -414,7 +486,7 @@ func (n *Notifier) sendTelegram(botToken, chatID, level, subject, message string
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := n.client()
 	resp, err := client.Do(req)
 	if err != nil {
 		n.logger.Warn("notify_telegram_delivery_failed", "err", err)
@@ -454,13 +526,96 @@ func (n *Notifier) sendSlack(webhookURL, level, subject, message string) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := n.client()
 	resp, err := client.Do(req)
 	if err != nil {
 		n.logger.Warn("notify_slack_delivery_failed", "err", err)
 		return
 	}
 	defer resp.Body.Close()
+}
+
+func (n *Notifier) sendNtfy(serverURL, topic, token, level, subject, message string) {
+	targetURL := strings.TrimRight(serverURL, "/") + "/" + url.PathEscape(topic)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(message))
+	if err != nil {
+		n.logger.Warn("notify_ntfy_req_failed", "err", err)
+		return
+	}
+
+	priority := "3"
+	tag := "information_source"
+	switch level {
+	case "critical", "error":
+		priority = "5"
+		tag = "rotating_light,fire"
+	case "warning":
+		priority = "4"
+		tag = "warning"
+	}
+
+	req.Header.Set("Title", fmt.Sprintf("[%s] %s", strings.ToUpper(level), subject))
+	req.Header.Set("Priority", priority)
+	req.Header.Set("Tags", tag)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := n.client()
+	resp, err := client.Do(req)
+	if err != nil {
+		n.logger.Warn("notify_ntfy_delivery_failed", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		n.logger.Warn("notify_ntfy_non_2xx", "status", resp.StatusCode)
+	}
+}
+
+func (n *Notifier) sendGotify(serverURL, token, level, subject, message string) {
+	targetURL := strings.TrimRight(serverURL, "/") + "/message"
+	priority := 5
+	switch level {
+	case "critical", "error":
+		priority = 8
+	case "warning":
+		priority = 6
+	}
+
+	payload := map[string]any{
+		"title":    fmt.Sprintf("[%s] %s", strings.ToUpper(level), subject),
+		"message":  message,
+		"priority": priority,
+	}
+	body, _ := json.Marshal(payload)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		n.logger.Warn("notify_gotify_req_failed", "err", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("X-Gotify-Key", token)
+	}
+
+	client := n.client()
+	resp, err := client.Do(req)
+	if err != nil {
+		n.logger.Warn("notify_gotify_delivery_failed", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		n.logger.Warn("notify_gotify_non_2xx", "status", resp.StatusCode)
+	}
 }
 
 func (n *Notifier) sendEmail(cfg Config, sec secrets, subject, message string) {
@@ -512,8 +667,11 @@ func (n *Notifier) sendEmail(cfg Config, sec secrets, subject, message string) {
 		n.logger.Warn("notify_smtp_data_failed", "err", err)
 		return
 	}
+	cleanSubject := mime.QEncoding.Encode("utf-8", sanitizeHeader(subject))
+	cleanFrom := sanitizeHeader(cfg.SMTPFrom)
+	cleanTo := sanitizeHeader(cfg.SMTPTo)
 	msg := fmt.Sprintf("Subject: %s\r\nFrom: %s\r\nTo: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s\r\n",
-		sanitizeHeader(subject), sanitizeHeader(cfg.SMTPFrom), sanitizeHeader(cfg.SMTPTo), message)
+		cleanSubject, cleanFrom, cleanTo, message)
 	if _, err := w.Write([]byte(msg)); err != nil {
 		n.logger.Warn("notify_smtp_write_failed", "err", err)
 		return
@@ -538,6 +696,7 @@ func (n *Notifier) SendTest() error {
 	cfg := n.Status()
 	if !cfg.Config.WebhookEnabled && !cfg.Config.DiscordEnabled &&
 		!cfg.Config.TelegramEnabled && !cfg.Config.SlackEnabled &&
+		!cfg.Config.NtfyEnabled && !cfg.Config.GotifyEnabled &&
 		!cfg.Config.SMTPEnabled {
 		return errors.New("no notification channel enabled")
 	}

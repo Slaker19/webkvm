@@ -87,35 +87,6 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// ListJailedIPs returns all currently banned IPs.
-func (h *Handler) ListJailedIPs(w http.ResponseWriter, r *http.Request) {
-	if h.jail == nil {
-		jsonResp(w, http.StatusOK, []any{})
-		return
-	}
-	jsonResp(w, http.StatusOK, h.jail.ListBanned())
-}
-
-// UnbanJailedIP unbans an IP manually.
-func (h *Handler) UnbanJailedIP(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		IP string `json:"ip"`
-	}
-	if err := decodeBody(r, &req); err != nil {
-		jsonErr(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if h.jail == nil {
-		jsonErr(w, http.StatusServiceUnavailable, "jail not initialized")
-		return
-	}
-	if err := h.jail.Unban(req.IP); err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	jsonResp(w, http.StatusOK, map[string]string{"status": "unbanned", "ip": req.IP})
-}
-
 func (h *Handler) GetGraphics(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	info, err := h.compute.GetVNCInfo(id)

@@ -205,3 +205,84 @@ func TestAlert_InvalidRuleRefused(t *testing.T) {
 		t.Fatalf("no rules should be stored, got %d", got)
 	}
 }
+
+func TestAlert_IngestAlertmanager(t *testing.T) {
+	e := newTestEngine(t)
+
+	payload := AlertmanagerPayload{
+		Status: "firing",
+		Alerts: []AlertmanagerAlert{
+			{
+				Status: "firing",
+				Labels: map[string]string{
+					"alertname": "HostHighMemory",
+					"severity":  "critical",
+					"instance":  "node-1",
+				},
+				Annotations: map[string]string{
+					"summary":     "Host memory is above 95%",
+					"description": "Node node-1 has 96% RAM usage",
+				},
+			},
+		},
+	}
+
+	ingested, err := e.IngestAlertmanager(payload)
+	if err != nil {
+		t.Fatalf("IngestAlertmanager failed: %v", err)
+	}
+	if len(ingested) != 1 {
+		t.Fatalf("expected 1 incident, got %d", len(ingested))
+	}
+	if ingested[0].Severity != "critical" || ingested[0].Alertname != "HostHighMemory" {
+		t.Fatalf("unexpected incident: %+v", ingested[0])
+	}
+
+	list := e.Incidents()
+	if len(list) != 1 {
+		t.Fatalf("expected 1 incident in list, got %d", len(list))
+	}
+
+	// Resolve the alert
+	payload.Alerts[0].Status = "resolved"
+	ingestedResolved, _ := e.IngestAlertmanager(payload)
+	if len(ingestedResolved) != 1 || ingestedResolved[0].Status != "resolved" {
+		t.Fatalf("expected resolved incident, got %+v", ingestedResolved)
+	}
+
+	e.ClearResolvedIncidents()
+	if len(e.Incidents()) != 0 {
+		t.Fatalf("expected 0 incidents after clear, got %d", len(e.Incidents()))
+	}
+}
+
+func TestAlertmanagerCapacityEnforcement(t *testing.T) {
+	e := newTestEngine(t)
+	now := time.Now().UTC()
+
+	// Ingest 550 distinct incidents
+	for i := 0; i < 550; i++ {
+		payload := AlertmanagerPayload{
+			Status: "firing",
+			Alerts: []AlertmanagerAlert{
+				{
+					Status: "firing",
+					Labels: map[string]string{
+						"alertname": "TestAlert",
+						"instance":  string(rune('a' + (i % 26))),
+						"unique_id": string(rune(i)),
+					},
+					StartsAt: now.Add(time.Duration(i) * time.Second),
+				},
+			},
+		}
+		if _, err := e.IngestAlertmanager(payload); err != nil {
+			t.Fatalf("ingest %d failed: %v", i, err)
+		}
+	}
+
+	incidents := e.Incidents()
+	if len(incidents) > maxTrackedIncidents {
+		t.Fatalf("expected incidents <= %d, got %d", maxTrackedIncidents, len(incidents))
+	}
+}

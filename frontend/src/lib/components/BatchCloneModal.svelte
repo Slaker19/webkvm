@@ -33,7 +33,10 @@
         autostart: autostart,
       });
       if (res && res.job) {
-        await api.waitJob(res.job);
+        await api.waitJob(res.job, {
+          title: `Clonado en lote (${count} VMs): prefijo "${prefix.trim()}"`,
+          kind: 'clone',
+        });
       }
       toast.success(t('batchClone.successToast', { count }));
       onSuccess();

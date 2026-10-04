@@ -22,6 +22,8 @@ func TestMiddleware_PublicPaths(t *testing.T) {
 		{"/api/covers/abc.png", "legacy cover images"},
 		{"/api/branding", "logo and favicon render on the login screen"},
 		{"/api/system/cert", "certificate download for first-time trust"},
+		{"/api/metrics/grafana-dashboard", "official grafana dashboard json download"},
+		{"/api/metrics/alert-rules", "prometheus alertmanager rules yaml download"},
 	}
 	for _, tc := range public {
 		req := httptest.NewRequest("GET", tc.path, nil)

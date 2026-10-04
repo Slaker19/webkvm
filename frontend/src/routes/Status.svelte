@@ -27,8 +27,24 @@
   // and recent backup jobs — all lightweight, no heavy chart libs.
   let hostMetrics = $state(null);
   let activeAlerts = $state([]);
+  let incidents = $state([]);
+  let clearingResolved = $state(false);
   let backupJobs = $state([]);
   let dashboardLoading = $state(true);
+
+  async function clearResolved() {
+    clearingResolved = true;
+    try {
+      await api.clearResolvedIncidents();
+      toast.success(t('status.incidentsCleared'));
+      const res = await api.listIncidents();
+      incidents = res.incidents || [];
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      clearingResolved = false;
+    }
+  }
 
   const hostCpuPoints = $derived(
     (hostMetrics?.points || []).map((p) => ({ t: p.t, v: p.cpu_usage }))
@@ -45,14 +61,16 @@
     // (it leaks destination paths and remote hosts), so for a viewer it
     // now answers 403 — which previously would have taken the host
     // metrics and the alert list down with it.
-    const [hm, al, jb] = await Promise.allSettled([
+    const [hm, al, jb, inc] = await Promise.allSettled([
       api.hostMetrics(),
       api.listActiveAlerts(),
       auth.isAdmin() ? api.listBackupJobs() : Promise.resolve({ jobs: [] }),
+      api.listIncidents(),
     ]);
     if (hm.status === 'fulfilled') hostMetrics = hm.value;
     if (al.status === 'fulfilled') activeAlerts = al.value?.alerts || [];
     if (jb.status === 'fulfilled') backupJobs = (jb.value?.jobs || []).slice(0, 5);
+    if (inc.status === 'fulfilled') incidents = inc.value?.incidents || [];
     dashboardLoading = false;
   }
 
@@ -395,25 +413,89 @@
       {/if}
     </div>
     <div class="rounded-xl border border-border bg-background p-4">
-      <p class="text-sm font-semibold mb-1">{t('status.alertsTitle')}</p>
+      <div class="flex items-center justify-between mb-1">
+        <p class="text-sm font-semibold">{t('status.alertsTitle')}</p>
+        {#if isAdmin && incidents.some((i) => i.status === 'resolved')}
+          <button
+            type="button"
+            onclick={clearResolved}
+            disabled={clearingResolved}
+            class="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {t('status.incidentsClearResolved')}
+          </button>
+        {/if}
+      </div>
       <p class="text-xs text-muted-foreground mb-3">
-        {t('status.alertsCount', { n: activeAlerts.length })}
+        {t('status.alertsCount', {
+          n: activeAlerts.length + incidents.filter((i) => i.status === 'firing').length,
+        })}
       </p>
-      <div class="space-y-1.5 max-h-40 overflow-y-auto">
+      <div class="space-y-1.5 max-h-48 overflow-y-auto">
+        <!-- Threshold alerts -->
         {#each activeAlerts as alert (alert.vm_id + alert.rule?.id)}
           <div
-            class="flex items-center gap-2 text-xs rounded-lg bg-destructive/10 border border-destructive/30 px-2 py-1.5"
+            class="flex items-center gap-2 text-xs rounded-lg bg-destructive/10 border border-destructive/30 px-2.5 py-1.5"
           >
-            <span class="w-2 h-2 rounded-full bg-destructive shrink-0"></span>
-            <span class="flex-1 min-w-0 truncate">
-              {alert.vm_id.slice(0, 8)} · {alert.rule?.metric || ''}
+            <span class="w-2 h-2 rounded-full bg-destructive shrink-0 animate-pulse"></span>
+            <span class="flex-1 min-w-0 truncate font-mono">
+              {alert.vm_id ? alert.vm_id.slice(0, 8) : 'host'} · {alert.rule?.metric || ''}
               {alert.rule?.above ? '>' : '<'}
               {alert.rule?.threshold || 0}
             </span>
+            <span
+              class="text-[10px] px-1.5 py-0.5 rounded font-mono bg-destructive/20 text-destructive uppercase"
+            >
+              {t('status.incidentFiring')}
+            </span>
           </div>
-        {:else}
-          <p class="text-sm text-muted-foreground">{t('status.noAlerts')}</p>
         {/each}
+
+        <!-- Alertmanager incidents -->
+        {#each incidents as inc (inc.id || inc.fingerprint)}
+          <div
+            class="flex items-start gap-2 text-xs rounded-lg px-2.5 py-1.5 border {inc.status ===
+            'firing'
+              ? inc.severity === 'critical'
+                ? 'bg-destructive/10 border-destructive/30'
+                : 'bg-amber-500/10 border-amber-500/30'
+              : 'bg-muted/30 border-border text-muted-foreground'}"
+          >
+            <span
+              class="w-2 h-2 rounded-full shrink-0 mt-1 {inc.status === 'firing'
+                ? inc.severity === 'critical'
+                  ? 'bg-destructive animate-pulse'
+                  : 'bg-amber-500 animate-pulse'
+                : 'bg-muted-foreground'}"
+            ></span>
+            <div class="flex-1 min-w-0 space-y-0.5">
+              <div class="flex items-center justify-between gap-1">
+                <span class="font-medium truncate">{inc.alertname || inc.summary}</span>
+                <span
+                  class="text-[9px] px-1 py-0.2 rounded font-mono uppercase {inc.status === 'firing'
+                    ? 'bg-destructive/20 text-destructive'
+                    : 'bg-muted text-muted-foreground'}"
+                >
+                  {inc.status === 'firing'
+                    ? t('status.incidentFiring')
+                    : t('status.incidentResolved')}
+                </span>
+              </div>
+              {#if inc.summary && inc.summary !== inc.alertname}
+                <p class="text-[11px] truncate opacity-90">{inc.summary}</p>
+              {/if}
+              <div class="flex items-center gap-2 text-[10px] text-muted-foreground font-mono">
+                {#if inc.instance}<span>{inc.instance}</span>{/if}
+                {#if inc.severity}<span class="uppercase">[{inc.severity}]</span>{/if}
+                <span>{inc.source || 'alertmanager'}</span>
+              </div>
+            </div>
+          </div>
+        {/each}
+
+        {#if activeAlerts.length === 0 && incidents.length === 0}
+          <p class="text-sm text-muted-foreground py-2 text-center">{t('status.noIncidents')}</p>
+        {/if}
       </div>
       <!-- Backups are admin-only data; showing "no backups" to a viewer
            would claim the fleet is unprotected when it simply is not

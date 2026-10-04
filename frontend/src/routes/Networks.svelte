@@ -5,6 +5,7 @@
   import Spinner from '$lib/components/Spinner.svelte';
   import { onMount } from 'svelte';
   import { api, auth } from '$lib/stores/auth.svelte.js';
+  import { upsertTask, finishTask } from '$lib/stores/tasks.svelte.js';
   import { toast, dismiss } from '$lib/components/ui/toast';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
@@ -56,6 +57,26 @@
   let leases = $state([]);
   let loadingLeases = $state(false);
 
+  // Interface IP modal & Bond creation states
+  let editingIface = $state(null); // Interface being edited for IP/gateway
+  let ifaceIPv4 = $state('');
+  let ifaceGateway = $state('');
+  let savingIface = $state(false);
+
+  let showBondModal = $state(false);
+  let bondName = $state('bond0');
+  let bondMode = $state('active-backup');
+  let bondSlaves = $state([]);
+  let bondBridge = $state('vmbr0');
+  let bondIPv4 = $state('');
+  let bondGateway = $state('');
+  let savingBond = $state(false);
+
+  // Attach interface to bridge modal state
+  let attachingIface = $state(null);
+  let targetBridge = $state('vmbr0');
+  let savingAttach = $state(false);
+
   let totalLeases = $derived(Object.values(leasesByNetwork).reduce((sum, l) => sum + l.length, 0));
 
   let preview = $derived.by(() => computeCIDRPreview(cidr));
@@ -72,6 +93,7 @@
 
   onMount(() => {
     load();
+    loadHostInterfaces();
     // /api/settings is admin-only, and only the (admin-only) create form
     // uses this default, so non-admins skip the request entirely.
     if (!auth.isAdmin()) return;
@@ -215,6 +237,163 @@
     }
   }
 
+  async function toggleIfaceState(iface) {
+    const nextState = iface.state === 'up' ? 'down' : 'up';
+    try {
+      await api.configureHostInterface(iface.name, { state: nextState });
+      toast.success(
+        t('networks.ifaceStateToggled', { name: iface.name, state: nextState.toUpperCase() })
+      );
+      await loadHostInterfaces();
+    } catch (e) {
+      toast.error(e.message, { duration: 0 });
+    }
+  }
+
+  function isolateIface(iface) {
+    askConfirm({
+      title: t('networks.isolateIfaceTitle', { name: iface.name }),
+      description: t('networks.isolateIfaceDesc', { name: iface.name, master: iface.master }),
+      confirmLabel: t('networks.isolateIface'),
+      variant: 'destructive',
+      onConfirm: async () => {
+        confirmState.loading = true;
+        const taskId = 'net-isolate:' + iface.name;
+        upsertTask({
+          id: taskId,
+          kind: 'network',
+          title: `Desvinculando interfaz: ${iface.name}`,
+          pct: 30,
+          message: `Extrayendo de ${iface.master || 'bridge'}...`,
+          status: 'running',
+        });
+        try {
+          await api.configureHostInterface(iface.name, { isolate: true });
+          finishTask(taskId, 'success', `Interfaz ${iface.name} aislada correctamente`, 100);
+          confirmState.open = false;
+          toast.success(t('networks.isolateIfaceSuccess', { name: iface.name }));
+          await Promise.all([load(), loadHostInterfaces()]);
+        } catch (e) {
+          finishTask(taskId, 'error', e.message || 'Error al aislar interfaz', 30);
+          toast.error(e.message, { duration: 0 });
+        } finally {
+          confirmState.loading = false;
+        }
+      },
+    });
+  }
+
+  function openEditIface(iface) {
+    editingIface = iface;
+    ifaceIPv4 = iface.ipv4 || '';
+    ifaceGateway = '';
+  }
+
+  async function saveIfaceConfig() {
+    if (!editingIface) return;
+    savingIface = true;
+    try {
+      const payload = { ipv4: ifaceIPv4.trim() };
+      if (ifaceGateway.trim()) payload.gateway = ifaceGateway.trim();
+      await api.configureHostInterface(editingIface.name, payload);
+      toast.success(t('common.saved'));
+      editingIface = null;
+      await loadHostInterfaces();
+    } catch (e) {
+      toast.error(e.message, { duration: 0 });
+    } finally {
+      savingIface = false;
+    }
+  }
+
+  async function createBond() {
+    if (bondSlaves.length < 2) {
+      toast.error(t('networks.selectBondSlavesHelp'));
+      return;
+    }
+    savingBond = true;
+    const bondN = bondName.trim();
+    const taskId = 'net-bond:' + bondN;
+    upsertTask({
+      id: taskId,
+      kind: 'network',
+      title: `Configurando enlace Bond: ${bondN} (${bondMode})`,
+      pct: 30,
+      message: 'Aplicando configuración Netplan y esclavos...',
+      status: 'running',
+    });
+    try {
+      await api.createHostBond({
+        name: bondN,
+        mode: bondMode,
+        interfaces: bondSlaves,
+        bridge: bondBridge ? bondBridge.trim() : undefined,
+        ipv4: !bondBridge && bondIPv4.trim() ? bondIPv4.trim() : undefined,
+        gateway: !bondBridge && bondGateway.trim() ? bondGateway.trim() : undefined,
+      });
+      finishTask(taskId, 'success', `Enlace Bond ${bondN} creado con éxito`, 100);
+      toast.success(t('networks.bondCreatedSuccess', { name: bondName }));
+      showBondModal = false;
+      bondSlaves = [];
+      await Promise.all([load(), loadHostInterfaces()]);
+    } catch (e) {
+      finishTask(taskId, 'error', e.message || 'Error al crear enlace Bond', 30);
+      toast.error(e.message, { duration: 0 });
+    } finally {
+      savingBond = false;
+    }
+  }
+
+  async function deleteBond(name) {
+    if (!confirm(t('networks.deleteBondConfirm', { name }))) return;
+    const taskId = 'net-delbond:' + name;
+    upsertTask({
+      id: taskId,
+      kind: 'network',
+      title: `Eliminando enlace Bond: ${name}`,
+      pct: 30,
+      message: 'Liberando interfaces y actualizando Netplan...',
+      status: 'running',
+    });
+    try {
+      await api.deleteHostBond(name);
+      finishTask(taskId, 'success', `Enlace Bond ${name} eliminado con éxito`, 100);
+      toast.success(t('networks.bondDeletedSuccess', { name }));
+      await Promise.all([load(), loadHostInterfaces()]);
+    } catch (e) {
+      finishTask(taskId, 'error', e.message || 'Error al eliminar enlace Bond', 30);
+      toast.error(e.message, { duration: 0 });
+    }
+  }
+
+  async function attachIfaceToBridge() {
+    if (!attachingIface || !targetBridge) return;
+    savingAttach = true;
+    const taskId = 'net-attach:' + attachingIface.name;
+    upsertTask({
+      id: taskId,
+      kind: 'network',
+      title: `Asociando ${attachingIface.name} a ${targetBridge}`,
+      pct: 30,
+      message: 'Vinculando interfaz al puente...',
+      status: 'running',
+    });
+    try {
+      await api.updateNetwork(targetBridge, { add_slaves: [attachingIface.name] });
+      finishTask(taskId, 'success', `${attachingIface.name} vinculado a ${targetBridge}`, 100);
+      toast.success(
+        t('networks.attachSuccess', { name: attachingIface.name, bridge: targetBridge })
+      );
+      attachingIface = null;
+      await Promise.all([load(), loadHostInterfaces()]);
+    } catch (e) {
+      finishTask(taskId, 'error', e.message || 'Error al asociar a puente', 30);
+      toast.error(e.message, { duration: 0 });
+    } finally {
+      savingAttach = false;
+    }
+  }
+
   async function loadAllLeases() {
     const eligible = networks.filter((n) => n.kind !== 'direct' && n.dhcp);
     const results = await Promise.all(
@@ -315,9 +494,19 @@
       if (Number(mtu)) payload.mtu = Number(mtu);
       if (dhcp) payload.reservations = cleanReservations();
     }
+    const taskId = 'net-create:' + name.trim();
+    upsertTask({
+      id: taskId,
+      kind: 'network',
+      title: `Creando red virtual: ${name.trim()}`,
+      pct: 30,
+      message: 'Definiendo puente, DHCP y reglas de aislamiento...',
+      status: 'running',
+    });
     try {
       const created = await api.createNetwork(payload);
       const label = (created && created.name) || name;
+      finishTask(taskId, 'success', `Red virtual ${label} creada con éxito`, 100);
       toast.success(t('networks.networkCreated', { label }), { duration: 6000 });
       resetForm();
       await load();
@@ -325,6 +514,7 @@
         .getElementById('networks-table-anchor')
         ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (e) {
+      finishTask(taskId, 'error', e.message || 'Error al crear red virtual', 30);
       console.error('[Networks] create failed', { payload, error: e });
       error = e.message;
       toast.error(e.message, { duration: 0 });
@@ -884,6 +1074,235 @@
     />
   {/if}
 
+  <!-- Physical Host Interfaces Card -->
+  {#if hostInterfaces.length > 0}
+    <Card class="p-5 mt-6 space-y-4">
+      <div class="flex items-center justify-between flex-wrap gap-2">
+        <div class="flex items-center gap-2.5">
+          <div class="p-2 rounded-xl bg-accent/10 text-accent">
+            <Icon name="network" size={20} />
+          </div>
+          <div>
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-foreground">
+              {t('networks.hostInterfacesTitle')}
+            </h2>
+            <p class="text-xs text-muted-foreground mt-0.5">
+              {t('networks.hostInterfacesDesc')}
+            </p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          {#if auth.isAdmin()}
+            <Button
+              size="xs"
+              variant="outline"
+              onclick={() => {
+                bondSlaves = [];
+                showBondModal = true;
+              }}
+            >
+              <Icon name="plus" size={12} class="mr-1" />
+              {t('networks.createBondTitle')}
+            </Button>
+          {/if}
+          <span class="text-xs font-mono px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+            {hostInterfaces.length}
+            {hostInterfaces.length === 1 ? 'NIC' : 'NICs'}
+          </span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
+        {#each hostInterfaces as iface (iface.name)}
+          <div
+            class="p-4 rounded-xl border border-border/80 bg-background/50 hover:border-border transition-all flex flex-col justify-between space-y-3"
+          >
+            <div>
+              <div class="flex items-center justify-between gap-2 mb-2">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span
+                    class="w-2.5 h-2.5 rounded-full shrink-0 {iface.state === 'up'
+                      ? 'bg-success'
+                      : 'bg-muted-foreground/40'}"
+                  ></span>
+                  <span class="font-mono font-semibold text-sm text-foreground truncate"
+                    >{iface.name}</span
+                  >
+                </div>
+                <div class="flex items-center gap-1.5 shrink-0">
+                  {#if iface.type === 'bond'}
+                    <span
+                      class="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-accent/15 text-accent"
+                    >
+                      BOND ({iface.bond_mode || 'active-backup'})
+                    </span>
+                  {:else if iface.type === 'wifi'}
+                    <span
+                      class="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-warning/10 text-warning"
+                    >
+                      Wi-Fi
+                    </span>
+                  {:else}
+                    <span
+                      class="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-info/10 text-info"
+                    >
+                      {iface.speed ? `${iface.speed}M` : 'Ethernet'}
+                    </span>
+                  {/if}
+                </div>
+              </div>
+
+              <div class="space-y-1.5 text-xs text-muted-foreground">
+                <div class="flex items-center justify-between">
+                  <span>MAC:</span>
+                  <span class="font-mono text-foreground text-[11px]">{iface.mac || '—'}</span>
+                </div>
+                {#if iface.slaves && iface.slaves.length > 0}
+                  <div class="flex items-center justify-between">
+                    <span>{t('networks.bondSlaves')}:</span>
+                    <span class="font-mono text-accent font-semibold text-[11px]"
+                      >{iface.slaves.join(', ')}</span
+                    >
+                  </div>
+                {/if}
+                {#if iface.driver}
+                  <div class="flex items-center justify-between">
+                    <span>{t('networks.ifaceDriver')}:</span>
+                    <span class="font-mono text-foreground">{iface.driver}</span>
+                  </div>
+                {/if}
+                <div class="flex items-center justify-between">
+                  <span>{t('networks.ifaceMaster')}:</span>
+                  {#if iface.master}
+                    <span class="font-semibold text-accent font-mono">{iface.master}</span>
+                  {:else}
+                    <span class="text-warning text-[11px]">{t('networks.ifaceUnassigned')}</span>
+                  {/if}
+                </div>
+                {#if iface.ipv4}
+                  <div class="flex items-center justify-between">
+                    <span>{t('networks.ifaceIP')}:</span>
+                    <span class="font-mono font-semibold text-foreground text-[11px]"
+                      >{iface.ipv4}</span
+                    >
+                  </div>
+                {/if}
+              </div>
+            </div>
+
+            <div
+              class="pt-2 border-t border-border/50 flex flex-wrap items-center gap-1.5 justify-between"
+            >
+              {#if auth.isAdmin()}
+                <div class="flex items-center gap-1">
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onclick={() => toggleIfaceState(iface)}
+                    class="text-[11px] h-7 px-2"
+                    title={iface.state === 'up'
+                      ? t('networks.toggleStateDown')
+                      : t('networks.toggleStateUp')}
+                  >
+                    <Icon
+                      name={iface.state === 'up' ? 'power' : 'zap'}
+                      size={12}
+                      class={iface.state === 'up' ? 'text-warning' : 'text-success'}
+                    />
+                    <span class="ml-1">{iface.state === 'up' ? 'Down' : 'Up'}</span>
+                  </Button>
+
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onclick={() => openEditIface(iface)}
+                    class="text-[11px] h-7 px-2"
+                    title={t('networks.configureIface')}
+                  >
+                    <Icon name="edit" size={12} />
+                    <span class="ml-1">IP</span>
+                  </Button>
+                </div>
+              {/if}
+
+              {#if iface.type === 'bond' && auth.isAdmin()}
+                <div class="flex items-center gap-1.5 ml-auto">
+                  {#if iface.master}
+                    <span class="text-[11px] text-muted-foreground flex items-center gap-1">
+                      <Icon name="check" size={12} class="text-success" />
+                      {iface.master}
+                    </span>
+                  {/if}
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onclick={() => deleteBond(iface.name)}
+                    class="text-[11px] h-7 px-2 text-destructive hover:bg-destructive/10"
+                    title={t('networks.deleteBond')}
+                  >
+                    <Icon name="trash" size={12} class="mr-1" />
+                    {t('networks.deleteBond')}
+                  </Button>
+                </div>
+              {:else if iface.master}
+                <div class="flex items-center gap-1 ml-auto">
+                  <span class="text-[11px] text-muted-foreground flex items-center gap-1">
+                    <Icon name="check" size={12} class="text-success" />
+                    {iface.master}
+                  </span>
+                  {#if auth.isAdmin()}
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onclick={() => isolateIface(iface)}
+                      class="text-[11px] h-7 px-2 text-destructive hover:bg-destructive/10"
+                      title={t('networks.isolateIface')}
+                    >
+                      <Icon name="unlink" size={12} class="mr-1" />
+                      {t('networks.isolateIface')}
+                    </Button>
+                  {/if}
+                </div>
+              {:else if auth.isAdmin()}
+                <div class="flex items-center gap-1.5 ml-auto">
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onclick={() => {
+                      attachingIface = iface;
+                      targetBridge = networks[0]?.name || 'vmbr0';
+                    }}
+                    class="text-xs h-7"
+                    title={t('networks.attachToBridge')}
+                  >
+                    <Icon name="link" size={12} class="mr-1" />
+                    {t('networks.attachToBridge')}
+                  </Button>
+
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onclick={() => {
+                      resetForm();
+                      name = `br-${iface.name.slice(0, 8)}`;
+                      kind = 'direct';
+                      directInterface = iface.name;
+                      showCreate = true;
+                    }}
+                    class="text-xs h-7"
+                  >
+                    <Icon name="plus" size={12} class="mr-1" />
+                    {t('networks.createBridgeWithIface')}
+                  </Button>
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/each}
+      </div>
+    </Card>
+  {/if}
+
   {#if viewingLeasesFor}
     <Card class="p-5 mt-4 space-y-3">
       <div class="flex items-center justify-between">
@@ -912,6 +1331,285 @@
         />
       {/if}
     </Card>
+  {/if}
+
+  <!-- Configure Interface IP Modal -->
+  {#if editingIface}
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <Card class="w-full max-w-md p-6 space-y-4 shadow-xl">
+        <div class="flex items-center justify-between border-b border-border pb-3">
+          <div class="flex items-center gap-2">
+            <Icon name="network" size={18} class="text-accent" />
+            <h3 class="font-semibold text-foreground text-sm">
+              {t('networks.configureIface')} — {editingIface.name}
+            </h3>
+          </div>
+          <button
+            onclick={() => (editingIface = null)}
+            class="text-muted-foreground hover:text-foreground text-sm"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div class="space-y-3 text-sm">
+          <div>
+            <label for="iface-ip-input" class="block font-medium mb-1">
+              {t('networks.ipSubnet')}
+            </label>
+            <Input
+              id="iface-ip-input"
+              bind:value={ifaceIPv4}
+              placeholder="192.168.1.100/24 (o vacío para limpiar)"
+              class="tnum font-mono"
+            />
+            <p class="text-xs text-muted-foreground mt-1">
+              Introduce una dirección CIDR o déjalo vacío para limpiar IPs en esta tarjeta.
+            </p>
+          </div>
+
+          <div>
+            <label for="iface-gw-input" class="block font-medium mb-1">
+              {t('networks.gateway')}
+            </label>
+            <Input
+              id="iface-gw-input"
+              bind:value={ifaceGateway}
+              placeholder="192.168.1.1 (opcional)"
+              class="tnum font-mono"
+            />
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-3 border-t border-border">
+          <Button
+            variant="outline"
+            size="sm"
+            onclick={() => (editingIface = null)}
+            disabled={savingIface}
+          >
+            {t('common.cancel')}
+          </Button>
+          <Button size="sm" onclick={saveIfaceConfig} disabled={savingIface}>
+            {savingIface ? t('common.saving') : t('common.save')}
+          </Button>
+        </div>
+      </Card>
+    </div>
+  {/if}
+
+  <!-- Create Bond Modal -->
+  {#if showBondModal}
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <Card class="w-full max-w-lg p-6 space-y-4 shadow-xl">
+        <div class="flex items-center justify-between border-b border-border pb-3">
+          <div class="flex items-center gap-2">
+            <Icon name="network" size={18} class="text-accent" />
+            <h3 class="font-semibold text-foreground text-sm">
+              {t('networks.createBondTitle')}
+            </h3>
+          </div>
+          <button
+            onclick={() => (showBondModal = false)}
+            class="text-muted-foreground hover:text-foreground text-sm"
+          >
+            ✕
+          </button>
+        </div>
+
+        <p class="text-xs text-muted-foreground">
+          {t('networks.createBondDesc')}
+        </p>
+
+        <div class="space-y-3 text-sm">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label for="bond-name-input" class="block font-medium mb-1">
+                {t('networks.bondName')}
+              </label>
+              <Input
+                id="bond-name-input"
+                bind:value={bondName}
+                placeholder="bond0"
+                class="font-mono"
+              />
+            </div>
+            <div>
+              <label for="bond-mode-select" class="block font-medium mb-1">
+                {t('networks.bondMode')}
+              </label>
+              <select id="bond-mode-select" bind:value={bondMode} class="input">
+                <option value="active-backup">{t('networks.bondModeActiveBackup')}</option>
+                <option value="balance-rr">{t('networks.bondModeBalanceRR')}</option>
+                <option value="802.3ad">{t('networks.bondMode8023ad')}</option>
+                <option value="balance-xor">{t('networks.bondModeBalanceXOR')}</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label for="bond-bridge-select" class="block font-medium mb-1">
+              {t('networks.bondBridge')}
+            </label>
+            <select id="bond-bridge-select" bind:value={bondBridge} class="input">
+              <option value="">{t('networks.bondBridgeNone')}</option>
+              {#each networks as net (net.name)}
+                <option value={net.name}>{net.name} ({net.kind})</option>
+              {/each}
+            </select>
+            <p class="text-[11px] text-muted-foreground mt-1">
+              {t('networks.bondBridgeHelp')}
+            </p>
+          </div>
+
+          <div>
+            <span class="block font-medium mb-1">
+              {t('networks.bondSlaves')}
+            </span>
+            <div class="grid grid-cols-2 gap-2 border border-border rounded-lg p-3 bg-muted/20">
+              {#each hostInterfaces.filter((i) => i.type !== 'bond') as iface (iface.name)}
+                <label class="flex items-center gap-2 cursor-pointer text-xs">
+                  <input
+                    type="checkbox"
+                    value={iface.name}
+                    checked={bondSlaves.includes(iface.name)}
+                    onchange={(e) => {
+                      if (e.target.checked) {
+                        bondSlaves = [...bondSlaves, iface.name];
+                      } else {
+                        bondSlaves = bondSlaves.filter((n) => n !== iface.name);
+                      }
+                    }}
+                    class="rounded border-border"
+                  />
+                  <span class="font-mono font-medium">{iface.name}</span>
+                  <span class="text-[10px] text-muted-foreground">({iface.state})</span>
+                </label>
+              {/each}
+            </div>
+          </div>
+
+          {#if bondBridge}
+            <div
+              class="p-3 rounded-lg bg-accent/10 border border-accent/20 text-xs text-foreground flex items-start gap-2.5"
+            >
+              <Icon name="info" size={16} class="text-accent shrink-0 mt-0.5" />
+              <div>
+                <p class="font-medium text-foreground">
+                  {t('networks.bondAttachedBridgeNoteTitle')}
+                </p>
+                <p class="text-muted-foreground mt-0.5 leading-relaxed">
+                  {t('networks.bondAttachedBridgeNoteDesc')}
+                </p>
+              </div>
+            </div>
+          {:else}
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label for="bond-ip-input" class="block font-medium mb-1">
+                  {t('networks.ipSubnet')} (Opcional)
+                </label>
+                <Input
+                  id="bond-ip-input"
+                  bind:value={bondIPv4}
+                  placeholder="192.168.1.80/24"
+                  class="font-mono text-xs"
+                />
+              </div>
+              <div>
+                <label for="bond-gw-input" class="block font-medium mb-1">
+                  {t('networks.gateway')} (Opcional)
+                </label>
+                <Input
+                  id="bond-gw-input"
+                  bind:value={bondGateway}
+                  placeholder="192.168.1.1"
+                  class="font-mono text-xs"
+                />
+              </div>
+            </div>
+          {/if}
+        </div>
+
+        <div class="flex justify-end gap-2 pt-3 border-t border-border">
+          <Button
+            variant="outline"
+            size="sm"
+            onclick={() => (showBondModal = false)}
+            disabled={savingBond}
+          >
+            {t('common.cancel')}
+          </Button>
+          <Button size="sm" onclick={createBond} disabled={savingBond || bondSlaves.length < 2}>
+            {savingBond ? t('common.creating') : t('common.create')}
+          </Button>
+        </div>
+      </Card>
+    </div>
+  {/if}
+
+  <!-- Attach Interface to Existing Bridge Modal -->
+  {#if attachingIface}
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <Card class="w-full max-w-md p-6 space-y-4 shadow-xl">
+        <div class="flex items-center justify-between border-b border-border pb-3">
+          <div class="flex items-center gap-2">
+            <Icon name="link" size={18} class="text-accent" />
+            <h3 class="font-semibold text-foreground text-sm">
+              {t('networks.attachToBridgeTitle', { name: attachingIface.name })}
+            </h3>
+          </div>
+          <button
+            onclick={() => (attachingIface = null)}
+            class="text-muted-foreground hover:text-foreground text-sm"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div class="space-y-3 text-sm">
+          <div>
+            <label for="target-bridge-select" class="block font-medium mb-1">
+              {t('networks.selectBridge')}
+            </label>
+            <select id="target-bridge-select" bind:value={targetBridge} class="input">
+              {#each networks as net (net.name)}
+                <option value={net.name}>{net.name} ({net.kind})</option>
+              {/each}
+            </select>
+            <p class="text-xs text-muted-foreground mt-1.5">
+              La interfaz física se incorporará como puerto esclavo del puente seleccionado (ej. {targetBridge}).
+            </p>
+            <div
+              class="mt-2.5 p-2.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-500 text-xs space-y-1"
+            >
+              <span class="font-semibold block">⚠️ Advertencia de Bucles / STP:</span>
+              <p>
+                Si ambas tarjetas van conectadas al mismo switch o router, se activará Spanning Tree
+                (STP) para evitar bucles. Para balanceo de carga real o tolerancia a fallos
+                (failover), la opción recomendada es utilizar <strong
+                  >"Crear Enlace Agregado / Bond"</strong
+                > y asociarlo al puente.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-3 border-t border-border">
+          <Button
+            variant="outline"
+            size="sm"
+            onclick={() => (attachingIface = null)}
+            disabled={savingAttach}
+          >
+            {t('common.cancel')}
+          </Button>
+          <Button size="sm" onclick={attachIfaceToBridge} disabled={savingAttach || !targetBridge}>
+            {savingAttach ? t('common.saving') : t('networks.attachToBridge')}
+          </Button>
+        </div>
+      </Card>
+    </div>
   {/if}
 </div>
 

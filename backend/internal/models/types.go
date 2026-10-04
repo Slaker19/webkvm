@@ -48,22 +48,22 @@ type VM struct {
 	// libvirtd starts the domain automatically on host boot.
 	// Surfaced here so the UI doesn't need a second round-trip
 	// to GET /vms/{id}/autostart after fetching the VM.
-	Autostart  bool     `json:"autostart"`
-	Firmware   string   `json:"firmware,omitempty"`
-	CPUMode    string   `json:"cpu_mode,omitempty"`
-	CPUModel   string   `json:"cpu_model,omitempty"`
-	CPUFlags   []string `json:"cpu_flags,omitempty"`
-	CPUUnits   int      `json:"cpu_units,omitempty"`
-	KVMHidden  bool     `json:"kvm_hidden,omitempty"`
-	VideoModel string   `json:"video_model,omitempty"`
-	AudioModel string   `json:"audio_model,omitempty"`
-	SerialPort bool     `json:"serial_port"`
-	GraphicsType string `json:"graphics_type,omitempty"` // "vnc", "spice", "both"
-	BootOrder  string   `json:"boot_order,omitempty"`
-	Privileged bool     `json:"privileged"`
-	Nesting    bool     `json:"nesting"`
-	Profiles   []string `json:"profiles,omitempty"`
-	IP         string   `json:"ip,omitempty"`
+	Autostart    bool     `json:"autostart"`
+	Firmware     string   `json:"firmware,omitempty"`
+	CPUMode      string   `json:"cpu_mode,omitempty"`
+	CPUModel     string   `json:"cpu_model,omitempty"`
+	CPUFlags     []string `json:"cpu_flags,omitempty"`
+	CPUUnits     int      `json:"cpu_units,omitempty"`
+	KVMHidden    bool     `json:"kvm_hidden,omitempty"`
+	VideoModel   string   `json:"video_model,omitempty"`
+	AudioModel   string   `json:"audio_model,omitempty"`
+	SerialPort   bool     `json:"serial_port"`
+	GraphicsType string   `json:"graphics_type,omitempty"` // "vnc", "spice", "both"
+	BootOrder    string   `json:"boot_order,omitempty"`
+	Privileged   bool     `json:"privileged"`
+	Nesting      bool     `json:"nesting"`
+	Profiles     []string `json:"profiles,omitempty"`
+	IP           string   `json:"ip,omitempty"`
 	// IPs lists every IPv4 the instance holds across its NICs (containers
 	// with several interfaces expose one per NIC). IP is the primary.
 	IPs     []string `json:"ips,omitempty"`
@@ -440,11 +440,11 @@ type HostDiskSMART struct {
 	TemperatureC       int    `json:"temperature_c"`
 	PowerOnHours       int64  `json:"power_on_hours"`
 	PowerCycles        int64  `json:"power_cycles"`
-	WearPercentage     int    `json:"wear_percentage"`          // 0-100%, -1 if N/A
-	DataWrittenBytes   uint64 `json:"data_written_bytes"`       // in bytes (TBW)
-	ReallocatedSectors int64  `json:"reallocated_sectors"`     // -1 if N/A
-	PendingSectors     int64  `json:"pending_sectors"`         // -1 if N/A
-	CriticalWarning    int    `json:"critical_warning"`        // NVMe bitmask
+	WearPercentage     int    `json:"wear_percentage"`     // 0-100%, -1 if N/A
+	DataWrittenBytes   uint64 `json:"data_written_bytes"`  // in bytes (TBW)
+	ReallocatedSectors int64  `json:"reallocated_sectors"` // -1 if N/A
+	PendingSectors     int64  `json:"pending_sectors"`     // -1 if N/A
+	CriticalWarning    int    `json:"critical_warning"`    // NVMe bitmask
 }
 
 // HostPartition describes a single partition within a HostDisk.
@@ -535,12 +535,13 @@ type AttachSharedFolderRequest struct {
 }
 
 type NetIface struct {
-	MAC     string `json:"mac"`
-	Network string `json:"network"`
-	Model   string `json:"model"`
-	Type    string `json:"type"` // network, bridge
-	Source  string `json:"source,omitempty"`
-	VLANTag *int   `json:"vlan_tag,omitempty"`
+	MAC       string `json:"mac"`
+	Network   string `json:"network"`
+	Model     string `json:"model"`
+	Type      string `json:"type"` // network, bridge
+	Source    string `json:"source,omitempty"`
+	VLANTag   *int   `json:"vlan_tag,omitempty"`
+	LinkState string `json:"link_state,omitempty"` // "up" or "down"
 	// IPs holds only THIS interface's own IPv4 addresses (matched by
 	// MAC). Previously every interface row in the UI displayed the
 	// VM/container's whole IP list (VM.IPs) instead of its own — with
@@ -801,6 +802,10 @@ type UpdateNetworkRequest struct {
 	Reservations []DHCPReservation `json:"reservations,omitempty"`
 	VLanAware    *bool             `json:"vlan_aware,omitempty"` // "direct" only
 	Autostart    *bool             `json:"autostart,omitempty"`
+	// AddSlaves attaches non-bridge network interfaces into this bridge (e.g. enx... into vmbr0)
+	AddSlaves []string `json:"add_slaves,omitempty"`
+	// RemoveSlaves detaches slave interfaces from this bridge (nomaster)
+	RemoveSlaves []string `json:"remove_slaves,omitempty"`
 }
 
 type HostInfo struct {
@@ -832,11 +837,37 @@ type HostStats struct {
 // HostInterface represents a physical/logical host network interface that
 // can be used as a bridge target for libvirt bridge-mode networks.
 type HostInterface struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`  // "ethernet", "wifi", "bond", "vlan"
-	State    string `json:"state"` // "up", "down", "unknown"
-	MAC      string `json:"mac"`
-	IPSource string `json:"ip_source"` // "static" | "dhcp" | "none"
+	Name     string   `json:"name"`
+	Type     string   `json:"type"`  // "ethernet", "wifi", "bond", "vlan"
+	State    string   `json:"state"` // "up", "down", "unknown"
+	MAC      string   `json:"mac"`
+	IPSource string   `json:"ip_source"`           // "static" | "dhcp" | "none"
+	Speed    int      `json:"speed,omitempty"`     // Link speed in Mbps, e.g. 1000
+	Master   string   `json:"master,omitempty"`    // Master bridge name if enslaved (e.g. "vmbr0")
+	Driver   string   `json:"driver,omitempty"`    // Kernel driver name (e.g. "cdc_ncm", "r8169")
+	IPv4     string   `json:"ipv4,omitempty"`      // Assigned IPv4 address with mask if any
+	Slaves   []string `json:"slaves,omitempty"`    // Member interfaces for bonding
+	BondMode string   `json:"bond_mode,omitempty"` // Mode for bonding (e.g. "active-backup")
+}
+
+// ConfigureHostInterfaceRequest allows setting IP/state or isolating an interface.
+type ConfigureHostInterfaceRequest struct {
+	State   *string `json:"state,omitempty"`   // "up" | "down"
+	Isolate bool    `json:"isolate,omitempty"` // If true, removes interface from master bridge
+	IPv4    *string `json:"ipv4,omitempty"`    // e.g. "192.168.1.50/24" or "" to flush
+	Gateway *string `json:"gateway,omitempty"` // e.g. "192.168.1.1" or "" to clear
+}
+
+// CreateHostBondRequest creates a Linux bonding interface (e.g. bond0).
+type CreateHostBondRequest struct {
+	Name       string   `json:"name"`              // e.g. "bond0"
+	Mode       string   `json:"mode"`              // "active-backup", "balance-rr", "802.3ad", "balance-xor"
+	Interfaces []string `json:"interfaces"`        // e.g. ["enp1s0", "enx6c1ff72592ae"]
+	Primary    string   `json:"primary,omitempty"` // optional primary interface for active-backup
+	Bridge     string   `json:"bridge,omitempty"`  // optional master bridge to attach the bond to (e.g. "vmbr0")
+	IPv4       string   `json:"ipv4,omitempty"`    // optional static CIDR
+	Gateway    string   `json:"gateway,omitempty"` // optional gateway
+	MTU        int      `json:"mtu,omitempty"`
 }
 
 // VMMeta is the webkvm app-level metadata stored inside a
@@ -941,9 +972,10 @@ type VlanSupport struct {
 
 // UpdateNetIfaceRequest is the payload of PATCH /api/vms/{id}/networks/{mac}.
 type UpdateNetIfaceRequest struct {
-	MAC     *string `json:"mac,omitempty"`
-	Network *string `json:"network,omitempty"`
-	VLANTag *int    `json:"vlan_tag,omitempty"` // nil = leave, 0 = remove VLAN
+	MAC       *string `json:"mac,omitempty"`
+	Network   *string `json:"network,omitempty"`
+	VLANTag   *int    `json:"vlan_tag,omitempty"`   // nil = leave, 0 = remove VLAN
+	LinkState *string `json:"link_state,omitempty"` // "up", "down"
 }
 
 // Group is a tag/label with a color, shared across VMs. Stored in
@@ -1176,6 +1208,22 @@ type User struct {
 	TOTPSecret      string   `json:"totp_secret,omitempty"`
 	TOTPEnabled     bool     `json:"totp_enabled,omitempty"`
 	TOTPBackupCodes []string `json:"totp_backup_codes,omitempty"`
+
+	// WebAuthn / Passkeys support
+	WebAuthnCredentials []WebAuthnCredential `json:"webauthn_credentials,omitempty"`
+}
+
+// WebAuthnCredential represents a registered WebAuthn / Passkey credential for a user.
+type WebAuthnCredential struct {
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	AttestationType string     `json:"attestation_type,omitempty"`
+	AAGUID          string     `json:"aaguid,omitempty"`
+	SignCount       uint32     `json:"sign_count"`
+	CreatedAt       time.Time  `json:"created_at"`
+	LastUsedAt      *time.Time `json:"last_used_at,omitempty"`
+	Transport       []string   `json:"transport,omitempty"`
+	RawJSON         string     `json:"raw_json,omitempty"`
 }
 
 // HasPermission reports whether the user is allowed to perform a specific action.
@@ -1227,6 +1275,7 @@ type UserResponse struct {
 	AllowedTags        []string         `json:"allowed_tags,omitempty"`
 	AllowedGroups      []string         `json:"allowed_groups,omitempty"`
 	TOTPEnabled        bool             `json:"totp_enabled"`
+	PasskeysCount      int              `json:"passkeys_count"`
 }
 
 func (u *User) ToResponse() UserResponse {
@@ -1246,6 +1295,7 @@ func (u *User) ToResponse() UserResponse {
 		AllowedTags:        u.AllowedTags,
 		AllowedGroups:      u.AllowedGroups,
 		TOTPEnabled:        u.TOTPEnabled,
+		PasskeysCount:      len(u.WebAuthnCredentials),
 	}
 }
 

@@ -167,6 +167,59 @@
     }
   }
 
+  // QEMU Guest Agent interactive tools (guest-exec, clock sync, fsfreeze)
+  let guestCommand = $state('');
+  let guestExecRunning = $state(false);
+  let guestExecResult = $state(null);
+  let guestFreezeStatus = $state('thawed');
+  let guestFreezeLoading = $state(false);
+  let guestSyncingClock = $state(false);
+
+  async function runGuestExec(cmd) {
+    const toRun = (cmd || guestCommand || '').trim();
+    if (!toRun || !vm || vm.state !== 'running') return;
+    guestExecRunning = true;
+    try {
+      const res = await api.guestExec(vm.id, { command: toRun });
+      guestExecResult = res;
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      guestExecRunning = false;
+    }
+  }
+
+  async function handleGuestSyncTime() {
+    if (!vm || vm.state !== 'running') return;
+    guestSyncingClock = true;
+    try {
+      await api.guestSyncTime(vm.id);
+      toast.success(t('vmDetail.guestClockSynced'));
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      guestSyncingClock = false;
+    }
+  }
+
+  async function handleGuestFSFreeze(freeze) {
+    if (!vm || vm.state !== 'running') return;
+    guestFreezeLoading = true;
+    try {
+      const res = await api.guestFSFreeze(vm.id, freeze);
+      guestFreezeStatus = freeze ? 'frozen' : 'thawed';
+      if (freeze) {
+        toast.success(t('vmDetail.guestFreezeSuccess', { count: res.count }));
+      } else {
+        toast.success(t('vmDetail.guestThawSuccess', { count: res.count }));
+      }
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      guestFreezeLoading = false;
+    }
+  }
+
   $effect(() => {
     if (activeSection === 'guest' && guestInfo === null && !guestLoading) {
       loadGuestInfo();
@@ -979,13 +1032,15 @@
   }
 
   async function saveIface(mac) {
-    if (!requireShutoff(t('vmDetail.requireShutoffEditingNic'))) return;
     const cur = ifaceEdits[mac];
     if (!cur) return;
+    const newMac = cur.mac.trim();
+    if (newMac && newMac !== mac) {
+      if (!requireShutoff(t('vmDetail.requireShutoffEditingNic'))) return;
+    }
     cur.error = '';
     cur.busy = true;
     ifaceEdits = { ...ifaceEdits };
-    const newMac = cur.mac.trim();
     const vlanRaw = cur.vlan.trim();
     let vlanTag = null;
     if (vlanRaw !== '') {
@@ -1036,6 +1091,20 @@
     } finally {
       cur.busy = false;
       ifaceEdits = { ...ifaceEdits };
+    }
+  }
+
+  async function toggleLinkState(iface) {
+    actionLoading = 'netlink';
+    try {
+      const nextState = iface.link_state === 'down' ? 'up' : 'down';
+      await api.updateNetIface(vmId, iface.mac, { link_state: nextState });
+      toast.success(nextState === 'up' ? 'Cable de red conectado' : 'Cable de red desconectado');
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      actionLoading = '';
     }
   }
 
@@ -1490,7 +1559,10 @@
         description: snapDesc,
         memory: snapMemory,
       });
-      await api.waitJob(res.job);
+      await api.waitJob(res.job, {
+        title: `Creando instantánea: ${snapName} (${vm?.name || vmId})`,
+        kind: 'snapshot',
+      });
       snapName = '';
       snapDesc = '';
       snapMemory = false;
@@ -1958,7 +2030,10 @@
     actionLoading = 'clone';
     try {
       const res = await api.cloneVM(vmId, { name: cName, pool: cPool, linked: cLinked });
-      const cloned = await api.waitJob(res.job);
+      const cloned = await api.waitJob(res.job, {
+        title: `Clonando VM: ${vm?.name || vmId} ➔ ${cName}`,
+        kind: 'clone',
+      });
       showClone = false;
       toast.success(t('vmDetail.vmCloned', { name: cloned?.name || cName }));
       await load();
@@ -1994,6 +2069,8 @@
     try {
       const res = await api.moveVMStorage(vmId, movePool);
       await api.waitJob(res.id, {
+        title: `Moviendo almacenamiento: ${vm?.name || vmId} ➔ ${movePool}`,
+        kind: 'storage',
         // A cross-device copy of a large disk can run well past the
         // default 10-minute ceiling; a timeout here would report
         // failure on a move that is still progressing fine.
@@ -3676,26 +3753,25 @@
 
         {#snippet sec_disks()}
           <BlockCard bid="disks" title={t('vmDetail.disks')}>
-            {#if !isContainerVm}
-              <div class="flex items-center justify-between mb-3">
-                <Button
-                  size="xs"
-                  variant="outline"
-                  onclick={() => {
-                    aDiskDevice = 'disk';
-                    aDiskBus = 'virtio';
-                    aDiskSize = 10;
-                    aDiskPool = vmDiskPools(pools)[0]?.name || 'webkvm-disks';
-                    aDiskExistingVol = '';
-                    aDiskVolumes = [];
-                    aDiskWWN = '';
-                    aDiskSerial = '';
-                    aDiskAlias = '';
-                    showAddDisk = true;
-                  }}>+ Add Disk</Button
-                >
-              </div>
-            {/if}
+            <div class="flex items-center justify-between mb-3">
+              <Button
+                size="xs"
+                variant="outline"
+                onclick={() => {
+                  aDiskDevice = 'disk';
+                  aDiskBus = isContainerVm ? 'incus' : 'virtio';
+                  aDiskSize = 10;
+                  aDiskPool =
+                    vmDiskPools(pools)[0]?.name || (isContainerVm ? 'default' : 'webkvm-disks');
+                  aDiskExistingVol = '';
+                  aDiskVolumes = [];
+                  aDiskWWN = '';
+                  aDiskSerial = '';
+                  aDiskAlias = '';
+                  showAddDisk = true;
+                }}>+ Add Disk</Button
+              >
+            </div>
             {#if !vm.disks || vm.disks.length === 0}
               <EmptyState compact icon="hardDrive" title={t('vmDetail.noDisks')} />
             {:else}
@@ -3772,12 +3848,15 @@
                           class="text-xs text-accent hover:text-accent-hover px-2 py-1 rounded hover:bg-muted"
                           >{t('vmDetail.changeBus')}</button
                         >
+                      {/if}
+                      {#if disk.target !== 'root'}
                         <button
                           onclick={() => {
-                            if (!requireShutoff(t('vmDetail.removing'))) return;
+                            if (!isContainerVm && vm.disks.length <= 1 && disk.device !== 'cdrom') {
+                              if (!requireShutoff(t('vmDetail.removing'))) return;
+                            }
                             removeDisk(disk.target);
                           }}
-                          title={t('vmDetail.requireShutoffTitle')}
                           class="text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10"
                           >{t('vmDetail.remove')}</button
                         >
@@ -3814,8 +3893,9 @@
                         </div>
                         <button
                           onclick={() => detachSharedFolder(f.tag)}
-                          disabled={actionLoading === 'sharedfolder' || vm.state !== 'shutoff'}
-                          title={vm.state !== 'shutoff'
+                          disabled={actionLoading === 'sharedfolder' ||
+                            (!isContainerVm && vm.state !== 'shutoff')}
+                          title={!isContainerVm && vm.state !== 'shutoff'
                             ? t('vmDetail.sharedFolderRequiresShutoff')
                             : ''}
                           class="text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
@@ -3823,7 +3903,9 @@
                         >
                       </div>
                       <div class="text-[10px] font-mono text-muted-foreground truncate">
-                        {sharedFolder9pMountCommand(f.tag)}
+                        {isContainerVm
+                          ? `Montado en: ${f.tag.startsWith('/') ? f.tag : '/mnt/' + f.tag}`
+                          : sharedFolder9pMountCommand(f.tag)}
                       </div>
                     </div>
                   {/each}
@@ -3852,11 +3934,12 @@
                   variant="outline"
                   onclick={attachSharedFolder}
                   disabled={actionLoading === 'sharedfolder' ||
-                    vm.state !== 'shutoff' ||
+                    (!isContainerVm && vm.state !== 'shutoff') ||
                     !newSharedFolderPath ||
                     !newSharedFolderTag}
-                  title={vm.state !== 'shutoff' ? t('vmDetail.sharedFolderRequiresShutoff') : ''}
-                  >{t('vmDetail.sharedFolderAttach')}</Button
+                  title={!isContainerVm && vm.state !== 'shutoff'
+                    ? t('vmDetail.sharedFolderRequiresShutoff')
+                    : ''}>{t('vmDetail.sharedFolderAttach')}</Button
                 >
               </div>
             </div>
@@ -3891,6 +3974,19 @@
                         >{iface.model}</span
                       >
                       <span class="text-sm">{networkLabelFor(iface.network, networks)}</span>
+                      {#if iface.link_state === 'down'}
+                        <span
+                          class="text-xs px-1.5 py-0.5 rounded bg-destructive/10 border border-destructive/20 text-destructive font-mono"
+                        >
+                          Cable desconectado
+                        </span>
+                      {:else}
+                        <span
+                          class="text-xs px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 font-mono"
+                        >
+                          Enlace activo
+                        </span>
+                      {/if}
                       {#if vm.state === 'running' && iface.ips?.length}
                         <span
                           class="text-xs px-1.5 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent font-mono"
@@ -3898,11 +3994,25 @@
                         >
                       {/if}
                     </div>
-                    <button
-                      onclick={() => removeNet(iface.mac)}
-                      class="text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >{t('vmDetail.remove')}</button
-                    >
+                    <div class="flex items-center gap-1.5 shrink-0">
+                      {#if vm.state === 'running'}
+                        <button
+                          onclick={() => toggleLinkState(iface)}
+                          disabled={actionLoading === 'netlink'}
+                          class="text-xs px-2 py-1 rounded border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                          title="Conectar o desconectar cable virtual en caliente"
+                        >
+                          {iface.link_state === 'down'
+                            ? '🔌 Conectar cable'
+                            : '🔌 Desconectar cable'}
+                        </button>
+                      {/if}
+                      <button
+                        onclick={() => removeNet(iface.mac)}
+                        class="text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded hover:bg-destructive/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >{t('vmDetail.remove')}</button
+                      >
+                    </div>
                   </div>
                 {/each}
               </div>
@@ -4072,6 +4182,36 @@
                   <Button
                     size="xs"
                     variant="outline"
+                    onclick={handleGuestSyncTime}
+                    disabled={guestSyncingClock}
+                    title={t('vmDetail.guestSyncClock')}
+                  >
+                    {#if guestSyncingClock}<Spinner size="xs" />{:else}<Icon
+                        name="clock"
+                        size={13}
+                        class="mr-1"
+                      />{t('vmDetail.guestSyncClock')}{/if}
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant={guestFreezeStatus === 'frozen' ? 'destructive' : 'outline'}
+                    onclick={() => handleGuestFSFreeze(guestFreezeStatus !== 'frozen')}
+                    disabled={guestFreezeLoading}
+                    title={guestFreezeStatus === 'frozen'
+                      ? t('vmDetail.guestThawBtn')
+                      : t('vmDetail.guestFreezeBtn')}
+                  >
+                    {#if guestFreezeLoading}<Spinner size="xs" />{:else}<Icon
+                        name="shield"
+                        size={13}
+                        class="mr-1"
+                      />{guestFreezeStatus === 'frozen'
+                        ? t('vmDetail.guestThawBtn')
+                        : t('vmDetail.guestFreezeBtn')}{/if}
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="outline"
                     onclick={runGuestFSTrim}
                     disabled={actionLoading === 'fstrim'}
                     title={t('vmDetail.fstrimDesc')}
@@ -4229,6 +4369,145 @@
                   {/each}
                 </div>
               {/if}
+
+              <!-- In-Guest Execution (guest-exec) Console -->
+              <div class="mt-6 pt-4 border-t border-border space-y-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                    >
+                      {t('vmDetail.guestConsole')}
+                    </h3>
+                    <p class="text-xs text-muted-foreground">
+                      {t('vmDetail.guestConsoleDesc')}
+                    </p>
+                  </div>
+                  <span
+                    class="text-[10px] px-1.5 py-0.5 rounded font-mono bg-accent/10 text-accent"
+                  >
+                    guest-exec
+                  </span>
+                </div>
+
+                <!-- Presets -->
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    class="text-[11px] px-2 py-0.5 rounded border border-border bg-muted/40 hover:bg-muted font-mono transition-colors"
+                    onclick={() => runGuestExec('uptime')}
+                    disabled={guestExecRunning}
+                  >
+                    {t('vmDetail.presetUptime')}
+                  </button>
+                  <button
+                    type="button"
+                    class="text-[11px] px-2 py-0.5 rounded border border-border bg-muted/40 hover:bg-muted font-mono transition-colors"
+                    onclick={() => runGuestExec('df -h')}
+                    disabled={guestExecRunning}
+                  >
+                    {t('vmDetail.presetDiskUsage')}
+                  </button>
+                  <button
+                    type="button"
+                    class="text-[11px] px-2 py-0.5 rounded border border-border bg-muted/40 hover:bg-muted font-mono transition-colors"
+                    onclick={() => runGuestExec('free -m')}
+                    disabled={guestExecRunning}
+                  >
+                    {t('vmDetail.presetMemUsage')}
+                  </button>
+                  <button
+                    type="button"
+                    class="text-[11px] px-2 py-0.5 rounded border border-border bg-muted/40 hover:bg-muted font-mono transition-colors"
+                    onclick={() => runGuestExec('ip a')}
+                    disabled={guestExecRunning}
+                  >
+                    {t('vmDetail.presetIp')}
+                  </button>
+                  <button
+                    type="button"
+                    class="text-[11px] px-2 py-0.5 rounded border border-border bg-muted/40 hover:bg-muted font-mono transition-colors"
+                    onclick={() => runGuestExec('cat /etc/os-release 2>/dev/null || systeminfo')}
+                    disabled={guestExecRunning}
+                  >
+                    {t('vmDetail.presetOs')}
+                  </button>
+                </div>
+
+                <!-- Command Input & Run -->
+                <form
+                  onsubmit={(e) => {
+                    e.preventDefault();
+                    runGuestExec();
+                  }}
+                  class="flex items-center gap-2"
+                >
+                  <Input
+                    bind:value={guestCommand}
+                    placeholder={t('vmDetail.guestCommandPlaceholder')}
+                    class="font-mono text-xs flex-1"
+                    disabled={guestExecRunning}
+                  />
+                  <Button
+                    type="submit"
+                    size="sm"
+                    disabled={guestExecRunning || !guestCommand.trim()}
+                    class="gap-1.5 shrink-0"
+                  >
+                    {#if guestExecRunning}
+                      <Spinner size="xs" color="text-white" />
+                      {t('vmDetail.guestRunning')}
+                    {:else}
+                      <Icon name="play" size={13} />
+                      {t('vmDetail.guestRun')}
+                    {/if}
+                  </Button>
+                </form>
+
+                <!-- Output Box -->
+                {#if guestExecResult}
+                  <div
+                    class="rounded-md border border-border bg-black/90 p-3 font-mono text-xs space-y-2"
+                  >
+                    <div class="flex items-center justify-between border-b border-border/40 pb-2">
+                      <div class="flex items-center gap-2">
+                        <span class="text-muted-foreground">{t('vmDetail.guestExitCode')}:</span>
+                        <span
+                          class="px-1.5 py-0.5 rounded text-[10px] font-bold {guestExecResult.exit_code ===
+                          0
+                            ? 'bg-emerald-500/20 text-emerald-400'
+                            : 'bg-destructive/20 text-destructive'}"
+                        >
+                          {guestExecResult.exit_code}
+                        </span>
+                        {#if !guestExecResult.exited}
+                          <span class="text-[10px] text-amber-400 font-semibold">(Timeout)</span>
+                        {/if}
+                      </div>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        class="!h-6 !text-[10px] text-muted-foreground hover:text-foreground"
+                        onclick={() => (guestExecResult = null)}
+                      >
+                        {t('common.clear')}
+                      </Button>
+                    </div>
+
+                    {#if guestExecResult.stdout}
+                      <pre
+                        class="text-emerald-400 whitespace-pre-wrap overflow-x-auto max-h-60 leading-relaxed">{guestExecResult.stdout}</pre>
+                    {/if}
+                    {#if guestExecResult.stderr}
+                      <pre
+                        class="text-destructive whitespace-pre-wrap overflow-x-auto max-h-40 leading-relaxed">{guestExecResult.stderr}</pre>
+                    {/if}
+                    {#if !guestExecResult.stdout && !guestExecResult.stderr}
+                      <p class="text-muted-foreground italic text-[11px]">(No output returned)</p>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
             {/if}
           </BlockCard>
         {/snippet}
@@ -5958,7 +6237,7 @@
       <div class="space-y-3">
         {#if vm?.state !== 'shutoff'}
           <div
-            class="p-3 border border-warning/30 bg-warning/10 rounded-md text-warning text-xs flex items-start gap-2"
+            class="p-2.5 border border-accent/30 bg-accent/10 rounded-md text-accent text-xs flex items-start gap-2"
           >
             <svg
               class="w-4 h-4 shrink-0 mt-0.5"
@@ -5966,11 +6245,12 @@
               stroke="currentColor"
               stroke-width="2"
               viewBox="0 0 24 24"
-              ><path
-                d="M12 9v2m0 4h.01M5 19h14a2 2 0 0 0 1.84-2.75L13.74 4a2 2 0 0 0-3.48 0L3.16 16.25A2 2 0 0 0 5 19z"
-              /></svg
+              ><path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg
             >
-            <span>{t('vmDetail.networkEditShutoff')}</span>
+            <span
+              >El cambio de red o puente se aplica en caliente. La modificación de la dirección MAC
+              física requiere apagar la máquina.</span
+            >
           </div>
         {/if}
         {#if !vm?.networks || vm.networks.length === 0}
@@ -6002,11 +6282,7 @@
                     <div class="block text-xs font-medium text-muted-foreground mb-1">
                       {t('vmDetail.tabNetwork')}
                     </div>
-                    <select
-                      bind:value={edit.network}
-                      disabled={vm.state !== 'shutoff'}
-                      class="input !text-xs"
-                    >
+                    <select bind:value={edit.network} class="input !text-xs">
                       {#each vmNetworks as n (n)}
                         <option value={n.name}>{n.name}</option>
                       {/each}
@@ -6020,7 +6296,7 @@
                     </div>
                     <Input
                       bind:value={edit.vlan}
-                      disabled={vm.state !== 'shutoff' || (support && !support.supported)}
+                      disabled={support && !support.supported}
                       placeholder="—"
                       class="tnum text-xs"
                     />
@@ -6038,7 +6314,7 @@
                   <Button
                     size="xs"
                     onclick={() => saveIface(iface.mac)}
-                    disabled={edit.busy || vm.state !== 'shutoff'}
+                    disabled={edit.busy || (vm.state !== 'shutoff' && edit.mac !== iface.mac)}
                   >
                     {#if edit.busy}<Spinner size="xs" color="text-white" />{:else}{t(
                         'vmDetail.saveInterface'

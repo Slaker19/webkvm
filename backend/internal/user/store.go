@@ -821,3 +821,115 @@ func (s *Store) ConsumeBackupCode(username, code string) (bool, error) {
 	}
 	return false, nil
 }
+
+// AddWebAuthnCredential adds a new passkey credential to the user account.
+func (s *Store) AddWebAuthnCredential(username string, cred models.WebAuthnCredential) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[username]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	for _, existing := range u.WebAuthnCredentials {
+		if strings.TrimRight(existing.ID, "=") == strings.TrimRight(cred.ID, "=") {
+			return fmt.Errorf("credential already registered")
+		}
+	}
+	u.WebAuthnCredentials = append(u.WebAuthnCredentials, cred)
+	return s.save()
+}
+
+// GetWebAuthnCredentials returns the list of passkeys registered for a user.
+func (s *Store) GetWebAuthnCredentials(username string) ([]models.WebAuthnCredential, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	u, ok := s.users[username]
+	if !ok {
+		return nil, fmt.Errorf("user not found")
+	}
+	out := make([]models.WebAuthnCredential, len(u.WebAuthnCredentials))
+	copy(out, u.WebAuthnCredentials)
+	return out, nil
+}
+
+// UpdateWebAuthnCredentialName renames an existing passkey.
+func (s *Store) UpdateWebAuthnCredentialName(username, credID, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[username]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	targetID := strings.TrimRight(credID, "=")
+	for i := range u.WebAuthnCredentials {
+		if strings.TrimRight(u.WebAuthnCredentials[i].ID, "=") == targetID {
+			u.WebAuthnCredentials[i].Name = name
+			return s.save()
+		}
+	}
+	return fmt.Errorf("credential not found")
+}
+
+// DeleteWebAuthnCredential removes a passkey from a user.
+func (s *Store) DeleteWebAuthnCredential(username, credID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[username]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	targetID := strings.TrimRight(credID, "=")
+	found := false
+	var kept []models.WebAuthnCredential
+	for _, c := range u.WebAuthnCredentials {
+		if strings.TrimRight(c.ID, "=") == targetID {
+			found = true
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if !found {
+		return fmt.Errorf("credential not found")
+	}
+	u.WebAuthnCredentials = kept
+	return s.save()
+}
+
+// FindUserByWebAuthnCredentialID finds a user by credential ID (for passkey login).
+func (s *Store) FindUserByWebAuthnCredentialID(credID string) (*models.User, *models.WebAuthnCredential, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	targetID := strings.TrimRight(credID, "=")
+	for _, u := range s.users {
+		for i, c := range u.WebAuthnCredentials {
+			if strings.TrimRight(c.ID, "=") == targetID {
+				userCopy := *u
+				credCopy := u.WebAuthnCredentials[i]
+				return &userCopy, &credCopy, nil
+			}
+		}
+	}
+	return nil, nil, fmt.Errorf("user with credential not found")
+}
+
+// RecordWebAuthnUsage updates the last used timestamp and sign count of a passkey.
+func (s *Store) RecordWebAuthnUsage(username, credID string, signCount uint32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[username]
+	if !ok {
+		return fmt.Errorf("user not found")
+	}
+	now := time.Now().UTC()
+	targetID := strings.TrimRight(credID, "=")
+	for i := range u.WebAuthnCredentials {
+		if strings.TrimRight(u.WebAuthnCredentials[i].ID, "=") == targetID {
+			u.WebAuthnCredentials[i].LastUsedAt = &now
+			if signCount > u.WebAuthnCredentials[i].SignCount {
+				u.WebAuthnCredentials[i].SignCount = signCount
+			}
+			return s.save()
+		}
+	}
+	return nil
+}

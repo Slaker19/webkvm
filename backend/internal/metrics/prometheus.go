@@ -24,11 +24,11 @@ type HostTelemetry struct {
 
 // PrometheusData bundles all data required to render the OpenMetrics / Prometheus scrape.
 type PrometheusData struct {
-	Version     string
-	Host        *HostTelemetry
-	VMs         []models.VM
-	VMMetrics   map[string]models.VMMetrics
-	Pools       []models.StoragePool
+	Version   string
+	Host      *HostTelemetry
+	VMs       []models.VM
+	VMMetrics map[string]models.VMMetrics
+	Pools     []models.StoragePool
 }
 
 // PrometheusExporter formats metric series according to the Prometheus text-based format.

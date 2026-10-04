@@ -49,7 +49,7 @@ COPY backend/ ./
 # Copy compiled frontend assets from Stage 1 into backend embedded FS
 COPY --from=frontend-builder /src/frontend/dist ./internal/frontend/dist
 
-ARG VERSION=0.1.5
+ARG VERSION=0.1.6
 RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/webkvm ./cmd/server && \
     CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/webkvm-cli ./cmd/cli
 

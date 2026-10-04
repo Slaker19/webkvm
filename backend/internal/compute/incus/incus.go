@@ -813,9 +813,91 @@ func (b *IncusBackend) GetDomainLog(id string, lines int) (string, error) {
 // --- Disks / devices / USB ---
 
 func (b *IncusBackend) AttachDisk(id string, req models.AttachDiskRequest) error {
-	return compute.ErrNotImplemented
+	if b.client == nil {
+		return compute.ErrNotImplemented
+	}
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return err
+	}
+	if inst.Devices == nil {
+		inst.Devices = make(map[string]map[string]string)
+	}
+
+	devName := req.Alias
+	if devName == "" {
+		for i := 1; i <= 64; i++ {
+			candidate := fmt.Sprintf("disk%d", i)
+			if _, exists := inst.Devices[candidate]; !exists {
+				devName = candidate
+				break
+			}
+		}
+	}
+	if devName == "" {
+		devName = fmt.Sprintf("disk-%d", time.Now().Unix())
+	}
+
+	dev := map[string]string{
+		"type": "disk",
+		"path": "/mnt/" + devName,
+	}
+	if req.Pool != "" {
+		dev["pool"] = req.Pool
+	}
+	if req.Source != "" {
+		dev["source"] = req.Source
+	}
+	if req.SizeGB > 0 {
+		dev["size"] = fmt.Sprintf("%dGiB", req.SizeGB)
+	}
+
+	inst.Devices[devName] = dev
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
 }
-func (b *IncusBackend) DetachDisk(id, target string) error { return compute.ErrNotImplemented }
+
+func (b *IncusBackend) DetachDisk(id, target string) error {
+	if b.client == nil {
+		return compute.ErrNotImplemented
+	}
+	if target == "root" {
+		return fmt.Errorf("cannot detach container root device")
+	}
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return err
+	}
+	found := false
+	for name, dev := range inst.Devices {
+		if dev["type"] == "disk" && (name == target || dev["path"] == target || dev["source"] == target) {
+			delete(inst.Devices, name)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("disk %q not found on container", target)
+	}
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
+}
 func (b *IncusBackend) ChangeDiskBus(id, target, newBus string) error {
 	return compute.ErrNotImplemented
 }
@@ -1035,13 +1117,7 @@ func (b *IncusBackend) UpdateNetworkIface(id, oldMAC string, req models.UpdateNe
 	if req.MAC != nil && *req.MAC != oldMAC {
 		return fmt.Errorf("changing a container NIC MAC is not supported: %w", compute.ErrNotImplemented)
 	}
-	if req.Network == nil {
-		return nil
-	}
-	bridge, err := b.bridgeForNetwork(*req.Network)
-	if err != nil {
-		return err
-	}
+
 	inst, etag, err := b.client.GetInstance(id)
 	if err != nil {
 		return err
@@ -1050,7 +1126,33 @@ func (b *IncusBackend) UpdateNetworkIface(id, oldMAC string, req models.UpdateNe
 	if devName == "" {
 		return fmt.Errorf("no network interface with MAC %s", oldMAC)
 	}
-	inst.Devices[devName]["parent"] = bridge
+
+	needsUpdate := false
+	if req.Network != nil && *req.Network != "" {
+		bridge, err := b.bridgeForNetwork(*req.Network)
+		if err != nil {
+			return err
+		}
+		inst.Devices[devName]["parent"] = bridge
+		needsUpdate = true
+	}
+
+	if req.LinkState != nil && *req.LinkState != "" {
+		ls := strings.ToLower(strings.TrimSpace(*req.LinkState))
+		if ls != "up" && ls != "down" {
+			return fmt.Errorf("invalid link state %q: must be 'up' or 'down'", *req.LinkState)
+		}
+		guestNicName := devName
+		if n, ok := inst.Devices[devName]["name"]; ok && n != "" {
+			guestNicName = n
+		}
+		_, _ = b.runInGuest(id, []string{"ip", "link", "set", guestNicName, ls})
+	}
+
+	if !needsUpdate {
+		return nil
+	}
+
 	op, err := b.client.UpdateInstance(id, api.InstancePut{
 		Config:      inst.Config,
 		Devices:     inst.Devices,
@@ -1090,11 +1192,70 @@ func nicDeviceByMAC(inst *api.Instance, mac string) string {
 	return ""
 }
 func (b *IncusBackend) AttachUSBDevice(id, vendorID, productID string) error {
-	return compute.ErrNotImplemented
+	if b.client == nil {
+		return compute.ErrNotImplemented
+	}
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return err
+	}
+	vID := strings.ToLower(strings.TrimPrefix(vendorID, "0x"))
+	pID := strings.ToLower(strings.TrimPrefix(productID, "0x"))
+	devName := fmt.Sprintf("usb-%s-%s", vID, pID)
+	if inst.Devices == nil {
+		inst.Devices = make(map[string]map[string]string)
+	}
+	inst.Devices[devName] = map[string]string{
+		"type":      "usb",
+		"vendorid":  vID,
+		"productid": pID,
+	}
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
 }
+
 func (b *IncusBackend) DetachUSBDevice(id, vendorID, productID string) error {
-	return compute.ErrNotImplemented
+	if b.client == nil {
+		return compute.ErrNotImplemented
+	}
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return err
+	}
+	vID := strings.ToLower(strings.TrimPrefix(vendorID, "0x"))
+	pID := strings.ToLower(strings.TrimPrefix(productID, "0x"))
+	devName := fmt.Sprintf("usb-%s-%s", vID, pID)
+	found := false
+	for k, dev := range inst.Devices {
+		if dev["type"] == "usb" && (k == devName || (strings.ToLower(strings.TrimPrefix(dev["vendorid"], "0x")) == vID && strings.ToLower(strings.TrimPrefix(dev["productid"], "0x")) == pID)) {
+			delete(inst.Devices, k)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("USB device %s:%s not found on instance", vendorID, productID)
+	}
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
 }
+
 func (b *IncusBackend) ListHostUSBDevices() ([]models.USBDevice, error) {
 	return nil, compute.ErrNotImplemented
 }
@@ -1110,11 +1271,71 @@ func (b *IncusBackend) ListHostPCIDevices() ([]models.PCIIOMMUGroup, error) {
 func (b *IncusBackend) GetHostPCIPreflight() (models.PCIPreflightInfo, error) {
 	return models.PCIPreflightInfo{}, compute.ErrNotImplemented
 }
+
 func (b *IncusBackend) AttachSharedFolder(id, hostPath, tag string, readOnly bool) error {
-	return compute.ErrNotImplemented
+	if b.client == nil {
+		return compute.ErrNotImplemented
+	}
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return err
+	}
+	devName := "shared-" + tag
+	cPath := tag
+	if !strings.HasPrefix(cPath, "/") {
+		cPath = "/mnt/" + tag
+	}
+	if inst.Devices == nil {
+		inst.Devices = make(map[string]map[string]string)
+	}
+	dev := map[string]string{
+		"type":   "disk",
+		"source": hostPath,
+		"path":   cPath,
+	}
+	if readOnly {
+		dev["readonly"] = "true"
+	}
+	inst.Devices[devName] = dev
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
 }
+
 func (b *IncusBackend) DetachSharedFolder(id, tag string) error {
-	return compute.ErrNotImplemented
+	if b.client == nil {
+		return compute.ErrNotImplemented
+	}
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return err
+	}
+	devName := "shared-" + tag
+	if _, ok := inst.Devices[devName]; !ok {
+		if _, ok := inst.Devices[tag]; ok {
+			devName = tag
+		} else {
+			return fmt.Errorf("shared folder with tag %q not found", tag)
+		}
+	}
+	delete(inst.Devices, devName)
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
 }
 
 // --- Snapshots ---
@@ -1953,6 +2174,22 @@ func (b *IncusBackend) GetGuestInfo(id string) (compute.GuestInfo, error) {
 
 func (b *IncusBackend) FSTrim(id string) (compute.GuestFSTrimResult, error) {
 	return compute.GuestFSTrimResult{}, compute.ErrNotImplemented
+}
+
+func (b *IncusBackend) GuestExec(id, path string, args []string, timeoutSec int) (compute.GuestExecResult, error) {
+	return compute.GuestExecResult{}, compute.ErrNotImplemented
+}
+
+func (b *IncusBackend) FSFreeze(id string, freeze bool) (int, error) {
+	return 0, compute.ErrNotImplemented
+}
+
+func (b *IncusBackend) FSFreezeStatus(id string) (string, error) {
+	return "", compute.ErrNotImplemented
+}
+
+func (b *IncusBackend) GuestSyncTime(id string) error {
+	return compute.ErrNotImplemented
 }
 
 // --- Backup / export / OVA / import ---
@@ -3568,7 +3805,36 @@ func instanceToVM(i *api.Instance) models.VM {
 					vm.DiskGB = sz
 				}
 				vm.Disks = append(vm.Disks, d)
+			} else if strings.HasPrefix(name, "shared-") {
+				vm.SharedFolders = append(vm.SharedFolders, models.SharedFolder{
+					Tag:      strings.TrimPrefix(name, "shared-"),
+					HostPath: dev["source"],
+					ReadOnly: dev["readonly"] == "true",
+				})
+			} else {
+				d := models.DiskInfo{
+					Device: "disk", Bus: "incus", Target: name, Name: name,
+					Source: dev["source"], Pool: dev["pool"], Type: "disk",
+				}
+				if sz := parseDiskGB(dev["size"]); sz > 0 {
+					d.SizeGB = sz
+				}
+				vm.Disks = append(vm.Disks, d)
 			}
+		case "usb":
+			vID := dev["vendorid"]
+			pID := dev["productid"]
+			if !strings.HasPrefix(vID, "0x") && vID != "" {
+				vID = "0x" + vID
+			}
+			if !strings.HasPrefix(pID, "0x") && pID != "" {
+				pID = "0x" + pID
+			}
+			vm.USBDevices = append(vm.USBDevices, models.USBDevice{
+				VendorID:  vID,
+				ProductID: pID,
+				Name:      fmt.Sprintf("USB Device %s:%s", dev["vendorid"], dev["productid"]),
+			})
 		case "nic":
 			parent := dev["parent"]
 			vm.Networks = append(vm.Networks, models.NetIface{

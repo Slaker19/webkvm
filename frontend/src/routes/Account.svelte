@@ -63,7 +63,10 @@
     Activity,
     Terminal,
     Image,
+    Fingerprint,
+    Pencil,
   } from '@lucide/svelte';
+  import * as webauthnJson from '@github/webauthn-json';
   import LanguageSelector from '$lib/components/LanguageSelector.svelte';
 
   let me = $state(null);
@@ -72,6 +75,9 @@
   let activeTab = $state('security'); // 'security' | 'appearance' | 'tokens'
 
   onMount(() => {
+    if (typeof window !== 'undefined' && window.PublicKeyCredential) {
+      isWebAuthnSupported = true;
+    }
     load();
   });
 
@@ -104,6 +110,17 @@
   let disable2FAPassword = $state('');
   let disabling2FA = $state(false);
 
+  // --- WebAuthn / Passkeys ---
+  let passkeys = $state([]);
+  let loadingPasskeys = $state(false);
+  let showAddPasskeyDialog = $state(false);
+  let newPasskeyName = $state('');
+  let addingPasskey = $state(false);
+  let confirmDeletePasskey = $state(null);
+  let editingPasskey = $state(null);
+  let editPasskeyName = $state('');
+  let isWebAuthnSupported = $state(false);
+
   const strength = $derived(passwordStrength(newPassword));
   const passwordsMatch = $derived(
     newPassword === '' || confirmPassword === '' || newPassword === confirmPassword
@@ -126,7 +143,7 @@
           activeTab = 'security';
         }
       }
-      await loadTokens();
+      await Promise.all([loadTokens(), loadPasskeys()]);
     } catch (e) {
       toast.error(e.message || t('account.loadFailed'));
       if (!me) {
@@ -315,6 +332,82 @@
       toast.error(e.message || t('account.disable2FAFailed'));
     } finally {
       disabling2FA = false;
+    }
+  }
+
+  async function loadPasskeys() {
+    loadingPasskeys = true;
+    try {
+      const r = await api.webauthnListCredentials();
+      passkeys = r?.credentials || [];
+    } catch {
+      passkeys = [];
+    } finally {
+      loadingPasskeys = false;
+    }
+  }
+
+  async function registerPasskey() {
+    addingPasskey = true;
+    try {
+      if (!webauthnJson.supported()) {
+        throw new Error(t('account.passkeyNotSupportedWarning'));
+      }
+      const beginRes = await api.webauthnRegisterBegin();
+      const credential = await webauthnJson.create({ publicKey: beginRes.publicKey });
+      await api.webauthnRegisterFinish({
+        session_id: beginRes.session_id,
+        name: newPasskeyName.trim() || undefined,
+        response: credential,
+      });
+      toast.success(t('account.passkeyAddedSuccess'));
+      showAddPasskeyDialog = false;
+      newPasskeyName = '';
+      await loadPasskeys();
+      await load();
+    } catch (err) {
+      if (err.name === 'NotAllowedError') {
+        toast.info(t('account.passkeyCancelled'));
+      } else {
+        toast.error(err.message || t('account.passkeyAddFailed'));
+      }
+    } finally {
+      addingPasskey = false;
+    }
+  }
+
+  function deletePasskey(cred) {
+    confirmDeletePasskey = cred;
+  }
+
+  async function doDeletePasskey() {
+    if (!confirmDeletePasskey) return;
+    const cred = confirmDeletePasskey;
+    confirmDeletePasskey = null;
+    try {
+      await api.webauthnDeleteCredential(cred.id);
+      toast.success(t('account.passkeyDeleted'));
+      await loadPasskeys();
+      await load();
+    } catch (err) {
+      toast.error(err.message || t('account.passkeyDeleteFailed'));
+    }
+  }
+
+  function startEditPasskey(cred) {
+    editingPasskey = cred;
+    editPasskeyName = cred.name || '';
+  }
+
+  async function saveEditPasskey() {
+    if (!editingPasskey || !editPasskeyName.trim()) return;
+    try {
+      await api.webauthnUpdateCredential(editingPasskey.id, editPasskeyName.trim());
+      toast.success(t('account.passkeyUpdated'));
+      editingPasskey = null;
+      await loadPasskeys();
+    } catch (err) {
+      toast.error(err.message || t('account.passkeyUpdateFailed'));
     }
   }
 </script>
@@ -771,6 +864,124 @@
               </Button>
             </div>
           </form>
+        </div>
+
+        <!-- Passkeys / WebAuthn Card -->
+        <div
+          class="lg:col-span-2 rounded-2xl border border-border bg-card p-5 sm:p-6 flex flex-col justify-between shadow-sm"
+        >
+          <div>
+            <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <div class="flex items-center gap-2.5">
+                <div class="p-2 rounded-xl bg-accent/10 text-accent">
+                  <Fingerprint class="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 class="text-base font-semibold tracking-tight">
+                    {t('account.passkeysTitle')}
+                  </h3>
+                  <p class="text-xs text-muted-foreground mt-0.5">{t('account.passkeysDesc')}</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <Badge variant={passkeys.length > 0 ? 'success' : 'outline'} class="text-xs">
+                  {passkeys.length}
+                  {passkeys.length === 1 ? 'Passkey' : 'Passkeys'}
+                </Badge>
+                <Button
+                  size="sm"
+                  onclick={() => {
+                    newPasskeyName = '';
+                    showAddPasskeyDialog = true;
+                  }}
+                  class="bg-accent hover:bg-accent-hover text-accent-foreground font-medium shadow-sm transition-all"
+                >
+                  <Plus class="w-4 h-4 mr-1.5" />
+                  {t('account.addPasskey')}
+                </Button>
+              </div>
+            </div>
+
+            {#if !isWebAuthnSupported}
+              <div
+                class="p-3 my-3 rounded-xl border border-warning/30 bg-warning/10 text-xs text-warning flex items-start gap-2"
+              >
+                <AlertTriangle class="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{t('account.passkeyNotSupportedWarning')}</span>
+              </div>
+            {/if}
+
+            <div class="mt-4">
+              {#if loadingPasskeys}
+                <div class="flex items-center justify-center p-6 text-muted-foreground">
+                  <Spinner size="sm" class="mr-2" />
+                  <span class="text-xs">{t('common.loading')}</span>
+                </div>
+              {:else if passkeys.length === 0}
+                <div class="text-center py-6 px-4 border border-dashed border-border rounded-xl">
+                  <Fingerprint class="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
+                  <p class="text-xs text-muted-foreground">{t('account.noPasskeys')}</p>
+                </div>
+              {:else}
+                <div
+                  class="divide-y divide-border/60 border border-border/80 rounded-xl overflow-hidden bg-background/50"
+                >
+                  {#each passkeys as pk (pk.id)}
+                    <div class="p-3.5 flex items-center justify-between gap-3 flex-wrap">
+                      <div class="flex items-center gap-3 min-w-0">
+                        <div
+                          class="w-8 h-8 rounded-lg bg-accent/10 text-accent flex items-center justify-center shrink-0"
+                        >
+                          <Fingerprint class="w-4 h-4" />
+                        </div>
+                        <div class="min-w-0">
+                          <div class="flex items-center gap-2">
+                            <span class="text-sm font-semibold text-foreground truncate"
+                              >{pk.name}</span
+                            >
+                            <button
+                              type="button"
+                              onclick={() => startEditPasskey(pk)}
+                              class="text-muted-foreground hover:text-foreground transition-colors p-0.5"
+                              title={t('account.editPasskey')}
+                            >
+                              <Pencil class="w-3 h-3" />
+                            </button>
+                          </div>
+                          <div
+                            class="text-[11px] text-muted-foreground flex items-center gap-2 mt-0.5"
+                          >
+                            <span
+                              >{t('account.passkeyCreated')}: {pk.created_at
+                                ? new Date(pk.created_at).toLocaleDateString()
+                                : '—'}</span
+                            >
+                            <span>•</span>
+                            <span>
+                              {t('account.passkeyLastUsed')}: {pk.last_used_at
+                                ? new Date(pk.last_used_at).toLocaleDateString()
+                                : t('account.passkeyNeverUsed')}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="flex items-center gap-2">
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onclick={() => deletePasskey(pk)}
+                          class="text-destructive hover:bg-destructive/10"
+                        >
+                          <Trash2 class="w-3.5 h-3.5 mr-1" />
+                          {t('common.delete')}
+                        </Button>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          </div>
         </div>
       </div>
     {/if}
@@ -1653,3 +1864,78 @@
     />
   </div>
 </ConfirmDialog>
+
+<!-- Add Passkey Modal -->
+<ConfirmDialog
+  open={showAddPasskeyDialog}
+  title={t('account.addPasskey')}
+  message=""
+  confirmLabel={addingPasskey ? t('account.addingPasskey') : t('common.create')}
+  onConfirm={registerPasskey}
+  onCancel={() => {
+    showAddPasskeyDialog = false;
+    newPasskeyName = '';
+  }}
+>
+  <div class="space-y-3">
+    <p class="text-xs text-muted-foreground">
+      {t('account.passkeysDesc')}
+    </p>
+    <div>
+      <label
+        for="new-passkey-name"
+        class="text-xs font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5"
+      >
+        {t('account.passkeyName')}
+      </label>
+      <Input
+        id="new-passkey-name"
+        bind:value={newPasskeyName}
+        placeholder={t('account.passkeyNamePlaceholder')}
+        autofocus
+      />
+    </div>
+  </div>
+</ConfirmDialog>
+
+<!-- Edit Passkey Modal -->
+<ConfirmDialog
+  open={!!editingPasskey}
+  title={t('account.editPasskey')}
+  message=""
+  confirmLabel={t('common.save')}
+  onConfirm={saveEditPasskey}
+  onCancel={() => {
+    editingPasskey = null;
+    editPasskeyName = '';
+  }}
+>
+  <div class="space-y-3">
+    <div>
+      <label
+        for="edit-passkey-name"
+        class="text-xs font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5"
+      >
+        {t('account.passkeyName')}
+      </label>
+      <Input
+        id="edit-passkey-name"
+        bind:value={editPasskeyName}
+        placeholder={t('account.passkeyNamePlaceholder')}
+        autofocus
+      />
+    </div>
+  </div>
+</ConfirmDialog>
+
+<!-- Delete Passkey Confirmation -->
+<ConfirmDialog
+  open={!!confirmDeletePasskey}
+  title={t('account.deletePasskey')}
+  message={confirmDeletePasskey
+    ? `${t('account.deletePasskeyConfirm')} ("${confirmDeletePasskey.name}")`
+    : ''}
+  confirmLabel={t('common.delete')}
+  onConfirm={doDeletePasskey}
+  onCancel={() => (confirmDeletePasskey = null)}
+/>

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"webkvm/internal/audit"
 	"webkvm/internal/metrics"
@@ -104,4 +105,89 @@ func (h *Handler) filterAlertsByACL(r *http.Request, alerts []map[string]any) []
 		}
 	}
 	return out
+}
+
+// AlertmanagerWebhook receives webhook payloads from Prometheus Alertmanager.
+func (h *Handler) AlertmanagerWebhook(w http.ResponseWriter, r *http.Request) {
+	if h.alerter == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "alert engine not initialized")
+		return
+	}
+
+	_, _, ip := audit.FromRequest(r)
+	if h.jail != nil && h.jail.IsBanned(ip) {
+		jsonErr(w, http.StatusForbidden, "IP address temporarily banned")
+		return
+	}
+
+	if h.settings != nil {
+		expectedSecret := h.settings.GetString("alerts.webhook_secret")
+		if expectedSecret != "" {
+			authHeader := r.Header.Get("Authorization")
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			secretParam := r.URL.Query().Get("secret")
+			customHeader := r.Header.Get("X-Webhook-Secret")
+			if token != expectedSecret && secretParam != expectedSecret && customHeader != expectedSecret {
+				if h.jail != nil {
+					h.jail.RecordFailure(ip, "unauthorized alertmanager webhook")
+				}
+				jsonErr(w, http.StatusUnauthorized, "invalid webhook secret")
+				return
+			}
+		}
+	}
+
+	var payload metrics.AlertmanagerPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid alertmanager payload: "+err.Error())
+		return
+	}
+	ingested, err := h.alerter.IngestAlertmanager(payload)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jsonResp(w, http.StatusOK, map[string]any{
+		"status":   "ok",
+		"ingested": len(ingested),
+	})
+}
+
+// ListIncidents returns all tracked incidents across the system.
+func (h *Handler) ListIncidents(w http.ResponseWriter, r *http.Request) {
+	if h.alerter == nil {
+		jsonResp(w, http.StatusOK, map[string]any{"incidents": []any{}})
+		return
+	}
+	incidents := h.alerter.Incidents()
+	_, role, _ := audit.FromRequest(r)
+	if role != models.RoleAdmin && h.compute != nil {
+		if all, err := h.compute.ListDomains(); err == nil {
+			visible := map[string]bool{}
+			for _, vm := range h.filterVMsByACL(r, all) {
+				visible[vm.ID] = true
+			}
+			filtered := make([]metrics.Incident, 0, len(incidents))
+			for _, inc := range incidents {
+				if inc.VMID == "" || visible[inc.VMID] {
+					filtered = append(filtered, inc)
+				}
+			}
+			incidents = filtered
+		}
+	}
+	jsonResp(w, http.StatusOK, map[string]any{"incidents": incidents})
+}
+
+// ClearResolvedIncidents clears all resolved incidents from the feed. Admin only.
+func (h *Handler) ClearResolvedIncidents(w http.ResponseWriter, r *http.Request) {
+	if h.alerter == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "alert engine not initialized")
+		return
+	}
+	h.alerter.ClearResolvedIncidents()
+	if h.audit != nil {
+		h.audit.Log(auditFor(r, "alerts.incidents.clear_resolved", "", nil))
+	}
+	jsonResp(w, http.StatusOK, map[string]bool{"ok": true})
 }

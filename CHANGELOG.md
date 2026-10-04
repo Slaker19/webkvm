@@ -6,6 +6,40 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
+## [0.1.6] — 2026-10-04
+
+### Added
+
+- **Unified Background Task & Real-Time Progress System:**
+  - Full integration of all asynchronous and long-running operations with the global Task Center and Task Drawer (`TaskCenter.svelte` / `TaskDrawer.svelte`).
+  - Added dedicated global jobs listing endpoint `GET /api/jobs` supporting role-based access control, owner isolation, and continuous polling.
+  - Automatic progress reporting across VM cloning, batch cloning, snapshots, disk/storage migrations, VM/container provisioning, appliance deployment, host disk formatting/wiping, RAID array creation, and ZFS pool lifecycle actions.
+- **Host Network Bonding & Atomic Netplan Persistence:**
+  - Automated Layer 2 network bond creation (`balance-rr`, `active-backup`, `802.3ad`, etc.) with atomic Netplan file generation (`/etc/netplan/60-webkvm-bonds.yaml`), syntax verification (`netplan generate`), and safe application (`netplan apply`).
+  - Dedicated endpoint `DELETE /api/host/bonds/{name}` to gracefully tear down bonds and release slave interfaces.
+  - Resilient uplink protection allowing secondary slave interface isolation while safeguarding primary active uplinks against accidental disconnections.
+- **Native Ntfy & Gotify Alert Notification Channels:**
+  - Native integration with Ntfy (`ntfy.sh` or self-hosted) with customizable server URLs, topic routing, optional Bearer authorization tokens, and priority/emoji tag mapping based on alert severity (`info`, `warning`, `critical`).
+  - Native integration with Gotify self-hosted push notification server with application token authentication and numeric priority levels.
+  - Interactive UI configuration cards in Settings > Notifications with live status indicator badges and masked credential storage.
+  - Zero-leak HTTP transport with automatic connection teardown (`DisableKeepAlives: true`) ensuring no persistent idle loops remain after sending alerts.
+- **Advanced Perimeter Defense & Security Jail (SSH, Whitelists & Custom Jails):**
+  - Host SSH brute-force protection jail: live monitoring of systemd journal / auth logs to isolate SSH attackers directly at kernel level (`nftables`).
+  - Whitelist CIDRs/IPs management: configure subnets and IP addresses exempt from bans with automatic unbanning upon addition and persistence in `jail.json`.
+  - Manual IP banning: easily ban any malicious IP with custom duration, reason, and target origin.
+  - Custom Jails: create and manage customized jail profiles with distinct failure thresholds, detection windows, and ban durations.
+  - Multi-tab management interface in Settings > Security Jail with real-time statistics and i18n support (ES, EN, CA).
+- **Official Grafana Dashboard (`webkvm-overview.json`):**
+  - Production-ready dark overview dashboard pre-wired with host telemetry, instance metrics, and storage pools.
+  - Real-time stat panels, host CPU/RAM/Disk gauges, and historical time series for compute instances (vCPU usage %, memory allocation, disk I/O read/write throughput, network transfer rates).
+  - Storage pool allocation vs capacity breakdown with gradient thresholds.
+  - Dedicated endpoint `GET /api/metrics/grafana-dashboard` and one-click download button in Settings > Metrics.
+- **Prometheus / Alertmanager Alerting Rules (`webkvm-alerts.yml`):**
+  - Standard Alertmanager alerting rule definitions covering daemon reachability (`WebKVMDown`), host CPU/RAM/disk saturation, storage pool thresholds (>85%), and sustained VM CPU spikes.
+  - Dedicated endpoint `GET /api/metrics/alert-rules` and one-click download/copy buttons in Settings > Metrics.
+- **Full Internationalization (i18n):**
+  - Complete multilingual translations across English, Spanish (`es`), and Catalan (`ca`) for Ntfy, Gotify, Grafana dashboard, and Alertmanager rules.
+
 ## [0.1.5] — 2026-10-03
 
 ### Added

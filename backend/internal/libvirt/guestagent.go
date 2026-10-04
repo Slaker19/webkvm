@@ -141,9 +141,177 @@ func (c *Connector) getClipboardWindows(id string) (string, error) {
 	return c.guestExecCapture(id, qcmd)
 }
 
+func (c *Connector) virshCmd(args ...string) *exec.Cmd {
+	var fullArgs []string
+	if c.uri != "" {
+		fullArgs = append(fullArgs, "-c", c.uri)
+	}
+	fullArgs = append(fullArgs, args...)
+	return exec.Command("virsh", fullArgs...)
+}
+
+// GuestExecResult holds the outcome of executing a command in the guest.
+type GuestExecResult struct {
+	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	Exited   bool   `json:"exited"`
+}
+
+// GuestExec executes a command inside the guest via qemu-guest-agent and awaits its result.
+func (c *Connector) GuestExec(id, path string, args []string, timeoutSec int) (GuestExecResult, error) {
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return GuestExecResult{}, fmt.Errorf("lookup domain: %w", err)
+	}
+	dom.Free()
+
+	if path == "" {
+		path = "/bin/sh"
+	}
+
+	qcmd, err := buildGuestExec(path, args, true)
+	if err != nil {
+		return GuestExecResult{}, err
+	}
+
+	raw := c.virshCmd("qemu-agent-command", id, "--cmd", qcmd)
+	out, err := raw.CombinedOutput()
+	if err != nil {
+		return GuestExecResult{}, fmt.Errorf("virsh: %w (out: %s)", err, string(out))
+	}
+
+	var resp struct {
+		Return struct {
+			PID int `json:"pid"`
+		} `json:"return"`
+		Error struct {
+			Message string `json:"desc"`
+		} `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return GuestExecResult{}, fmt.Errorf("parse: %w (out: %s)", err, string(out))
+	}
+	if resp.Error.Message != "" {
+		return GuestExecResult{}, fmt.Errorf("guest agent: %s", resp.Error.Message)
+	}
+	if resp.Return.PID == 0 {
+		return GuestExecResult{}, fmt.Errorf("no PID returned")
+	}
+
+	pid := resp.Return.PID
+	if timeoutSec <= 0 {
+		timeoutSec = 15
+	}
+	if timeoutSec > 60 {
+		timeoutSec = 60
+	}
+
+	deadline := time.Now().Add(time.Duration(timeoutSec) * time.Second)
+	statusCmd := fmt.Sprintf(`{"execute":"guest-exec-status","arguments":{"pid":%d}}`, pid)
+
+	for time.Now().Before(deadline) {
+		rawStatus := c.virshCmd("qemu-agent-command", id, "--cmd", statusCmd)
+		outStatus, errStatus := rawStatus.CombinedOutput()
+		if errStatus != nil {
+			return GuestExecResult{}, fmt.Errorf("virsh status: %w (out: %s)", errStatus, string(outStatus))
+		}
+
+		var sr struct {
+			Return struct {
+				Exited   bool   `json:"exited"`
+				ExitCode int    `json:"exitcode"`
+				OutData  string `json:"out-data"`
+				ErrData  string `json:"err-data"`
+			} `json:"return"`
+			Error struct {
+				Message string `json:"desc"`
+			} `json:"error,omitempty"`
+		}
+		if err := json.Unmarshal(outStatus, &sr); err != nil {
+			return GuestExecResult{}, fmt.Errorf("parse status: %w (out: %s)", err, string(outStatus))
+		}
+		if sr.Error.Message != "" {
+			return GuestExecResult{}, fmt.Errorf("guest agent status: %s", sr.Error.Message)
+		}
+
+		if sr.Return.Exited {
+			var stdout, stderr string
+			if sr.Return.OutData != "" {
+				if d, err := base64.StdEncoding.DecodeString(sr.Return.OutData); err == nil {
+					stdout = string(d)
+				}
+			}
+			if sr.Return.ErrData != "" {
+				if d, err := base64.StdEncoding.DecodeString(sr.Return.ErrData); err == nil {
+					stderr = string(d)
+				}
+			}
+			return GuestExecResult{
+				ExitCode: sr.Return.ExitCode,
+				Stdout:   stdout,
+				Stderr:   stderr,
+				Exited:   true,
+			}, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return GuestExecResult{
+		Exited: false,
+		Stderr: "execution timed out",
+	}, nil
+}
+
+// FSFreeze freezes or thaws the guest filesystems. Returns the number of affected filesystems.
+func (c *Connector) FSFreeze(id string, freeze bool) (int, error) {
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return 0, fmt.Errorf("lookup domain: %w", err)
+	}
+	dom.Free()
+
+	cmd := "guest-fsfreeze-thaw"
+	if freeze {
+		cmd = "guest-fsfreeze-freeze"
+	}
+	var count int
+	if err := c.agentQuery(id, cmd, &count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// FSFreezeStatus returns "thawed" or "frozen" from the guest agent.
+func (c *Connector) FSFreezeStatus(id string) (string, error) {
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return "", fmt.Errorf("lookup domain: %w", err)
+	}
+	dom.Free()
+
+	var status string
+	if err := c.agentQuery(id, "guest-fsfreeze-status", &status); err != nil {
+		return "", err
+	}
+	return status, nil
+}
+
+// GuestSyncTime synchronizes the guest clock with the host time.
+func (c *Connector) GuestSyncTime(id string) error {
+	dom, err := c.lookupDomain(id)
+	if err != nil {
+		return fmt.Errorf("lookup domain: %w", err)
+	}
+	dom.Free()
+
+	args := map[string]int64{"time": time.Now().UnixNano()}
+	return c.agentQueryWithArgs(id, "guest-set-time", args, nil)
+}
+
 // guestExec fires a guest-exec command and returns the PID. Does NOT poll for completion.
 func (c *Connector) guestExec(id, qcmd string) error {
-	raw := exec.Command("virsh", "qemu-agent-command", id, "--cmd", qcmd)
+	raw := c.virshCmd("qemu-agent-command", id, "--cmd", qcmd)
 	out, err := raw.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("virsh: %w (out: %s)", err, string(out))
@@ -170,7 +338,7 @@ func (c *Connector) guestExec(id, qcmd string) error {
 
 // guestExecCapture fires a guest-exec with capture-output and polls for the result.
 func (c *Connector) guestExecCapture(id, qcmd string) (string, error) {
-	raw := exec.Command("virsh", "qemu-agent-command", id, "--cmd", qcmd)
+	raw := c.virshCmd("qemu-agent-command", id, "--cmd", qcmd)
 	out, err := raw.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("virsh: %w (out: %s)", err, string(out))
@@ -197,7 +365,7 @@ func (c *Connector) guestExecCapture(id, qcmd string) (string, error) {
 	pid := resp.Return.PID
 	for i := 0; i < 50; i++ {
 		statusCmd := fmt.Sprintf(`{"execute":"guest-exec-status","arguments":{"pid":%d}}`, pid)
-		raw2 := exec.Command("virsh", "qemu-agent-command", id, "--cmd", statusCmd)
+		raw2 := c.virshCmd("qemu-agent-command", id, "--cmd", statusCmd)
 		out2, err2 := raw2.CombinedOutput()
 		if err2 != nil {
 			return "", fmt.Errorf("virsh status: %w (out: %s)", err2, string(out2))
@@ -243,12 +411,16 @@ func (c *Connector) guestExecCapture(id, qcmd string) (string, error) {
 // are answered by the agent itself, so they're a single round-trip and
 // work even on guests where exec is disabled via the agent's
 // allow/deny list — which is a common hardening step.
-func (c *Connector) agentQuery(id, command string, out any) error {
-	cmdBytes, err := json.Marshal(map[string]string{"execute": command})
+func (c *Connector) agentQueryWithArgs(id, command string, args any, out any) error {
+	payload := map[string]any{"execute": command}
+	if args != nil {
+		payload["arguments"] = args
+	}
+	cmdBytes, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal agent query: %w", err)
 	}
-	raw := exec.Command("virsh", "qemu-agent-command", id, "--cmd", string(cmdBytes))
+	raw := c.virshCmd("qemu-agent-command", id, "--cmd", string(cmdBytes))
 	stdout, err := raw.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("guest agent unreachable (is qemu-guest-agent running?): %w", err)
@@ -269,6 +441,10 @@ func (c *Connector) agentQuery(id, command string, out any) error {
 		return nil
 	}
 	return json.Unmarshal(resp.Return, out)
+}
+
+func (c *Connector) agentQuery(id, command string, out any) error {
+	return c.agentQueryWithArgs(id, command, nil, out)
 }
 
 // GuestFilesystem is one mounted filesystem as reported from inside

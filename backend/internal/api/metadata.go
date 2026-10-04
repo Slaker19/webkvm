@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -520,6 +521,167 @@ func (h *Handler) VMGuestFSTrim(w http.ResponseWriter, r *http.Request) {
 		"paths_count": len(res.Paths),
 	}))
 	jsonResp(w, http.StatusOK, res)
+}
+
+// GuestExecRequest is the payload for VMGuestExec.
+type GuestExecRequest struct {
+	Command    string   `json:"command,omitempty"`
+	Path       string   `json:"path,omitempty"`
+	Args       []string `json:"args,omitempty"`
+	TimeoutSec int      `json:"timeout_sec,omitempty"`
+}
+
+// VMGuestExec executes a command inside the guest OS via QEMU guest agent.
+func (h *Handler) VMGuestExec(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	vm, err := h.compute.GetDomain(id)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if vm.Hypervisor == "incus" {
+		jsonErr(w, http.StatusBadRequest, "guest exec is not applicable to containers")
+		return
+	}
+	if vm.State != models.VMStateRunning {
+		jsonErr(w, http.StatusConflict, "the VM must be running to execute guest commands")
+		return
+	}
+
+	var req GuestExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		jsonErr(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	path := req.Path
+	args := req.Args
+	if path == "" && strings.TrimSpace(req.Command) != "" {
+		path = "/bin/sh"
+		args = []string{"-c", req.Command}
+	}
+	if path == "" {
+		jsonErr(w, http.StatusBadRequest, "command or path is required")
+		return
+	}
+
+	res, err := h.compute.GuestExec(id, path, args, req.TimeoutSec)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if h.audit != nil {
+		h.audit.Log(auditFor(r, "vm.guest_exec", id, map[string]any{
+			"path":      path,
+			"exit_code": res.ExitCode,
+			"exited":    res.Exited,
+		}))
+	}
+
+	jsonResp(w, http.StatusOK, res)
+}
+
+// GuestFSFreezeRequest is the payload for VMGuestFSFreeze.
+type GuestFSFreezeRequest struct {
+	Freeze bool `json:"freeze"`
+}
+
+// VMGuestFSFreeze freezes or thaws guest filesystems via the guest agent.
+func (h *Handler) VMGuestFSFreeze(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	vm, err := h.compute.GetDomain(id)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if vm.Hypervisor == "incus" {
+		jsonErr(w, http.StatusBadRequest, "guest fsfreeze is not applicable to containers")
+		return
+	}
+	if vm.State != models.VMStateRunning {
+		jsonErr(w, http.StatusConflict, "the VM must be running to freeze filesystems")
+		return
+	}
+
+	var req GuestFSFreezeRequest
+	req.Freeze = true
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	count, err := h.compute.FSFreeze(id, req.Freeze)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if h.audit != nil {
+		h.audit.Log(auditFor(r, "vm.guest_fsfreeze", id, map[string]any{
+			"freeze": req.Freeze,
+			"count":  count,
+		}))
+	}
+
+	jsonResp(w, http.StatusOK, map[string]any{
+		"count":  count,
+		"frozen": req.Freeze,
+	})
+}
+
+// VMGuestFSFreezeStatus queries the current quiesce/freeze state of filesystems.
+func (h *Handler) VMGuestFSFreezeStatus(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	vm, err := h.compute.GetDomain(id)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if vm.Hypervisor == "incus" {
+		jsonErr(w, http.StatusBadRequest, "guest fsfreeze is not applicable to containers")
+		return
+	}
+	if vm.State != models.VMStateRunning {
+		jsonErr(w, http.StatusConflict, "the VM must be running")
+		return
+	}
+
+	status, err := h.compute.FSFreezeStatus(id)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	jsonResp(w, http.StatusOK, map[string]string{
+		"status": status,
+	})
+}
+
+// VMGuestSyncTime synchronizes the guest's clock with the host time.
+func (h *Handler) VMGuestSyncTime(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	vm, err := h.compute.GetDomain(id)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if vm.Hypervisor == "incus" {
+		jsonErr(w, http.StatusBadRequest, "guest clock sync is not applicable to containers")
+		return
+	}
+	if vm.State != models.VMStateRunning {
+		jsonErr(w, http.StatusConflict, "the VM must be running to sync clock")
+		return
+	}
+
+	if err := h.compute.GuestSyncTime(id); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if h.audit != nil {
+		h.audit.Log(auditFor(r, "vm.guest_synctime", id, nil))
+	}
+
+	jsonResp(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // GetVMMetricsHistory (V13-C-03) returns downsampled history for a VM.

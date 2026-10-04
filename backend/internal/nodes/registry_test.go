@@ -114,3 +114,35 @@ func TestRegistryDuplicateName(t *testing.T) {
 		t.Fatal("expected dup error")
 	}
 }
+
+func TestRegistryProbeLocalAndRemote(t *testing.T) {
+	dir := t.TempDir()
+	r, err := New(dir, "qemu:///system")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.SetLocalProber(func() (string, string, int64, int64, int64, string, error) {
+		return "online", "0.1.6", 3600, 50000000000, 100000000000, "ok", nil
+	})
+
+	localNode, err := r.ProbeNode("local")
+	if err != nil {
+		t.Fatalf("ProbeNode local failed: %v", err)
+	}
+	if localNode.Status != "online" || localNode.Version != "0.1.6" || localNode.LibvirtStatus != "ok" {
+		t.Fatalf("unexpected local node probe: %+v", localNode)
+	}
+
+	// Remote node with invalid URI should be marked offline
+	remoteNode, _ := r.Create("remote-offline", "https://127.0.0.1:54321")
+	probed, _ := r.ProbeNode(remoteNode.ID)
+	if probed.Status != "offline" {
+		t.Fatalf("expected remote to be offline, got: %s", probed.Status)
+	}
+
+	summary := r.ClusterSummary()
+	if summary.TotalNodes != 2 || summary.OnlineNodes != 1 || summary.OfflineNodes != 1 {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+}

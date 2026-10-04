@@ -6,6 +6,40 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.6] — 2026-10-04
+
+### Añadido
+
+- **Sistema Unificado de Tareas en Segundo Plano y Barras de Progreso:**
+  - Integración total de todas las operaciones asíncronas y de larga duración con el Centro de Tareas y Cajón de Tareas global (`TaskCenter.svelte` / `TaskDrawer.svelte`).
+  - Nuevo endpoint global `GET /api/jobs` con aislamiento por propietario y control de acceso basado en roles para la consulta en vivo de trabajos.
+  - Seguimiento y barras de progreso automáticas en clonado de máquinas virtuales y por lotes, instantáneas (snapshots), migración de almacenamiento y discos, creación de VMs y contenedores, despliegue de aplicaciones, inicialización y borrado seguro de discos, creación de arreglos RAID y gestión de pools ZFS.
+- **Gestión de Enlaces Redundantes (Bonds) y Persistencia Atómica en Netplan:**
+  - Creación automatizada de enlaces de red de Nivel 2 (`balance-rr`, `active-backup`, `802.3ad`, etc.) con persistencia atómica en `/etc/netplan/60-webkvm-bonds.yaml`, validación previa (`netplan generate`) y aplicación segura (`netplan apply`).
+  - Endpoint dedicado `DELETE /api/host/bonds/{name}` para la eliminación segura de bonds y liberación de interfaces esclavas.
+  - Protección de enlaces principales (uplinks) permitiendo el aislamiento seguro de tarjetas secundarias protegiendo la conexión de red del anfitrión.
+- **Canales Nativos de Notificación Ntfy y Gotify:**
+  - Integración nativa con Ntfy (`ntfy.sh` o servidor autoalojado) con URLs personalizables, enrutamiento por topics, tokens de autorización Bearer opcionales y mapeo automático de prioridades y emojis según la severidad (`info`, `warning`, `critical`).
+  - Integración nativa con el servidor de notificaciones push Gotify con autenticación mediante Application Token y niveles numéricos de prioridad.
+  - Tarjetas de configuración interactivas en Ajustes > Notificaciones con indicadores de estado en tiempo real y almacenamiento protegido de credenciales.
+  - Transporte HTTP de bajo consumo sin fugas de conexiones (`DisableKeepAlives: true`), garantizando el cierre inmediato de los bucles de red tras la entrega.
+- **Defensa Perimetral Avanzada y Security Jail (SSH, Whitelist y Jails Personalizados):**
+  - Jail de protección contra fuerza bruta SSH en el anfitrión: supervisión en tiempo real de journals de systemd y logs de autenticación para aislar atacantes a nivel kernel (`nftables`).
+  - Gestión de Whitelist de subredes CIDR e IPs: configuración de redes exentas de bloqueos con desbaneo automático al añadirse y persistencia en `jail.json`.
+  - Baneo manual de IPs: capacidad de aislar manualmente cualquier IP maliciosa con motivo, duración y origen asignables.
+  - Jails personalizados: definición de perfiles de protección propios con umbrales de fallos, ventanas temporales y duraciones de baneo configurables.
+  - Interfaz de administración con 3 subpestañas en Ajustes > Security Jail con telemetría en tiempo real e internacionalización completa (ES, EN, CA).
+- **Dashboard Oficial de Grafana (`webkvm-overview.json`):**
+  - Panel visual oscuro preconfigurado para Grafana con telemetría del host, métricas de instancias y storage pools.
+  - Paneles de estado en tiempo real, indicadores gauge de CPU/RAM/Disco y series temporales históricas para vCPUs, RAM asignada y consumida, I/O de disco y tráfico de red por instancia.
+  - Ocupación de storage pools con visualización de asignación vs capacidad y umbrales de advertencia.
+  - Endpoint dedicado `GET /api/metrics/grafana-dashboard` y descarga directa en un clic desde Ajustes > Métricas.
+- **Reglas de Alerta para Prometheus y Alertmanager (`webkvm-alerts.yml`):**
+  - Reglas estándar para Alertmanager que supervisan disponibilidad del demonio (`WebKVMDown`), saturación de CPU/RAM/disco del anfitrión, saturación de pools de almacenamiento (>85%) y picos sostenidos de vCPU en instancias.
+  - Endpoint dedicado `GET /api/metrics/alert-rules` con botones de descarga y copia rápida desde la interfaz.
+- **Internacionalización Completa (i18n):**
+  - Traducciones simétricas y completas en Español, Inglés y Catalán para todas las nuevas opciones de Ntfy, Gotify, Dashboard de Grafana y reglas de Alertmanager.
+
 ## [0.1.5] — 2026-10-03
 
 ### Añadido

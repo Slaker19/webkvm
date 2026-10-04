@@ -181,8 +181,27 @@ func isPhysicalInterface(name string) bool {
 	return err == nil
 }
 
+// isBondInterface reports whether name is a Linux bonding interface
+// (/sys/class/net/<name>/bonding exists) and is not a bridge.
+func isBondInterface(name string) bool {
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") || strings.Contains(name, "\\") {
+		return false
+	}
+	base := "/sys/class/net/" + name
+	if _, err := os.Stat(base + "/bridge"); err == nil {
+		return false
+	}
+	_, err := os.Stat(base + "/bonding")
+	return err == nil
+}
+
+// isPhysicalOrBondInterface reports whether name is a physical NIC or a bonding interface.
+func isPhysicalOrBondInterface(name string) bool {
+	return isPhysicalInterface(name) || isBondInterface(name)
+}
+
 // listPhysicalInterfaces returns the names of the host's physical/
-// wireless NICs, sorted alphabetically, for use in error-message
+// wireless NICs and bonding interfaces, sorted alphabetically, for use in error-message
 // hints. Mirrors the filtering in api.ListHostInterfaces; callers
 // that need richer per-interface detail (type, state, MAC, DHCP
 // status) should use that endpoint instead.
@@ -197,7 +216,7 @@ func listPhysicalInterfaces() []string {
 		if name == "lo" || strings.HasPrefix(name, "vnet") || strings.HasPrefix(name, "virbr") {
 			continue
 		}
-		if isPhysicalInterface(name) {
+		if isPhysicalOrBondInterface(name) {
 			out = append(out, name)
 		}
 	}
@@ -277,10 +296,18 @@ func createDirectBridge(name, iface string, vlanAware bool) (movedCIDR string, e
 		return "", fmt.Errorf("move IP from %s to %s: %v", iface, name, merr)
 	}
 
-	if out, aerr := exec.Command("ip", "link", "set", iface, "master", name).CombinedOutput(); aerr != nil {
+	cleanUp := func(reason error) (string, error) {
 		exec.Command("ip", "link", "set", iface, "nomaster").Run()
+		if moved != "" {
+			_ = restoreIPv4FromBridge(name, iface, moved)
+		}
+		exec.Command("ip", "link", "set", name, "down").Run()
 		exec.Command("ip", "link", "del", name).Run()
-		return "", fmt.Errorf("ip link set %s master %s: %v: %s", iface, name, aerr, strings.TrimSpace(string(out)))
+		return "", reason
+	}
+
+	if out, aerr := exec.Command("ip", "link", "set", iface, "master", name).CombinedOutput(); aerr != nil {
+		return cleanUp(fmt.Errorf("ip link set %s master %s: %v: %s", iface, name, aerr, strings.TrimSpace(string(out))))
 	}
 
 	// Bug fix: bring the slave itself up. Re-parenting a DOWN interface
@@ -288,15 +315,11 @@ func createDirectBridge(name, iface string, vlanAware bool) (movedCIDR string, e
 	// driver — without this the bridge is left in NO-CARRIER until an
 	// operator manually runs `ip link set <iface> up`.
 	if out, uerr := exec.Command("ip", "link", "set", iface, "up").CombinedOutput(); uerr != nil {
-		exec.Command("ip", "link", "set", iface, "nomaster").Run()
-		exec.Command("ip", "link", "del", name).Run()
-		return "", fmt.Errorf("ip link set %s up: %v: %s", iface, uerr, strings.TrimSpace(string(out)))
+		return cleanUp(fmt.Errorf("ip link set %s up: %v: %s", iface, uerr, strings.TrimSpace(string(out))))
 	}
 
 	if out, berr := exec.Command("ip", "link", "set", name, "up").CombinedOutput(); berr != nil {
-		exec.Command("ip", "link", "set", iface, "nomaster").Run()
-		exec.Command("ip", "link", "del", name).Run()
-		return "", fmt.Errorf("ip link set %s up: %v: %s", name, berr, strings.TrimSpace(string(out)))
+		return cleanUp(fmt.Errorf("ip link set %s up: %v: %s", name, berr, strings.TrimSpace(string(out))))
 	}
 
 	if vlanAware {

@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { api, auth } from '$lib/stores/auth.svelte.js';
+  import { upsertTask } from '$lib/stores/tasks.svelte.js';
   import { toast } from '$lib/components/ui/toast';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
@@ -318,6 +319,16 @@
       // path: closeDeployModal() bails out while deploying is true, so
       // the modal could only be dismissed by reloading the page.
       deployJobId = res?.job_id || '';
+      if (deployJobId) {
+        upsertTask({
+          id: 'async:' + deployJobId,
+          kind: 'general',
+          title: `Desplegando App: ${deployModalApp.name} (${deployName})`,
+          pct: 10,
+          message: 'Descargando y preparando plantilla...',
+          status: 'running',
+        });
+      }
       deploySuccess = {
         job_id: deployJobId,
         id: deployJobId,

@@ -18,22 +18,22 @@ var safeDiskDeviceRE = regexp.MustCompile(`^/dev/(sd[a-z]+|nvme[0-9]+n[0-9]+|vd[
 
 // Info holds parsed S.M.A.R.T. health and telemetry data for a disk.
 type Info struct {
-	Device           string `json:"device"`
-	Model            string `json:"model,omitempty"`
-	Serial           string `json:"serial,omitempty"`
-	Firmware         string `json:"firmware,omitempty"`
-	Protocol         string `json:"protocol,omitempty"` // "ATA", "NVMe", etc.
-	Available        bool   `json:"available"`
-	Healthy          bool   `json:"healthy"`
-	Status           string `json:"status"` // "PASSED", "FAILED", "UNKNOWN"
-	TemperatureC     int    `json:"temperature_c"`
-	PowerOnHours     int64  `json:"power_on_hours"`
-	PowerCycles      int64  `json:"power_cycles"`
-	WearPercentage   int    `json:"wear_percentage"`          // 0-100%, -1 if not supported
-	DataWrittenBytes uint64 `json:"data_written_bytes"`       // in bytes (TBW)
-	ReallocatedSectors int64 `json:"reallocated_sectors"`     // -1 if not applicable
-	PendingSectors     int64 `json:"pending_sectors"`         // -1 if not applicable
-	CriticalWarning    int   `json:"critical_warning"`        // NVMe critical warning bitmask
+	Device             string `json:"device"`
+	Model              string `json:"model,omitempty"`
+	Serial             string `json:"serial,omitempty"`
+	Firmware           string `json:"firmware,omitempty"`
+	Protocol           string `json:"protocol,omitempty"` // "ATA", "NVMe", etc.
+	Available          bool   `json:"available"`
+	Healthy            bool   `json:"healthy"`
+	Status             string `json:"status"` // "PASSED", "FAILED", "UNKNOWN"
+	TemperatureC       int    `json:"temperature_c"`
+	PowerOnHours       int64  `json:"power_on_hours"`
+	PowerCycles        int64  `json:"power_cycles"`
+	WearPercentage     int    `json:"wear_percentage"`     // 0-100%, -1 if not supported
+	DataWrittenBytes   uint64 `json:"data_written_bytes"`  // in bytes (TBW)
+	ReallocatedSectors int64  `json:"reallocated_sectors"` // -1 if not applicable
+	PendingSectors     int64  `json:"pending_sectors"`     // -1 if not applicable
+	CriticalWarning    int    `json:"critical_warning"`    // NVMe critical warning bitmask
 	SelfTestStatus     string `json:"self_test_status,omitempty"`
 	FetchedAt          int64  `json:"fetched_at"`
 }

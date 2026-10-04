@@ -1,11 +1,14 @@
 package metrics
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -87,16 +90,62 @@ type ruleState struct {
 	lastValue    float64
 }
 
+// AlertmanagerAlert represents a single alert item in an Alertmanager webhook.
+type AlertmanagerAlert struct {
+	Status       string            `json:"status"` // "firing" | "resolved"
+	Labels       map[string]string `json:"labels"`
+	Annotations  map[string]string `json:"annotations"`
+	StartsAt     time.Time         `json:"startsAt"`
+	EndsAt       time.Time         `json:"endsAt"`
+	GeneratorURL string            `json:"generatorURL"`
+	Fingerprint  string            `json:"fingerprint"`
+}
+
+// AlertmanagerPayload represents the incoming webhook payload from Prometheus Alertmanager.
+type AlertmanagerPayload struct {
+	Version           string              `json:"version"`
+	GroupKey          string              `json:"groupKey"`
+	TruncatedAlerts   int                 `json:"truncatedAlerts"`
+	Status            string              `json:"status"` // "firing" | "resolved"
+	Receiver          string              `json:"receiver"`
+	GroupLabels       map[string]string   `json:"groupLabels"`
+	CommonLabels      map[string]string   `json:"commonLabels"`
+	CommonAnnotations map[string]string   `json:"commonAnnotations"`
+	ExternalURL       string              `json:"externalURL"`
+	Alerts            []AlertmanagerAlert `json:"alerts"`
+}
+
+// Incident tracks an incident in WebKVM's live incident feed.
+type Incident struct {
+	ID          string            `json:"id"`
+	Fingerprint string            `json:"fingerprint"`
+	Alertname   string            `json:"alertname"`
+	Severity    string            `json:"severity"` // "critical" | "warning" | "info"
+	Status      string            `json:"status"`   // "firing" | "resolved"
+	Summary     string            `json:"summary"`
+	Description string            `json:"description"`
+	Instance    string            `json:"instance,omitempty"`
+	VMID        string            `json:"vm_id,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+	StartsAt    time.Time         `json:"starts_at"`
+	EndsAt      *time.Time        `json:"ends_at,omitempty"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	Source      string            `json:"source"` // "alertmanager" | "internal"
+}
+
 // AlertEngine evaluates rules against every sample and fires alerts
 // through the notifier + event hub. Rules are persisted to
 // {dataDir}/alerts.json (a tiny config file — NOT metric data).
 type AlertEngine struct {
-	dir  string
-	path string
+	dir           string
+	path          string
+	incidentsPath string
 
-	mu     sync.Mutex
-	rules  []AlertRule
-	states map[string]*ruleState
+	mu        sync.Mutex
+	rules     []AlertRule
+	states    map[string]*ruleState
+	incidents map[string]*Incident
 
 	notify *notify.Notifier
 	hub    *events.Hub
@@ -105,41 +154,53 @@ type AlertEngine struct {
 // NewAlertEngine wires the engine to the notifier and event hub.
 func NewAlertEngine(dataDir string, notifier *notify.Notifier, hub *events.Hub) *AlertEngine {
 	return &AlertEngine{
-		dir:    dataDir,
-		path:   filepath.Join(dataDir, "alerts.json"),
-		states: map[string]*ruleState{},
-		notify: notifier,
-		hub:    hub,
+		dir:           dataDir,
+		path:          filepath.Join(dataDir, "alerts.json"),
+		incidentsPath: filepath.Join(dataDir, "incidents.json"),
+		states:        map[string]*ruleState{},
+		incidents:     map[string]*Incident{},
+		notify:        notifier,
+		hub:           hub,
 	}
 }
 
-// Load reads the rules file (missing = no rules).
+// Load reads the rules and incidents files (missing = empty).
 func (e *AlertEngine) Load() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	data, err := os.ReadFile(e.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
+	if err == nil {
+		var file struct {
+			Version int         `json:"version"`
+			Rules   []AlertRule `json:"rules"`
+		}
+		if err := json.Unmarshal(data, &file); err == nil {
+			e.rules = file.Rules
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	var file struct {
-		Version int         `json:"version"`
-		Rules   []AlertRule `json:"rules"`
+
+	incData, err := os.ReadFile(e.incidentsPath)
+	if err == nil {
+		var list []*Incident
+		if err := json.Unmarshal(incData, &list); err == nil {
+			for _, inc := range list {
+				e.incidents[inc.Fingerprint] = inc
+			}
+		}
 	}
-	if err := json.Unmarshal(data, &file); err != nil {
-		return err
-	}
-	e.rules = file.Rules
 	return nil
 }
 
-// Save persists the rules atomically (0600).
+// Save persists the rules and incidents atomically (0600).
 func (e *AlertEngine) Save() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.saveLocked()
+	if err := e.saveLocked(); err != nil {
+		return err
+	}
+	return e.saveIncidentsLocked()
 }
 
 func (e *AlertEngine) saveLocked() error {
@@ -153,6 +214,213 @@ func (e *AlertEngine) saveLocked() error {
 		return err
 	}
 	return os.Rename(tmp, e.path)
+}
+
+const maxTrackedIncidents = 500
+
+func (e *AlertEngine) enforceCapacityLocked() {
+	if len(e.incidents) <= maxTrackedIncidents {
+		return
+	}
+	// First pass: evict oldest resolved incidents
+	for len(e.incidents) > maxTrackedIncidents {
+		var oldestFP string
+		var oldestTime time.Time
+		for fp, inc := range e.incidents {
+			if inc.Status == "resolved" {
+				if oldestFP == "" || inc.UpdatedAt.Before(oldestTime) {
+					oldestFP = fp
+					oldestTime = inc.UpdatedAt
+				}
+			}
+		}
+		if oldestFP != "" {
+			delete(e.incidents, oldestFP)
+		} else {
+			break
+		}
+	}
+	// Second pass: if still above capacity, evict oldest overall incident
+	for len(e.incidents) > maxTrackedIncidents {
+		var oldestFP string
+		var oldestTime time.Time
+		for fp, inc := range e.incidents {
+			if oldestFP == "" || inc.UpdatedAt.Before(oldestTime) {
+				oldestFP = fp
+				oldestTime = inc.UpdatedAt
+			}
+		}
+		if oldestFP != "" {
+			delete(e.incidents, oldestFP)
+		} else {
+			break
+		}
+	}
+}
+
+func (e *AlertEngine) saveIncidentsLocked() error {
+	_ = os.MkdirAll(e.dir, 0o700)
+	list := make([]*Incident, 0, len(e.incidents))
+	for _, inc := range e.incidents {
+		list = append(list, inc)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].UpdatedAt.After(list[j].UpdatedAt)
+	})
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := e.incidentsPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, e.incidentsPath)
+}
+
+// IngestAlertmanager processes an incoming Alertmanager webhook payload.
+func (e *AlertEngine) IngestAlertmanager(payload AlertmanagerPayload) ([]Incident, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	now := time.Now().UTC()
+	var processed []Incident
+
+	for _, a := range payload.Alerts {
+		fp := a.Fingerprint
+		if fp == "" {
+			// Deterministic hash of alertname + instance + labels
+			h := sha256.New()
+			keys := make([]string, 0, len(a.Labels))
+			for k := range a.Labels {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				h.Write([]byte(fmt.Sprintf("%s=%s;", k, a.Labels[k])))
+			}
+			fp = hex.EncodeToString(h.Sum(nil))[:16]
+		}
+
+		alertname := a.Labels["alertname"]
+		if alertname == "" {
+			alertname = "External Alert"
+		}
+		severity := a.Labels["severity"]
+		if severity == "" {
+			severity = "warning"
+		}
+
+		status := a.Status
+		if status == "" {
+			status = payload.Status
+		}
+		if status == "" {
+			status = "firing"
+		}
+
+		instance := a.Labels["instance"]
+		vmid := a.Labels["vm_id"]
+		if vmid == "" {
+			vmid = a.Labels["vmid"]
+		}
+
+		summary := a.Annotations["summary"]
+		if summary == "" {
+			summary = a.Annotations["description"]
+		}
+		if summary == "" {
+			summary = alertname
+		}
+
+		desc := a.Annotations["description"]
+		if desc == "" {
+			desc = a.Annotations["message"]
+		}
+
+		startsAt := a.StartsAt
+		if startsAt.IsZero() {
+			startsAt = now
+		}
+
+		inc, exists := e.incidents[fp]
+		if !exists {
+			inc = &Incident{
+				ID:          fp,
+				Fingerprint: fp,
+				Source:      "alertmanager",
+				StartsAt:    startsAt,
+			}
+			e.incidents[fp] = inc
+		}
+
+		inc.Alertname = alertname
+		inc.Severity = severity
+		inc.Status = status
+		inc.Summary = summary
+		inc.Description = desc
+		inc.Instance = instance
+		inc.VMID = vmid
+		inc.Labels = a.Labels
+		inc.Annotations = a.Annotations
+		inc.UpdatedAt = now
+
+		if status == "resolved" {
+			inc.EndsAt = &now
+		} else {
+			inc.EndsAt = nil
+		}
+
+		processed = append(processed, *inc)
+
+		// Broadcast incident SSE event
+		if e.hub != nil {
+			e.hub.Broadcast(events.Event{
+				Type:      "alert.incident",
+				VmID:      vmid,
+				Timestamp: now.Unix(),
+				Data: map[string]any{
+					"incident": inc,
+				},
+			})
+		}
+
+		// Forward notification if firing
+		if e.notify != nil && status == "firing" {
+			title := fmt.Sprintf("[%s] %s", strings.ToUpper(severity), alertname)
+			e.notify.Record("alert", title, summary)
+		}
+	}
+
+	e.enforceCapacityLocked()
+	_ = e.saveIncidentsLocked()
+	return processed, nil
+}
+
+// Incidents returns all tracked incidents sorted by updated_at descending.
+func (e *AlertEngine) Incidents() []Incident {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	list := make([]Incident, 0, len(e.incidents))
+	for _, inc := range e.incidents {
+		list = append(list, *inc)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].UpdatedAt.After(list[j].UpdatedAt)
+	})
+	return list
+}
+
+// ClearResolvedIncidents removes all resolved incidents from memory and disk.
+func (e *AlertEngine) ClearResolvedIncidents() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for fp, inc := range e.incidents {
+		if inc.Status == "resolved" {
+			delete(e.incidents, fp)
+		}
+	}
+	_ = e.saveIncidentsLocked()
 }
 
 // SetRules replaces the rules for one VM (or all, when vmID == ""), keeping

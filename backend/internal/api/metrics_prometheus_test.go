@@ -30,7 +30,7 @@ func TestPrometheusMetrics_AuthAndContent(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		Version: "0.1.5",
+		Version: "0.1.6",
 	}
 
 	h := &Handler{
@@ -71,7 +71,7 @@ func TestPrometheusMetrics_AuthAndContent(t *testing.T) {
 		t.Errorf("expected text/plain Content-Type, got %q", ct)
 	}
 	body := recBearer.Body.String()
-	if !strings.Contains(body, `webkvm_info{version="0.1.5"} 1`) {
+	if !strings.Contains(body, `webkvm_info{version="0.1.6"} 1`) {
 		t.Errorf("missing webkvm_info in Prometheus output: %s", body)
 	}
 	if !strings.Contains(body, `webkvm_up 1`) {
@@ -111,5 +111,45 @@ func TestPrometheusMetrics_AuthAndContent(t *testing.T) {
 
 	if recDisabled.Code != http.StatusNotFound {
 		t.Errorf("disabled metrics got status %d, want 404", recDisabled.Code)
+	}
+}
+
+func TestGrafanaDashboardAndAlertRules(t *testing.T) {
+	h := &Handler{}
+
+	// 1. Grafana Dashboard
+	recDash := httptest.NewRecorder()
+	reqDash := httptest.NewRequest(http.MethodGet, "/api/metrics/grafana-dashboard", nil)
+	h.GrafanaDashboard(recDash, reqDash)
+
+	if recDash.Code != http.StatusOK {
+		t.Fatalf("GrafanaDashboard status %d, want 200", recDash.Code)
+	}
+	if ct := recDash.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("GrafanaDashboard Content-Type = %q, want application/json", ct)
+	}
+	if cd := recDash.Header().Get("Content-Disposition"); !strings.Contains(cd, "webkvm-grafana-dashboard.json") {
+		t.Errorf("GrafanaDashboard Content-Disposition = %q", cd)
+	}
+	if !strings.Contains(recDash.Body.String(), "webkvm_up") {
+		t.Errorf("GrafanaDashboard body missing webkvm_up")
+	}
+
+	// 2. Alert Rules
+	recRules := httptest.NewRecorder()
+	reqRules := httptest.NewRequest(http.MethodGet, "/api/metrics/alert-rules", nil)
+	h.AlertRules(recRules, reqRules)
+
+	if recRules.Code != http.StatusOK {
+		t.Fatalf("AlertRules status %d, want 200", recRules.Code)
+	}
+	if ct := recRules.Header().Get("Content-Type"); !strings.Contains(ct, "yaml") {
+		t.Errorf("AlertRules Content-Type = %q, want yaml", ct)
+	}
+	if cd := recRules.Header().Get("Content-Disposition"); !strings.Contains(cd, "webkvm-alert-rules.yml") {
+		t.Errorf("AlertRules Content-Disposition = %q", cd)
+	}
+	if !strings.Contains(recRules.Body.String(), "alert: WebKVMDown") {
+		t.Errorf("AlertRules body missing alert: WebKVMDown")
 	}
 }
