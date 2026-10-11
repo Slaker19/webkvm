@@ -55,16 +55,32 @@ SyslogIdentifier=webkvm
 NoNewPrivileges=false
 ProtectSystem=full
 ProtectHome=false
+# Uploads use TMPDIR=/var/tmp and the app only needs its own files there.
 PrivateTmp=true
 ProtectKernelTunables=false
+# Kept false: mdraid.go runs "modprobe md_mod/raid*", which needs module
+# loading. ZFS/zvol tooling also relies on it.
 ProtectKernelModules=false
 ProtectControlGroups=false
 RestrictSUIDSGID=false
+ProtectHostname=true
+ProtectClock=true
+RestrictRealtime=true
 LockPersonality=true
+# UMask=0077 is deliberately NOT set: the backend creates storage-pool and
+# mountpoint directories with MkdirAll(0755) (libvirt/connect.go, storage.go,
+# smb_mount.go) that the qemu user must be able to traverse; a 0077 umask
+# would turn them into 0700 and VMs would fail to start. Sensitive files are
+# created 0600 explicitly in code instead. A drop-in can set it once pool
+# directory modes are made explicit.
 SystemCallArchitectures=native
 MemoryDenyWriteExecute=false
 RestrictNamespaces=false
-ReadWritePaths=/opt/webkvm /var/lib/libvirt /var/tmp /etc/webkvm /etc/systemd/system /etc/mdadm
+# Paths the backend writes: data dir, libvirt images, uploads, credentials,
+# mount units (/etc/systemd/system), mdadm.conf, host netplan bridges and
+# its logs. The "-" prefix tolerates a path that does not exist (otherwise
+# startup fails with 226/NAMESPACE).
+ReadWritePaths=/opt/webkvm /var/lib/libvirt /var/tmp /etc/webkvm /etc/systemd/system -/etc/mdadm -/etc/netplan -/var/log/webkvm -/var/lib/incus
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_SYS_ADMIN CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID CAP_KILL CAP_SYS_PTRACE CAP_SYS_RESOURCE CAP_AUDIT_WRITE CAP_MKNOD CAP_SYS_RAWIO
 AmbientCapabilities=
 

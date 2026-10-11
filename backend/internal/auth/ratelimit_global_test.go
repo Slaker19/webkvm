@@ -54,6 +54,8 @@ func doRequest(l *GlobalRateLimiter, remote string, bearer string) *httptest.Res
 	}
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
+		// The auth middleware sets X-User once it has validated the token.
+		req.Header.Set(HeaderUser, "api-user")
 	}
 	rr := httptest.NewRecorder()
 	l.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -308,5 +310,26 @@ func TestGlobalRateLimiter_ParamChangeRebuildsBucket(t *testing.T) {
 	}
 	if rr := doRequest(l, "198.18.0.1:1234", ""); rr.Code != http.StatusTooManyRequests {
 		t.Fatalf("second request after policy change: got %d, want 429", rr.Code)
+	}
+}
+
+// A Bearer header that was never validated (no identity set by the auth
+// middleware, e.g. on a public route) must NOT bypass the limiter.
+func TestGlobalRateLimiter_UnvalidatedBearerNotExempt(t *testing.T) {
+	l := NewGlobalRateLimiter(&fakeRateSettings{enabled: true, rps: 100, burst: 1})
+	t.Cleanup(l.Close)
+	var last int
+	for i := 0; i < 4; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/vms", nil)
+		req.RemoteAddr = "203.0.113.7:1234"
+		req.Header.Set("Authorization", "Bearer x")
+		rr := httptest.NewRecorder()
+		l.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(rr, req)
+		last = rr.Code
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("bogus Bearer must be rate limited, last status %d", last)
 	}
 }

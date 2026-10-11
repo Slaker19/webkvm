@@ -54,12 +54,33 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"go.yaml.in/yaml/v3"
 )
+
+// Limits for untrusted vzdump archives (audit #24). The converter buffers
+// regular entries in memory, so these also bound its footprint.
+const (
+	maxPctConfBytes   = 1 << 20
+	maxRootEntryBytes = 2 << 30
+	maxRootTotalBytes = 4 << 30
+)
+
+// readLimited reads at most max bytes from r and fails if more are available.
+func readLimited(r io.Reader, max int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > max {
+		return nil, fmt.Errorf("entry exceeds %d bytes", max)
+	}
+	return b, nil
+}
 
 // IsVzdumpLXC reports whether the reader looks like a vzdump LXC backup
 // (compressed or not). It probes for the magic bytes of gzip / lzo / zstd
@@ -162,7 +183,9 @@ func ImportFromProxmox(srcPath, destPath, newName, poolName string) error {
 		defer gz.Close()
 		srcReader = gz
 	} else if len(head) >= 4 && head[0] == 0x28 && head[1] == 0xb5 && head[2] == 0x2f && head[3] == 0xfd {
-		dec, err := zstd.NewReader(srcReader)
+		dec, err := zstd.NewReader(srcReader,
+			zstd.WithDecoderMaxMemory(512<<20),
+			zstd.WithDecoderMaxWindow(128<<20))
 		if err != nil {
 			return fmt.Errorf("vzdump: open zstd: %w", err)
 		}
@@ -181,6 +204,7 @@ func ImportFromProxmox(srcPath, destPath, newName, poolName string) error {
 	}
 	var pctConf string
 	var rootEntries []rootEntry
+	var buffered int64
 
 	srcTar := tar.NewReader(srcReader)
 	for {
@@ -197,7 +221,10 @@ func ImportFromProxmox(srcPath, destPath, newName, poolName string) error {
 
 		// Extract pct.conf
 		if clean == "etc/vzdump/pct.conf" {
-			raw, _ := io.ReadAll(srcTar)
+			raw, rerr := readLimited(srcTar, maxPctConfBytes)
+			if rerr != nil {
+				return fmt.Errorf("vzdump: pct.conf: %w", rerr)
+			}
 			pctConf = string(raw)
 			continue
 		}
@@ -247,7 +274,17 @@ func ImportFromProxmox(srcPath, destPath, newName, poolName string) error {
 
 		var buf []byte
 		if hdr.Typeflag == tar.TypeReg {
-			buf, _ = io.ReadAll(srcTar)
+			// Entries are buffered in memory below, so bound both the
+			// single entry and the running total (decompression bombs).
+			if hdr.Size > maxRootEntryBytes || buffered+hdr.Size > maxRootTotalBytes {
+				return fmt.Errorf("vzdump: archive too large to convert (entry %q, %d bytes)", hdr.Name, hdr.Size)
+			}
+			var rerr error
+			buf, rerr = readLimited(srcTar, maxRootEntryBytes)
+			if rerr != nil {
+				return fmt.Errorf("vzdump: read %s: %w", hdr.Name, rerr)
+			}
+			buffered += int64(len(buf))
 		}
 		rootEntries = append(rootEntries, rootEntry{hdr: &hdrCopy, data: buf})
 	}
@@ -259,6 +296,11 @@ func ImportFromProxmox(srcPath, destPath, newName, poolName string) error {
 	}
 	if info.name == "" {
 		info.name = "imported-ct"
+	}
+	// Everything below ends up in YAML that Incus interprets: validate each
+	// value instead of splicing raw text (audit #3).
+	if err := info.sanitize(poolName); err != nil {
+		return fmt.Errorf("vzdump: %w", err)
 	}
 
 	// --- write dest tar (plain, no compression — the caller wraps if needed) ---
@@ -593,7 +635,97 @@ func resolvePool(poolName string) string {
 	return "default"
 }
 
-// buildBackupYAML builds a minimal Incus backup.yaml from pctInfo.
+var (
+	reCT     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,62}$`)
+	reDigits = regexp.MustCompile(`^[0-9]{1,7}$`)
+	reWord   = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
+	rePool   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$`)
+)
+
+var knownArch = map[string]bool{
+	"amd64": true, "x86_64": true, "i386": true, "i686": true, "arm64": true,
+	"aarch64": true, "armhf": true, "armv7l": true, "riscv64": true, "ppc64el": true, "s390x": true,
+}
+
+// hasControl reports whether s contains control characters (newlines are the
+// ones that would let a value break out of its YAML line).
+func hasControl(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitize validates every pct.conf-derived value that reaches the generated
+// backup.yaml, normalising the container name to a valid Incus hostname.
+func (p *pctInfo) sanitize(poolName string) error {
+	for _, v := range []string{p.name, p.cores, p.memory, p.arch, p.ostype, poolName} {
+		if hasControl(v) {
+			return fmt.Errorf("control characters are not allowed in the container configuration")
+		}
+	}
+	p.name = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
+			return r
+		}
+		return '-'
+	}, p.name)
+	p.name = strings.TrimLeft(p.name, "-")
+	if !reCT.MatchString(p.name) {
+		return fmt.Errorf("invalid container name %q", p.name)
+	}
+	if p.cores != "" && !reDigits.MatchString(p.cores) {
+		return fmt.Errorf("invalid cores value %q", p.cores)
+	}
+	if p.memory != "" && !reDigits.MatchString(p.memory) {
+		return fmt.Errorf("invalid memory value %q", p.memory)
+	}
+	if !knownArch[strings.ToLower(p.arch)] {
+		return fmt.Errorf("unsupported architecture %q", p.arch)
+	}
+	if !reWord.MatchString(p.ostype) {
+		return fmt.Errorf("invalid ostype %q", p.ostype)
+	}
+	if pn := strings.TrimSpace(poolName); pn != "" && !rePool.MatchString(pn) {
+		return fmt.Errorf("invalid pool name %q", pn)
+	}
+	return nil
+}
+
+type backupContainerYAML struct {
+	Architecture    string                       `yaml:"architecture"`
+	Config          map[string]string            `yaml:"config"`
+	Devices         map[string]map[string]string `yaml:"devices"`
+	Name            string                       `yaml:"name"`
+	Profiles        []string                     `yaml:"profiles"`
+	Stateful        bool                         `yaml:"stateful"`
+	Description     string                       `yaml:"description"`
+	Ephemeral       bool                         `yaml:"ephemeral"`
+	ExpandedConfig  map[string]string            `yaml:"expanded_config"`
+	ExpandedDevices map[string]map[string]string `yaml:"expanded_devices"`
+	Status          string                       `yaml:"status"`
+}
+
+type backupVolumeYAML struct {
+	Name        string            `yaml:"name"`
+	Type        string            `yaml:"type"`
+	ContentType string            `yaml:"content_type"`
+	Config      map[string]string `yaml:"config"`
+	Pool        string            `yaml:"pool"`
+	Project     string            `yaml:"project"`
+}
+
+type backupYAMLDoc struct {
+	Container backupContainerYAML `yaml:"container"`
+	Volume    backupVolumeYAML    `yaml:"volume"`
+}
+
+// buildBackupYAML builds a minimal Incus backup.yaml from pctInfo. The
+// document is produced by yaml.Marshal from typed fields (never by string
+// concatenation), so no value can inject keys such as security.privileged
+// or extra devices. Callers must run info.sanitize first.
 func buildBackupYAML(info pctInfo, poolName string) string {
 	pool := resolvePool(poolName)
 	cpu := "1"
@@ -604,50 +736,48 @@ func buildBackupYAML(info pctInfo, poolName string) string {
 	if info.memory != "" {
 		mem = info.memory
 	}
+	root := func() map[string]map[string]string {
+		return map[string]map[string]string{"root": {"path": "/", "pool": pool, "type": "disk"}}
+	}
+	doc := backupYAMLDoc{
+		Container: backupContainerYAML{
+			Architecture:    info.arch,
+			Config:          map[string]string{"limits.cpu": cpu, "limits.memory": mem + "MB"},
+			Devices:         root(),
+			Name:            info.name,
+			Profiles:        []string{"default"},
+			Description:     "Imported from Proxmox vzdump",
+			ExpandedConfig:  map[string]string{"limits.cpu": cpu, "limits.memory": mem + "MB"},
+			ExpandedDevices: root(),
+			Status:          "Stopped",
+		},
+		Volume: backupVolumeYAML{
+			Name: info.name, Type: "container", ContentType: "filesystem",
+			Config: map[string]string{}, Pool: pool, Project: "default",
+		},
+	}
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return "" // unreachable for these types; an empty file makes Incus refuse the import
+	}
+	return string(out)
+}
 
-	return fmt.Sprintf(`container:
-  architecture: %s
-  config:
-    limits.cpu: "%s"
-    limits.memory: "%sMB"
-  devices:
-    root:
-      path: /
-      pool: %s
-      type: disk
-  name: %s
-  profiles:
-  - default
-  stateful: false
-  description: Imported from Proxmox vzdump
-  ephemeral: false
-  expanded_config:
-    limits.cpu: "%s"
-    limits.memory: "%sMB"
-  expanded_devices:
-    root:
-      path: /
-      pool: %s
-      type: disk
-  status: Stopped
-volume:
-  name: %s
-  type: container
-  content_type: filesystem
-  config: {}
-  pool: %s
-  project: default
-`, info.arch, cpu, mem, pool, info.name, cpu, mem, pool, info.name, pool)
+type indexYAMLDoc struct {
+	Name    string `yaml:"name"`
+	Backend string `yaml:"backend"`
+	Pool    string `yaml:"pool"`
+	Type    string `yaml:"type"`
 }
 
 // buildIndexYAML builds an Incus index.yaml with the flat top-level fields
 // that backup.GetInfo() expects: name, backend, pool, type.
 func buildIndexYAML(info pctInfo, poolName string) string {
-	return fmt.Sprintf(`name: %s
-backend: dir
-pool: %s
-type: container
-`, info.name, resolvePool(poolName))
+	out, err := yaml.Marshal(indexYAMLDoc{Name: info.name, Backend: "dir", Pool: resolvePool(poolName), Type: "container"})
+	if err != nil {
+		return ""
+	}
+	return string(out)
 }
 
 // incusBackupMeta is the subset of Incus backup.yaml we need.

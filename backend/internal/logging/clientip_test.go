@@ -38,15 +38,33 @@ func TestClientIP_ProxyTrust_SingleIP(t *testing.T) {
 	}
 }
 
-func TestClientIP_ProxyTrust_ChainTakesLeftmost(t *testing.T) {
+func TestClientIP_ProxyTrust_ChainWalksRightToLeft(t *testing.T) {
 	t.Setenv("WEBKVM_TRUST_PROXY", "1")
 	t.Setenv("WEBKVM_TRUSTED_PROXY_CIDRS", "10.0.0.0/8")
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.0.0.1:443"
 	req.Header.Set("X-Forwarded-For", "203.0.113.7, 198.51.100.1, 10.0.0.1")
 	got := ClientIP(req)
-	if got != "203.0.113.7" {
-		t.Fatalf("chain: should return leftmost (original client); got %q", got)
+	if got != "198.51.100.1" {
+		t.Fatalf("chain: should return the first non-trusted hop from the right; got %q", got)
+	}
+}
+
+// A client-forged leftmost entry must not win over what our own proxy saw.
+func TestClientIP_ProxyTrust_SpoofedLeftmostIgnored(t *testing.T) {
+	t.Setenv("WEBKVM_TRUST_PROXY", "1")
+	t.Setenv("WEBKVM_TRUSTED_PROXY_CIDRS", "10.0.0.0/8")
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "10.0.0.1:443"
+	// attacker sent "127.0.0.1"; the proxy appended the real peer.
+	req.Header.Set("X-Forwarded-For", "127.0.0.1, 203.0.113.50")
+	if got := ClientIP(req); got != "203.0.113.50" {
+		t.Fatalf("got %q, want the proxy-observed 203.0.113.50", got)
+	}
+	// Malformed entry: ignore the header entirely.
+	req.Header.Set("X-Forwarded-For", "203.0.113.50, garbage")
+	if got := ClientIP(req); got != "10.0.0.1" {
+		t.Fatalf("malformed XFF: got %q, want peer", got)
 	}
 }
 

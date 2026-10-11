@@ -72,3 +72,33 @@ func (h *Handler) DetachPCIDevice(w http.ResponseWriter, r *http.Request) {
 	h.audit.Log(auditFor(r, "vm.pci_detach", id, map[string]interface{}{"address": address}))
 	jsonResp(w, http.StatusOK, map[string]string{"status": "detached"})
 }
+
+// BindHostPCIDeviceVFIO binds a host PCI device to vfio-pci for VM passthrough.
+func (h *Handler) BindHostPCIDeviceVFIO(w http.ResponseWriter, r *http.Request) {
+	address, err := url.PathUnescape(chi.URLParam(r, "address"))
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid address parameter")
+		return
+	}
+	if err := h.compute.BindHostPCIDeviceVFIO(address); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.audit.Log(auditFor(r, "host.pci_bind_vfio", address, map[string]interface{}{"address": address}))
+	jsonResp(w, http.StatusOK, map[string]string{"status": "bound_vfio", "address": address})
+}
+
+// UnbindHostPCIDeviceVFIO restores a host PCI device from vfio-pci back to its host driver.
+func (h *Handler) UnbindHostPCIDeviceVFIO(w http.ResponseWriter, r *http.Request) {
+	address, err := url.PathUnescape(chi.URLParam(r, "address"))
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid address parameter")
+		return
+	}
+	if err := h.compute.UnbindHostPCIDeviceVFIO(address); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.audit.Log(auditFor(r, "host.pci_unbind_vfio", address, map[string]interface{}{"address": address}))
+	jsonResp(w, http.StatusOK, map[string]string{"status": "unbound_vfio", "address": address})
+}

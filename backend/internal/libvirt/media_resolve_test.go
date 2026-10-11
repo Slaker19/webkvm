@@ -55,28 +55,29 @@ func TestResolveMediaPath(t *testing.T) {
 	c := &Connector{
 		cfg: cfg,
 	}
+	adminScope := models.MediaScope{Admin: true}
 
 	// 1. Empty input
-	got, err := c.resolveMediaPath("")
+	got, err := c.resolveMediaPath("", adminScope)
 	if err != nil || got != "" {
 		t.Fatalf("resolveMediaPath(\"\") = (%q, %v), want (\"\", nil)", got, err)
 	}
 
 	// 2. Absolute existing file
-	got, err = c.resolveMediaPath(alpinePath)
+	got, err = c.resolveMediaPath(alpinePath, adminScope)
 	if err != nil || got != alpinePath {
 		t.Fatalf("resolveMediaPath(%q) = (%q, %v), want (%q, nil)", alpinePath, got, err, alpinePath)
 	}
 
 	// 3. Absolute non-existent file
 	missingPath := filepath.Join(tmpDir, "nonexistent.iso")
-	got, err = c.resolveMediaPath(missingPath)
+	got, err = c.resolveMediaPath(missingPath, adminScope)
 	if err == nil {
 		t.Fatalf("resolveMediaPath(%q) expected error, got %q", missingPath, got)
 	}
 
 	// 4. Absolute directory
-	got, err = c.resolveMediaPath(isoPoolDir)
+	got, err = c.resolveMediaPath(isoPoolDir, adminScope)
 	if err == nil || !strings.Contains(err.Error(), "directory") {
 		t.Fatalf("resolveMediaPath(%q) expected directory error, got (%q, %v)", isoPoolDir, got, err)
 	}

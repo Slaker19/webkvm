@@ -25,7 +25,28 @@ for (const Ctor of [
   });
 }
 
-// happy-dom rejects animation.finished on Animation.cancel(), which in
+if (typeof window !== 'undefined' && window.localStorage) {
+  globalThis.localStorage = window.localStorage;
+} else if (!globalThis.localStorage) {
+  const storage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (storage.has(String(key)) ? storage.get(String(key)) : null),
+    setItem: (key, value) => {
+      storage.set(String(key), String(value));
+    },
+    removeItem: (key) => {
+      storage.delete(String(key));
+    },
+    clear: () => {
+      storage.clear();
+    },
+    get length() {
+      return storage.size;
+    },
+    key: (i) => Array.from(storage.keys())[i] ?? null,
+  };
+}
+
 // node surfaces as an unhandled rejection rather than browser silence.
 if (typeof process !== 'undefined') {
   process.on('unhandledRejection', (reason) => {

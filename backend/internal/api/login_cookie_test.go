@@ -76,6 +76,7 @@ func TestLogin_SetsHttpOnlyCookieAndOmitsToken(t *testing.T) {
 	}
 	if session == nil {
 		t.Fatal("session cookie not set")
+		return
 	}
 	if !session.HttpOnly {
 		t.Error("session cookie must be HttpOnly")

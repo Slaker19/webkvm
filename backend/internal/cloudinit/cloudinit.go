@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/tredoe/osutil/user/crypt/sha512_crypt"
 )
@@ -325,11 +326,13 @@ func buildUserData(cfg Config) string {
 		fmt.Fprintf(&ud, "users:\n  - name: %s\n", cfg.User)
 		if cfg.Password != "" {
 			hash := cryptSHA512(cfg.Password, "")
-			fmt.Fprintf(&ud, "    passwd: %s\n", hash)
-			// cloud-init locks the account unless explicitly told not to;
-			// without this the password hash is stored with a leading '!'
-			// in /etc/shadow and login is impossible.
-			ud.WriteString("    lock_passwd: false\n")
+			if hash != "" {
+				fmt.Fprintf(&ud, "    passwd: %s\n", hash)
+				// cloud-init locks the account unless explicitly told not to;
+				// without this the password hash is stored with a leading '!'
+				// in /etc/shadow and login is impossible.
+				ud.WriteString("    lock_passwd: false\n")
+			}
 		}
 		if cfg.SSHKey != "" {
 			ud.WriteString("    ssh_authorized_keys:\n")
@@ -347,8 +350,10 @@ func buildUserData(cfg Config) string {
 		ud.WriteString("users:\n")
 		ud.WriteString("  - name: root\n")
 		hash := cryptSHA512(cfg.Password, "")
-		fmt.Fprintf(&ud, "    passwd: %s\n", hash)
-		ud.WriteString("    lock_passwd: false\n")
+		if hash != "" {
+			fmt.Fprintf(&ud, "    passwd: %s\n", hash)
+			ud.WriteString("    lock_passwd: false\n")
+		}
 		if cfg.SSHKey != "" {
 			ud.WriteString("    ssh_authorized_keys:\n")
 			fmt.Fprintf(&ud, "      - %s\n", yamlSingleQuote(cfg.SSHKey))
@@ -575,8 +580,13 @@ func cryptSHA512(password, salt string) string {
 
 	hash, err := c.Generate([]byte(password), []byte(salt))
 	if err != nil {
-		// This only happens for a malformed salt; our salt is always well-formed.
-		panic("sha512_crypt failed: " + err.Error())
+		// Fallback for malformed salt: generate with standard crypt defaults
+		s := sha512_crypt.GetSalt()
+		defaultSalt := string(s.GenerateWRounds(sha512_crypt.SaltLenMax, cryptRounds))
+		if fallbackHash, err2 := c.Generate([]byte(password), []byte(defaultSalt)); err2 == nil {
+			return fallbackHash
+		}
+		return ""
 	}
 	return hash
 }
@@ -586,7 +596,16 @@ func GeneratePassword(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, length)
 	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand failed: " + err.Error())
+		seed := time.Now().UnixNano()
+		for i := range b {
+			seed = seed*6364136223846793005 + 1442695040888963407
+			idx := (seed >> 32) % int64(len(charset))
+			if idx < 0 {
+				idx = -idx
+			}
+			b[i] = charset[idx]
+		}
+		return string(b)
 	}
 	for i := range b {
 		b[i] = charset[int(b[i])%len(charset)]

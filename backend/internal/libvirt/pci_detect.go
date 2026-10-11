@@ -309,10 +309,11 @@ func (c *Connector) GetHostPCIPreflight() (models.PCIPreflightInfo, error) {
 		}
 	}
 
+	// VFIO is truly available for PCI passthrough if the vfio-pci driver is bound or registered in sysfs
 	vfioAvail := false
-	if _, err := os.Stat("/dev/vfio"); err == nil {
+	if _, err := os.Stat("/sys/bus/pci/drivers/vfio-pci"); err == nil {
 		vfioAvail = true
-	} else if vfioLoaded {
+	} else if _, err := os.Stat("/dev/vfio"); err == nil && vfioLoaded {
 		vfioAvail = true
 	}
 

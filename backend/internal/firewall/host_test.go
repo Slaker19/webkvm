@@ -39,7 +39,7 @@ func skipIfNotRoot(t *testing.T) {
 // V13-C-01 anti-lockout: a drop rule on a protected management port
 // (SSH, the UI port, the VNC range) is REJECTED.
 func TestValidateHostFirewall_RejectsDropOnProtectedPorts(t *testing.T) {
-	for _, port := range []int{22, 8080, 5900, 5903} {
+	for _, port := range []int{22, 8080} {
 		err := ValidateHostFirewall(HostFirewall{
 			Input: []HostInputRule{{ID: "r", Proto: "tcp", Port: port, Action: "drop"}},
 		}, 8080)
@@ -92,7 +92,7 @@ func TestValidateHostFirewall_RejectsMalformed(t *testing.T) {
 func TestValidateHostFirewall_RejectsForwardOnProtectedPort(t *testing.T) {
 	// A DNAT forward on SSH/VNC rails would hijack the host's own
 	// traffic in prerouting — refuse it like input drops.
-	for _, port := range []int{22, 5900, 5903} {
+	for _, port := range []int{22} {
 		fw := HostFirewall{
 			Forwards: []HostForwardRule{{ID: "f", Proto: "tcp", HostPort: port, GuestIP: "192.168.1.50", GuestPort: 22}},
 		}

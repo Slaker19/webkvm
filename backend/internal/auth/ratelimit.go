@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"webkvm/internal/logging"
 )
 
 // TrustedCIDRProvider lets the limiter honor X-Forwarded-For when
@@ -193,28 +195,28 @@ func (l *LoginRateLimiter) clientIP(r *http.Request) net.IP {
 // resolve to "loopback" and bypass the limiter for 100% of traffic
 // regardless of the real client.
 func clientIPOf(r *http.Request, trusted []*net.IPNet, settings TrustedCIDRProvider) net.IP {
+	ip, _ := resolveClient(r, trusted, settings)
+	return ip
+}
+
+// resolveClient resolves the client IP through the shared
+// logging.ResolveClientIP (X-Forwarded-For walked right-to-left, skipping
+// trusted proxies). fromHeader reports whether the result came from XFF.
+func resolveClient(r *http.Request, trusted []*net.IPNet, settings TrustedCIDRProvider) (ip net.IP, fromHeader bool) {
 	peer := peerIP(r)
 	trustProxy := settings != nil && settings.GetBool("server.trust_proxy")
-	if trustProxy && isTrustedPeer(peer, trusted, settings) {
-		if v := r.Header.Get("X-Forwarded-For"); v != "" {
-			first := v
-			if i := strings.Index(v, ","); i >= 0 {
-				first = v[:i]
-			}
-			if ip := net.ParseIP(strings.TrimSpace(first)); ip != nil {
-				return ip
-			}
-		}
-	}
-	return peer
+	return logging.ResolveClientIP(peer, r.Header.Get("X-Forwarded-For"), trustProxy,
+		func(c net.IP) bool { return isTrustedPeer(c, trusted, settings) })
 }
 
 // isTrusted returns true if the request's real client IP (see
 // clientIP) is loopback or matches one of the configured trusted
 // CIDRs (env-var at construction, or live server.trusted_cidrs).
 func (l *LoginRateLimiter) isTrusted(r *http.Request) bool {
-	ip := l.clientIP(r)
-	if ip == nil {
+	ip, fromHeader := resolveClient(r, l.trusted, l.settings)
+	// An address taken from X-Forwarded-For is attacker-influenced data:
+	// never grant it the trusted/loopback exemption.
+	if ip == nil || fromHeader {
 		return false
 	}
 	return l.isTrustedProxyPeer(ip)

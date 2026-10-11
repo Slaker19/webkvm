@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
@@ -13,10 +14,11 @@ import (
 )
 
 // HostPorts returns the essential host ports that must always be
-// reachable. The web UI port is passed in; SSH (22) and the default
-// noVNC range are hard-coded as safety rails.
+// reachable. The web UI port is passed in; SSH (22) is hard-coded as a
+// safety rail. The VNC range (5900-5903) is NOT opened any more: VNC listens
+// on 127.0.0.1 and the console proxy reaches it locally (audit #14).
 func HostPorts(webPort int) []int {
-	return []int{22, webPort, 5900, 5901, 5902, 5903}
+	return []int{22, webPort}
 }
 
 // IPResolver returns the current IPv4 of a VM (empty when off/no lease).
@@ -311,8 +313,9 @@ func (m *Manager) buildRulesetWith(host HostFirewall, all []VMFirewall) string {
 			if ip == "" && m.resolve != nil {
 				ip = m.resolve(fw.VMID)
 			}
-			if net.ParseIP(ip) == nil {
-				// Can't resolve: mark pending, skip rule.
+			if a, perr := netip.ParseAddr(ip); perr != nil || !a.Is4() {
+				// Can't resolve (or not IPv4, which nft would reject for
+				// the whole ruleset): mark pending, skip rule.
 				f.Applied = false
 				continue
 			}

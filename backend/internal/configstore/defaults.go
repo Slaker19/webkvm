@@ -289,11 +289,21 @@ func DefaultSchema() Schema {
 			Default:     false,
 			HotReload:   true,
 		},
+		// --- Containers -----------------------------------------------------
+		{
+			Key:         "incus.allowed_profiles",
+			Section:     "Containers",
+			Label:       "Incus profiles available to non-admins",
+			Description: "Incus profile names that operators may attach to containers they create or edit. Administrators can use any profile. Profiles can add devices and raw config, so keep this list to vetted profiles. Applies immediately.",
+			Type:        FieldList,
+			Default:     []string{"default"},
+			HotReload:   true,
+		},
 		{
 			Key:         "alerts.webhook_secret",
 			Section:     "Metrics",
 			Label:       "Alertmanager Webhook Secret",
-			Description: "Optional shared secret required to ingest alerts from Alertmanager. Pass via Authorization Bearer token, X-Webhook-Secret header, or ?secret= parameter. Applies immediately.",
+			Description: "Shared secret required to ingest alerts from Alertmanager. Pass via Authorization Bearer token or X-Webhook-Secret header (never in the URL). While empty, the webhook only accepts requests from the local host (loopback). Applies immediately.",
 			Type:        FieldString,
 			Default:     "",
 			HotReload:   true,

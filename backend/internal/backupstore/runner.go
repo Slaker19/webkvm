@@ -653,7 +653,7 @@ func (r *Runner) writeBackup(tgt Target, destDir string, onProgress ...func(int,
 		r.logger.Error("backup_path_denied", "target", tgt.ID, "path", destDir, "err", err)
 		return nil, 0, err
 	}
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
 		r.logger.Error("backup_mkdir_failed", "target", tgt.ID, "path", destDir, "err", err)
 		return nil, 0, fmt.Errorf("%w: mkdir: %v", ErrTargetPathUnwritable, err)
 	}
@@ -991,7 +991,7 @@ func (r *Runner) writeIncrementalBackup(
 		r.logger.Error("backup_path_denied", "target", tgt.ID, "path", destDir, "err", err)
 		return nil, 0, err
 	}
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
 		return nil, 0, fmt.Errorf("%w: mkdir: %v", ErrTargetPathUnwritable, err)
 	}
 
@@ -1229,7 +1229,7 @@ func (r *Runner) RestoreCheckpoint(
 	// Staging must reside within target's filesystem to prevent EXDEV on publish
 	// and to avoid filling the root disk with large VM images.
 	stagingDir := filepath.Join(tgt.Path, fmt.Sprintf(".webkvm-restore-staging-%s-%s", time.Now().UTC().Format("20060102T150405Z"), randHex(4)))
-	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
 		return "", fmt.Errorf("create staging: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(stagingDir) }()
@@ -1286,7 +1286,7 @@ func (r *Runner) RestoreCheckpoint(
 		subStaging := stagingDir
 		if d.device != "" {
 			subStaging = filepath.Join(stagingDir, d.device)
-			if err := os.MkdirAll(subStaging, 0o755); err != nil {
+			if err := os.MkdirAll(subStaging, 0o700); err != nil {
 				return "", fmt.Errorf("create dev staging for %s: %w", d.device, err)
 			}
 		}
@@ -1553,7 +1553,7 @@ func (r *Runner) resolveScope(tgt Target) ([]models.VM, error) {
 // when it's grown past 10 MB — the operator can re-export
 // the full audit log from the Audit page.
 func (r *Runner) writeConfigArchive(ctx context.Context, outPath string, tgt Target) (int64, error) {
-	f, err := os.Create(outPath)
+	f, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("create: %w", err)
 	}
@@ -1617,7 +1617,7 @@ func (r *Runner) writeConfigArchive(ctx context.Context, outPath string, tgt Tar
 	for _, line := range manifestLines {
 		manifest += line + "\n"
 	}
-	if err := writeTarEntry(tw, "manifest.txt", []byte(manifest), 0o644); err != nil {
+	if err := writeTarEntry(tw, "manifest.txt", []byte(manifest), 0o600); err != nil {
 		_ = tw.Close()
 		_ = cclose()
 		_ = f.Close()
@@ -1653,7 +1653,7 @@ func (r *Runner) writeConfigArchive(ctx context.Context, outPath string, tgt Tar
 // uploadSFTPRun pushes the config/ subtree on upload.
 func copyConfigGlobal(srcPath, destDir string) error {
 	dir := filepath.Join(destDir, "config")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	dst := filepath.Join(dir, "webkvm-config-latest.tar.zst")
@@ -1750,23 +1750,54 @@ func DeleteBackupConfig(tgt Target) error {
 	return err
 }
 
-// collectConfigEntries lists the files that go into the
-// config tar. Returns archive-name + on-disk-path pairs.
-// Filters out the ISO pool (huge) and any subdir; the
-// backup store's own JSON files are pulled in by the
-// second pass.
-// isExcludedConfigFile reports whether a dataDir top-level file must
-// never be included in the configuration backup. Credential-bearing
-// files and the bootstrap admin password are excluded so a leaked
-// backup cannot reveal secrets; *.tmp files are transient.
-func isExcludedConfigFile(name string) bool {
-	switch name {
-	case "notify-secrets.json", "sftp-secrets.json", "admin-password.initial":
-		return true
-	}
-	return strings.HasSuffix(name, ".tmp")
+// configAllowList is the set of dataDir top-level files that may go
+// into the configuration backup. It is an ALLOW-list on purpose: the
+// config tar is uploaded to SFTP/S3 targets and left on disk, so any
+// file not explicitly vetted as non-secret must stay out. Never add:
+// jwt.key, users.json, api-tokens.json, revoked.json, jail.json,
+// config.json, nodes.json, targets.json, *-secrets.json,
+// admin-password.initial, certs/*.key, snippets.json (cloud-init
+// snippets may embed credentials).
+var configAllowList = map[string]bool{
+	"appliances.json":     true,
+	"groups.json":         true,
+	"pool-purposes.json":  true,
+	"networks.json":       true,
+	"firewall.json":       true,
+	"firewall-host.json":  true,
+	"vm-schedules.json":   true,
+	"helper-scripts.json": true,
+	"alerts.json":         true,
+	"incidents.json":      true,
+	"verified.json":       true,
+	"audit.log":           true,
 }
 
+// isExcludedConfigFile reports whether a dataDir top-level file must
+// never be included in the configuration backup. Only names in
+// configAllowList are accepted; anything secret-like is rejected even
+// if it were ever added to the list by mistake.
+func isExcludedConfigFile(name string) bool {
+	if !configAllowList[name] {
+		return true
+	}
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ".tmp") || strings.HasSuffix(lower, ".key") ||
+		strings.Contains(lower, "secret") || strings.Contains(lower, "password") ||
+		strings.Contains(lower, "token") {
+		return true
+	}
+	switch lower {
+	case "jwt.key", "users.json", "revoked.json", "jail.json", "config.json", "nodes.json", "targets.json":
+		return true
+	}
+	return false
+}
+
+// collectConfigEntries lists the files that go into the config tar
+// (archive-name + on-disk-path pairs): the allow-listed non-secret
+// top-level dataDir files plus backup/schedules.json. Subdirectories
+// (pools/, certs/, ...) are never walked.
 func (r *Runner) collectConfigEntries() ([]struct {
 	arcName string
 	srcPath string
@@ -1775,25 +1806,12 @@ func (r *Runner) collectConfigEntries() ([]struct {
 		arcName string
 		srcPath string
 	}
-	// Top-level dataDir entries (skip subdirs: pools/, backup/).
 	entries, err := os.ReadDir(r.dataDir)
 	if err != nil {
 		return nil, err
 	}
 	for _, e := range entries {
-		if e.IsDir() {
-			// Special case: backup/ contains the targets and
-			// schedules JSONs which we DO want.
-			if e.Name() == "backup" {
-				continue
-			}
-			continue
-		}
-		// NEVER ship credentials or the initial password in the
-		// config backup: a leaked backup must not expose the SFTP
-		// password, webhook/SMTP secrets or the bootstrap admin
-		// password. Also skip transient temp files.
-		if isExcludedConfigFile(e.Name()) {
+		if e.IsDir() || isExcludedConfigFile(e.Name()) {
 			continue
 		}
 		out = append(out, struct {
@@ -1801,16 +1819,14 @@ func (r *Runner) collectConfigEntries() ([]struct {
 			srcPath string
 		}{arcName: e.Name(), srcPath: filepath.Join(r.dataDir, e.Name())})
 	}
-	// backup/targets.json + backup/schedules.json (skip jobs.json
-	// — the operator can look at the Jobs tab for the current
-	// run log).
+	// backup/schedules.json only. targets.json holds target
+	// credentials/endpoints and is never exported; jobs.json is
+	// skipped (see the Jobs tab for the run log).
 	backupDir := filepath.Join(r.dataDir, "backup")
-	for _, name := range []string{"targets.json", "schedules.json"} {
-		out = append(out, struct {
-			arcName string
-			srcPath string
-		}{arcName: "backup/" + name, srcPath: filepath.Join(backupDir, name)})
-	}
+	out = append(out, struct {
+		arcName string
+		srcPath string
+	}{arcName: "backup/schedules.json", srcPath: filepath.Join(backupDir, "schedules.json")})
 	return out, nil
 }
 
@@ -2287,7 +2303,7 @@ func RestoreRun(ctx context.Context, tgt Target, runSuffix, dataDir string, file
 	// find it under dataDir/restore-<ts>/.
 	ts := time.Now().UTC().Format("20060102T150405.000000000Z")
 	destination := filepath.Join(dataDir, "restore-"+ts)
-	if err := os.MkdirAll(destination, 0o755); err != nil {
+	if err := os.MkdirAll(destination, 0o700); err != nil {
 		return RestoreResult{}, err
 	}
 	res := RestoreResult{Destination: destination}
@@ -2297,7 +2313,7 @@ func RestoreRun(ctx context.Context, tgt Target, runSuffix, dataDir string, file
 	for i, f := range files {
 		subdir, kind, vmid := restoreSubdirFor(f.name)
 		subPath := filepath.Join(destination, subdir)
-		if err := os.MkdirAll(subPath, 0o755); err != nil {
+		if err := os.MkdirAll(subPath, 0o700); err != nil {
 			return res, err
 		}
 		if progress != nil {
@@ -2337,7 +2353,7 @@ func RestoreRun(ctx context.Context, tgt Target, runSuffix, dataDir string, file
 		})
 	}
 	mb, _ := json.MarshalIndent(entries, "", "  ")
-	_ = os.WriteFile(filepath.Join(destination, "RESTORE_MANIFEST.json"), mb, 0o644)
+	_ = os.WriteFile(filepath.Join(destination, "RESTORE_MANIFEST.json"), mb, 0o600)
 	return res, nil
 }
 
@@ -2508,6 +2524,21 @@ func extractOne(ctx context.Context, tgt Target, f restoreFile, destDir string) 
 		return "", fmt.Errorf("extracted %s: size %d bytes, exceeds cap of %d (zip-bomb guard)",
 			f.name, total, MaxRestoreExtractedBytes)
 	}
+	// Older archives may carry files with 0644 modes (and, before the
+	// allow-list, secrets such as jwt.key). Extraction only ever
+	// targets restore-<ts>/ (never the live dataDir, so live secrets
+	// cannot be overwritten); strip group/other access there anyway.
+	_ = filepath.Walk(destDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.IsDir() {
+			_ = os.Chmod(p, info.Mode().Perm()&0o700)
+		} else {
+			_ = os.Chmod(p, info.Mode().Perm()&0o600)
+		}
+		return nil
+	})
 	// Per-archive manifest.
 	type fileEntry struct {
 		Path string `json:"path"`
@@ -2523,7 +2554,7 @@ func extractOne(ctx context.Context, tgt Target, f restoreFile, destDir string) 
 	})
 	mb, _ := json.MarshalIndent(files, "", "  ")
 	manifest := filepath.Join(destDir, "RESTORE_MANIFEST.json")
-	_ = os.WriteFile(manifest, mb, 0o644)
+	_ = os.WriteFile(manifest, mb, 0o600)
 	return manifest, nil
 }
 

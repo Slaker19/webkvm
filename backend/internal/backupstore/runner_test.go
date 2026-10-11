@@ -1479,46 +1479,93 @@ func TestApplyRetentionIgnoresForeignAndConfigDir(t *testing.T) {
 	}
 }
 
+var secretConfigNames = []string{
+	"jwt.key", "users.json", "api-tokens.json", "revoked.json", "jail.json",
+	"config.json", "nodes.json", "targets.json", "notify-secrets.json",
+	"sftp-secrets.json", "cifs-secrets.json", "chap-secrets.json",
+	"admin-password.initial", "snippets.json", "users.json.tmp",
+}
+
 func TestIsExcludedConfigFile(t *testing.T) {
-	excluded := []string{"notify-secrets.json", "sftp-secrets.json", "admin-password.initial", "users.json.tmp"}
-	for _, n := range excluded {
+	for _, n := range secretConfigNames {
 		if !isExcludedConfigFile(n) {
 			t.Errorf("%q should be excluded from the config backup", n)
 		}
 	}
-	kept := []string{"users.json", "config.json", "targets.json", "pool-purposes.json"}
-	for _, n := range kept {
+	if isExcludedConfigFile("whatever-new-file.json") != true {
+		t.Error("unknown files must be excluded (allow-list)")
+	}
+	for _, n := range []string{"pool-purposes.json", "networks.json", "groups.json", "appliances.json"} {
 		if isExcludedConfigFile(n) {
 			t.Errorf("%q should NOT be excluded", n)
 		}
 	}
 }
 
-func TestCollectConfigEntriesExcludesSecrets(t *testing.T) {
+func TestConfigArchiveHasNoSecretsAndIs0600(t *testing.T) {
 	dir := t.TempDir()
-	for _, n := range []string{
-		"users.json", "config.json", "nodes.json",
-		"notify-secrets.json", "sftp-secrets.json", "admin-password.initial",
-	} {
-		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o600); err != nil {
+	for _, n := range append([]string{"networks.json", "groups.json"}, secretConfigNames...) {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "certs", "server.key"), []byte("k"), 0o644)
+	bdir := filepath.Join(dir, "backup")
+	_ = os.MkdirAll(bdir, 0o755)
+	_ = os.WriteFile(filepath.Join(bdir, "targets.json"), []byte("x"), 0o644)
+	_ = os.WriteFile(filepath.Join(bdir, "schedules.json"), []byte("x"), 0o644)
+
 	r := &Runner{dataDir: dir, logger: slog.Default()}
-	entries, err := r.collectConfigEntries()
+	out := filepath.Join(t.TempDir(), "cfg.tar.zst")
+	if _, err := r.writeConfigArchive(context.Background(), out, Target{ID: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(out)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("archive mode = %o, want 600", st.Mode().Perm())
+	}
+	f, _ := os.Open(out)
+	defer f.Close()
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
 	have := map[string]bool{}
-	for _, e := range entries {
-		have[e.arcName] = true
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		have[h.Name] = true
+		if h.Mode&0o077 != 0 {
+			t.Errorf("entry %s mode %o is group/world accessible", h.Name, h.Mode)
+		}
 	}
-	if !have["users.json"] || !have["config.json"] {
-		t.Fatalf("expected users.json/config.json present, got %v", have)
+	for _, want := range []string{"networks.json", "groups.json", "backup/schedules.json", "manifest.txt"} {
+		if !have[want] {
+			t.Errorf("expected %s in archive, got %v", want, have)
+		}
 	}
-	for _, secret := range []string{"notify-secrets.json", "sftp-secrets.json", "admin-password.initial"} {
-		if have[secret] {
-			t.Fatalf("SECRET %q leaked into the config backup entries", secret)
+	for n := range have {
+		base := filepath.Base(n)
+		for _, sec := range secretConfigNames {
+			if base == sec {
+				t.Errorf("SECRET %q leaked into config archive", n)
+			}
+		}
+		if strings.HasSuffix(n, ".key") {
+			t.Errorf("key file %q in archive", n)
 		}
 	}
 }

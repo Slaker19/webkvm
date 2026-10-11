@@ -133,10 +133,16 @@ func (l *GlobalRateLimiter) params() (float64, int) {
 // middleware runs first and 401s them). Trusted sources (loopback +
 // configured CIDRs) are always exempt.
 func (l *GlobalRateLimiter) exempt(r *http.Request) bool {
-	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+	// The Bearer exemption applies only to requests the auth middleware has
+	// actually validated (it sets X-User; Middleware strips any client-sent
+	// one). A bare "Authorization: Bearer x" on a public route is not exempt.
+	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") && r.Header.Get(HeaderUser) != "" {
 		return true
 	}
-	ip := clientIPOf(r, l.trusted, l.settings)
+	ip, fromHeader := resolveClient(r, l.trusted, l.settings)
+	if fromHeader {
+		return false
+	}
 	return isTrustedPeer(ip, l.trusted, l.settings)
 }
 

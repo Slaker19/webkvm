@@ -376,7 +376,7 @@ func TestUpdateDomain_PrivilegedHotChangeLocked(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	priv := true
-	_, err = b.UpdateDomain("web", models.UpdateVMRequest{Privileged: &priv})
+	_, err = b.UpdateDomain("web", models.UpdateVMRequest{Privileged: &priv, Scope: models.MediaScope{Admin: true}})
 	if err == nil {
 		t.Fatal("expected an error when toggling security.privileged on a running container")
 	}

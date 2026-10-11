@@ -80,39 +80,54 @@ func isTrustedProxySource(ip net.IP) bool {
 	return false
 }
 
-// ClientIP returns the best-known client IP for a request, given
-// the current proxy-trust setting.
+// ResolveClientIP is THE single client-IP resolver, shared by the request
+// logger, the audit log and both rate limiters (which differ only in how
+// they decide trustProxy / isTrusted).
 //
-//   - If TrustProxy() is true, X-Forwarded-For is set, AND the
-//     immediate TCP peer is itself a trusted proxy source (see
-//     isTrustedProxySource), the FIRST hop in the header is returned
-//     (the actual client). This is the X-Forwarded-For convention:
-//     each proxy appends, so the leftmost is the original sender.
-//   - Otherwise, the TCP peer address (RemoteAddr) is used, with
-//     the port stripped.
+// X-Forwarded-For is only consulted when trustProxy is on AND the immediate
+// TCP peer is a trusted proxy. The header is then walked right-to-left (each
+// proxy appends the address it saw, so the rightmost entries are written by
+// our own infrastructure and the leftmost is whatever the client claimed):
+// the first address that is not itself a trusted proxy is the client. A
+// malformed entry makes the whole header untrusted and the peer is used.
 //
-// Use this in BOTH the request logger (for the remote_ip field)
-// and the audit logger (for the IP field on entries) so they
-// always agree. Don't call r.Header.Get("X-Forwarded-For")
-// directly — that's what introduced the original "logs disagree
-// with audit" bug.
+// The second result reports whether the returned IP came from the header. An
+// XFF-derived address must never be granted trusted/loopback exemptions.
+func ResolveClientIP(peer net.IP, xff string, trustProxy bool, isTrusted func(net.IP) bool) (ip net.IP, fromHeader bool) {
+	if !trustProxy || xff == "" || !isTrusted(peer) {
+		return peer, false
+	}
+	parts := strings.Split(xff, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		c := net.ParseIP(strings.TrimSpace(parts[i]))
+		if c == nil {
+			return peer, false
+		}
+		if !isTrusted(c) {
+			return c, true
+		}
+	}
+	// Every hop was a trusted proxy: the client is the leftmost entry's
+	// position, which is itself trusted infrastructure; use the peer.
+	return peer, false
+}
+
+// ClientIP returns the best-known client IP for a request, given the
+// current proxy-trust setting (WEBKVM_TRUST_PROXY and
+// WEBKVM_TRUSTED_PROXY_CIDRS). See ResolveClientIP for the algorithm.
+//
+// Use this in BOTH the request logger (for the remote_ip field) and the
+// audit logger (for the IP field on entries) so they always agree. Don't
+// call r.Header.Get("X-Forwarded-For") directly.
 func ClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if TrustProxy() && isTrustedProxySource(net.ParseIP(host)) {
-		if v := r.Header.Get("X-Forwarded-For"); v != "" {
-			// Take the leftmost (original client). Comma is the
-			// X-Forwarded-For separator per RFC 7239 §5.2.
-			first := strings.TrimSpace(v)
-			if i := strings.Index(v, ","); i >= 0 {
-				first = strings.TrimSpace(v[:i])
-			}
-			if first != "" {
-				return first
-			}
-		}
+	peer := net.ParseIP(host)
+	ip, _ := ResolveClientIP(peer, r.Header.Get("X-Forwarded-For"), TrustProxy(), isTrustedProxySource)
+	if ip == nil {
+		return host
 	}
-	return host
+	return ip.String()
 }

@@ -2,6 +2,7 @@ package libvirt
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"webkvm/internal/models"
@@ -189,3 +190,23 @@ func TestHostRestrictionsLive(t *testing.T) {
 		t.Errorf("expected 0000:02:00.0 to have no restrictions, got %+v", r)
 	}
 }
+
+func TestBindPCIDeviceVFIO_PreflightFailsWhenNoDriver(t *testing.T) {
+	c := &Connector{}
+	// Test against invalid address
+	if err := c.BindPCIDeviceVFIO("invalid-pci"); err == nil {
+		t.Errorf("expected error for invalid PCI address, got nil")
+	}
+
+	// Test against WiFi device when vfio-pci driver is not loaded in sysfs
+	if _, err := os.Stat("/sys/bus/pci/drivers/vfio-pci/bind"); os.IsNotExist(err) {
+		err := c.BindPCIDeviceVFIO("0000:02:00.0")
+		if err == nil {
+			t.Errorf("expected preflight error when vfio-pci is not loaded, got nil")
+		}
+		if !strings.Contains(err.Error(), "kernel driver vfio-pci is not available") && !strings.Contains(err.Error(), "not found in sysfs") {
+			t.Errorf("expected vfio-pci preflight error, got: %v", err)
+		}
+	}
+}
+

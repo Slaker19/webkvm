@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
@@ -52,35 +53,50 @@ func BuildOTPAuthURL(issuer, account, secret string) string {
 	return fmt.Sprintf("otpauth://totp/%s?%s", label, q.Encode())
 }
 
-// ValidateTOTP validates a 6-digit TOTP code against a Base32 secret for current time with window +/- 1 step.
+// ValidateTOTP validates a 6-digit TOTP code against a Base32 secret for
+// current time with window +/- 1 step. It does NOT prevent replay of an
+// already-used code; login must use MatchTOTP + the stored last-used step.
 func ValidateTOTP(secret, code string) bool {
+	_, ok := MatchTOTP(secret, code, time.Now())
+	return ok
+}
+
+// MatchTOTP checks code against the secret at the +/-1 step window around
+// now and returns the matching 30-second step number. Comparison is
+// constant-time and always evaluates all three steps. The caller must
+// reject a step <= the last one it accepted (replay protection, RFC 6238 5.2).
+func MatchTOTP(secret, code string, now time.Time) (step int64, ok bool) {
 	cleanSecret := strings.ToUpper(strings.TrimSpace(secret))
 	cleanCode := strings.TrimSpace(code)
 	if len(cleanCode) != 6 {
-		return false
+		return 0, false
 	}
 
 	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(cleanSecret)
 	if err != nil {
 		key, err = base32.StdEncoding.DecodeString(cleanSecret)
 		if err != nil {
-			return false
+			return 0, false
 		}
 	}
 
-	now := time.Now().Unix()
-	step := int64(30)
-	currentInterval := now / step
-
-	// Check intervals: t-1, t, t+1
+	currentInterval := now.Unix() / 30
+	matched := int64(-1)
+	// Check intervals t-1, t, t+1 without early exit.
 	for _, offset := range []int64{-1, 0, 1} {
 		interval := currentInterval + offset
-		if computeHOTP(key, interval) == cleanCode {
-			return true
+		if subtle.ConstantTimeCompare([]byte(computeHOTP(key, interval)), []byte(cleanCode)) == 1 {
+			matched = interval
 		}
 	}
-	return false
+	if matched < 0 {
+		return 0, false
+	}
+	return matched, true
 }
+
+// CurrentTOTPStep returns the 30-second step number of t.
+func CurrentTOTPStep(t time.Time) int64 { return t.Unix() / 30 }
 
 func computeHOTP(key []byte, counter int64) string {
 	buf := make([]byte, 8)
@@ -98,4 +114,14 @@ func computeHOTP(key []byte, counter int64) string {
 
 	otp := code % 1000000
 	return fmt.Sprintf("%06d", otp)
+}
+
+// TOTPCodeAt returns the code an authenticator would show for secret at t.
+// Used by tests and tooling; login paths only validate.
+func TOTPCodeAt(secret string, t time.Time) (string, error) {
+	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.TrimSpace(secret)))
+	if err != nil {
+		return "", err
+	}
+	return computeHOTP(key, t.Unix()/30), nil
 }

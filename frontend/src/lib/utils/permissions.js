@@ -27,6 +27,7 @@ export const CAPABILITIES = [
   { key: 'backups', icon: 'archive', roles: ['operator'] },
   { key: 'media', icon: 'image', roles: ['operator'] },
   { key: 'export', icon: 'download', roles: ['operator'] },
+  { key: 'nesting', icon: 'layers', roles: ['operator'] },
 ];
 
 /** Capability keys that apply to a given role. */
@@ -39,11 +40,13 @@ export function capabilitiesForRole(role) {
  *
  * Mirrors User.HasPermission in the backend: admins hold everything,
  * viewers hold nothing (console is grantable but off by default), and
- * operators default to allowed.
+ * operators default to allowed, EXCEPT nesting which is opt-in (denied
+ * by default for operators).
  */
 export function defaultFor(role, key) {
   if (role === 'admin') return true;
   if (role === 'viewer') return false;
+  if (key === 'nesting') return false;
   return CAPABILITIES.some((c) => c.key === key && c.roles.includes(role));
 }
 

@@ -290,7 +290,7 @@
   // autostart). Unprivileged containers are the safe default.
   let bootOrder = $state('cdrom');
   let privileged = $state(false);
-  let nesting = $state(true);
+  let nesting = $state(auth.isAdmin());
   let profiles = $state(['default']);
   // Off by default: a new VM should not silently start with the host.
   // The switch is visible in both easy and advanced mode.
@@ -2098,7 +2098,11 @@
                       label={t('vmCreate.privileged')}
                       helper={t('vmCreate.privilegedHelper')}
                     >
-                      <Switch bind:checked={privileged} ariaLabel={t('vmCreate.privileged')} />
+                      <Switch
+                        bind:checked={privileged}
+                        ariaLabel={t('vmCreate.privileged')}
+                        disabled={!auth.isAdmin()}
+                      />
                     </SettingRow>
                     <SettingRow label={t('vmCreate.nesting')} helper={t('vmCreate.nestingHelper')}>
                       <Switch bind:checked={nesting} ariaLabel={t('vmCreate.nesting')} />

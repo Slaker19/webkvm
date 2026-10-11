@@ -51,7 +51,7 @@ func TestExtractOVAAdversarialEntries(t *testing.T) {
 		"traversal_dotdot":     reg("bogus"),
 		"absolute_path":        reg("bogus"),
 		"nested_dirs":          reg("bogus"),
-		"legit_qcow2_passthru": reg("bogus"),
+		"legit_qcow2_passthru": reg(realQcow2(t)),
 	}
 	names := map[string]string{
 		"traversal_dotdot":     "../escape.vmdk",

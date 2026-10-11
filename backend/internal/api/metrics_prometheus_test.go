@@ -11,6 +11,7 @@ import (
 	"webkvm/internal/configstore"
 	"webkvm/internal/models"
 	"webkvm/internal/tokens"
+	"webkvm/internal/user"
 )
 
 func TestPrometheusMetrics_AuthAndContent(t *testing.T) {
@@ -30,14 +31,24 @@ func TestPrometheusMetrics_AuthAndContent(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		Version: "0.1.6",
+		Version: "0.1.7",
+	}
+
+	t.Setenv("WEBKVM_ADMIN_PASSWORD", "Str0ng-Pass#2026")
+	us, err := user.NewStore(tempDir)
+	if err != nil {
+		t.Fatalf("user.NewStore: %v", err)
+	}
+	if _, err := us.Create(models.CreateUserRequest{Username: "prom", Password: "Str0ng-Pass#2026", Role: models.RoleAdmin}); err != nil {
+		t.Fatal(err)
 	}
 
 	h := &Handler{
-		cfg:      cfg,
-		auth:     authMgr,
-		tokens:   tokStore,
-		settings: cfgStore,
+		cfg:       cfg,
+		auth:      authMgr,
+		tokens:    tokStore,
+		settings:  cfgStore,
+		userStore: us,
 	}
 
 	// 1. By default, unauthenticated scrape must be rejected with 401
@@ -53,7 +64,7 @@ func TestPrometheusMetrics_AuthAndContent(t *testing.T) {
 	}
 
 	// 2. Scrape with API token via Bearer header
-	tok, plainTok, err := tokStore.Create("prom-agent", "admin", models.RoleAdmin, nil, 0, 0)
+	tok, plainTok, err := tokStore.Create("prom-agent", "prom", models.RoleAdmin, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("tokStore.Create: %v", err)
 	}
@@ -71,7 +82,7 @@ func TestPrometheusMetrics_AuthAndContent(t *testing.T) {
 		t.Errorf("expected text/plain Content-Type, got %q", ct)
 	}
 	body := recBearer.Body.String()
-	if !strings.Contains(body, `webkvm_info{version="0.1.6"} 1`) {
+	if !strings.Contains(body, `webkvm_info{version="0.1.7"} 1`) {
 		t.Errorf("missing webkvm_info in Prometheus output: %s", body)
 	}
 	if !strings.Contains(body, `webkvm_up 1`) {
@@ -151,5 +162,80 @@ func TestGrafanaDashboardAndAlertRules(t *testing.T) {
 	}
 	if !strings.Contains(recRules.Body.String(), "alert: WebKVMDown") {
 		t.Errorf("AlertRules body missing alert: WebKVMDown")
+	}
+}
+
+func TestPrometheusMetrics_IdentityChecks(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgStore, err := configstore.New(tempDir, configstore.DefaultSchema())
+	if err != nil {
+		t.Fatal(err)
+	}
+	authMgr := auth.NewManager("test-secret-key-32-chars-long!!", cfgStore)
+	t.Cleanup(func() { authMgr.Close() })
+	tokStore, err := tokens.New(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WEBKVM_ADMIN_PASSWORD", "Str0ng-Pass#2026")
+	us, err := user.NewStore(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, role := range map[string]string{"adm": models.RoleAdmin, "view": models.RoleViewer} {
+		if _, err := us.Create(models.CreateUserRequest{Username: name, Password: "Str0ng-Pass#2026", Role: role}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := &Handler{cfg: &config.Config{Version: "x"}, auth: authMgr, tokens: tokStore, settings: cfgStore, userStore: us}
+
+	get := func(target, bearer string) int {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		rec := httptest.NewRecorder()
+		h.PrometheusMetrics(rec, req)
+		return rec.Code
+	}
+	epochOf := func(n string) int { u, _ := us.Get(n); return u.SessionEpoch }
+
+	admJWT, _, _ := authMgr.GenerateTokenWithMustChange("adm", models.RoleAdmin, false, epochOf("adm"))
+	viewJWT, _, _ := authMgr.GenerateTokenWithMustChange("view", models.RoleViewer, false, epochOf("view"))
+	mfaJWT, _ := authMgr.GenerateMFAToken("adm")
+	_, admAPI, _ := tokStore.Create("a", "adm", models.RoleAdmin, nil, 0, epochOf("adm"))
+	_, viewAPI, _ := tokStore.Create("v", "view", models.RoleViewer, nil, 0, epochOf("view"))
+
+	if c := get("/metrics", admJWT); c != http.StatusOK {
+		t.Errorf("admin JWT: %d", c)
+	}
+	if c := get("/metrics", viewJWT); c != http.StatusForbidden {
+		t.Errorf("viewer JWT: %d, want 403", c)
+	}
+	if c := get("/metrics", viewAPI); c != http.StatusForbidden {
+		t.Errorf("viewer API token: %d, want 403", c)
+	}
+	if c := get("/metrics", mfaJWT); c != http.StatusUnauthorized {
+		t.Errorf("MFA-pending token: %d, want 401", c)
+	}
+	if c := get("/metrics?token="+admJWT, ""); c != http.StatusUnauthorized {
+		t.Errorf("JWT in ?token=: %d, want 401", c)
+	}
+	if c := get("/metrics?token="+admAPI, ""); c != http.StatusOK {
+		t.Errorf("API token in ?token=: %d, want 200", c)
+	}
+	// API tokens switched off in settings.
+	if _, _, err := cfgStore.SetMany(configstore.Set{"auth.allow_api_tokens": false}); err != nil {
+		t.Fatal(err)
+	}
+	if c := get("/metrics", admAPI); c != http.StatusUnauthorized {
+		t.Errorf("API token while disabled: %d, want 401", c)
+	}
+	// Revoked session epoch.
+	if _, err := us.BumpSessionEpoch("adm", "root"); err != nil {
+		t.Fatal(err)
+	}
+	if c := get("/metrics", admJWT); c != http.StatusUnauthorized {
+		t.Errorf("stale-epoch JWT: %d, want 401", c)
 	}
 }

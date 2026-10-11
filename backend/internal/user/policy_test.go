@@ -11,6 +11,23 @@ import (
 
 func strPtr(s string) *string { return &s }
 
+// An installer-provided admin-password.initial is used as the initial admin
+// password (instead of a WEBKVM_ADMIN_PASSWORD env var in the unit).
+func TestPreseededInitialPasswordFileIsUsed(t *testing.T) {
+	t.Setenv("WEBKVM_ADMIN_PASSWORD", "")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "admin-password.initial"), []byte("Pre-Seeded!Pass#1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.ChangePassword("admin", "Pre-Seeded!Pass#1", "NewStr0ng!Pass#2026"); err != nil {
+		t.Fatalf("pre-seeded password was not used: %v", err)
+	}
+}
+
 func longRepeat(n int, pattern string) string {
 	s := strings.Repeat(pattern, n/len(pattern)+1)
 	if len(s) > n {

@@ -47,6 +47,7 @@ func TestChainStoreAppendAndGet(t *testing.T) {
 	}
 	if chain == nil {
 		t.Fatal("expected chain, got nil")
+		return
 	}
 	if chain.VMID != "vm-1" {
 		t.Errorf("VMID = %q, want vm-1", chain.VMID)
@@ -205,6 +206,7 @@ func TestChainPersistenceAcrossReload(t *testing.T) {
 	}
 	if chain == nil {
 		t.Fatal("chain lost across reload")
+		return
 	}
 	if chain.VMName != "PersistVM" {
 		t.Errorf("VMName = %q, want PersistVM", chain.VMName)

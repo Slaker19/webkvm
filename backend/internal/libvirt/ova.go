@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"webkvm/internal/imgsafe"
+
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -771,7 +773,7 @@ func (c *Connector) ImportOVA(ovaPath, newName, poolName string) (string, string
 		}
 		switch {
 		case strings.HasSuffix(hdr.Name, ".ovf"):
-			ovfData, err = io.ReadAll(tr)
+			ovfData, err = readAllLimited(tr, maxOVFBytes)
 			if err != nil {
 				return "", "", err
 			}
@@ -800,6 +802,7 @@ func (c *Connector) ImportOVA(ovaPath, newName, poolName string) (string, string
 		return "", "", fmt.Errorf("create work dir in pool: %w", err)
 	}
 	defer os.RemoveAll(workDir)
+	budget := newDiskBudget(poolPath)
 
 	for {
 		hdr, err := tr2.Next()
@@ -821,11 +824,14 @@ func (c *Connector) ImportOVA(ovaPath, newName, poolName string) (string, string
 		if !strings.HasPrefix(filepath.Clean(tmpDisk), filepath.Clean(workDir)+string(os.PathSeparator)) {
 			continue
 		}
+		if err := budget.take(hdr.Size); err != nil {
+			return "", "", err
+		}
 		f, err := os.Create(tmpDisk)
 		if err != nil {
 			return "", "", err
 		}
-		if _, err := io.Copy(f, tr2); err != nil {
+		if _, err := copyLimited(f, tr2, hdr.Size); err != nil {
 			f.Close()
 			return "", "", err
 		}
@@ -858,7 +864,7 @@ func (c *Connector) ImportOVA(ovaPath, newName, poolName string) (string, string
 	// disk files are named after resolvedName (the unique VM
 	// name), with a counter suffix on collision — see
 	// vmDiskPath for the full policy.
-	ovfStr, err = rewriteOVFDisks(ovfStr, diskFiles, poolPath, resolvedName)
+	ovfStr, convertedDisks, err := rewriteOVFDisks(ovfStr, diskFiles, poolPath, resolvedName)
 	if err != nil {
 		return "", "", err
 	}
@@ -890,12 +896,17 @@ func (c *Connector) ImportOVA(ovaPath, newName, poolName string) (string, string
 	// libvirt XML. Full OVF->libvirt translation is left for a future
 	// pass — for this round-trip to work between OVA exports, we use
 	// the qcow2 disk path as the basis for a generated domain.
-	xmlStr, err := ovfToLibvirtXML(ovfStr, poolPath)
+	xmlStr, err := ovfToLibvirtXML(ovfStr, poolPath, convertedDisks)
 	if err != nil {
 		return "", "", err
 	}
 
-	dom, err := c.conn.DomainDefineXML(xmlStr)
+	allowed := map[string]bool{}
+	for base := range convertedDisks {
+		allowed[filepath.Join(poolPath, base)] = true
+	}
+	// The XML is derived from an untrusted OVF: validate it like any import.
+	dom, err := c.defineDomain(xmlStr, DomainPolicy{AllowedDiskFiles: allowed})
 	if err != nil {
 		return "", "", fmt.Errorf("define domain: %w", err)
 	}
@@ -955,8 +966,13 @@ func openOVAStream(ovaPath string) (io.Reader, func(), error) {
 // It returns an error if any disk could not be converted, so the import
 // aborts instead of registering a domain whose backing file is not the
 // format its XML declares.
-func rewriteOVFDisks(ovf string, diskFiles map[string][]byte, poolPath, vmName string) (string, error) {
+//
+// The returned set holds the base names of the disks written by THIS import;
+// ovfToLibvirtXML only accepts those, so an OVF can never reference another
+// file that already lives in the pool (audit #5).
+func rewriteOVFDisks(ovf string, diskFiles map[string][]byte, poolPath, vmName string) (string, map[string]bool, error) {
 	var convErr error
+	converted := map[string]bool{}
 	// Match both ovf:href="disks/..." and bare ovf:href="..."
 	re := regexp.MustCompile(`ovf:href="([^"]+)"`)
 	// Track per-import disk counter so the first disk lands at
@@ -979,6 +995,9 @@ func rewriteOVFDisks(ovf string, diskFiles map[string][]byte, poolPath, vmName s
 			}
 		}
 		if !ok {
+			if ovfHrefLooksLikeDisk(arcName) && convErr == nil {
+				convErr = fmt.Errorf("OVF references disk %q that is not present in the archive", filepath.Base(arcName))
+			}
 			return match
 		}
 		tmpPath := string(tmpPathBytes)
@@ -1009,20 +1028,31 @@ func rewriteOVFDisks(ovf string, diskFiles map[string][]byte, poolPath, vmName s
 		if !strings.HasPrefix(filepath.Clean(qcow2Path), filepath.Clean(poolPath)+string(os.PathSeparator)) {
 			return match
 		}
-		convCtx, convCancel := context.WithTimeout(context.Background(), 2*time.Hour)
-		defer convCancel()
-		cmd := exec.CommandContext(convCtx, "qemu-img", "convert", "-O", "qcow2", "-q", tmpPath, qcow2Path)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			os.Remove(qcow2Path)
-			convErr = fmt.Errorf("convert %s to qcow2: %v: %s",
-				filepath.Base(arcName), err, strings.TrimSpace(string(out)))
+		// Untrusted image: refuse backing files, data-files and vmdk extents
+		// outside the file, convert with an explicit -f, never overwrite
+		// (audit #6).
+		declared := imgsafe.FormatFromExt(tmpPath)
+		if declared == "" {
+			convErr = fmt.Errorf("disk %s has an unsupported image format", filepath.Base(arcName))
+			return match
+		}
+		if err := imgsafe.Convert(context.Background(), tmpPath, qcow2Path, declared, 2*time.Hour); err != nil {
+			convErr = fmt.Errorf("convert %s to qcow2: %v", filepath.Base(arcName), err)
 			return match
 		}
 		diskCounter++
+		converted[filepath.Base(qcow2Path)] = true
 		// Rewrite href to point to the newly converted qcow2 image in the pool
 		return fmt.Sprintf("ovf:href=\"disks/%s\"", filepath.Base(qcow2Path))
 	})
-	return out, convErr
+	return out, converted, convErr
+}
+
+// ovfHrefLooksLikeDisk mirrors the filter ovfToLibvirtXML applies to
+// References/File entries.
+func ovfHrefLooksLikeDisk(href string) bool {
+	ext := strings.ToLower(filepath.Ext(href))
+	return strings.HasPrefix(href, "disks/") || ext == ".qcow2" || ext == ".vmdk" || ext == ".img" || ext == ".raw"
 }
 
 // ovfToLibvirtXML translates the OVF (VirtualBox/VMware-style
@@ -1031,7 +1061,10 @@ func rewriteOVFDisks(ovf string, diskFiles map[string][]byte, poolPath, vmName s
 // populate are filled in. Anything else (custom networks, hostdev,
 // etc.) is dropped, since the OVF doesn't carry that information
 // anyway. The goal is a working round-trip, not full fidelity.
-func ovfToLibvirtXML(ovf, poolPath string) (string, error) {
+//
+// allowedDisks is the set of disk base names written by the current import
+// (see rewriteOVFDisks); any other disk-looking href is rejected.
+func ovfToLibvirtXML(ovf, poolPath string, allowedDisks map[string]bool) (string, error) {
 	// Parse the OVF with a tolerant struct.
 	var doc struct {
 		VirtualSystem struct {
@@ -1085,11 +1118,13 @@ func ovfToLibvirtXML(ovf, poolPath string) (string, error) {
 	var disks strings.Builder
 	diskIndex := 0
 	for _, f := range doc.References.Files {
-		ext := strings.ToLower(filepath.Ext(f.Href))
-		if !strings.HasPrefix(f.Href, "disks/") && ext != ".qcow2" && ext != ".vmdk" && ext != ".img" && ext != ".raw" {
+		if !ovfHrefLooksLikeDisk(f.Href) {
 			continue
 		}
 		base := filepath.Base(f.Href)
+		if !allowedDisks[base] {
+			return "", fmt.Errorf("OVF references disk %q that was not extracted from this archive", base)
+		}
 		diskPath := filepath.Join(poolPath, base)
 		targetDev := fmt.Sprintf("vd%c", 'a'+diskIndex)
 		if diskIndex >= 26 {
@@ -1126,7 +1161,7 @@ func ovfToLibvirtXML(ovf, poolPath string) (string, error) {
       <source network='default'/>
       <model type='virtio'/>
     </interface>
-    <graphics type='vnc' listen='0.0.0.0'/>
+    <graphics type='vnc' listen='127.0.0.1'/>
   </devices>
 </domain>
 `, xmlEscape(doc.VirtualSystem.Name), memKiB, vcpus, disks.String()), nil

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -320,7 +321,7 @@ func TestImportFromProxmoxPool(t *testing.T) {
 			// The "default" PROFILE is unrelated to the pool and must
 			// survive verbatim; an over-eager substitution would break
 			// every imported container's networking.
-			if !strings.Contains(backup, "profiles:\n  - default") {
+			if !regexp.MustCompile(`profiles:\n\s*- default`).MatchString(backup) {
 				t.Errorf("default profile lost from backup.yaml:\n%s", backup)
 			}
 

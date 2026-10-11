@@ -251,3 +251,22 @@ func TestResolveJWTSecretStrong(t *testing.T) {
 		t.Errorf("JWTSecret: want 'Strong-Secret-123!@#', got %q", cfg.JWTSecret)
 	}
 }
+
+// #25: CORS is same-origin only unless CORS_ORIGIN is set explicitly.
+func TestLoadCORSDefaultsToSameOrigin(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DATA_DIR", dir)
+	t.Setenv("CORS_ORIGIN", "")
+	origCwd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origCwd) })
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CORSOrigin != "" {
+		t.Fatalf("CORSOrigin default = %q, want empty", cfg.CORSOrigin)
+	}
+}

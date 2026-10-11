@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -103,7 +104,11 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 				[]byte("\r\n[console unavailable: the VM is powered off or still booting]\r\n"))
 			return
 		}
-		time.Sleep(700 * time.Millisecond)
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 	defer func() {
 		if stream != nil {
@@ -126,7 +131,11 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 	// as the domain runs again — the browser never notices.
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
-			time.Sleep(800 * time.Millisecond)
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
 		}
 		if attempt > 0 {
 			var oerr error
@@ -141,7 +150,11 @@ func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 					!strings.Contains(oerr.Error(), "Active console session") {
 					break
 				}
-				time.Sleep(750 * time.Millisecond)
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(600 * time.Millisecond):
+				}
 			}
 			if !ok {
 				_ = writeWS(websocket.TextMessage,
@@ -272,30 +285,11 @@ func (h *Handler) HostTerminal(w http.ResponseWriter, r *http.Request) {
 		_ = ws.WriteMessage(websocket.TextMessage, []byte("host login unavailable: /bin/login not found"))
 		return
 	}
+	// -p keeps the minimal, explicit environment below so the login shell
+	// gets a UTF-8 locale and truecolor (without it login drops LANG/LC_ALL).
+	// This is safe because the service's own environment is never inherited.
 	cmd := exec.Command("/bin/login", "-p")
-
-	// Build enriched environment with UTF-8 locale and truecolor support
-	// so modern TUIs (btop, mc, htop, yazi, lazygit) render box-drawing
-	// characters and 24-bit colors correctly.
-	env := os.Environ()
-	hasLang := false
-	hasLCAll := false
-	for _, e := range env {
-		if strings.HasPrefix(e, "LANG=") {
-			hasLang = true
-		}
-		if strings.HasPrefix(e, "LC_ALL=") {
-			hasLCAll = true
-		}
-	}
-	if !hasLang {
-		env = append(env, "LANG=C.UTF-8")
-	}
-	if !hasLCAll {
-		env = append(env, "LC_ALL=C.UTF-8")
-	}
-	env = append(env, "TERM=xterm-256color", "COLORTERM=truecolor")
-	cmd.Env = env
+	cmd.Env = hostTerminalEnv()
 
 	ptmx, err := pty.StartWithAttrs(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}, &syscall.SysProcAttr{Setsid: true})
 	if err != nil {
@@ -494,7 +488,11 @@ func (h *Handler) ResetVMPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newPassword := generatePasswordString(8)
+	newPassword, err := generatePasswordString(8)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "failed to generate secure password: "+err.Error())
+		return
+	}
 	if err := h.compute.SetUserPassword(id, username, newPassword); err != nil {
 		slog.Error("password_reset_failed", "vm_id", id, "user", username, "err", err)
 		h.vmActionErr(w, err, nil)
@@ -510,17 +508,16 @@ func (h *Handler) ResetVMPassword(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func generatePasswordString(length int) string {
-	// Unbiased, fail-closed: crypto/rand errors propagate (we panic rather
-	// than fall back to a weak/known password), and rejection sampling
-	// removes the modulo bias the old byte%len(charset) scheme had.
+func generatePasswordString(length int) (string, error) {
+	// Unbiased, fail-closed: crypto/rand errors propagate cleanly,
+	// and rejection sampling removes the modulo bias.
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	const maxUnbiased = uint64(4294967296) / uint64(len(charset)) * uint64(len(charset))
 	b := make([]byte, 4)
 	out := make([]byte, 0, length)
 	for len(out) < length {
 		if _, err := rand.Read(b); err != nil {
-			panic("crypto/rand unavailable: " + err.Error())
+			return "", fmt.Errorf("crypto/rand unavailable: %w", err)
 		}
 		x := binary.BigEndian.Uint32(b)
 		if uint64(x) >= maxUnbiased {
@@ -528,7 +525,7 @@ func generatePasswordString(length int) string {
 		}
 		out = append(out, charset[x%uint32(len(charset))])
 	}
-	return string(out)
+	return string(out), nil
 }
 
 // VMConsoleTicket issues a short-lived single-use ticket authorizing one
@@ -580,4 +577,19 @@ func (h *Handler) HostTerminalTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResp(w, http.StatusOK, map[string]any{"ticket": tk, "expires_in": 30})
+}
+
+// hostTerminalEnv is the explicit allow-list environment handed to
+// /bin/login for the host terminal. The service runs as root and its own
+// environment may hold secrets (unit Environment=, tokens), so it must never
+// be inherited. UTF-8 locale and truecolor let modern TUIs (btop, mc, htop,
+// yazi, lazygit) render box-drawing characters and 24-bit colors; login
+// itself sets HOME/SHELL/PATH/USER.
+func hostTerminalEnv() []string {
+	return []string{
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+		"LANG=C.UTF-8",
+		"LC_ALL=C.UTF-8",
+	}
 }

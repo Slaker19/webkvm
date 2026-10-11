@@ -84,10 +84,56 @@ type IncusBackend struct {
 	// own unix-socket HTTP request (the official client only decodes
 	// JSON bodies, never binary streams).
 	socketPath string
+	// allowedProfiles returns the profile names a non-admin may attach
+	// (setting incus.allowed_profiles). nil means only "default".
+	allowedProfiles func() []string
 }
 
 // IncusBackendOption customizes the backend at construction time.
 type IncusBackendOption func(*IncusBackend)
+
+// WithAllowedProfiles wires the source of incus.allowed_profiles.
+func WithAllowedProfiles(f func() []string) IncusBackendOption {
+	return func(b *IncusBackend) { b.allowedProfiles = f }
+}
+
+// authorizeSpec is the ONE place that decides whether a caller may ask for a
+// container spec (audit #3/#4). Every path that creates or reconfigures a
+// container (create, appliance deploy, update) goes through CreateDomain /
+// UpdateDomain, which call it. Admins may do anything; everyone else cannot
+// set security.privileged, can only use profiles listed in
+// incus.allowed_profiles (default ["default"]) and only enables
+// security.nesting with the "nesting" capability.
+func (b *IncusBackend) authorizeSpec(scope models.MediaScope, privileged, nesting *bool, profiles []string) error {
+	if scope.Admin {
+		return nil
+	}
+	if privileged != nil && *privileged {
+		return fmt.Errorf("%w: privileged containers require an administrator", compute.ErrForbidden)
+	}
+	if nesting != nil && *nesting && !scope.CanNesting {
+		return fmt.Errorf("%w: nesting requires the nesting permission", compute.ErrForbidden)
+	}
+	allowed := []string{"default"}
+	if b.allowedProfiles != nil {
+		if l := b.allowedProfiles(); len(l) > 0 {
+			allowed = l
+		}
+	}
+	for _, p := range profiles {
+		ok := false
+		for _, a := range allowed {
+			if a == p {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return fmt.Errorf("%w: profile %q is not allowed for this user", compute.ErrForbidden, p)
+		}
+	}
+	return nil
+}
 
 // NewIncusBackend connects to the LXD daemon over a unix socket. An empty
 // path uses DefaultSocketPath(). Returns an error (including
@@ -481,9 +527,18 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 	if err != nil {
 		return models.VM{}, err
 	}
+	if err := b.authorizeSpec(req.Scope, req.Privileged, req.Nesting, req.Profiles); err != nil {
+		return models.VM{}, err
+	}
+	// Nesting defaults to on for admins (historic behaviour) and to off for
+	// everyone without the "nesting" capability (audit #4).
+	nestingDefault := "false"
+	if req.Scope.Admin || req.Scope.CanNesting {
+		nestingDefault = "true"
+	}
 	config := map[string]string{
 		"boot.autostart":   "true",
-		"security.nesting": "true",
+		"security.nesting": nestingDefault,
 	}
 	if req.VCPUs > 0 {
 		config["limits.cpu"] = strconv.Itoa(req.VCPUs)
@@ -622,6 +677,9 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 // secure boot, TPM, network model) are not applicable to containers and
 // return compute.ErrNotImplemented instead of silently ignoring them.
 func (b *IncusBackend) UpdateDomain(id string, req models.UpdateVMRequest) (models.VM, error) {
+	if err := b.authorizeSpec(req.Scope, req.Privileged, req.Nesting, req.Profiles); err != nil {
+		return models.VM{}, err
+	}
 	for name, v := range map[string]bool{
 		"CPUMode": req.CPUMode != nil, "VideoModel": req.VideoModel != nil,
 		"OSType": req.OSType != nil, "OSVersion": req.OSVersion != nil,
@@ -1270,6 +1328,12 @@ func (b *IncusBackend) ListHostPCIDevices() ([]models.PCIIOMMUGroup, error) {
 }
 func (b *IncusBackend) GetHostPCIPreflight() (models.PCIPreflightInfo, error) {
 	return models.PCIPreflightInfo{}, compute.ErrNotImplemented
+}
+func (b *IncusBackend) BindHostPCIDeviceVFIO(address string) error {
+	return compute.ErrNotImplemented
+}
+func (b *IncusBackend) UnbindHostPCIDeviceVFIO(address string) error {
+	return compute.ErrNotImplemented
 }
 
 func (b *IncusBackend) AttachSharedFolder(id, hostPath, tag string, readOnly bool) error {

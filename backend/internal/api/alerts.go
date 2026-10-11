@@ -1,7 +1,9 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
 
@@ -120,20 +122,30 @@ func (h *Handler) AlertmanagerWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	expectedSecret := ""
 	if h.settings != nil {
-		expectedSecret := h.settings.GetString("alerts.webhook_secret")
-		if expectedSecret != "" {
-			authHeader := r.Header.Get("Authorization")
-			token := strings.TrimPrefix(authHeader, "Bearer ")
-			secretParam := r.URL.Query().Get("secret")
-			customHeader := r.Header.Get("X-Webhook-Secret")
-			if token != expectedSecret && secretParam != expectedSecret && customHeader != expectedSecret {
-				if h.jail != nil {
-					h.jail.RecordFailure(ip, "unauthorized alertmanager webhook")
-				}
-				jsonErr(w, http.StatusUnauthorized, "invalid webhook secret")
-				return
+		expectedSecret = h.settings.GetString("alerts.webhook_secret")
+	}
+	if expectedSecret == "" {
+		// No secret configured: accept only a direct loopback peer (a local
+		// Alertmanager). Never a request that was forwarded by a proxy, since
+		// then the loopback peer is the proxy, not the real sender.
+		if !isDirectLoopbackPeer(r) {
+			jsonErr(w, http.StatusForbidden, "webhook only accepts loopback requests until alerts.webhook_secret is set")
+			return
+		}
+	} else {
+		// Header only: a secret in the URL ends up in access logs.
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got == "" || got == r.Header.Get("Authorization") {
+			got = r.Header.Get("X-Webhook-Secret")
+		}
+		if subtle.ConstantTimeCompare([]byte(got), []byte(expectedSecret)) != 1 {
+			if h.jail != nil {
+				h.jail.RecordFailure(ip, "unauthorized alertmanager webhook")
 			}
+			jsonErr(w, http.StatusUnauthorized, "invalid webhook secret")
+			return
 		}
 	}
 
@@ -141,6 +153,24 @@ func (h *Handler) AlertmanagerWebhook(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid alertmanager payload: "+err.Error())
 		return
+	}
+	for i := range payload.Alerts {
+		payload.Alerts[i].Status = sanitizePayloadText(payload.Alerts[i].Status, 32)
+		payload.Alerts[i].Fingerprint = sanitizePayloadText(payload.Alerts[i].Fingerprint, 64)
+		if payload.Alerts[i].Labels != nil {
+			cleanLabels := make(map[string]string, len(payload.Alerts[i].Labels))
+			for k, v := range payload.Alerts[i].Labels {
+				cleanLabels[sanitizePayloadText(k, 64)] = sanitizePayloadText(v, 256)
+			}
+			payload.Alerts[i].Labels = cleanLabels
+		}
+		if payload.Alerts[i].Annotations != nil {
+			cleanAnnotations := make(map[string]string, len(payload.Alerts[i].Annotations))
+			for k, v := range payload.Alerts[i].Annotations {
+				cleanAnnotations[sanitizePayloadText(k, 64)] = sanitizePayloadText(v, 1024)
+			}
+			payload.Alerts[i].Annotations = cleanAnnotations
+		}
 	}
 	ingested, err := h.alerter.IngestAlertmanager(payload)
 	if err != nil {
@@ -190,4 +220,37 @@ func (h *Handler) ClearResolvedIncidents(w http.ResponseWriter, r *http.Request)
 		h.audit.Log(auditFor(r, "alerts.incidents.clear_resolved", "", nil))
 	}
 	jsonResp(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// isDirectLoopbackPeer reports whether the TCP peer is a loopback address and
+// the request carries no proxy-forwarding headers (which would mean the real
+// sender is somewhere else and the loopback peer is just a local reverse proxy).
+func isDirectLoopbackPeer(r *http.Request) bool {
+	for _, hd := range []string{"X-Forwarded-For", "X-Real-Ip", "Forwarded", "X-Forwarded-Host"} {
+		if r.Header.Get(hd) != "" {
+			return false
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func sanitizePayloadText(s string, maxLen int) string {
+	s = strings.ReplaceAll(s, "\r", "")
+	s = strings.ReplaceAll(s, "\n", " ")
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 32 && r != 127) || r > 159 {
+			b.WriteRune(r)
+		}
+	}
+	res := strings.TrimSpace(b.String())
+	if len(res) > maxLen {
+		res = res[:maxLen]
+	}
+	return res
 }

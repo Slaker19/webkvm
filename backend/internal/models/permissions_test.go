@@ -33,6 +33,9 @@ func TestHasPermission_ExplicitDenyIsHonoured(t *testing.T) {
 func TestHasPermission_OperatorDefaultsAllow(t *testing.T) {
 	u := &User{Username: "op", Role: RoleOperator}
 	for _, perm := range Capabilities {
+		if perm == "nesting" {
+			continue // opt-in capability, see TestHasPermission_NestingIsOptIn
+		}
 		if !u.HasPermission(perm) {
 			t.Errorf("HasPermission(%q) = false, want true (operator default)", perm)
 		}
@@ -115,6 +118,7 @@ func TestCapabilities_AllMapToAFlag(t *testing.T) {
 		CanBackups:      boolPtr(true),
 		CanMedia:        boolPtr(true),
 		CanExport:       boolPtr(true),
+		CanNesting:      boolPtr(true),
 	}
 	for _, perm := range Capabilities {
 		flag, known := full.capabilityFlag(perm)

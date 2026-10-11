@@ -101,6 +101,7 @@ func (h *Handler) applyCloudInit(vmID, vmName string, req *models.CloudInitReque
 		Device: "cdrom",
 		Bus:    "sata",
 		Source: isoPath,
+		Scope:  models.MediaScope{Admin: true}, // server-built seed ISO outside the pools
 	}
 	if err := h.compute.AttachDisk(vmID, attach); err != nil {
 		_ = os.Remove(isoPath)
@@ -479,7 +480,7 @@ func (h *Handler) ReapplyCloudInit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		attach := models.AttachDiskRequest{Device: "cdrom", Bus: "sata", Source: isoPath}
+		attach := models.AttachDiskRequest{Device: "cdrom", Bus: "sata", Source: isoPath, Scope: models.MediaScope{Admin: true}}
 		if err := h.compute.AttachDisk(id, attach); err != nil {
 			_ = os.Remove(isoPath)
 			jsonErr(w, http.StatusInternalServerError, "attach seed: "+err.Error())

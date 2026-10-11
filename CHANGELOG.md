@@ -6,6 +6,59 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
+## [0.1.7] — 2026-10-11
+
+### Added
+
+- **Hardware & VFIO Passthrough Manager:**
+  - Dedicated Hardware & VFIO management panel in Settings (`HardwareVfioTab.svelte`) with live IOMMU preflight diagnostics (Intel VT-d / AMD-Vi, DMA translation mode, and VFIO kernel module availability).
+  - Visual breakdown of all system PCI devices grouped by IOMMU group, with status badges for driver, in-use instances, system bridges, and host-critical resources (boot VGA, primary uplink, storage controllers).
+  - One-click driver isolation and assignment: endpoints `POST /api/host/pci-devices/{address}/bind-vfio` to bind devices to `vfio-pci` via kernel `driver_override` and `POST /api/host/pci-devices/{address}/unbind-vfio` to restore original host drivers.
+  - Strict security validation against host-critical devices, path traversal, and conflicting running virtual machines.
+  - Automated driver rollback: if binding to `vfio-pci` fails, sysfs `driver_override` is cleared and default drivers are reprobed to prevent leaving host devices orphaned.
+- **Host Operating System Updates Manager (APT, DNF, Pacman):**
+  - Integrated host OS package update manager in Settings (`HostUpdatesTab.svelte`) supporting multi-distribution package managers (APT on Debian/Ubuntu, DNF on RHEL/Rocky Linux/Fedora, Pacman on Arch/CachyOS).
+  - Endpoints `GET /api/host/updates` for querying upgradable packages with automatic security advisory detection, category tabs (All, Security, Regular, Held), and pending reboot detection (`/var/run/reboot-required`).
+  - Repository index refresh via `POST /api/host/updates/refresh` guarded with preflight binary checks and concurrency mutual exclusion (`isRefreshingHost`).
+  - Asynchronous system upgrade endpoint `POST /api/host/updates/upgrade` executing non-interactive system updates with progress parsing, error tail extraction, and integration into the global Task Center.
+- **Multi-Distribution Compatibility & Packaging:**
+  - Full native runtime and installation support across Ubuntu 24.04 LTS, Rocky Linux 9.8, and CachyOS / Arch Linux.
+  - Dynamic distro-aware UEFI/OVMF firmware search paths (`/usr/share/OVMF`, `/usr/share/edk2/ovmf`, `/usr/share/edk2-ovmf/x64`).
+  - Standalone installer (`packaging/standalone/install.sh`) enhanced with DNF package compatibility (`iptables-nft`, optional package fallback via `pkg_available`) and co-located binary discovery.
+- **Comprehensive Security Audit Hardening:**
+  - **Gate A (Host Path Confinement):** Host path confinement via `internal/fsutil.ConfinePath`, restrictive file permissions (0700/0600), isolated media directories, and single-stream exclusive disk uploads.
+  - **Gate B (Domain XML Policy):** Strict domain XML schema validator and single `DomainDefineXML` enforcement funnel, loopback-only VNC listeners (`127.0.0.1`), and removal of unauthenticated external VNC ports.
+  - **Gate C (Untrusted Image Security):** Deep image safety validation with `imgsafe`, qemu-img probe limits, and OVA tar extraction size and entry count limits.
+  - **Auth & Session Security:** Session epoch increment on password change, TOTP token replay protection, WebAuthn SignCount tracking, and hardened Content Security Policy (connect-src 'self', script nonces).
+  - **Network & SSRF Defense:** IP-pinned dialer for webhooks and alerts blocking 0.0.0.0/8, 198.18.0.0/15, 240.0.0.0/4, and NAT64 ranges. Safe right-to-left X-Forwarded-For parsing.
+  - **Systemd Sandboxing:** Added `ProtectHostname`, `ProtectClock`, `RestrictRealtime`, and strict ReadWritePaths to systemd service units.
+- **Defensive Storage Abstraction:**
+  - Added unified `safeStorage` wrapper (`$lib/utils/storage.js`) featuring transparent `MemoryStorage` fallback for restrictive browser policies and SSR contexts.
+
+### Changed
+
+- **Backend Modularization (`internal/libvirt`):**
+  - Decoupled monolithic `domain.go` by extracting domain subsystem responsibilities into dedicated modules:
+    - `domain_pci.go`: PCI address hex formatting, preflight checks, VFIO binding, and sysfs rollback.
+    - `domain_usb.go`: Host USB discovery, root hub filtering, and live attach/detach.
+    - `domain_shares.go`: 9p filesystem shared folders management.
+- **Frontend Bundle Optimization (Vite / Rollup):**
+  - Configured intelligent granular manual chunking in `vite.config.js`.
+  - Entry bundle `index.js` reduced by **70%** (from 682 KB to 200 KB / 61 KB gzipped).
+  - Heavy modules isolated into on-demand cached chunks (`app-i18n`, `vendor-ui`, `vendor-lucide`, `vendor-xterm`).
+  - Resolved all Rollup chunk size threshold warnings.
+
+### Fixed
+
+- **Async Task Tracking in Host Updates:**
+  - Replaced floating unhandled promise loops in `HostUpdatesTab.svelte` with synchronized `api.waitJob` execution and 35-minute operational timeouts.
+- **Cloud-Init Password Generation:**
+  - Fixed empty password issuance in `cloudinit.go` by ensuring cryptographic entropy with fallback PRNG and SHA-512 crypt hashing.
+- **Hardware Tab Runtime Safety:**
+  - Guarded preflight state access with optional chaining (`preflight?.`) to eliminate `TypeError` crashes during initialization.
+- **Serial Console WebSocket Teardown:**
+  - Replaced fixed sleep delays with `r.Context().Done()` channel selection in `console_serial.go` to instantly terminate backend routines upon client disconnection.
+
 ## [0.1.6] — 2026-10-04
 
 ### Added

@@ -384,12 +384,6 @@ func (e *AlertEngine) IngestAlertmanager(payload AlertmanagerPayload) ([]Inciden
 				},
 			})
 		}
-
-		// Forward notification if firing
-		if e.notify != nil && status == "firing" {
-			title := fmt.Sprintf("[%s] %s", strings.ToUpper(severity), alertname)
-			e.notify.Record("alert", title, summary)
-		}
 	}
 
 	e.enforceCapacityLocked()

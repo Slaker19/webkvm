@@ -19,6 +19,7 @@
   import { Unicode11Addon } from '@xterm/addon-unicode11';
   import { WebLinksAddon } from '@xterm/addon-web-links';
   import { ClipboardAddon } from '@xterm/addon-clipboard';
+  import { createGuestClipboardProvider } from '$lib/utils/terminalClipboard.js';
   import '@xterm/xterm/css/xterm.css';
   import { TERMINAL_THEMES, TUI_KEYS } from '$lib/utils/terminalConfig.js';
   import {
@@ -44,6 +45,9 @@
   let fullscreen = $state(false);
   let autoRetry = $state(true);
   let showThemeMenu = $state(false);
+  // Text the guest asked to put on the clipboard (OSC 52). Never applied
+  // automatically; the user must click "Copy" in the banner.
+  let pendingGuestCopy = $state('');
 
   // Synced reactive preferences from central store
   const currentThemeId = $derived(terminalSettings.theme);
@@ -113,6 +117,19 @@
         // clipboard write error ignored
       }
     }
+  }
+
+  async function applyGuestCopy() {
+    const text = pendingGuestCopy;
+    pendingGuestCopy = '';
+    if (text && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (_e) {
+        // clipboard write error ignored
+      }
+    }
+    if (term) term.focus();
   }
 
   async function pasteClipboard() {
@@ -294,7 +311,16 @@
 
     // 3. Clipboard addon
     try {
-      term.loadAddon(new ClipboardAddon());
+      // The guest can never READ the clipboard, and its writes wait for a
+      // user click (see createGuestClipboardProvider).
+      term.loadAddon(
+        new ClipboardAddon(
+          undefined,
+          createGuestClipboardProvider((text) => {
+            pendingGuestCopy = text;
+          })
+        )
+      );
     } catch (_e) {
       // clipboard fallback
     }
@@ -750,6 +776,31 @@
           F{n}
         </button>
       {/each}
+    </div>
+  {/if}
+
+  {#if pendingGuestCopy}
+    <div
+      class="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border-b border-amber-500/40 text-xs"
+      role="alert"
+    >
+      <span class="flex-1 min-w-0 truncate">
+        {t('terminal.guestCopyRequest', { count: pendingGuestCopy.length })}
+      </span>
+      <button
+        type="button"
+        onclick={applyGuestCopy}
+        class="px-2 py-0.5 rounded bg-background border border-border hover:bg-primary/10 font-semibold"
+      >
+        {t('terminal.guestCopyAccept')}
+      </button>
+      <button
+        type="button"
+        onclick={() => (pendingGuestCopy = '')}
+        class="px-2 py-0.5 rounded border border-transparent hover:border-border"
+      >
+        {t('terminal.guestCopyDismiss')}
+      </button>
     </div>
   {/if}
 

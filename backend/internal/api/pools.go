@@ -123,23 +123,27 @@ func purposeNoun(purpose string) string {
 // operator point a VM's disk at an arbitrary host file (e.g. /etc/shadow,
 // another tenant's disk image) since libvirt only requires a readable
 // path, not that it belongs to a managed pool.
-func (h *Handler) validateDiskSourcePath(path string) error {
+func (h *Handler) validateDiskSourcePath(path string) (string, error) {
 	if path == "" {
-		return nil
+		return "", nil
 	}
 	if h.compute == nil {
-		return fmt.Errorf("storage backend unavailable")
+		return "", fmt.Errorf("storage backend unavailable")
 	}
-	resolved, err := filepath.Abs(path)
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) || strings.Contains(cleanPath, "..") || strings.Contains(path, "..") {
+		return "", fmt.Errorf("invalid source path: absolute path without traversal required")
+	}
+	resolved, err := filepath.Abs(cleanPath)
 	if err != nil {
-		return fmt.Errorf("invalid source path")
+		return "", fmt.Errorf("invalid source path")
 	}
 	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
-		resolved = real
+		resolved = filepath.Clean(real)
 	}
 	pools, err := h.compute.ListStoragePools()
 	if err != nil {
-		return fmt.Errorf("could not validate source path")
+		return "", fmt.Errorf("could not validate source path")
 	}
 	for _, p := range pools {
 		base := p.Path
@@ -154,11 +158,12 @@ func (h *Handler) validateDiskSourcePath(path string) error {
 			continue // the pool directory itself is never a valid disk source
 		}
 		rel, err := filepath.Rel(base, resolved)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			safePath := filepath.Join(base, rel)
+			return safePath, nil
 		}
 	}
-	return fmt.Errorf("source path %q is not inside a known storage pool", path)
+	return "", fmt.Errorf("source path %q is not inside a known storage pool", path)
 }
 
 // resolveVolumeFromSource maps an absolute disk source path back to its

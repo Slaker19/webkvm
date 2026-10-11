@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"html"
 	"log/slog"
@@ -9,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,7 +76,7 @@ var upgrader = websocket.Upgrader{
 		// same-origin: the console page and its WebSocket are served by
 		// this backend, so a malicious cross-site page must not be able
 		// to open a VNC WebSocket against it.
-		if len(origins) == 1 && (origins[0] == "*" || origins[0] == "") {
+		if len(origins) == 0 || (len(origins) == 1 && (origins[0] == "*" || origins[0] == "")) {
 			o, err := url.Parse(origin)
 			return err == nil && o.Host == r.Host
 		}
@@ -562,6 +565,11 @@ body.embedded #status{bottom:8px;right:8px;padding:3px 8px;font-size:10px}
 <div id="spice-area" style="display:none;width:100%%;height:100%%;position:relative;overflow:hidden;background:#020617;">
   <div id="spice-screen" style="width:100%%;height:100%%;display:flex;align-items:center;justify-content:center;overflow:hidden;"></div>
   <div id="message-div" style="display:none;"></div>
+</div>
+<div id="clip-banner" style="display:none;position:fixed;top:8px;left:50%%;transform:translateX(-50%%);z-index:1000;max-width:90vw;align-items:center;gap:10px;padding:6px 12px;border-radius:8px;font:12px/1.4 monospace;color:#e2e8f0;background:rgba(2,6,23,.92);border:1px solid rgba(250,204,21,.5)">
+  <span id="clip-banner-text" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+  <button id="clip-banner-copy" type="button" style="cursor:pointer">Copy</button>
+  <button id="clip-banner-dismiss" type="button" style="cursor:pointer">Dismiss</button>
 </div>
 <div id="status"><span class="dot connecting"></span>Connecting</div>
 <script type="module">
@@ -1093,11 +1101,41 @@ document.getElementById('btnToggleKeys').onclick = function () {
 /* ---- direct clipboard ---- */
 var lastClipText = '';
 
+/* The guest must never write the host clipboard on its own (pastejacking
+   into a possibly-root terminal). Park its text behind a banner; only the
+   user's click on "Copy" (a real user gesture) writes it. */
+var pendingClip = '';
+var clipBanner = document.getElementById('clip-banner');
+var clipBannerText = document.getElementById('clip-banner-text');
+
+function hideClipBanner() {
+    pendingClip = '';
+    if (clipBanner) clipBanner.style.display = 'none';
+}
+
 function syncClipToHost(text) {
     if (!text || text === lastClipText) return;
-    lastClipText = text;
-    navigator.clipboard.writeText(text).catch(function () {});
+    pendingClip = text.length > 1048576 ? text.slice(0, 1048576) : text;
+    if (!clipBanner || !clipBannerText) return;
+    var preview = pendingClip.replace(/\s+/g, ' ').slice(0, 60);
+    var multi = /[\r\n]/.test(pendingClip) ? ' (multi-line)' : '';
+    clipBannerText.textContent = 'The guest wants to copy ' + pendingClip.length +
+        ' characters' + multi + ': ' + preview;
+    clipBanner.style.display = 'flex';
 }
+
+(function () {
+    var accept = document.getElementById('clip-banner-copy');
+    var dismiss = document.getElementById('clip-banner-dismiss');
+    if (accept) accept.onclick = function () {
+        var text = pendingClip;
+        hideClipBanner();
+        if (!text || !navigator.clipboard) return;
+        lastClipText = text;
+        navigator.clipboard.writeText(text).catch(function () {});
+    };
+    if (dismiss) dismiss.onclick = hideClipBanner;
+})();
 
 document.addEventListener('keydown', function (e) {
     if (!rfb || !connected) return;
@@ -1406,13 +1444,16 @@ document.addEventListener('keydown', function (e) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Console hardening: don't leak the server address (Referrer-Policy),
 	// prevent embedding in other sites, and lock down the subresources.
-	// The page uses inline <style>/<script> for self-containment, hence
-	// the 'unsafe-inline' entries; connect-src still restricts where the
-	// WebSocket may go.
+	// The page's single inline <script> is authorised by a per-response
+	// nonce instead of 'unsafe-inline' (injected markup can't guess it);
+	// inline styles still need 'unsafe-inline' (many style attributes).
+	// connect-src 'self' covers the same-origin WebSockets and nothing else.
+	nonce := newCSPNonce()
+	html = strings.Replace(html, `<script type="module">`, `<script type="module" nonce="`+nonce+`">`, 1)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'")
+	w.Header().Set("Content-Security-Policy", consoleCSP(nonce))
 	fmt.Fprint(w, html)
 }
 
@@ -1475,4 +1516,20 @@ func (h *Handler) SetClipboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// newCSPNonce returns a fresh, unguessable value for a CSP script nonce.
+func newCSPNonce() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// No entropy: fall back to a nonce nobody can match, which makes
+		// the inline script refuse to run rather than run unprotected.
+		return "unavailable"
+	}
+	return base64.StdEncoding.EncodeToString(b[:])
+}
+
+// consoleCSP is the policy for the standalone /console page.
+func consoleCSP(nonce string) string {
+	return "default-src 'self'; script-src 'self' 'nonce-" + nonce + "'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
 }

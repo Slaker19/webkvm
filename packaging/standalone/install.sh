@@ -130,6 +130,7 @@ CONFIG_EXISTED=0
 DOWNLOADED_BIN=""
 DOWNLOADED_TARBALL=""
 RELEASE_DIR=""
+RELEASE_TAG=""
 HEALTH_FILE=""
 HAD_BIN=0
 HAD_SERVICE=0
@@ -174,6 +175,7 @@ trap rollback_on_failure EXIT
 
 log() { printf '[webkvm] %s\n' "$*"; }
 die() { printf '[webkvm] ERROR: %s\n' "$*" >&2; exit 1; }
+warn() { printf '[webkvm] WARNING: %s\n' "$*" >&2; }
 confirm() { # confirm VAR "question" default
   local var="$1" q="$2" dflt="${3:-}"
   if [[ -n "${!var:-}" ]]; then return; fi
@@ -438,7 +440,19 @@ setup_package_map() {
       # qemu-kvm one, so it has to go too. The drivers it bundled are
       # named individually instead, plus libvirt-daemon itself for
       # libvirtd — without it there is no service to enable at all.
-      RUNTIME_PACKAGES=(ca-certificates curl openssl xorriso xz dnsmasq dnsmasq-utils libvirt-daemon libvirt-daemon-driver-qemu libvirt-daemon-driver-storage libvirt-daemon-driver-network libvirt-daemon-driver-interface libvirt-daemon-driver-nodedev libvirt-daemon-driver-nwfilter libvirt-daemon-driver-secret libvirt-daemon-config-network libvirt-client qemu-kvm-core qemu-img edk2-ovmf swtpm swtpm-tools virt-install bridge-utils python3 iproute procps-ng util-linux tar zstd nftables iptables nfs-utils cifs-utils samba-client gdisk parted e2fsprogs xfsprogs btrfs-progs f2fs-tools)
+      RUNTIME_PACKAGES=(ca-certificates curl openssl xorriso xz dnsmasq dnsmasq-utils libvirt-daemon libvirt-daemon-driver-qemu libvirt-daemon-driver-storage libvirt-daemon-driver-network libvirt-daemon-driver-interface libvirt-daemon-driver-nodedev libvirt-daemon-driver-nwfilter libvirt-daemon-driver-secret libvirt-daemon-config-network libvirt-client qemu-kvm-core qemu-img edk2-ovmf swtpm swtpm-tools virt-install python3 iproute procps-ng util-linux tar zstd nftables nfs-utils cifs-utils samba-client gdisk parted e2fsprogs xfsprogs)
+      # iptables: on RHEL/Rocky the package is iptables-nft, on Fedora it is iptables or iptables-nft
+      if pkg_available iptables; then
+        RUNTIME_PACKAGES+=(iptables)
+      elif pkg_available iptables-nft; then
+        RUNTIME_PACKAGES+=(iptables-nft)
+      fi
+      # Optional filesystem and legacy network utilities that exist on Fedora but were dropped on RHEL/Rocky
+      for opt in bridge-utils btrfs-progs f2fs-tools; do
+        if pkg_available "$opt"; then
+          RUNTIME_PACKAGES+=("$opt")
+        fi
+      done
       ;;
     pacman)
       # Arch: bridge-utils was dropped (brctl replaced by `ip` from iproute2, already listed);
@@ -491,15 +505,25 @@ install_incus() {
     fi
   fi
   pkg_install "${pkg}" || true
-  systemctl enable --now "${svc}" >/dev/null 2>&1 || true
-  # Unprivileged containers need subuid/subgid ranges for root (Arch's
-  # incus package does not configure them) — without these, instance
+  # Unprivileged containers need subuid/subgid ranges for root (Arch and Fedora
+  # incus packages do not configure them by default) — without these, instance
   # creation fails with "System doesn't have a functional idmap setup".
   local subrange="root:1000000:1000000000"
+  local idmap_changed=0
   if ! grep -qs "^root:1000000:1000000000" /etc/subuid 2>/dev/null; then
     echo "${subrange}" >> /etc/subuid
+    idmap_changed=1
+  fi
+  if ! grep -qs "^root:1000000:1000000000" /etc/subgid 2>/dev/null; then
     echo "${subrange}" >> /etc/subgid
+    idmap_changed=1
+  fi
+  if [[ "${idmap_changed}" == "1" ]]; then
     log "configured subuid/subgid for root (unprivileged containers)"
+  fi
+  systemctl enable --now "${svc}" >/dev/null 2>&1 || true
+  if [[ "${idmap_changed}" == "1" ]]; then
+    systemctl restart "${svc}" >/dev/null 2>&1 || true
   fi
   # Minimal init: storage pool + default profile so `incus launch` and the
   # WebKVM container module work immediately (setup-network.sh then points
@@ -516,7 +540,9 @@ install_incus() {
 prompt_settings() {
   echo ""
   confirm DEFAULT_PORT "Backend HTTP/HTTPS port" "8080"
-  confirm DEFAULT_BIND "Bind address" "0.0.0.0"
+  # Loopback by default (new installs only): front it with a TLS reverse
+  # proxy, an SSH tunnel, or choose 0.0.0.0 / a LAN IP here on purpose.
+  confirm DEFAULT_BIND "Bind address (127.0.0.1 = local only; 0.0.0.0 = all interfaces)" "127.0.0.1"
   # Pregunta clara: SSL (IP o dominio) vs solo IP (HTTP). Cubre el caso
   prompt_select HTTPS "How do you want to access WebKVM?" "no|IP only (plain HTTP)" "yes|With SSL — self-signed certificate (works for IP and domain names, recommended)" "yes"
   if [[ "${HTTPS}" == "yes" ]]; then
@@ -649,6 +675,17 @@ prompt_settings
 [[ "${DEFAULT_BIND}" != *[[:space:]]* && "${DEFAULT_BIND}" != *$'\n'* ]] || die "WEBKVM_BIND_ADDR contains whitespace"
 [[ "${DEFAULT_PORT}" =~ ^[0-9]+$ && ${DEFAULT_PORT} -ge 1 && ${DEFAULT_PORT} -le 65535 ]] || die "WEBKVM_PORT must be between 1 and 65535"
 
+# Non-loopback bind over plain HTTP sends the session cookie and every
+# password in clear text across the network.
+case "${DEFAULT_BIND}" in
+  127.*|::1|localhost|"") ;;
+  *)
+    if [[ "${HTTPS}" != "yes" ]]; then
+      warn "bind address ${DEFAULT_BIND} is reachable from the network and HTTPS is OFF: logins and session cookies will travel in clear text. Re-run with --https=yes (or put a TLS reverse proxy in front) before exposing WebKVM beyond a trusted network."
+    fi
+    ;;
+esac
+
 export DEBIAN_FRONTEND=noninteractive
 
 # Port already bound? Fail EARLY with a clear message instead of a
@@ -687,6 +724,9 @@ install -d -m 0755 "${DATA_DIR}" "${DATA_DIR}/logs" "${DATA_DIR}/source" "${CERT
 SOURCE_BIN=""
 if [[ -x "${WEBKVM_BINARY:-}" ]]; then
   SOURCE_BIN="${WEBKVM_BINARY}"
+elif [[ -x "${SCRIPT_DIR}/webkvm" ]]; then
+  SOURCE_BIN="${SCRIPT_DIR}/webkvm"
+  log "using binary alongside installer: ${SOURCE_BIN}"
 elif [[ -n "${BIN_URL}" ]]; then
   [[ "${BIN_URL}" == https://* ]] || die "WEBKVM_BINARY_URL must use HTTPS"
   [[ "${BIN_SHA256}" =~ ^[[:xdigit:]]{64}$ ]] || die "WEBKVM_BINARY_SHA256 must be a 64-character SHA-256 when downloading a binary"
@@ -706,6 +746,7 @@ else
   # server that only has the installer script (curl | bash one-liner).
   log "fetching latest release tarball from GitHub..."
   RELEASE_API="https://api.github.com/repos/Slaker19/webkvm/releases/latest"
+  RELEASE_TAG=$(curl -fsSL --retry 3 --proto '=https' --tlsv1.2 "${RELEASE_API}" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)
   TARBALL_URL=$(curl -fsSL --retry 3 --proto '=https' --tlsv1.2 "${RELEASE_API}" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*webkvm-[^"]*\.tar\.gz"' | head -1 | cut -d'"' -f4 || true)
   SHA256_URL=$(curl -fsSL --retry 3 --proto '=https' --tlsv1.2 "${RELEASE_API}" 2>/dev/null | grep -o '"browser_download_url": *"[^"]*SHA256SUMS[^"]*"' | head -1 | cut -d'"' -f4 || true)
   if [[ -n "${TARBALL_URL}" && -n "${SHA256_URL}" ]]; then
@@ -769,6 +810,8 @@ if [[ -x "${WEBKVM_BINARY:-}" ]]; then
   if [[ -x "${cli_dir}/webkvm-cli" ]]; then
     CLI_SRC="${cli_dir}/webkvm-cli"
   fi
+elif [[ -x "${SCRIPT_DIR}/webkvm-cli" ]]; then
+  CLI_SRC="${SCRIPT_DIR}/webkvm-cli"
 elif [[ -n "${BIN_URL}" ]]; then
   # Release assets are webkvm-<ver>-linux_amd64 / webkvm-cli-<ver>-linux_amd64
   # (see release.yml); a bare .../webkvm maps to .../webkvm-cli. Best-effort.
@@ -794,6 +837,20 @@ if [[ -n "${CLI_SRC}" && -x "${CLI_SRC}" ]]; then
   log "CLI installed -> ${PREFIX}/bin/webkvm-cli"
 fi
 
+# Deploy system quick-backup script if available in checkout or release
+BACKUP_SRC=""
+if [[ -f "${REPO_DIR}/scripts/webkvm-backup.sh" ]]; then
+  BACKUP_SRC="${REPO_DIR}/scripts/webkvm-backup.sh"
+elif [[ -f "${SCRIPT_DIR}/scripts/webkvm-backup.sh" ]]; then
+  BACKUP_SRC="${SCRIPT_DIR}/scripts/webkvm-backup.sh"
+elif [[ -n "${RELEASE_DIR}" && -f "${RELEASE_DIR}/scripts/webkvm-backup.sh" ]]; then
+  BACKUP_SRC="${RELEASE_DIR}/scripts/webkvm-backup.sh"
+fi
+if [[ -n "${BACKUP_SRC}" && -f "${BACKUP_SRC}" ]]; then
+  install -D -m 0755 "${BACKUP_SRC}" "${PREFIX}/bin/webkvm-backup.sh"
+  log "backup script installed -> ${PREFIX}/bin/webkvm-backup.sh"
+fi
+
 # Deploy the self-updater behind the UI's "Update" button (/#/status): the
 # backend shells out to it instead of duplicating the download/verify/install
 # logic. In a checkout the script ships in-tree; a `curl | bash` install only
@@ -807,11 +864,22 @@ if [[ ! -f "${UPDATE_SRC}" ]]; then
   # world-writable directory lets a local user pre-create a symlink and
   # have this root curl overwrite the file it points at.
   UPDATE_TMP="$(mktemp /tmp/webkvm-update.XXXXXX)"
-  # Defaults to main because this branch only runs for `curl | bash`
-  # installs, which have no tag to pin to. Override it to match a specific
-  # release.
-  UPDATE_REF="${WEBKVM_UPDATE_REF:-main}"
-  if curl --fail --silent --location --retry 3 --proto '=https' --tlsv1.2 \
+  # Pinned to the release tag (never to the moving `main` branch): this
+  # script ends up in /usr/local/bin and runs as root from the UI's Update
+  # button. The tag is the one the binary came from; for other install
+  # sources it is taken from the latest release, or set WEBKVM_UPDATE_REF.
+  UPDATE_REF="${WEBKVM_UPDATE_REF:-${RELEASE_TAG}}"
+  if [[ -z "${UPDATE_REF}" && -n "${BIN_URL}" && "${BIN_URL}" =~ /releases/download/([^/]+)/ ]]; then
+    UPDATE_REF="${BASH_REMATCH[1]}"
+  fi
+  if [[ -z "${UPDATE_REF}" ]]; then
+    UPDATE_REF=$(curl -fsSL --retry 3 --proto '=https' --tlsv1.2 "https://api.github.com/repos/Slaker19/webkvm/releases/latest" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+  fi
+  if [[ ! "${UPDATE_REF}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    log "WARNING: could not determine a release tag for update.sh; not downloading it from a moving branch"
+    UPDATE_REF=""
+  fi
+  if [[ -n "${UPDATE_REF}" ]] && curl --fail --silent --location --retry 3 --proto '=https' --tlsv1.2 \
       "https://raw.githubusercontent.com/Slaker19/webkvm/${UPDATE_REF}/packaging/standalone/update.sh" \
       -o "${UPDATE_TMP}" 2>/dev/null; then
     # Sanity-check the download: a 404 body or an HTML error page saved as
@@ -834,9 +902,15 @@ else
 fi
 if [[ -n "${UPDATE_TMP}" ]]; then rm -f "${UPDATE_TMP}"; fi
 
-# Pass the initial admin password through to the backend's first boot.
-ADMIN_PW_LINE=""
-[[ -n "${WEBKVM_ADMIN_PASSWORD:-}" ]] && ADMIN_PW_LINE="Environment=WEBKVM_ADMIN_PASSWORD=${WEBKVM_ADMIN_PASSWORD}"
+# Pass the initial admin password through to the backend's first boot via a
+# 0600 file (<DATA_DIR>/admin-password.initial, consumed by user.NewStore and
+# deleted after the first password change). It is NOT written into the unit's
+# Environment=: that would expose it in `systemctl show`, /proc/<pid>/environ
+# of every child process and the world-readable unit file.
+if [[ -n "${WEBKVM_ADMIN_PASSWORD:-}" && ! -s "${DATA_DIR}/users.json" ]]; then
+  ( umask 077; printf '%s' "${WEBKVM_ADMIN_PASSWORD}" > "${DATA_DIR}/admin-password.initial" )
+  chmod 0600 "${DATA_DIR}/admin-password.initial"
+fi
 # v2.1.0: opt-in the container module in the systemd unit.
 INCUS_ENV_LINE=""
 [[ "${WEBKVM_INSTALL_INCUS}" == "1" || "${WEBKVM_INCUS_ENABLED}" == "1" ]] && INCUS_ENV_LINE="Environment=WEBKVM_INCUS_ENABLED=1"
@@ -861,7 +935,6 @@ Environment=WEBKVM_LOG_FILE=${DATA_DIR}/logs/backend.log
 # the updater unless this is "1"). Kill it with a drop-in if an admin
 # session must not be able to install software as root.
 Environment=WEBKVM_ALLOW_UPDATE=1
-${ADMIN_PW_LINE}
 ${INCUS_ENV_LINE}
 WorkingDirectory=${DATA_DIR}
 ExecStart=${BIN}
@@ -872,7 +945,18 @@ LimitNOFILE=65536
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=webkvm
-ReadWritePaths=${DATA_DIR} /var/lib/libvirt /var/tmp /etc/webkvm /etc/systemd/system
+# Hardening (see scripts/webkvm.service for the rationale). Conservative
+# on purpose: NoNewPrivileges/ProtectKernelModules stay off (PAM /bin/login
+# for the host terminal, modprobe md_mod for mdraid) and UMask is not set
+# (storage-pool dirs must stay traversable by the qemu user).
+ProtectSystem=full
+PrivateTmp=true
+ProtectHostname=true
+ProtectClock=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths=${DATA_DIR} /var/lib/libvirt /var/tmp /etc/webkvm /etc/systemd/system -/etc/mdadm -/etc/netplan -/var/log/webkvm -/var/lib/incus
 
 [Install]
 WantedBy=multi-user.target
@@ -1015,6 +1099,9 @@ bold "=== webkvm installed successfully ==="
 echo ""
 echo "  Web UI:  ${PROTO}://${lan_ip}:${HEALTH_PORT}"
 echo "           ${PROTO}://localhost:${HEALTH_PORT}"
+if [[ "${CONFIG_EXISTED}" == 0 && "${DEFAULT_BIND}" == "127.0.0.1" ]]; then
+  echo "           (bound to 127.0.0.1 only: use an SSH tunnel or a TLS reverse proxy, or set server.bind_addr to expose it on the LAN)"
+fi
 if [[ "${HTTPS}" == "yes" ]]; then
   echo "  Certificate: ${CERT_DIR}/webkvm.crt  (download it from the UI at /api/system/cert and trust it to remove the warning)"
   if [[ -n "${TLS_DOMAIN}" ]]; then
@@ -1022,7 +1109,7 @@ if [[ "${HTTPS}" == "yes" ]]; then
   fi
 fi
 if [[ -f "${DATA_DIR}/admin-password.initial" ]]; then
-  echo "  Admin password: $(cat "${DATA_DIR}/admin-password.initial")"
+  echo "  Admin password: stored in ${DATA_DIR}/admin-password.initial (root-only, 0600); it is deleted after the first password change"
 fi
 echo ""
   echo "  Networks:"

@@ -370,6 +370,9 @@ func (s *Store) Create(a Appliance) error {
 	if err := ValidateSourceURL(a.URL); err != nil {
 		return err
 	}
+	if err := ValidateLinkURL(a.DocumentationURL); err != nil {
+		return fmt.Errorf("documentation_url: %w", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.items[a.ID]; exists {
@@ -392,6 +395,9 @@ func (s *Store) Update(id string, a Appliance) error {
 		if err := ValidateSourceURL(a.URL); err != nil {
 			return err
 		}
+	}
+	if err := ValidateLinkURL(a.DocumentationURL); err != nil {
+		return fmt.Errorf("documentation_url: %w", err)
 	}
 	s.mu.Lock()
 	existing, ok := s.items[id]

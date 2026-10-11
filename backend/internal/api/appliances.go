@@ -474,7 +474,8 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 		// installers run containerised workloads, and an appliance the
 		// operator deployed is expected back after a reboot — but an
 		// explicit choice from the caller now wins over that default.
-		nesting := true
+		scope := h.mediaScope(r)
+		nesting := scope.Admin || scope.CanNesting // audit #4: off for users without the nesting permission
 		if req.Nesting != nil {
 			nesting = *req.Nesting
 		}
@@ -514,10 +515,15 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 			Profiles:    req.Profiles,
 			GPU:         req.GPU,
 			CloudInit:   ciReq,
+			Scope:       scope,
 		}
 
 		vm, err := h.compute.CreateDomain(createReq)
 		if err != nil {
+			if errors.Is(err, compute.ErrForbidden) {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
 			jsonErr(w, http.StatusInternalServerError, "failed to deploy container: "+err.Error())
 			return
 		}
@@ -1076,6 +1082,9 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 // shared DNS-rebind-safe helper in storage.go.
 func downloadTo(jobID, url, destPath string) error {
 	const maxBytes int64 = 10 << 30
+	// destPath is a WebKVM-owned scratch file; a leftover from a crashed
+	// deploy must not block a retry now that downloads never overwrite.
+	_ = os.Remove(destPath)
 	_, err := secureDownloadWithProgress(jobID, url, destPath, 60*time.Minute, maxBytes)
 	return err
 }

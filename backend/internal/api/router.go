@@ -74,13 +74,18 @@ func NewRouter(
 	// wildcard "*" cannot carry credentials, so it stays as-is
 	// (same-origin installs don't need CORS at all).
 	allowCreds := len(origins) > 0 && !slices.Contains(origins, "*")
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   origins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-		AllowCredentials: allowCreds,
-		MaxAge:           300,
-	}))
+	// No CORS_ORIGIN configured (the default) means same-origin only: the
+	// bundled SPA is served by this backend, so no CORS headers are needed.
+	// (rs/cors treats an empty origin list as "*", hence the guard.)
+	if len(origins) > 0 {
+		r.Use(cors.Handler(cors.Options{
+			AllowedOrigins:   origins,
+			AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+			AllowCredentials: allowCreds,
+			MaxAge:           300,
+		}))
+	}
 	SetAllowedOrigins(origins)
 	r.Use(authMgr.Middleware)
 	// V13-SEC-02: global per-IP rate limit. Mounted AFTER the JWT
@@ -91,13 +96,16 @@ func NewRouter(
 	}
 	r.Use(auth.SessionEnforcer(
 		us.SessionStatus,
-		// Paths the user is allowed to hit even with must_change=true or a
-		// revoked session epoch.
-		// /api/auth/* — so the frontend can call /me to detect the flag
-		// and /login or /refresh to establish a fresh, current-epoch token.
+		// Paths the user is allowed to hit with must_change=true. The
+		// epoch/active checks still apply to them (a revoked token gets 401).
+		// /api/auth/me|logout|refresh — so the frontend can detect the flag
+		// and establish a fresh, current-epoch token. Registering a passkey
+		// or enabling 2FA is NOT allowed while a password change is pending.
 		// /api/users/me/password — the actual recovery path.
-		// /api/health — used by load balancers; never requires auth.
-		"/api/auth/",
+		// /api/health, cert, webhook — public paths (no identity attached).
+		"/api/auth/me",
+		"/api/auth/logout",
+		"/api/auth/refresh",
 		"/api/users/me/password",
 		"/api/health",
 		"/api/system/cert",
@@ -591,6 +599,11 @@ func NewRouter(
 			r.Post("/interfaces/{name}/configure", h.ConfigureHostInterface)
 			r.Post("/bonds", h.CreateHostBond)
 			r.Delete("/bonds/{name}", h.DeleteHostBond)
+			r.Post("/pci-devices/{address}/bind-vfio", h.BindHostPCIDeviceVFIO)
+			r.Post("/pci-devices/{address}/unbind-vfio", h.UnbindHostPCIDeviceVFIO)
+			r.Get("/updates", h.GetHostUpdates)
+			r.Post("/updates/refresh", h.RefreshHostUpdates)
+			r.Post("/updates/upgrade", h.UpgradeHostUpdates)
 		})
 	})
 

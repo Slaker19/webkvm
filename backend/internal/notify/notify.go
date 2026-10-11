@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/mail"
 	"net/smtp"
 	"net/url"
 	"os"
@@ -123,12 +124,7 @@ func New(dataDir string, cfg Config, logger *slog.Logger) (*Notifier, error) {
 		events:      make([]AlertEvent, 0, 32),
 		eventMax:    200,
 		logger:      logger,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				DisableKeepAlives: true,
-			},
-		},
+		httpClient:  newSafeClient(10 * time.Second),
 	}
 	if err := n.loadSecrets(); err != nil {
 		return nil, err
@@ -140,12 +136,7 @@ func (n *Notifier) client() *http.Client {
 	if n.httpClient != nil {
 		return n.httpClient
 	}
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			DisableKeepAlives: true,
-		},
-	}
+	return newSafeClient(10 * time.Second)
 }
 
 // loadSecrets reads the secrets file (0600). A missing file is fine.
@@ -654,11 +645,27 @@ func (n *Notifier) sendEmail(cfg Config, sec secrets, subject, message string) {
 			return
 		}
 	}
-	if err := client.Mail(cfg.SMTPFrom); err != nil {
+	fromAddr, err := mail.ParseAddress(sanitizeHeader(cfg.SMTPFrom))
+	if err != nil {
+		n.logger.Warn("notify_smtp_invalid_from", "err", err)
+		return
+	}
+	toAddr, err := mail.ParseAddress(sanitizeHeader(cfg.SMTPTo))
+	if err != nil {
+		n.logger.Warn("notify_smtp_invalid_to", "err", err)
+		return
+	}
+	cleanSub := sanitizeHeader(subject)
+	if strings.ContainsAny(cleanSub, "\r\n") || strings.ContainsAny(fromAddr.Address, "\r\n") || strings.ContainsAny(toAddr.Address, "\r\n") {
+		n.logger.Warn("notify_smtp_header_injection_detected")
+		return
+	}
+
+	if err := client.Mail(fromAddr.Address); err != nil {
 		n.logger.Warn("notify_smtp_mail_failed", "err", err)
 		return
 	}
-	if err := client.Rcpt(cfg.SMTPTo); err != nil {
+	if err := client.Rcpt(toAddr.Address); err != nil {
 		n.logger.Warn("notify_smtp_rcpt_failed", "err", err)
 		return
 	}
@@ -667,11 +674,10 @@ func (n *Notifier) sendEmail(cfg Config, sec secrets, subject, message string) {
 		n.logger.Warn("notify_smtp_data_failed", "err", err)
 		return
 	}
-	cleanSubject := mime.QEncoding.Encode("utf-8", sanitizeHeader(subject))
-	cleanFrom := sanitizeHeader(cfg.SMTPFrom)
-	cleanTo := sanitizeHeader(cfg.SMTPTo)
+	cleanSubject := mime.QEncoding.Encode("utf-8", cleanSub)
+	cleanBody := sanitizeEmailBody(message)
 	msg := fmt.Sprintf("Subject: %s\r\nFrom: %s\r\nTo: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s\r\n",
-		cleanSubject, cleanFrom, cleanTo, message)
+		cleanSubject, fromAddr.String(), toAddr.String(), cleanBody)
 	if _, err := w.Write([]byte(msg)); err != nil {
 		n.logger.Warn("notify_smtp_write_failed", "err", err)
 		return
@@ -688,7 +694,34 @@ func (n *Notifier) sendEmail(cfg Config, sec secrets, subject, message string) {
 func sanitizeHeader(s string) string {
 	s = strings.ReplaceAll(s, "\r", "")
 	s = strings.ReplaceAll(s, "\n", "")
-	return s
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 32 && r != 127) || r > 159 {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func sanitizeEmailBody(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	lines := strings.Split(s, "\n")
+	var sanitizedLines []string
+	for _, line := range lines {
+		var b strings.Builder
+		for _, r := range line {
+			if (r >= 32 && r != 127) || r == '\t' || r > 159 {
+				b.WriteRune(r)
+			}
+		}
+		cleaned := b.String()
+		if strings.HasPrefix(cleaned, ".") {
+			cleaned = "." + cleaned
+		}
+		sanitizedLines = append(sanitizedLines, cleaned)
+	}
+	return strings.Join(sanitizedLines, "\r\n")
 }
 
 // SendTest delivers a test alert to confirm channel configuration.

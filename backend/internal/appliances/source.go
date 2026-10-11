@@ -66,3 +66,24 @@ func ValidateSourceURL(u string) error {
 
 	return fmt.Errorf("URL host %q is not an official source", host)
 }
+
+// ValidateLinkURL checks a URL that the UI renders as a clickable link (such
+// as documentation_url). Empty is fine; otherwise it must be an absolute
+// http(s) URL with a host, so a stored javascript:/data: value can never
+// become an href.
+func ValidateLinkURL(u string) error {
+	if strings.TrimSpace(u) == "" {
+		return nil
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %v", err)
+	}
+	if s := strings.ToLower(parsed.Scheme); s != "http" && s != "https" {
+		return fmt.Errorf("link URL must use http or https")
+	}
+	if parsed.Hostname() == "" {
+		return fmt.Errorf("link URL must include a host")
+	}
+	return nil
+}

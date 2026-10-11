@@ -378,7 +378,7 @@ Three planes:
 | `WEBKVM_LOG_FILE` | `""` | Log tee (read by `GET /api/system/logs`). |
 | `VNC_PROXY_HOST` | `127.0.0.1` | Target host for noVNC→VNC TCP connections. |
 | `PUBLIC_HOST` | `""` | IP baked into `.rdp`/`.vv` files (auto-detected when empty). |
-| `CORS_ORIGIN` | `*` | Allowed CORS origins (comma-separated). |
+| `CORS_ORIGIN` | _(empty)_ | Allowed CORS origins (comma-separated). Empty = same-origin only. |
 | `TLS_CERT` / `TLS_KEY` / `TLS_DOMAIN` | — | TLS settings (persisted as server.tls_*). |
 | `WEBKVM_ADMIN_PASSWORD` | — | Initial admin password (random generated otherwise). |
 | `WEBKVM_INCUS_ENABLED` | `0` | enable the Incus/LXD container module (requires the daemon on the host). |

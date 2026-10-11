@@ -6,6 +6,59 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.7] — 2026-10-11
+
+### Añadido
+
+- **Gestor Visual de Hardware y Passthrough VFIO:**
+  - Panel completo de gestión de Hardware y VFIO en Ajustes (`HardwareVfioTab.svelte`) con diagnóstico en tiempo real de IOMMU (Intel VT-d / AMD-Vi, modo de traducción DMA y disponibilidad del módulo del kernel vfio-pci).
+  - Visualización interactiva de todos los dispositivos PCI agrupados por grupo IOMMU, con distintivos de estado para controladores, máquinas virtuales asociadas, puentes del sistema y recursos críticos del anfitrión (tarjeta gráfica de arranque, enlace de red primario y controladoras de almacenamiento).
+  - Aislamiento y asignación de dispositivos en 1 clic: endpoints `POST /api/host/pci-devices/{address}/bind-vfio` para aislar dispositivos en `vfio-pci` mediante `driver_override` a nivel de kernel y `POST /api/host/pci-devices/{address}/unbind-vfio` para devolverlos al controlador nativo del anfitrión.
+  - Validación de seguridad estricta para evitar aislar recursos críticos del host o dispositivos en uso por máquinas virtuales activas.
+  - Rollback automatizado de controladores: si el enlace a `vfio-pci` falla, se limpia `driver_override` en sysfs y se fuerza el reprobado de los controladores nativos para evitar dejar dispositivos huérfanos.
+- **Gestor de Actualizaciones del Sistema Operativo del Host (APT, DNF, Pacman):**
+  - Panel integrado de actualizaciones de paquetes del sistema anfitrión en Ajustes (`HostUpdatesTab.svelte`) compatible con múltiples distribuciones (APT en Debian/Ubuntu, DNF en RHEL/Rocky Linux/Fedora, Pacman en Arch/CachyOS).
+  - Endpoints `GET /api/host/updates` para listar paquetes actualizables con detección automática de avisos de seguridad, pestañas por categoría (Todos, Seguridad, Normales, Retenidos) y detección de reinicio pendiente (`/var/run/reboot-required`).
+  - Refresco de índices mediante `POST /api/host/updates/refresh` con comprobación previa del binario y exclusión mutua de concurrencia (`isRefreshingHost`).
+  - Endpoint de actualización asíncrona `POST /api/host/updates/upgrade` que ejecuta la actualización del sistema en segundo plano con parseo de progreso, extracción de colas de error e integración con el Centro de Tareas global.
+- **Compatibilidad Multi-Distribución y Mejoras de Empaquetado:**
+  - Soporte nativo y validación completa en Ubuntu 24.04 LTS, Rocky Linux 9.8 y CachyOS / Arch Linux.
+  - Rutas de búsqueda dinámicas para firmwares UEFI/OVMF según la distro (`/usr/share/OVMF`, `/usr/share/edk2/ovmf`, `/usr/share/edk2-ovmf/x64`).
+  - Instalador autónomo (`packaging/standalone/install.sh`) adaptado para DNF (`iptables-nft`, fallback en `pkg_available`) y detección de binarios precompilados en el mismo directorio.
+- **Endurecimiento Exhaustivo de Seguridad (Auditoría):**
+  - **Gate A (Confinamiento de Rutas del Host):** Confinamiento estricto vía `internal/fsutil.ConfinePath`, permisos restrictivos (0700/0600), aislamiento de directorios de medios y subidas exclusivas de discos en un solo hilo.
+  - **Gate B (Políticas de XML de Dominio):** Validador estricto de esquemas XML y embudo único `DomainDefineXML`, consolas VNC restringidas exclusivamente a loopback (`127.0.0.1`) sin apertura de puertos públicos no autenticados.
+  - **Gate C (Seguridad de Imágenes no Confiables):** Validación profunda mediante `imgsafe`, límites de análisis en qemu-img y límites de tamaño y cantidad de archivos en extracción de plantillas OVA.
+  - **Seguridad en Autenticación y Sesiones:** Incremento del epoch de sesión al cambiar contraseña, protección contra repetición de códigos TOTP, validación de SignCount en WebAuthn y cabeceras CSP endurecidas (connect-src 'self', nonces para scripts).
+  - **Defensa de Red y Anti-SSRF:** Dialers con IP fijada para webhooks y alertas bloqueando 0.0.0.0/8, 198.18.0.0/15, 240.0.0.0/4 y NAT64. Resolución segura de cabeceras X-Forwarded-For de derecha a izquierda.
+  - **Aislamiento en Systemd:** Inclusión de `ProtectHostname`, `ProtectClock`, `RestrictRealtime` y restricción de ReadWritePaths en el servicio systemd.
+- **Capa Defensiva de Almacenamiento en Navegador:**
+  - Nueva utilidad `safeStorage` (`$lib/utils/storage.js`) con fallback transparente a memoria (`MemoryStorage`) ante políticas de almacenamiento restringidas o entornos SSR.
+
+### Cambiado
+
+- **Modularización del Backend (`internal/libvirt`):**
+  - Descomposición del archivo monolítico `domain.go` separando subsistemas en módulos especializados:
+    - `domain_pci.go`: Formato hexadecimal de direcciones PCI, preflight, enlace VFIO y rollback en sysfs.
+    - `domain_usb.go`: Detección de dispositivos USB, filtrado de root hubs y conexión/desconexión en caliente.
+    - `domain_shares.go`: Gestión de carpetas compartidas 9p (`<filesystem>`).
+- **Optimización de Empaquetado Frontend (Vite / Rollup):**
+  - Configuración granular de división de chunks en `vite.config.js`.
+  - Reducción del **70%** en el bundle principal `index.js` (de 682 KB a 200 KB / 61 KB gzipped).
+  - Aislamiento de módulos pesados en chunks bajo demanda con caché independiente (`app-i18n`, `vendor-ui`, `vendor-lucide`, `vendor-xterm`).
+  - Eliminación total de avisos de exceso de tamaño en el empaquetado.
+
+### Corregido
+
+- **Seguimiento Asíncrono de Actualizaciones del Host:**
+  - Eliminadas las promesas flotantes no controladas en `HostUpdatesTab.svelte` adoptando `api.waitJob` sincronizado con un timeout operativo de 35 minutos.
+- **Generación de Contraseñas en Cloud-Init:**
+  - Corregida la emisión de contraseñas vacías en `cloudinit.go` asegurando entropía criptográfica mediante fallback pseudoaleatorio robusto y hashing SHA-512 crypt.
+- **Seguridad en Tiempo de Ejecución en Hardware/VFIO:**
+  - Acceso seguro al estado de preflight con encadenamiento opcional (`preflight?.`) evitando excepciones `TypeError` durante la inicialización.
+- **Cierre Limpio de WebSockets de Consola Serie:**
+  - Sustituidos retardos fijos por escucha del canal de contexto `r.Context().Done()` en `console_serial.go` para cancelar rutinas de fondo al desconectarse el cliente.
+
 ## [0.1.6] — 2026-10-04
 
 ### Añadido
@@ -66,9 +119,9 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 - **Construcción Multi-Stage en Contenedor y Diagnósticos de Inicio:**
   - `Dockerfile` multi-stage con compilación aislada del frontend Svelte (Node 22 slim) y del backend Go 1.26 con CGO y cabeceras libvirt en Ubuntu 24.04, garantizando paridad binaria y compatibilidad de bibliotecas `glibc` con independencia de la máquina anfitriona.
   - Optimización de caché de capas para reconstrucciones ultrarrápidas (~15 segundos).
-  - Diagnósticos *pre-flight* en `docker-entrypoint.sh` comprobando la presencia del socket libvirt, aceleración por hardware KVM (`/dev/kvm`) y el módulo del kernel ZFS (`/dev/zfs`).
+  - Diagnósticos _pre-flight_ en `docker-entrypoint.sh` comprobando la presencia del socket libvirt, aceleración por hardware KVM (`/dev/kvm`) y el módulo del kernel ZFS (`/dev/zfs`).
   - Integración de comprobación de salud (`HEALTHCHECK`) y configuración de paridad (`pid: host`, unidades systemd, `/dev:rslave`).
-- **Ajuste Dinámico de Memoria en Caliente (*Live Memory Ballooning*):**
+- **Ajuste Dinámico de Memoria en Caliente (_Live Memory Ballooning_):**
   - Modificación dinámica de la memoria de máquinas virtuales en ejecución (`SetMemoryFlags` con `DOMAIN_MEM_LIVE`) a través de la API sin requerir apagado o reinicio de la instancia.
   - Indicador visual en los ajustes de configuración de la VM avisando cuando el ajuste en caliente está disponible en instancias en ejecución.
 - **Alertas Proactivas de Degradación de Almacenamiento:**
@@ -114,9 +167,9 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
   - Degradación segura automática a gráficos VNC (`resolveGraphicsType`) cuando la versión del binario QEMU del host (como QEMU 10) no tiene soporte compilado de gráficos SPICE.
   - Corrección de la longitud de contraseña autogenerada en el modal de despliegue de la tienda de aplicaciones para ajustarse a los límites de Cloud-Init (entre 6 y 12 caracteres).
 - **Selector de Idiomas en Barra Lateral Compacta y Flotante:**
-  - Corregido el bucle de parpadeo, desajuste y cierre involuntario del desplegable de idiomas al abrirlo en modos compacto (*rail*) y autoexpandible (*hover*).
+  - Corregido el bucle de parpadeo, desajuste y cierre involuntario del desplegable de idiomas al abrirlo en modos compacto (_rail_) y autoexpandible (_hover_).
   - La barra lateral retiene su visibilidad expandida mientras cualquier menú flotante esté abierto y evita cierres por pérdida de foco.
-  - En modo compacto (*rail*), el desplegable abre hacia la derecha (`side="right"`, `align="end"`), evitando el recorte fuera de la pantalla a la izquierda.
+  - En modo compacto (_rail_), el desplegable abre hacia la derecha (`side="right"`, `align="end"`), evitando el recorte fuera de la pantalla a la izquierda.
   - Eliminada la restricción de ancho forzado a nivel de ancla en los componentes primitivos de menú desplegable de Tailwind v4.
 
 ## [0.1.2-fix2] — 2026-09-30
@@ -134,7 +187,7 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 - **Blindaje contra Path Injection:**
   - Reforzada la validación y sanitización de rutas en `zvol.Resolve` y `mdraid.ensureDeviceNode` mediante `filepath.Clean`, límites de prefijo explícitos y comprobaciones regex localizadas.
 - **Actualización de Dependencias Vulnerables:**
-  - Corregidas las alertas de Dependabot (CVE-2026-102277 / GHSA-q2hr-2g5m-vwhr) fijando las versiones parcheadas de `brace-expansion` (`1.1.21` y `5.0.12`) mediante *overrides* de npm en las herramientas de desarrollo del frontend.
+  - Corregidas las alertas de Dependabot (CVE-2026-102277 / GHSA-q2hr-2g5m-vwhr) fijando las versiones parcheadas de `brace-expansion` (`1.1.21` y `5.0.12`) mediante _overrides_ de npm en las herramientas de desarrollo del frontend.
 
 ## [0.1.2] — 2026-09-30
 
@@ -142,7 +195,7 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
 - **Pools de Almacenamiento ZFS y ZVols:**
   - Gestión integral de pools de almacenamiento ZFS con soporte para topologías stripe, mirror, raidz1 y raidz2.
-  - Creación y ciclo de vida de volúmenes de bloques crudos (ZVols) con aprovisionamiento fino (*sparse*) para conexión nativa directa a VMs.
+  - Creación y ciclo de vida de volúmenes de bloques crudos (ZVols) con aprovisionamiento fino (_sparse_) para conexión nativa directa a VMs.
   - Endpoints REST dedicados: `GET /api/host/zpools`, `POST /api/host/zpools`, `GET /api/host/zvols`, `POST /api/host/zvols` y `DELETE /api/host/zvols/{name}`.
   - Pestaña de gestión ZFS dedicada en la vista de Almacenamiento con asistentes para creación de pools y volúmenes.
 - **Software RAID en Linux (`mdadm`):**
@@ -181,10 +234,10 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 - **Autoactualización desde la aplicación:**
   - Soporte de actualización automática mediante `POST /api/system/update` y `/#/status`.
   - Detección automática del modo de actualización: **release** (descarga e instala binarios oficiales verificados de GitHub) o **source** (actualiza el checkout git y recompila frontend y backend).
-  - Verificación criptográfica con `SHA256SUMS` y política *fail-closed* antes de ejecutar instaladores con privilegios root.
+  - Verificación criptográfica con `SHA256SUMS` y política _fail-closed_ antes de ejecutar instaladores con privilegios root.
   - Ejecución en unidad transitoria de systemd (`systemd-run`) para aislar el updater del cgroup principal durante las paradas y reinicios del servicio.
   - Bloqueo de concurrencia mediante `flock` sobre `/run/webkvm-update.lock`.
-  - Despliegue atómico con copia previa y recuperación automática (*rollback*) si falla el chequeo de salud.
+  - Despliegue atómico con copia previa y recuperación automática (_rollback_) si falla el chequeo de salud.
   - Detección dinámica del puerto del servicio desde `config.json` y el entorno de systemd.
   - Controles en la interfaz de usuario, modales de confirmación y traducciones completas en español, inglés y catalán.
 
@@ -239,14 +292,13 @@ virtualización Linux.
   recursos, 2FA/TOTP, tokens de API y registro de auditoría.
 - **Cloud-init** para la configuración inicial de invitados (usuarios,
   claves SSH, red, paquetes).
-- **Tienda de aplicaciones:** appliances y *helper scripts* listos para
+- **Tienda de aplicaciones:** appliances y _helper scripts_ listos para
   desplegar, y catálogo de imágenes cloud oficiales.
 - **Passthrough PCI y USB** con comprobación previa de IOMMU/VFIO.
 - **Interfaz en tres idiomas:** inglés, español y catalán.
 - **Instalación:** instalador standalone multidistro (apt/dnf/pacman) con
-  HTTPS autofirmado y *rollback*, imagen Docker, paquetes deb/rpm y un
+  HTTPS autofirmado y _rollback_, imagen Docker, paquetes deb/rpm y un
   cliente de línea de comandos (`webkvm-cli`).
-
 
 ---
 

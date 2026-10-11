@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"webkvm/internal/audit"
+	"webkvm/internal/auth"
 	"webkvm/internal/models"
 
 	"github.com/go-chi/chi/v5"
@@ -110,5 +111,37 @@ func (h *Handler) ChangeMyPassword(w http.ResponseWriter, r *http.Request) {
 	h.audit.Log(audit.Entry{
 		User: user, Role: role, IP: ip, Action: "user.change_password", Resource: caller,
 	})
-	jsonResp(w, http.StatusOK, map[string]string{"status": "password changed"})
+	// The epoch moved, so the caller's own token is now stale. Re-issue
+	// one (and the cookie) so this session stays logged in while every
+	// other session is closed.
+	u, err := h.userStore.Get(caller)
+	if err != nil {
+		jsonResp(w, http.StatusOK, map[string]string{"status": "password changed"})
+		return
+	}
+	newToken, newExp, err := h.auth.GenerateTokenWithMustChange(u.Username, u.Role, u.MustChangePassword, u.SessionEpoch)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "password changed but failed to issue a new token; please log in again")
+		return
+	}
+	if old := extractBearer(r); old != "" {
+		_ = h.auth.Revoke(old)
+	} else if old := auth.SessionToken(r); old != "" {
+		_ = h.auth.Revoke(old)
+	}
+	csrf := auth.CSRFValue(r)
+	if csrf == "" {
+		if v, cerr := auth.NewCSRFValue(); cerr == nil {
+			csrf = v
+		}
+	}
+	auth.SetSessionCookie(w, newToken, h.auth.SecureCookies(), int(h.auth.TokenTTL().Seconds()))
+	if csrf != "" {
+		auth.SetCSRFCookie(w, csrf, h.auth.SecureCookies(), int(h.auth.TokenTTL().Seconds()))
+	}
+	jsonResp(w, http.StatusOK, map[string]any{
+		"status":     "password changed",
+		"expires_at": newExp,
+		"csrf":       csrf,
+	})
 }

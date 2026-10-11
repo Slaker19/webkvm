@@ -90,8 +90,29 @@ type VM struct {
 	SharedFolders   []SharedFolder `json:"shared_folders,omitempty"`
 }
 
+// MediaScope tells the libvirt layer how far a caller may reach when a
+// request references host files (ISO, virtio ISO, cdrom source, existing
+// disk). It is never decoded from JSON: handlers fill it from the
+// authenticated identity. The zero value is the most restrictive one
+// (non-admin, every pool allowed) so a forgotten assignment fails closed.
+type MediaScope struct {
+	// Admin callers may reference regular files outside the storage
+	// pools. Device nodes, sockets and directories are refused for
+	// everybody.
+	Admin bool
+	// AllowedPools restricts which pools' directories a non-admin may
+	// reference. nil means every pool.
+	AllowedPools map[string]bool
+	// CanNesting is true when a non-admin holds the "nesting" capability.
+	// Container specs (privileged, nesting, profiles) are authorised
+	// against this scope inside the Incus backend (audit #3/#4).
+	CanNesting bool
+}
+
 type CreateVMRequest struct {
-	Name string `json:"name"`
+	// Scope is set by the handler (never from the request body).
+	Scope MediaScope `json:"-"`
+	Name  string     `json:"name"`
 	// Type is the instance kind to create: "vm" (default, KVM) or
 	// "container" (LXD). Empty keeps the historical default (vm).
 	Type string `json:"type,omitempty"`
@@ -188,24 +209,26 @@ type CreateVMRequest struct {
 }
 
 type UpdateVMRequest struct {
-	Name         *string  `json:"name,omitempty"`
-	VCPUs        *int     `json:"vcpus,omitempty"`
-	RAMMB        *int64   `json:"ram_mb,omitempty"`
-	DiskGB       *int64   `json:"disk_gb,omitempty"`
-	CPUMode      *string  `json:"cpu_mode,omitempty"`
-	CPUModel     *string  `json:"cpu_model,omitempty"`
-	CPUFlags     []string `json:"cpu_flags,omitempty"`
-	CPUUnits     *int     `json:"cpu_units,omitempty"`
-	KVMHidden    *bool    `json:"kvm_hidden,omitempty"`
-	VideoModel   *string  `json:"video_model,omitempty"`
-	AudioModel   *string  `json:"audio_model,omitempty"`
-	Network      *string  `json:"network,omitempty"`
-	NetworkModel *string  `json:"network_model,omitempty"`
-	OSType       *string  `json:"os_type,omitempty"`
-	OSVersion    *string  `json:"os_version,omitempty"`
-	Chipset      *string  `json:"chipset,omitempty"`
-	SecureBoot   *bool    `json:"secure_boot,omitempty"`
-	TPMEnabled   *bool    `json:"tpm_enabled,omitempty"`
+	// Scope is set by the handler (never from the request body).
+	Scope        MediaScope `json:"-"`
+	Name         *string    `json:"name,omitempty"`
+	VCPUs        *int       `json:"vcpus,omitempty"`
+	RAMMB        *int64     `json:"ram_mb,omitempty"`
+	DiskGB       *int64     `json:"disk_gb,omitempty"`
+	CPUMode      *string    `json:"cpu_mode,omitempty"`
+	CPUModel     *string    `json:"cpu_model,omitempty"`
+	CPUFlags     []string   `json:"cpu_flags,omitempty"`
+	CPUUnits     *int       `json:"cpu_units,omitempty"`
+	KVMHidden    *bool      `json:"kvm_hidden,omitempty"`
+	VideoModel   *string    `json:"video_model,omitempty"`
+	AudioModel   *string    `json:"audio_model,omitempty"`
+	Network      *string    `json:"network,omitempty"`
+	NetworkModel *string    `json:"network_model,omitempty"`
+	OSType       *string    `json:"os_type,omitempty"`
+	OSVersion    *string    `json:"os_version,omitempty"`
+	Chipset      *string    `json:"chipset,omitempty"`
+	SecureBoot   *bool      `json:"secure_boot,omitempty"`
+	TPMEnabled   *bool      `json:"tpm_enabled,omitempty"`
 	// TPMVersion is "1.2" or "2.0" (validated in UpdateVM). nil leaves
 	// the current version unchanged; only meaningful together with
 	// TPMEnabled (or when TPM is already on).
@@ -295,18 +318,20 @@ type CreateRAIDRequest struct {
 }
 
 type AttachDiskRequest struct {
-	Device      string `json:"device"`                  // disk, cdrom
-	Bus         string `json:"bus"`                     // virtio, sata, scsi, ide
-	Source      string `json:"source,omitempty"`        // for cdrom: ISO path
-	ZVol        string `json:"zvol,omitempty"`          // for raw block: existing ZFS volume "pool/name"
-	SizeGB      int64  `json:"size_gb,omitempty"`       // for disk: new size
-	Pool        string `json:"pool,omitempty"`          // storage pool for new disk
-	Format      string `json:"format,omitempty"`        // for disk: qcow2, raw
-	DiskCacheIO *bool  `json:"disk_cache_io,omitempty"` // cache='none' io='native'
-	DiskDiscard *bool  `json:"disk_discard,omitempty"`  // discard='unmap'
-	WWN         string `json:"wwn,omitempty"`           // 16 hex chars
-	Serial      string `json:"serial,omitempty"`        // disk serial string
-	Alias       string `json:"alias,omitempty"`         // user alias (ua-...)
+	// Scope is set by the handler (never from the request body).
+	Scope       MediaScope `json:"-"`
+	Device      string     `json:"device"`                  // disk, cdrom
+	Bus         string     `json:"bus"`                     // virtio, sata, scsi, ide
+	Source      string     `json:"source,omitempty"`        // for cdrom: ISO path
+	ZVol        string     `json:"zvol,omitempty"`          // for raw block: existing ZFS volume "pool/name"
+	SizeGB      int64      `json:"size_gb,omitempty"`       // for disk: new size
+	Pool        string     `json:"pool,omitempty"`          // storage pool for new disk
+	Format      string     `json:"format,omitempty"`        // for disk: qcow2, raw
+	DiskCacheIO *bool      `json:"disk_cache_io,omitempty"` // cache='none' io='native'
+	DiskDiscard *bool      `json:"disk_discard,omitempty"`  // discard='unmap'
+	WWN         string     `json:"wwn,omitempty"`           // 16 hex chars
+	Serial      string     `json:"serial,omitempty"`        // disk serial string
+	Alias       string     `json:"alias,omitempty"`         // user alias (ua-...)
 	// Force overrides the "this disk already contains data" guard when
 	// attaching an existing disk image. Without it, attaching a disk
 	// whose image is not empty is refused (409) so the operator cannot
@@ -1109,6 +1134,10 @@ type UserPermissions struct {
 	// system. It is separate from CanConsole because screen access and
 	// bulk data extraction are different risks.
 	CanExport *bool `json:"can_export,omitempty"`
+	// CanNesting lets a non-admin enable security.nesting on containers.
+	// Unlike the other capabilities it defaults to DENIED for operators:
+	// nesting widens the container attack surface (audit #4).
+	CanNesting *bool `json:"can_nesting,omitempty"`
 }
 
 // Capabilities is the canonical list of named permissions. Anything not
@@ -1122,6 +1151,7 @@ var Capabilities = []string{
 	"backups",
 	"media",
 	"export",
+	"nesting",
 }
 
 // capabilityFlag returns the tri-state flag backing perm, and whether
@@ -1147,6 +1177,8 @@ func (p *UserPermissions) capabilityFlag(perm string) (*bool, bool) {
 		return p.CanMedia, true
 	case "export":
 		return p.CanExport, true
+	case "nesting":
+		return p.CanNesting, true
 	}
 	return nil, false
 }
@@ -1208,6 +1240,9 @@ type User struct {
 	TOTPSecret      string   `json:"totp_secret,omitempty"`
 	TOTPEnabled     bool     `json:"totp_enabled,omitempty"`
 	TOTPBackupCodes []string `json:"totp_backup_codes,omitempty"`
+	// TOTPLastStep is the 30s step of the last accepted TOTP code; a code
+	// from a step <= this one is a replay and is refused.
+	TOTPLastStep int64 `json:"totp_last_step,omitempty"`
 
 	// WebAuthn / Passkeys support
 	WebAuthnCredentials []WebAuthnCredential `json:"webauthn_credentials,omitempty"`
@@ -1248,6 +1283,10 @@ func (u *User) HasPermission(perm string) bool {
 			return flag != nil && *flag
 		}
 		return false
+	}
+	// Opt-in capabilities: an operator only has them when explicitly granted.
+	if perm == "nesting" {
+		return flag != nil && *flag
 	}
 	// RoleOperator: defaults to true unless explicitly overridden to false.
 	if flag != nil {

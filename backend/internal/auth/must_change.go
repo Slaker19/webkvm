@@ -26,8 +26,9 @@ type LookupUserSession func(username string) (mustChange bool, epoch int, active
 // or whose token's session epoch (see Claims.SessionEpoch / HeaderTokenEpoch)
 // no longer matches the account's current one — i.e. an admin has forced that
 // account to log out everywhere since this token was issued. A small set
-// of paths is exempted so the user can still recover (auth endpoints, the
-// change-password endpoint, health).
+// of paths is exempted from the must_change check ONLY (the recovery paths:
+// /me, logout, refresh, the change-password endpoint, health); the epoch and
+// active checks always apply.
 //
 // Both checks are read against the live user store on every request (not
 // just the JWT), so an admin's action takes effect immediately without
@@ -50,12 +51,16 @@ func SessionEnforcer(lookup LookupUserSession, exceptPrefixes ...string) func(ht
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Always allow the excepted paths so the user can
-			// self-recover (change password) or self-inspect (me).
+			// The excepted paths are exempt ONLY from the must_change
+			// block (so the user can self-recover or self-inspect).
+			// Revoked sessions and inactive accounts are never exempt:
+			// otherwise a stolen, revoked token could still register a
+			// passkey or TOTP secret under /api/auth/.
+			exempt := false
 			for p := range exceptSet {
 				if strings.HasPrefix(r.URL.Path, p) {
-					next.ServeHTTP(w, r)
-					return
+					exempt = true
+					break
 				}
 			}
 			must, epoch, active, err := lookup(user)
@@ -86,7 +91,7 @@ func SessionEnforcer(lookup LookupUserSession, exceptPrefixes ...string) func(ht
 				writeAuthError(w, http.StatusUnauthorized, "session revoked, please log in again")
 				return
 			}
-			if must {
+			if must && !exempt {
 				writeAuthError(w, http.StatusForbidden, "password change required")
 				return
 			}

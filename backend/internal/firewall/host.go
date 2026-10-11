@@ -148,8 +148,8 @@ func (s *HostStore) IsEmpty() bool {
 }
 
 // ProtectedPorts returns the management ports that can never be
-// blocked: SSH (22), the web UI/API port, and the noVNC range
-// (5900-5903). The UI renders them as a locked, non-deletable section
+// blocked: SSH (22) and the web UI/API port.
+// The UI renders them as a locked, non-deletable section
 // and the backend rejects drop rules that target them.
 func ProtectedPorts(webPort int) []int {
 	return HostPorts(webPort)

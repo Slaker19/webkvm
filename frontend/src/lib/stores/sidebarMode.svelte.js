@@ -6,6 +6,7 @@
  * off-canvas drawer regardless of this setting — see Layout.svelte.
  */
 import { browser } from '$lib/utils/browser.js';
+import { safeStorage } from '$lib/utils/storage.js';
 
 const KEY = 'webkvm.sidebar.mode.v1';
 export const MODES = ['full', 'rail', 'hover'];
@@ -13,7 +14,7 @@ export const MODES = ['full', 'rail', 'hover'];
 function initial() {
   if (!browser) return 'full';
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = safeStorage.getItem(KEY);
     if (MODES.includes(raw)) return raw;
   } catch {
     /* ignore */
@@ -28,7 +29,7 @@ export function setDesktopSidebarMode(mode) {
   sidebarMode.value = mode;
   if (browser) {
     try {
-      localStorage.setItem(KEY, mode);
+      safeStorage.setItem(KEY, mode);
     } catch {
       /* ignore */
     }

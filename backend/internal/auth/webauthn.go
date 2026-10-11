@@ -349,5 +349,29 @@ func (m *WebAuthnManager) FinishLogin(sessionID string, findUser func(rawID, use
 		}
 	}
 
-	return wUser.User, matchedCred, nil
+	updated, err := credentialAfterLogin(matchedCred, cred)
+	if err != nil {
+		return nil, nil, err
+	}
+	return wUser.User, updated, nil
+}
+
+// credentialAfterLogin returns a copy of the stored credential carrying the
+// authenticator state the library computed for this assertion (notably the
+// new SignCount, which the caller persists). A clone warning (the counter
+// did not advance although the authenticator uses counters) means the
+// passkey may have been copied; refuse the login.
+func credentialAfterLogin(stored *models.WebAuthnCredential, lib *webauthn.Credential) (*models.WebAuthnCredential, error) {
+	if lib == nil {
+		return stored, nil
+	}
+	if lib.Authenticator.CloneWarning {
+		return nil, fmt.Errorf("passkey sign counter did not advance: possible cloned authenticator")
+	}
+	if stored == nil {
+		return nil, nil
+	}
+	c := *stored
+	c.SignCount = lib.Authenticator.SignCount
+	return &c, nil
 }

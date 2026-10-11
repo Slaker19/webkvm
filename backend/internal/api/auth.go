@@ -138,7 +138,7 @@ func (h *Handler) Login2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	validCode := auth.ValidateTOTP(u.TOTPSecret, req.Code)
+	validCode, _ := h.userStore.ConsumeTOTP(username, req.Code)
 	if !validCode {
 		// Try consuming backup code
 		usedBackup, _ := h.userStore.ConsumeBackupCode(username, req.Code)

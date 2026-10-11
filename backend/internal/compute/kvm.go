@@ -192,6 +192,12 @@ func (b *KVMBackend) ListHostPCIDevices() ([]models.PCIIOMMUGroup, error) {
 func (b *KVMBackend) GetHostPCIPreflight() (models.PCIPreflightInfo, error) {
 	return b.lv.GetHostPCIPreflight()
 }
+func (b *KVMBackend) BindHostPCIDeviceVFIO(address string) error {
+	return b.lv.BindPCIDeviceVFIO(address)
+}
+func (b *KVMBackend) UnbindHostPCIDeviceVFIO(address string) error {
+	return b.lv.UnbindPCIDeviceVFIO(address)
+}
 func (b *KVMBackend) AttachSharedFolder(id, hostPath, tag string, readOnly bool) error {
 	return b.lv.AttachSharedFolder(id, hostPath, tag, readOnly)
 }
@@ -568,6 +574,7 @@ func (b *KVMBackend) ImportDomain(tarPath, newName, poolName string, opts Import
 		RAMMB:      opts.RAMMB,
 		Autostart:  opts.Autostart,
 		SourceSize: opts.SourceSize,
+		Admin:      opts.Admin,
 		OnProgress: opts.OnProgress,
 	})
 }

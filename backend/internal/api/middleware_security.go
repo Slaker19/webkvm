@@ -70,7 +70,10 @@ func computeIndexScriptHashes() []string {
 //     for computed sizing (e.g. Avatar's width/height). Attribute
 //     styles cannot be hashed, and the alternative would be rewriting
 //     unrelated components to chase a header.
-//   - connect-src ws:/wss: — the serial console WebSocket.
+//   - connect-src 'self' — XHR/fetch, the SSE stream and the serial
+//     console WebSocket, all same-origin ('self' covers ws/wss to the same
+//     host in CSP3 browsers). Any other host (including a bare ws:/wss:
+//     wildcard) would be an exfiltration channel for injected script.
 //
 // frame-ancestors 'self' allows the in-app console iframe while still
 // refusing embedding by other origins; form-action and base-uri 'none'
@@ -88,7 +91,7 @@ func buildCSP() string {
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data: blob:",
 		"font-src 'self'",
-		"connect-src 'self' ws: wss:",
+		"connect-src 'self'",
 		"frame-src 'self'",
 		"frame-ancestors 'self'",
 		"form-action 'self'",

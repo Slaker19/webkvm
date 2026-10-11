@@ -287,6 +287,14 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
+		// Identity headers are set ONLY by this middleware after validating
+		// a credential. Drop anything the client sent so a forged X-User /
+		// X-Role can never be mistaken for an authenticated identity (e.g.
+		// on the public routes below).
+		r.Header.Del("X-User")
+		r.Header.Del("X-Role")
+		r.Header.Del(HeaderTokenEpoch)
+
 		// Genuinely public: the login endpoint, the health probe, embedded
 		// static assets, and VM cover images (guarded by an unguessable
 		// UUID in the URL).

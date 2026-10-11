@@ -83,7 +83,7 @@ release (`makepkg -si`); el unit va a `/usr/lib/systemd/system` como manda Arch.
 
 En una terminal, el instalador pregunta:
 
-1. **Puerto** (8080) y **bind address** (0.0.0.0).
+1. **Puerto** (8080) y **bind address** (127.0.0.1).
 2. **HTTPS** con certificado auto-firmado (recomendado) — el backend sirve TLS
    directamente; el certificado se puede descargar desde `https://IP:PUERTO/api/system/cert`.
 3. **Dominio público** (opcional): si resuelve al servidor, se obtiene un certificado
@@ -98,7 +98,7 @@ En una terminal, el instalador pregunta:
 
 - `WEBKVM_DATA_DIR`: `/opt/webkvm`.
 - `WEBKVM_PREFIX`: `/usr/local`.
-- `WEBKVM_BIND_ADDR`: `0.0.0.0` en instalación nueva.
+- `WEBKVM_BIND_ADDR`: `127.0.0.1` en instalación nueva (usa `0.0.0.0` o una IP de LAN solo con HTTPS).
 - `WEBKVM_PORT`: `8080` por defecto.
 - `WEBKVM_BINARY`: ruta a binario local.
 - `WEBKVM_BINARY_URL`: URL HTTPS del binario (con `WEBKVM_BINARY_SHA256` obligatorio).

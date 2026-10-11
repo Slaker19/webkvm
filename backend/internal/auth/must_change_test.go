@@ -18,7 +18,7 @@ func TestSessionEnforcer_BlocksWhenFlagTrue(t *testing.T) {
 		}
 		return false, 0, true, nil
 	}
-	mw := SessionEnforcer(lookup, "/api/auth/", "/api/users/me/password")
+	mw := SessionEnforcer(lookup, "/api/auth/me", "/api/auth/logout", "/api/auth/refresh", "/api/users/me/password")
 
 	hit := false
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +75,7 @@ func TestSessionEnforcer_AllowsExceptedPaths(t *testing.T) {
 	lookup := func(username string) (bool, int, bool, error) {
 		return true, 0, true, nil // always must change
 	}
-	mw := SessionEnforcer(lookup, "/api/auth/", "/api/users/me/password")
+	mw := SessionEnforcer(lookup, "/api/auth/me", "/api/auth/logout", "/api/auth/refresh", "/api/users/me/password")
 
 	allowedPaths := []string{
 		"/api/auth/me",
@@ -289,3 +289,49 @@ type sentinelErr string
 func (s sentinelErr) Error() string { return string(s) }
 
 const errSentinel sentinelErr = "store broken"
+
+func TestSessionEnforcer_ExemptPathsStillEnforceEpochAndActive(t *testing.T) {
+	exempt := []string{"/api/auth/me", "/api/auth/refresh", "/api/users/me/password"}
+	cases := []struct {
+		name   string
+		lookup LookupUserSession
+		epoch  string
+	}{
+		{"revoked", func(string) (bool, int, bool, error) { return false, 2, true, nil }, "1"},
+		{"revoked+must", func(string) (bool, int, bool, error) { return true, 2, true, nil }, "1"},
+		{"inactive", func(string) (bool, int, bool, error) { return false, 0, false, nil }, "0"},
+	}
+	for _, c := range cases {
+		mw := SessionEnforcer(c.lookup, exempt...)
+		for _, p := range append(exempt, "/api/auth/webauthn/register/begin", "/api/auth/2fa/setup") {
+			h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatalf("%s %s: downstream must not be hit", c.name, p)
+			}))
+			req := httptest.NewRequest(http.MethodPost, p, nil)
+			req.Header.Set(HeaderUser, "alice")
+			req.Header.Set(HeaderTokenEpoch, c.epoch)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("%s %s: expected 401, got %d", c.name, p, rr.Code)
+			}
+		}
+	}
+}
+
+func TestSessionEnforcer_MustChangeBlocksFactorEnrolment(t *testing.T) {
+	lookup := func(string) (bool, int, bool, error) { return true, 0, true, nil }
+	mw := SessionEnforcer(lookup, "/api/auth/me", "/api/auth/logout", "/api/auth/refresh", "/api/users/me/password")
+	for _, p := range []string{"/api/auth/webauthn/register/begin", "/api/auth/2fa/setup", "/api/auth/2fa/enable"} {
+		h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatalf("%s must be blocked while must_change is set", p)
+		}))
+		req := httptest.NewRequest(http.MethodPost, p, nil)
+		req.Header.Set(HeaderUser, "alice")
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("%s: expected 403, got %d", p, rr.Code)
+		}
+	}
+}

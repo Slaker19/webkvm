@@ -12,6 +12,7 @@
  * Persisted in localStorage with strict allowlist validation.
  */
 import { browser } from '$lib/utils/browser.js';
+import { safeStorage } from '$lib/utils/storage.js';
 
 export const THEMES = ['zinc', 'oled', 'light'];
 export const ACCENTS = ['indigo', 'emerald', 'blue', 'violet', 'amber', 'rose'];
@@ -31,7 +32,7 @@ const ACCENT_KEY = 'webkvm.theme.accent.v1';
 function initialTheme() {
   if (!browser) return 'zinc';
   try {
-    const saved = localStorage.getItem(THEME_KEY);
+    const saved = safeStorage.getItem(THEME_KEY);
     if (THEMES.includes(saved)) return saved;
   } catch {
     /* ignore */
@@ -42,7 +43,7 @@ function initialTheme() {
 function initialAccent() {
   if (!browser) return 'indigo';
   try {
-    const saved = localStorage.getItem(ACCENT_KEY);
+    const saved = safeStorage.getItem(ACCENT_KEY);
     if (ACCENTS.includes(saved)) return saved;
   } catch {
     /* ignore */
@@ -80,7 +81,7 @@ export function setTheme(mode) {
   theme.mode = mode;
   if (browser) {
     try {
-      localStorage.setItem(THEME_KEY, mode);
+      safeStorage.setItem(THEME_KEY, mode);
     } catch {
       /* ignore */
     }
@@ -93,7 +94,7 @@ export function setAccent(accent) {
   theme.accent = accent;
   if (browser) {
     try {
-      localStorage.setItem(ACCENT_KEY, accent);
+      safeStorage.setItem(ACCENT_KEY, accent);
     } catch {
       /* ignore */
     }

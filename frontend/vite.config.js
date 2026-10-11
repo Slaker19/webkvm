@@ -28,6 +28,7 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
         // Split the heavy third-party libraries out of the entry chunk.
@@ -39,19 +40,28 @@ export default defineConfig({
         // than our own code) and skip the ones a given page never
         // touches — e.g. a viewer who never opens a console pays for
         // neither xterm nor noVNC.
-        manualChunks: {
-          'vendor-xterm': [
-            '@xterm/xterm',
-            '@xterm/addon-fit',
-            '@xterm/addon-webgl',
-            '@xterm/addon-unicode11',
-            '@xterm/addon-web-links',
-            '@xterm/addon-clipboard',
-          ],
-          'vendor-novnc': ['@novnc/novnc'],
-          'vendor-ui': ['bits-ui'],
-          'vendor-cron': ['cronstrue'],
-          'vendor-qr': ['qrcode'],
+        manualChunks(id) {
+          if (id.includes('node_modules/@xterm/')) {
+            return 'vendor-xterm';
+          }
+          if (id.includes('node_modules/@novnc/')) {
+            return 'vendor-novnc';
+          }
+          if (id.includes('node_modules/@lucide/svelte/')) {
+            return 'vendor-lucide';
+          }
+          if (id.includes('node_modules/bits-ui/')) {
+            return 'vendor-ui';
+          }
+          if (id.includes('node_modules/cronstrue/')) {
+            return 'vendor-cron';
+          }
+          if (id.includes('node_modules/qrcode/')) {
+            return 'vendor-qr';
+          }
+          if (id.includes('src/lib/i18n.svelte.js')) {
+            return 'app-i18n';
+          }
         },
       },
     },

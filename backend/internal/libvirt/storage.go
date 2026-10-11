@@ -424,11 +424,64 @@ func (c *Connector) lookupVolRefreshing(pool *libvirt.StoragePool, volName strin
 	return nil, err
 }
 
+// poolPurposeAllowsMedia reports whether a pool's purpose string (possibly a
+// comma list, empty = disk) designates ISO or disk images.
+func poolPurposeAllowsMedia(purpose string) bool {
+	if strings.TrimSpace(purpose) == "" {
+		return true
+	}
+	for _, p := range strings.Split(purpose, ",") {
+		switch strings.TrimSpace(p) {
+		case PoolPurposeISO, PoolPurposeDisk:
+			return true
+		}
+	}
+	return false
+}
+
+// mediaRoots returns the directories a non-admin caller may reference media
+// from: the filesystem paths of the ISO/disk pools the scope allows, plus the
+// default WebKVM pools (which exist even when libvirt is unreachable).
+func (c *Connector) mediaRoots(scope models.MediaScope) []string {
+	allowed := func(name string) bool {
+		return scope.AllowedPools == nil || scope.AllowedPools[name]
+	}
+	var roots []string
+	c.mu.RLock()
+	connected := c.conn != nil
+	c.mu.RUnlock()
+	if connected {
+		if pools, err := c.ListStoragePools(); err == nil {
+			for _, p := range pools {
+				if p.Path != "" && allowed(p.Name) && poolPurposeAllowsMedia(p.Purpose) {
+					roots = append(roots, p.Path)
+				}
+			}
+		}
+	}
+	if c.cfg != nil {
+		if allowed(config.ISOPoolName) {
+			roots = append(roots, c.cfg.ISOPoolPath())
+		}
+		if allowed(config.DiskPoolName) {
+			roots = append(roots, c.cfg.DiskPoolPath())
+		}
+	}
+	return roots
+}
+
 // resolveMediaPath resolves an ISO or disk image name to an absolute filesystem path.
 // If media is already an absolute path, it verifies that the file exists and is readable.
 // If media is a relative filename, it searches configured storage pools (prioritizing ISO pools).
 // It returns an error if the media is not found or if multiple pools match (strict mode).
-func (c *Connector) resolveMediaPath(media string) (string, error) {
+//
+// Confinement (audit #5/#7/#8): the backend runs as root and libvirt relabels
+// whatever file ends up in the domain XML, so an absolute path is only
+// honoured when it canonicalises (EvalSymlinks) to a regular file inside a
+// storage pool the caller may use. Admins (scope.Admin) may additionally
+// reference regular files outside the pools; device nodes, sockets and
+// directories are refused for everybody.
+func (c *Connector) resolveMediaPath(media string, scope models.MediaScope) (string, error) {
 	if media == "" {
 		return "", nil
 	}
@@ -444,7 +497,18 @@ func (c *Connector) resolveMediaPath(media string) (string, error) {
 		if stat.IsDir() {
 			return "", fmt.Errorf("media path %q is a directory, expected an image file", cleanMedia)
 		}
-		return cleanMedia, nil
+		if scope.Admin {
+			real, err := fsutil.ResolveRegular(cleanMedia)
+			if err != nil {
+				return "", fmt.Errorf("media path %q rejected: %w", cleanMedia, err)
+			}
+			return real, nil
+		}
+		real, err := fsutil.ResolveInRoots(cleanMedia, c.mediaRoots(scope))
+		if err != nil {
+			return "", fmt.Errorf("media path %q rejected: %w", cleanMedia, err)
+		}
+		return real, nil
 	}
 
 	if strings.ContainsAny(media, "/\\") {
@@ -455,6 +519,15 @@ func (c *Connector) resolveMediaPath(media string) (string, error) {
 	pools, err := c.ListStoragePools()
 	if err != nil && c.conn != nil {
 		pools = nil
+	}
+	if scope.AllowedPools != nil {
+		allowed := pools[:0:0]
+		for _, p := range pools {
+			if scope.AllowedPools[p.Name] {
+				allowed = append(allowed, p)
+			}
+		}
+		pools = allowed
 	}
 
 	var matches []string
@@ -519,7 +592,14 @@ func (c *Connector) resolveMediaPath(media string) (string, error) {
 	}
 
 	if len(matches) == 1 {
-		return matches[0], nil
+		real, rerr := fsutil.ResolveRegular(matches[0])
+		if rerr == nil && !scope.Admin && !fsutil.InRoots(real, c.mediaRoots(scope)) {
+			rerr = fsutil.ErrOutsideRoots
+		}
+		if rerr != nil {
+			return "", fmt.Errorf("media file %q rejected: %w", media, rerr)
+		}
+		return real, nil
 	}
 	if len(matches) > 1 {
 		return "", fmt.Errorf("ambiguous media name %q found in multiple storage pools (%s); specify the full path",

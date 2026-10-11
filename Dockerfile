@@ -8,6 +8,9 @@
 # ==============================================================================
 # Stage 1: Build Frontend
 # ==============================================================================
+# TODO(supply-chain): pin base images by digest (FROM image@sha256:...) once a
+# digest-refresh process (Dependabot/Renovate docker ecosystem) is in place;
+# a bare digest pin would freeze OS security updates.
 FROM node:22-bookworm-slim AS frontend-builder
 
 WORKDIR /src/frontend
@@ -49,7 +52,7 @@ COPY backend/ ./
 # Copy compiled frontend assets from Stage 1 into backend embedded FS
 COPY --from=frontend-builder /src/frontend/dist ./internal/frontend/dist
 
-ARG VERSION=0.1.6
+ARG VERSION=0.1.7
 RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/webkvm ./cmd/server && \
     CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/webkvm-cli ./cmd/cli
 

@@ -884,6 +884,7 @@ func (h *Handler) RestoreAsVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	importOpts := compute.ImportOpts{
+		Admin:     h.mediaScope(r).Admin,
 		Network:   req.Network,
 		VCPUs:     req.VCPUs,
 		RAMMB:     req.RAMMB,

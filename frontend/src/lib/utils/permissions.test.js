@@ -17,8 +17,17 @@ describe('effectiveCapabilities', () => {
   it('inherits role defaults when a capability is not set explicitly', () => {
     const caps = effectiveCapabilities({ role: 'operator', permissions: {} });
     for (const cap of capabilitiesForRole('operator')) {
-      expect(caps[cap.key]).toBe(true);
+      expect(caps[cap.key]).toBe(defaultFor('operator', cap.key));
     }
+    expect(caps.nesting).toBe(false);
+  });
+
+  it('honours nesting explicitly granted to an operator', () => {
+    const caps = effectiveCapabilities({
+      role: 'operator',
+      permissions: { can_nesting: true },
+    });
+    expect(caps.nesting).toBe(true);
   });
 
   it('does not show a viewer holding console by default', () => {
@@ -76,6 +85,7 @@ describe('buildPermissionsPayload', () => {
       backups: false,
       media: true,
       export: false,
+      nesting: true,
     });
     expect(payload).toEqual({
       can_create_vm: true,
@@ -86,6 +96,7 @@ describe('buildPermissionsPayload', () => {
       can_backups: false,
       can_media: true,
       can_export: false,
+      can_nesting: true,
     });
   });
 

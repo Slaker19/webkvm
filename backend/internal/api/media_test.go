@@ -91,6 +91,7 @@ func TestMedia_SystemAssetsProtected(t *testing.T) {
 	}
 	if systemItem == nil {
 		t.Fatalf("expected at least one system media item")
+		return
 	}
 
 	// Try to delete system asset -> must return 403

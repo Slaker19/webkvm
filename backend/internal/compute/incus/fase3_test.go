@@ -414,6 +414,7 @@ func TestIncusBackendCreateDomain(t *testing.T) {
 	fake.mu.Unlock()
 	if post == nil {
 		t.Fatal("no create request captured")
+		return
 	}
 	if post.Name != "web" || post.Type != api.InstanceTypeContainer {
 		t.Errorf("post name/type = %q/%q", post.Name, post.Type)
@@ -487,6 +488,7 @@ func TestIncusBackendCreateDomainWithoutCloudInit(t *testing.T) {
 	fake.mu.Unlock()
 	if post == nil {
 		t.Fatal("no create request captured")
+		return
 	}
 	if post.Config["user.user-data"] != "" {
 		t.Errorf("user.user-data should be empty with no cloud-init request, got %q", post.Config["user.user-data"])
@@ -542,6 +544,7 @@ func TestIncusBackendCreateDomainRootPool(t *testing.T) {
 		if _, err := b.CreateDomain(models.CreateVMRequest{
 			Name: "web", Image: "ubuntu:24.04", DiskGB: 10,
 			Profiles: []string{"default", "fast"},
+			Scope:    models.MediaScope{Admin: true},
 		}); err != nil {
 			t.Fatalf("create container: %v", err)
 		}

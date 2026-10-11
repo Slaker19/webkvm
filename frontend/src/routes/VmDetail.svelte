@@ -1983,6 +1983,19 @@
       actionLoading = '';
     }
   }
+  async function unbindPCIDevice(address) {
+    actionLoading = 'pci';
+    try {
+      await api.unbindHostPCIDeviceVFIO(address);
+      toast.success(t('hardwareVfio.unbindSuccess', { address }));
+      await loadHostPCIDevices(true);
+      await loadHostPCIPreflight();
+    } catch (e) {
+      toast.error(t('hardwareVfio.unbindError', { address, error: e.message }));
+    } finally {
+      actionLoading = '';
+    }
+  }
 
   // 9p shared folders (admin only — VM must be shut off).
   let newSharedFolderPath = $state('');
@@ -3102,7 +3115,11 @@
                       label={t('vmCreate.privileged')}
                       helper={t('vmCreate.privilegedHelper')}
                     >
-                      <Switch bind:checked={ePrivileged} ariaLabel={t('vmCreate.privileged')} />
+                      <Switch
+                        bind:checked={ePrivileged}
+                        ariaLabel={t('vmCreate.privileged')}
+                        disabled={!auth.isAdmin()}
+                      />
                     </SettingRow>
 
                     <SettingRow label={t('vmCreate.nesting')} helper={t('vmCreate.nestingHelper')}>
@@ -4164,6 +4181,7 @@
                           vmState={vm.state}
                           loading={actionLoading === 'pci'}
                           onattach={attachPCIGroup}
+                          onunbind={unbindPCIDevice}
                         />
                       {/each}
                     </div>

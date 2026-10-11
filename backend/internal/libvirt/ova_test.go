@@ -165,7 +165,7 @@ func TestOVFToLibvirtXML_DisksAndTargets(t *testing.T) {
   </VirtualSystem>
 </Envelope>`
 
-	xml, err := ovfToLibvirtXML(ovf, "/var/lib/libvirt/images")
+	xml, err := ovfToLibvirtXML(ovf, "/var/lib/libvirt/images", map[string]bool{"test-disk1.qcow2": true, "test-disk2.qcow2": true})
 	if err != nil {
 		t.Fatalf("ovfToLibvirtXML failed: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestRewriteOVFDisks_RewritesHrefToConvertedQcow2(t *testing.T) {
 	srcDir := t.TempDir()
 
 	srcDisk := filepath.Join(srcDir, "disk1.vmdk")
-	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", srcDisk, "1M").CombinedOutput(); err != nil {
+	if out, err := exec.Command("qemu-img", "create", "-f", "vmdk", srcDisk, "1M").CombinedOutput(); err != nil {
 		t.Fatalf("qemu-img create failed: %v (%s)", err, out)
 	}
 
@@ -200,7 +200,7 @@ func TestRewriteOVFDisks_RewritesHrefToConvertedQcow2(t *testing.T) {
 	}
 
 	ovfInput := `<Envelope><References><File ovf:id="f1" ovf:href="disks/disk1.vmdk"/></References></Envelope>`
-	rewritten, err := rewriteOVFDisks(ovfInput, diskFiles, poolDir, "imported-vm")
+	rewritten, _, err := rewriteOVFDisks(ovfInput, diskFiles, poolDir, "imported-vm")
 	if err != nil {
 		t.Fatalf("rewriteOVFDisks failed: %v", err)
 	}
@@ -220,11 +220,11 @@ func TestOVFImport_RewriteDisksAndGenerateXML(t *testing.T) {
 	srcDir := t.TempDir()
 
 	srcDisk1 := filepath.Join(srcDir, "disk1.vmdk")
-	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", srcDisk1, "1M").CombinedOutput(); err != nil {
+	if out, err := exec.Command("qemu-img", "create", "-f", "vmdk", srcDisk1, "1M").CombinedOutput(); err != nil {
 		t.Fatalf("qemu-img create disk1 failed: %v (%s)", err, out)
 	}
 	srcDisk2 := filepath.Join(srcDir, "disk2.vmdk")
-	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", srcDisk2, "1M").CombinedOutput(); err != nil {
+	if out, err := exec.Command("qemu-img", "create", "-f", "vmdk", srcDisk2, "1M").CombinedOutput(); err != nil {
 		t.Fatalf("qemu-img create disk2 failed: %v (%s)", err, out)
 	}
 
@@ -257,12 +257,12 @@ func TestOVFImport_RewriteDisksAndGenerateXML(t *testing.T) {
   </VirtualSystem>
 </Envelope>`
 
-	rewrittenOVF, err := rewriteOVFDisks(ovfInput, diskFiles, poolDir, "my-vm")
+	rewrittenOVF, converted, err := rewriteOVFDisks(ovfInput, diskFiles, poolDir, "my-vm")
 	if err != nil {
 		t.Fatalf("rewriteOVFDisks: %v", err)
 	}
 
-	xml, err := ovfToLibvirtXML(rewrittenOVF, poolDir)
+	xml, err := ovfToLibvirtXML(rewrittenOVF, poolDir, converted)
 	if err != nil {
 		t.Fatalf("ovfToLibvirtXML: %v", err)
 	}

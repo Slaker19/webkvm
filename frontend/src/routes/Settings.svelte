@@ -24,6 +24,8 @@
   import NotificationsTab from '$lib/components/NotificationsTab.svelte';
   import SnippetsTab from '$lib/components/SnippetsTab.svelte';
   import SecurityJailTab from '$lib/components/SecurityJailTab.svelte';
+  import HardwareVfioTab from '$lib/components/HardwareVfioTab.svelte';
+  import HostUpdatesTab from '$lib/components/HostUpdatesTab.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import { Skeleton } from '$lib/components/ui/skeleton';
   import { t } from '../lib/i18n.svelte.js';
@@ -254,7 +256,9 @@
     })),
     { name: 'notifications', label: t('settings.notifications') },
     { name: 'snippets', label: t('settings.snippets') },
-    { name: 'jail', label: 'Seguridad (Jail)' },
+    { name: 'jail', label: t('settings.securityJail') },
+    { name: 'hardware', label: t('settings.hardwareVfio') },
+    { name: 'updates', label: t('settings.hostUpdates') },
   ]);
 </script>
 
@@ -268,7 +272,7 @@
         <Button onclick={save} disabled={saving}>
           {saving ? t('settings.saving') : t('settings.saveChanges')}
         </Button>
-      {:else if activeTab !== 'notifications' && activeTab !== 'snippets' && activeTab !== 'jail'}
+      {:else if activeTab !== 'notifications' && activeTab !== 'snippets' && activeTab !== 'jail' && activeTab !== 'hardware' && activeTab !== 'updates'}
         <Button variant="outline" onclick={() => (confirmingReset = true)} disabled={loading}>
           {t('settings.resetAll')}
         </Button>
@@ -357,6 +361,10 @@
           <SnippetsTab />
         {:else if activeTab === 'jail'}
           <SecurityJailTab />
+        {:else if activeTab === 'hardware'}
+          <HardwareVfioTab />
+        {:else if activeTab === 'updates'}
+          <HostUpdatesTab />
         {:else}
           <SettingsTab fields={activeFields} {values} {editing} {errors} onChange={setEdit} />
           {#if activeTab === 'metrics'}

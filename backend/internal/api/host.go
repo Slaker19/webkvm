@@ -58,7 +58,9 @@ func (h *Handler) GetHostInfo(w http.ResponseWriter, r *http.Request) {
 
 	// QEMU version: best-effort probe; leave empty on failure.
 	if conn := h.lv.Get(); conn != nil {
-		if out, err := conn.GetCapabilities(); err == nil {
+		if hvVer, err := conn.GetVersion(); err == nil && hvVer > 0 {
+			info.QEMUVersion = fmt.Sprintf("%d.%d.%d", hvVer/1000000, (hvVer/1000)%1000, hvVer%1000)
+		} else if out, err := conn.GetCapabilities(); err == nil {
 			if v := extractQEMUVersion(out); v != "" {
 				info.QEMUVersion = v
 			}

@@ -44,7 +44,7 @@ install-deps:
 	@echo "Detecting distro..."
 	@if ! command -v go >/dev/null 2>&1; then \
 		echo "Installing Go 1.26..."; \
-		curl -sL https://go.dev/dl/go1.26.7.linux-amd64.tar.gz | sudo tar -C /usr/local -xzf -; \
+		curl -sL https://go.dev/dl/go1.26.9.linux-amd64.tar.gz | sudo tar -C /usr/local -xzf -; \
 		echo 'export PATH=$$PATH:/usr/local/go/bin:$$HOME/go/bin' >> $$HOME/.bashrc; \
 		export PATH=$$PATH:/usr/local/go/bin:$$HOME/go/bin; \
 		echo "Go installed. Run: source ~/.bashrc"; \

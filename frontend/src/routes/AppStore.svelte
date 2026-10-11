@@ -17,6 +17,7 @@
   import { navigate } from '$lib/router.svelte.js';
   import { networkLabel } from '$lib/utils/networkLabel.js';
   import { deployablePools } from '$lib/purpose.js';
+  import { safeHref } from '$lib/utils/safeHref.js';
 
   let loading = $state(true);
   let appliances = $state([]);
@@ -60,7 +61,7 @@
   let deployPool = $state('');
   let deployGPU = $state(false);
   let deployProfiles = $state([]);
-  let deployNesting = $state(true);
+  let deployNesting = $state(auth.isAdmin());
   let deployPrivileged = $state(false);
   let deployAutostart = $state(true);
   let showAdvanced = $state(false);
@@ -240,7 +241,7 @@
     // turned off.
     deployGPU = hostHasGPU && deployType === 'container' && !!app.needs_gpu;
     deployProfiles = [];
-    deployNesting = true;
+    deployNesting = auth.isAdmin();
     deployPrivileged = false;
     deployAutostart = true;
     deployPool = '';
@@ -819,7 +820,7 @@ EOF\n`;
 
               {#if app.documentation_url}
                 <a
-                  href={app.documentation_url}
+                  href={safeHref(app.documentation_url)}
                   target="_blank"
                   rel="noopener noreferrer"
                   class="p-1.5 rounded-lg text-muted-foreground hover:text-accent hover:bg-muted transition-colors inline-flex items-center"
@@ -1242,6 +1243,7 @@ EOF\n`;
                     <input
                       type="checkbox"
                       bind:checked={deployPrivileged}
+                      disabled={!auth.isAdmin()}
                       class="mt-0.5 accent-warning"
                     />
                     <span class="min-w-0">

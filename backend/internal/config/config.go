@@ -67,8 +67,9 @@ type Config struct {
 
 	// CORSOrigin controls the Access-Control-Allow-Origin header.
 	// Set to the scheme+host of the reverse proxy (e.g. https://webkvm.local)
-	// to restrict CORS. Defaults to "*" (all origins) for LAN
-	// compatibility. Override with CORS_ORIGIN env var.
+	// to allow a cross-origin frontend. Empty (the default) means
+	// same-origin only, which is all the bundled SPA needs. Set "*" to
+	// restore the old allow-all behaviour. Override with CORS_ORIGIN.
 	CORSOrigin string
 
 	// SecureCookies (V13-SEC-01) marks the session/CSRF cookies with the
@@ -153,7 +154,7 @@ func Load() (*Config, error) {
 		RepoDir:              envStrFrom("REPO_DIR", envStrFrom("WEBKVM_REPO_DIR", defaultDataDir(), dotenv), dotenv),
 		VNCProxyHost:         envStrFrom("VNC_PROXY_HOST", "127.0.0.1", dotenv),
 		PublicHost:           envStrFrom("PUBLIC_HOST", "", dotenv),
-		CORSOrigin:           envStrFrom("CORS_ORIGIN", "*", dotenv),
+		CORSOrigin:           envStrFrom("CORS_ORIGIN", "", dotenv),
 		LogFile:              envStrFrom("WEBKVM_LOG_FILE", "", dotenv),
 		LibvirtStartDelaySec: envIntFrom("LIBVIRT_START_DELAY_SEC", envIntFrom("WEBKVM_LIBVIRT_START_DELAY_SEC", 0, dotenv), dotenv),
 		SecureCookies:        envBoolFrom("WEBKVM_COOKIE_SECURE", true, dotenv),

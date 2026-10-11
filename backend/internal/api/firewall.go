@@ -3,10 +3,12 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"time"
 
 	"webkvm/internal/firewall"
+	"webkvm/internal/models"
 )
 
 // GetVMFirewall returns the firewall rules + port forwards for a VM,
@@ -69,17 +71,11 @@ func (h *Handler) SetVMFirewall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Anti-hijack (same as host validation): a forward on a protected
-	// management port would steal the host's own traffic in prerouting.
-	prot := map[int]bool{}
-	for _, p := range firewall.ProtectedPorts(h.cfg.Port) {
-		prot[p] = true
-	}
-	for _, f := range req.Forwards {
-		if !f.Disabled && prot[f.HostPort] {
-			jsonErr(w, http.StatusBadRequest, "forward host port "+strconv.Itoa(f.HostPort)+" is a protected WebKVM management port (SSH/UI/VNC)")
-			return
-		}
+	// Anti-hijack, target and port policy (see validateVMForwards).
+	if msg := validateVMForwards(req.Forwards, r.Header.Get("X-Role") == models.RoleAdmin,
+		h.compute.GetDomainIP(id), firewall.ProtectedPorts(h.cfg.Port)); msg != "" {
+		jsonErr(w, http.StatusBadRequest, msg)
+		return
 	}
 	fw := firewall.VMFirewall{VMID: id, Rules: req.Rules, Forwards: req.Forwards}
 	if err := h.fwStore.Set(fw); err != nil {
@@ -102,6 +98,45 @@ func (h *Handler) SetVMFirewall(w http.ResponseWriter, r *http.Request) {
 		"vm":      h.fwStore.Get(id),
 		"pending": pending,
 	})
+}
+
+// validateVMForwards enforces the policy on a VM's port forwards and returns
+// an error message ("" when acceptable):
+//
+//   - a forward host port must not be a protected management port (it would
+//     steal the host's own traffic in prerouting) nor in the VNC range
+//     5900-5999;
+//   - target_ip, when set, must be a plain IPv4 (an IPv6 literal breaks the
+//     whole nft apply);
+//   - a non-admin may only target the VM's own address (otherwise DNAT turns
+//     a VM-scoped permission into a pivot to other VMs or the LAN) and may
+//     not bind privileged host ports (<1024).
+func validateVMForwards(forwards []firewall.Forward, isAdmin bool, vmIP string, protected []int) string {
+	prot := map[int]bool{}
+	for _, p := range protected {
+		prot[p] = true
+	}
+	for _, f := range forwards {
+		if f.Disabled {
+			continue
+		}
+		if prot[f.HostPort] || (f.HostPort >= 5900 && f.HostPort <= 5999) {
+			return "forward host port " + strconv.Itoa(f.HostPort) + " is a reserved WebKVM port (SSH/UI/VNC)"
+		}
+		if f.TargetIP != "" {
+			ip, err := netip.ParseAddr(f.TargetIP)
+			if err != nil || !ip.Is4() {
+				return "forward target_ip must be an IPv4 address"
+			}
+			if !isAdmin && f.TargetIP != vmIP {
+				return "forward target_ip must be the VM's own address"
+			}
+		}
+		if !isAdmin && f.HostPort < 1024 {
+			return "forward host port " + strconv.Itoa(f.HostPort) + " is privileged; only administrators may use ports below 1024"
+		}
+	}
+	return ""
 }
 
 // --- Host firewall (V13-C-01 / V13-C-02) ---

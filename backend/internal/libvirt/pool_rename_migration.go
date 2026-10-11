@@ -259,7 +259,7 @@ func (c *Connector) repointDomainsFromLegacyISOPool(oldDir, newDir string) {
 		}
 		newXML, changed := rewriteLegacyPoolRefs(xmlDesc, oldDir, newDir, legacyISOPoolName, config.ISOPoolName)
 		if changed {
-			if nd, derr := c.conn.DomainDefineXML(newXML); derr != nil {
+			if nd, derr := c.defineDomain(newXML, TrustedDomain); derr != nil {
 				slog.Warn("iso_pool_migration_domain_failed", "vm", name, "step", "redefine", "err", derr)
 			} else {
 				nd.Free()

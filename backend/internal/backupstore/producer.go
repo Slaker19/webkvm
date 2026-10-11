@@ -178,7 +178,7 @@ func ProduceVMArchive(ctx context.Context, vm VMBackup, opts ProducerOpts, w io.
 		_ = cclose()
 	}()
 
-	if err := writeTarEntry(tw, "domain.xml", []byte(vm.DomainXML), 0o644); err != nil {
+	if err := writeTarEntry(tw, "domain.xml", []byte(vm.DomainXML), 0o600); err != nil {
 		return ProducerResult{}, fmt.Errorf("write domain.xml: %w", err)
 	}
 
@@ -207,7 +207,7 @@ func ProduceVMArchive(ctx context.Context, vm VMBackup, opts ProducerOpts, w io.
 		// The synthetic "_base" entry has no XML.
 		if snap.Name != "_base" && snap.DomainSnapshotXML != "" {
 			xmlArc := fmt.Sprintf("snapshots/%s.xml", snap.Name)
-			if err := writeTarEntry(tw, xmlArc, []byte(snap.DomainSnapshotXML), 0o644); err != nil {
+			if err := writeTarEntry(tw, xmlArc, []byte(snap.DomainSnapshotXML), 0o600); err != nil {
 				return res, fmt.Errorf("write snapshot %s xml: %w", snap.Name, err)
 			}
 			manifest.WriteString(fmt.Sprintf("snapshot=%s\n", snap.Name))
@@ -272,7 +272,7 @@ func ProduceVMArchive(ctx context.Context, vm VMBackup, opts ProducerOpts, w io.
 		}
 		res.DisksIncluded++
 	}
-	if err := writeTarEntry(tw, "manifest.txt", []byte(manifest.String()), 0o644); err != nil {
+	if err := writeTarEntry(tw, "manifest.txt", []byte(manifest.String()), 0o600); err != nil {
 		return res, fmt.Errorf("write manifest.txt: %w", err)
 	}
 	res.TotalBytes = counter.n
@@ -376,7 +376,7 @@ func writeFileToTar(tw *tar.Writer, srcPath, arcName string) error {
 	}
 	hdr := &tar.Header{
 		Name:     arcName,
-		Mode:     0o644,
+		Mode:     0o600,
 		Size:     int64(len(data)),
 		Typeflag: tar.TypeReg,
 	}
@@ -408,7 +408,7 @@ func writeTarFileSparse(tw *tar.Writer, srcPath, arcName string, sparse bool) er
 	}
 	hdr := &tar.Header{
 		Name:     arcName,
-		Mode:     0o644,
+		Mode:     0o600,
 		Size:     info.Size(),
 		Typeflag: tar.TypeReg,
 	}
@@ -550,7 +550,7 @@ func streamRepackedDisk(ctx context.Context, tw *tar.Writer, srcPath, arcName st
 	}
 	hdr := &tar.Header{
 		Name:     arcName,
-		Mode:     0o644,
+		Mode:     0o600,
 		Size:     fi.Size(),
 		ModTime:  fi.ModTime(),
 		Typeflag: tar.TypeReg,

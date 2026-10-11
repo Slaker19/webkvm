@@ -270,6 +270,7 @@ async function request(path, opts = {}) {
       data
     );
   }
+  if (data?.csrf) csrfState = data.csrf;
   return data;
 }
 
@@ -719,6 +720,13 @@ export const api = {
   listHostUSBDevices: () => request('/host/usb-devices'),
   listHostPCIDevices: () => request('/host/pci-devices'),
   getHostPCIPreflight: () => request('/host/pci-preflight'),
+  bindHostPCIDeviceVFIO: (address) =>
+    request(`/host/pci-devices/${encodeURIComponent(address)}/bind-vfio`, { method: 'POST' }),
+  unbindHostPCIDeviceVFIO: (address) =>
+    request(`/host/pci-devices/${encodeURIComponent(address)}/unbind-vfio`, { method: 'POST' }),
+  getHostUpdates: () => request('/host/updates'),
+  refreshHostUpdates: () => request('/host/updates/refresh', { method: 'POST' }),
+  upgradeHostUpdates: () => request('/host/updates/upgrade', { method: 'POST' }),
   getGuestInfo: (id) => request(`/vms/${id}/guest-info`),
   guestFSTrim: (id) => request(`/vms/${id}/guest/fstrim`, { method: 'POST' }),
   guestExec: (id, data) =>

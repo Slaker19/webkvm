@@ -42,7 +42,7 @@ import (
 
 // Set by -ldflags at build time. Defaults are used for `go run`.
 var (
-	Version   = "0.1.6"
+	Version   = "0.1.7"
 	BuildTime = "unknown"
 )
 
@@ -209,9 +209,17 @@ func main() {
 		port = v
 	}
 	if bindAddr != cfg.BindAddr || port != cfg.Port {
-		logger.Info("settings_overrode_addr",
+		logAddrOverride := logger.Info
+		if bindAddr != cfg.BindAddr {
+			// config.json silently beats the BIND_ADDR env var of the unit;
+			// make it visible, since an operator who sets BIND_ADDR=127.0.0.1
+			// would otherwise be surprised by a LAN-facing listener.
+			logAddrOverride = logger.Warn
+		}
+		logAddrOverride("settings_overrode_addr",
 			"bind_addr_from", cfg.BindAddr, "bind_addr_to", bindAddr,
-			"port_from", cfg.Port, "port_to", port)
+			"port_from", cfg.Port, "port_to", port,
+			"msg", "server.bind_addr in config.json overrides the BIND_ADDR environment variable")
 	}
 	cfg.BindAddr = bindAddr
 	cfg.Port = port
@@ -228,6 +236,11 @@ func main() {
 	// so the installer (or the Settings page) can persist it and the
 	// backend picks it up on the next restart.
 	tlsConfig, tlsMode := configureTLS(settingsStore, cfg.DataDir, logger)
+	if tlsConfig == nil && !isLoopbackBind(cfg.BindAddr) {
+		logger.Warn("insecure_listener",
+			"bind_addr", cfg.BindAddr,
+			"msg", "listening on a non-loopback address without TLS: passwords and session cookies travel in clear text; enable server.tls_cert/tls_key or put a TLS reverse proxy in front")
+	}
 
 	// Also re-apply the log level from the store so the operator's
 	// Settings page choice takes precedence over the env-var. The
@@ -807,7 +820,9 @@ func main() {
 	var incusMetrics *incus.MetricsCollector
 	if cfg.IncusEnabled {
 		incusSocket := cfg.IncusSocket
-		if incusBackend, lerr := incus.NewIncusBackend(incusSocket); lerr != nil {
+		if incusBackend, lerr := incus.NewIncusBackend(incusSocket, incus.WithAllowedProfiles(func() []string {
+			return settingsStore.GetList("incus.allowed_profiles")
+		})); lerr != nil {
 			logger.Warn("incus_disabled", "err", lerr, "socket", incusSocket)
 		} else {
 			computeBackend = compute.NewCombined(computeBackend, incusBackend)
@@ -1095,4 +1110,14 @@ func parseCIDRList(items []string) []*net.IPNet {
 		}
 	}
 	return out
+}
+
+// isLoopbackBind reports whether a listen host is loopback-only. An empty
+// host or an unspecified address (0.0.0.0, ::) listens on every interface.
+func isLoopbackBind(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }

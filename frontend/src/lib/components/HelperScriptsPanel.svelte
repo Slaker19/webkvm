@@ -19,6 +19,7 @@
   import Spinner from '$lib/components/Spinner.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import { t } from '$lib/i18n.svelte.js';
+  import { safeHref } from '$lib/utils/safeHref.js';
 
   /**
    * onDeploy receives a script shaped like a catalog entry, so the App
@@ -184,7 +185,7 @@
         <p class="text-muted-foreground">{t('helperScripts.securityBody')}</p>
         {#if sourceUrl}
           <a
-            href={sourceUrl}
+            href={safeHref(sourceUrl)}
             target="_blank"
             rel="noopener noreferrer"
             class="inline-flex items-center gap-1 text-accent hover:underline"
@@ -319,7 +320,7 @@
             {/if}
             {#if s.website}
               <a
-                href={s.website}
+                href={safeHref(s.website)}
                 target="_blank"
                 rel="noopener noreferrer"
                 class="text-xs text-accent hover:underline inline-flex items-center gap-1"
@@ -360,7 +361,7 @@
             <div>
               {t('helperScripts.confirmInstaller')}:
               <a
-                href={pendingDeploy.install_url}
+                href={safeHref(pendingDeploy.install_url)}
                 target="_blank"
                 rel="noopener noreferrer"
                 class="text-accent hover:underline break-all">{pendingDeploy.slug}-install.sh</a
@@ -394,7 +395,7 @@
         <div class="flex flex-wrap gap-3 text-xs">
           {#if detail.install_url}
             <a
-              href={detail.install_url}
+              href={safeHref(detail.install_url)}
               target="_blank"
               rel="noopener noreferrer"
               class="text-accent hover:underline"
@@ -404,7 +405,7 @@
           {/if}
           {#if detail.launcher_url}
             <a
-              href={detail.launcher_url}
+              href={safeHref(detail.launcher_url)}
               target="_blank"
               rel="noopener noreferrer"
               class="text-accent hover:underline"

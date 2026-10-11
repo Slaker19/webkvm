@@ -154,6 +154,7 @@ func TestFindCloudInitCdrom(t *testing.T) {
 	cd := findCloudInitCdrom(disks, "my-vm")
 	if cd == nil {
 		t.Fatal("expected to find the seed cdrom")
+		return
 	}
 	if cd.Target != "sdb" {
 		t.Errorf("expected target sdb, got %s", cd.Target)

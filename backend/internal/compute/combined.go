@@ -537,6 +537,13 @@ func (c *Combined) backends() []Backend {
 
 func (c *Combined) ImportDomain(tarPath, newName, poolName string, opts ImportOpts) (string, string, []string, error) {
 	if isIncusBackupArchive(tarPath) && c.secondary != nil {
+		// A native Incus backup carries a config (devices, privileged,
+		// profiles, raw.*) that the daemon applies verbatim. Until that
+		// config can be validated safely it is admin-only, unless WebKVM
+		// generated it itself (vzdump conversion) (audit #3).
+		if !opts.Admin && !opts.GeneratedConfig {
+			return "", "", nil, fmt.Errorf("%w: importing a native container backup requires an administrator", ErrForbidden)
+		}
 		return c.secondary.ImportDomain(tarPath, newName, poolName, opts)
 	}
 	return c.Backend.ImportDomain(tarPath, newName, poolName, opts)

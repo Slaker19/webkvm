@@ -3,7 +3,7 @@
   import Spinner from '$lib/components/Spinner.svelte';
   import { t } from '$lib/i18n.svelte.js';
 
-  let { group, vmState = 'running', loading = false, onattach = null } = $props();
+  let { group, vmState = 'running', loading = false, onattach = null, onunbind = null } = $props();
 
   const isShutoff = $derived(vmState === 'shutoff');
   const isContaminated = $derived(group.devices && group.devices.length > 1);
@@ -158,8 +158,8 @@
             {/if}
           </div>
 
-          {#if badge}
-            <div class="shrink-0 sm:text-right">
+          <div class="flex items-center gap-2 shrink-0 sm:text-right">
+            {#if badge}
               <span
                 class="px-2 py-0.5 rounded text-[10px] font-medium border {badge.variant ===
                 'destructive'
@@ -172,8 +172,19 @@
               >
                 {badge.text}
               </span>
-            </div>
-          {/if}
+            {/if}
+            {#if dev.vfio_bound && onunbind && !dev.in_use}
+              <button
+                type="button"
+                onclick={() => onunbind(dev.address)}
+                disabled={loading}
+                class="text-[10px] font-medium px-2 py-0.5 rounded border border-warning/40 text-warning hover:bg-warning/10 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                title={t('hardwareVfio.revertToHost')}
+              >
+                {t('hardwareVfio.revertToHost')}
+              </button>
+            {/if}
+          </div>
         </div>
       {/each}
     </div>

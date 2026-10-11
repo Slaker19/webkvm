@@ -24,7 +24,7 @@ func uploadDiskBody(t *testing.T, pool, filename string) (*bytes.Buffer, string)
 	if err != nil {
 		t.Fatalf("create form file: %v", err)
 	}
-	if _, err := fw.Write([]byte("fake-qcow2-content")); err != nil {
+	if _, err := fw.Write([]byte(realQcow2(t))); err != nil {
 		t.Fatalf("write file content: %v", err)
 	}
 	if err := mw.Close(); err != nil {
@@ -58,6 +58,7 @@ func TestUploadDisk_RejectsISOPool(t *testing.T) {
 // TestUploadDisk_AcceptsDiskPool proves the guard didn't break the happy
 // path: a disk pool still accepts the upload and writes the file.
 func TestUploadDisk_AcceptsDiskPool(t *testing.T) {
+	needQemuImg(t)
 	tmpDir := t.TempDir()
 	h := newPoolTestHandlerWithPath(tmpDir,
 		models.StoragePool{Name: "webkvm-disks", Purpose: compute.PoolPurposeDisk},

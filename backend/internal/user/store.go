@@ -2,6 +2,7 @@ package user
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	"webkvm/internal/auth"
 	"webkvm/internal/models"
 
 	"golang.org/x/crypto/bcrypt"
@@ -49,6 +51,14 @@ func NewStore(dataDir string) (*Store, error) {
 	// Seed the default admin only if the store is empty.
 	if len(s.users) == 0 {
 		adminPassword := os.Getenv("WEBKVM_ADMIN_PASSWORD")
+		// An installer may pre-seed <dataDir>/admin-password.initial (0600)
+		// instead of putting the password in the unit's environment, where
+		// it would leak to child processes and `systemctl show`.
+		if adminPassword == "" {
+			if b, rerr := os.ReadFile(filepath.Join(dataDir, "admin-password.initial")); rerr == nil {
+				adminPassword = strings.TrimSpace(string(b))
+			}
+		}
 		if adminPassword == "" {
 			raw := make([]byte, 24)
 			if _, err := rand.Read(raw); err != nil {
@@ -403,7 +413,8 @@ func permissionsEqual(a, b *models.UserPermissions) bool {
 		boolPtrEqual(a.CanSnapshots, b.CanSnapshots) &&
 		boolPtrEqual(a.CanBackups, b.CanBackups) &&
 		boolPtrEqual(a.CanMedia, b.CanMedia) &&
-		boolPtrEqual(a.CanExport, b.CanExport)
+		boolPtrEqual(a.CanExport, b.CanExport) &&
+		boolPtrEqual(a.CanNesting, b.CanNesting)
 }
 
 // ChangePassword verifies the old password and sets a new one.
@@ -427,7 +438,12 @@ func (s *Store) ChangePassword(username, oldPassword, newPassword string) error 
 	}
 	u.PasswordHash = string(hash)
 	u.MustChangePassword = false
+	// Close every other session of this account: a stolen token must not
+	// survive a password change. The caller re-issues a token for the
+	// session that made the change.
+	u.SessionEpoch++
 	if err := s.save(); err != nil {
+		u.SessionEpoch--
 		// Strictly transactional — only after a successful
 		// persist may the initial-secret files be destroyed.
 		return err
@@ -785,6 +801,9 @@ func (s *Store) EnableTOTP(username, secret string, backupCodes []string) error 
 	u.TOTPSecret = secret
 	u.TOTPEnabled = true
 	u.TOTPBackupCodes = backupCodes
+	// The code that proved the secret during setup must not be replayable
+	// at login.
+	u.TOTPLastStep = auth.CurrentTOTPStep(time.Now())
 	return s.save()
 }
 
@@ -799,7 +818,33 @@ func (s *Store) DisableTOTP(username string) error {
 	u.TOTPSecret = ""
 	u.TOTPEnabled = false
 	u.TOTPBackupCodes = nil
+	u.TOTPLastStep = 0
 	return s.save()
+}
+
+// ConsumeTOTP validates a TOTP code for the user and, on success, records its
+// step so the same code (or any older one) cannot be used again.
+func (s *Store) ConsumeTOTP(username, code string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[username]
+	if !ok {
+		return false, fmt.Errorf("user not found")
+	}
+	if !u.TOTPEnabled || u.TOTPSecret == "" {
+		return false, nil
+	}
+	step, ok := auth.MatchTOTP(u.TOTPSecret, code, time.Now())
+	if !ok || step <= u.TOTPLastStep {
+		return false, nil
+	}
+	prev := u.TOTPLastStep
+	u.TOTPLastStep = step
+	if err := s.save(); err != nil {
+		u.TOTPLastStep = prev
+		return false, err
+	}
+	return true, nil
 }
 
 // ConsumeBackupCode checks if a backup code is valid, and if so, consumes (removes) it.
@@ -812,7 +857,7 @@ func (s *Store) ConsumeBackupCode(username, code string) (bool, error) {
 	}
 	code = strings.TrimSpace(strings.ToLower(code))
 	for i, bc := range u.TOTPBackupCodes {
-		if strings.ToLower(bc) == code {
+		if subtle.ConstantTimeCompare([]byte(strings.ToLower(bc)), []byte(code)) == 1 {
 			// Remove consumed code
 			u.TOTPBackupCodes = append(u.TOTPBackupCodes[:i], u.TOTPBackupCodes[i+1:]...)
 			_ = s.save()

@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -23,6 +22,7 @@ import (
 	"webkvm/internal/compute"
 	"webkvm/internal/config"
 	"webkvm/internal/diskprobe"
+	"webkvm/internal/imgsafe"
 	"webkvm/internal/models"
 	"webkvm/internal/safego"
 
@@ -290,6 +290,22 @@ func isBlockedIP(ip net.IP) bool {
 		if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
 			return true
 		}
+		// 0.0.0.0/8 ("this network"), 198.18.0.0/15 (benchmarking) and
+		// 240.0.0.0/4 (reserved) are never legitimate download hosts.
+		if v4[0] == 0 || (v4[0] == 198 && (v4[1] == 18 || v4[1] == 19)) || v4[0] >= 240 {
+			return true
+		}
+		return false
+	}
+	// NAT64 (64:ff9b::/96, 64:ff9b:1::/48) would let a hostname reach IPv4
+	// internal addresses through a translator.
+	if len(ip) == net.IPv6len && ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b {
+		if ip[4] == 0 && ip[5] == 0 {
+			return true
+		}
+		if ip[4] == 0 && ip[5] == 1 {
+			return true
+		}
 	}
 	return false
 }
@@ -380,8 +396,11 @@ func downloadWithClient(client *http.Client, jobID, url, destPath string, maxByt
 	// Read one byte beyond the advertised limit so an oversized response is
 	// detected instead of being silently truncated and marked completed.
 	limitReader := io.LimitReader(resp.Body, maxBytes+1)
-	dst, err := os.Create(destPath)
+	dst, err := createUploadFile(destPath)
 	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return 0, fmt.Errorf("destination %q already exists; refusing to overwrite", filepath.Base(destPath))
+		}
 		return 0, fmt.Errorf("create file: %w", err)
 	}
 	defer dst.Close()
@@ -944,11 +963,12 @@ func (h *Handler) ProbeStorageDisk(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "path is required")
 		return
 	}
-	if err := h.validateDiskSourcePath(req.Path); err != nil {
+	safePath, err := h.validateDiskSourcePath(req.Path)
+	if err != nil {
 		jsonErr(w, http.StatusForbidden, err.Error())
 		return
 	}
-	pool, vol, ok := h.resolveVolumeFromSource(req.Path)
+	pool, vol, ok := h.resolveVolumeFromSource(safePath)
 	if !ok {
 		jsonErr(w, http.StatusForbidden, "source path is not inside a known storage pool")
 		return
@@ -1347,9 +1367,9 @@ func (h *Handler) UploadISO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dst, err := os.Create(destPath)
+	dst, err := createUploadFile(destPath)
 	if err != nil {
-		jsonErr(w, http.StatusInternalServerError, "failed to create file: "+err.Error())
+		jsonErr(w, uploadCreateStatus(err), "failed to create file: "+err.Error())
 		return
 	}
 	defer dst.Close()
@@ -1394,16 +1414,40 @@ var diskUploadExts = map[string]bool{
 // qcow2 image at dst. Returns false (never an error) when qemu-img isn't
 // installed or the conversion fails — callers treat both cases the same
 // way: keep the original file as-is instead of failing the whole upload.
+//
+// The source is untrusted: imgsafe refuses backing files, qcow2 data-files and
+// vmdk extents outside the file, forces -f (no format probing) and never
+// overwrites dst (audit #6).
 func convertToQcow2(src, dst string) bool {
-	if _, err := exec.LookPath("qemu-img"); err != nil {
+	if !imgsafe.Available() {
 		return false
 	}
-	out, err := exec.Command("qemu-img", "convert", "-O", "qcow2", src, dst).CombinedOutput()
-	if err != nil {
-		slog.Warn("qemu-img convert failed", "src", src, "dst", dst, "err", err, "output", string(out))
+	declared := imgsafe.FormatFromExt(src)
+	if declared == "" {
+		return false
+	}
+	if err := imgsafe.Convert(context.Background(), src, dst, declared, 2*time.Hour); err != nil {
+		slog.Warn("qemu-img convert failed", "src", src, "dst", dst, "err", err)
 		return false
 	}
 	return true
+}
+
+// validateUploadedImage inspects an uploaded disk image in place. A nil error
+// means the image carries no references to other host files.
+func validateUploadedImage(path string) error {
+	declared := imgsafe.FormatFromExt(path)
+	if declared == "" {
+		return fmt.Errorf("unsupported disk image extension")
+	}
+	if !imgsafe.Available() {
+		if declared == "raw" {
+			return nil // raw images cannot reference other files
+		}
+		return fmt.Errorf("qemu-img is required to validate %s images", declared)
+	}
+	_, err := imgsafe.Inspect(context.Background(), path, declared)
+	return err
 }
 
 // extractAndConvertOVA extracts the primary virtual disk from an uploaded .ova tarball
@@ -1487,14 +1531,25 @@ func extractAndConvertOVA(ovaPath, poolPath, originalName string) (string, strin
 		return "", "", 0, fmt.Errorf("no disk image found inside OVA archive")
 	}
 
+	// The disk comes from an untrusted archive: validate it with imgsafe
+	// before it can land in a pool (audit #6), and never overwrite.
+	declared := imgsafe.FormatFromExt(extractedDiskPath)
 	if strings.HasSuffix(extractedDiskPath, ".qcow2") {
+		if !imgsafe.Available() {
+			return "", "", 0, fmt.Errorf("qemu-img is required to validate qcow2 images")
+		}
+		if _, err := imgsafe.Inspect(context.Background(), extractedDiskPath, "qcow2"); err != nil {
+			return "", "", 0, fmt.Errorf("OVA disk rejected: %w", err)
+		}
+		if _, lerr := os.Lstat(qcow2Path); lerr == nil {
+			return "", "", 0, fmt.Errorf("destination %q already exists", qcow2Name)
+		}
 		if err := os.Rename(extractedDiskPath, qcow2Path); err != nil {
 			return "", "", 0, err
 		}
-	} else if _, err := exec.LookPath("qemu-img"); err == nil {
-		cmd := exec.Command("qemu-img", "convert", "-O", "qcow2", extractedDiskPath, qcow2Path)
-		if out, cerr := cmd.CombinedOutput(); cerr != nil {
-			return "", "", 0, fmt.Errorf("qemu-img convert: %w (%s)", cerr, string(out))
+	} else if imgsafe.Available() && declared != "" {
+		if err := imgsafe.Convert(context.Background(), extractedDiskPath, qcow2Path, declared, 2*time.Hour); err != nil {
+			return "", "", 0, fmt.Errorf("OVA disk rejected or conversion failed: %w", err)
 		}
 	} else {
 		rawName := base + filepath.Ext(extractedDiskPath)
@@ -1624,9 +1679,9 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		dst, derr := os.Create(destPath)
+		dst, derr := createUploadFile(destPath)
 		if derr != nil {
-			jsonErr(w, http.StatusInternalServerError, "failed to create file: "+derr.Error())
+			jsonErr(w, uploadCreateStatus(derr), "failed to create file: "+derr.Error())
 			return
 		}
 		written, err = io.Copy(dst, part)
@@ -1655,6 +1710,17 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		jsonErr(w, http.StatusBadRequest, "missing file field")
 		return
+	}
+
+	// Gate C (audit #6): the image is attacker-controlled. Refuse (and
+	// delete) anything that references other host files: qcow2/qed backing
+	// files, qcow2 data-files, vmdk extents outside the image.
+	if strings.ToLower(filepath.Ext(name)) != ".ova" {
+		if verr := validateUploadedImage(destPath); verr != nil {
+			_ = os.Remove(destPath)
+			jsonErr(w, http.StatusBadRequest, "uploaded image rejected: "+verr.Error())
+			return
+		}
 	}
 
 	poolPath, perr := h.compute.GetPoolPath(poolName)
@@ -1756,9 +1822,9 @@ func (h *Handler) UploadISOByCURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dst, err := os.Create(destPath)
+	dst, err := createUploadFile(destPath)
 	if err != nil {
-		jsonErr(w, http.StatusInternalServerError, "failed to create file: "+err.Error())
+		jsonErr(w, uploadCreateStatus(err), "failed to create file: "+err.Error())
 		return
 	}
 	defer dst.Close()

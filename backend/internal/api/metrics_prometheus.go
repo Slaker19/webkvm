@@ -9,48 +9,90 @@ import (
 	"webkvm/internal/models"
 )
 
-// isScrapeAuthorized checks whether a /metrics scrape request is allowed.
-// It allows access if:
-// 1. metrics.allow_unauthenticated is enabled in settings, OR
-// 2. A valid Bearer token (JWT or API Token) is supplied, OR
-// 3. A valid ?token= query parameter is supplied, OR
-// 4. A valid webkvm_session cookie is present.
-func (h *Handler) isScrapeAuthorized(r *http.Request) bool {
-	if h.settings != nil {
-		if h.settings.GetBool("metrics.allow_unauthenticated") {
-			return true
-		}
+// scrapeAuth is the outcome of authorizing a /metrics scrape.
+type scrapeAuth int
+
+const (
+	scrapeOK scrapeAuth = iota
+	scrapeUnauthorized
+	scrapeForbidden
+)
+
+// authorizeScrape decides whether a /metrics scrape request is allowed. The
+// route is public to the generic auth middleware (so Prometheus can reach it
+// with its own credentials), which means the checks the middleware and
+// SessionEnforcer do for every other route are repeated here:
+//
+//  1. metrics.allow_unauthenticated is enabled, OR
+//  2. a session JWT (issuer "webkvm", Bearer header or session cookie), or
+//     an API token (Bearer header, or ?token= for scrapers that can't set
+//     headers; JWTs are never accepted in the URL), whose account exists, is
+//     active, and whose session epoch is current.
+//
+// The series cover every VM, so only admins get them: any other valid
+// identity is answered 403.
+func (h *Handler) authorizeScrape(r *http.Request) scrapeAuth {
+	if h.settings != nil && h.settings.GetBool("metrics.allow_unauthenticated") {
+		return scrapeOK
 	}
 
-	tokenStr := ""
+	bearer := ""
 	if authHeader := r.Header.Get("Authorization"); authHeader != "" {
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-			tokenStr = parts[1]
+			bearer = parts[1]
 		}
 	}
-	if tokenStr == "" {
-		tokenStr = r.URL.Query().Get("token")
+	queryTok := r.URL.Query().Get("token")
+	cookieTok := auth.SessionToken(r)
+
+	var username string
+	var epoch int
+	ok := false
+
+	// Session JWT (header or cookie). Only "webkvm"-issuer session tokens
+	// count: an MFA-pending token ("webkvm_mfa") must never open a session.
+	for _, cand := range []string{bearer, cookieTok} {
+		if cand == "" || h.auth == nil {
+			continue
+		}
+		if claims, err := h.auth.ValidateToken(cand); err == nil && claims != nil && claims.Issuer == "webkvm" {
+			username, epoch, ok = claims.Username, claims.SessionEpoch, true
+			break
+		}
 	}
-	if tokenStr == "" {
-		tokenStr = auth.SessionToken(r)
+	// API token (header, or query for scrapers).
+	if !ok && h.tokens != nil && h.auth != nil && h.auth.AllowAPITokens() {
+		for _, cand := range []string{bearer, queryTok} {
+			if cand == "" {
+				continue
+			}
+			if tok, err := h.tokens.Validate(cand); err == nil && tok != nil {
+				username, epoch, ok = tok.Username, tok.SessionEpoch, true
+				break
+			}
+		}
 	}
-	if tokenStr == "" {
-		return false
+	if !ok {
+		return scrapeUnauthorized
 	}
 
-	if h.auth != nil {
-		if claims, err := h.auth.ValidateToken(tokenStr); err == nil && claims != nil {
-			return true
-		}
+	// Live account state, same as SessionEnforcer: fail closed.
+	if h.userStore == nil {
+		return scrapeUnauthorized
 	}
-	if h.tokens != nil {
-		if tok, err := h.tokens.Validate(tokenStr); err == nil && tok != nil {
-			return true
-		}
+	must, curEpoch, active, err := h.userStore.SessionStatus(username)
+	if err != nil || !active || epoch != curEpoch || must {
+		return scrapeUnauthorized
 	}
-
-	return false
+	u, err := h.userStore.Get(username)
+	if err != nil {
+		return scrapeUnauthorized
+	}
+	if u.Role != models.RoleAdmin {
+		return scrapeForbidden
+	}
+	return scrapeOK
 }
 
 // PrometheusMetrics handles GET /metrics and GET /api/metrics/prometheus.
@@ -63,9 +105,13 @@ func (h *Handler) PrometheusMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !h.isScrapeAuthorized(r) {
+	switch h.authorizeScrape(r) {
+	case scrapeUnauthorized:
 		w.Header().Set("WWW-Authenticate", `Bearer realm="WebKVM Prometheus Metrics"`)
-		http.Error(w, "unauthorized: provide an API token via Bearer header or ?token= parameter", http.StatusUnauthorized)
+		http.Error(w, "unauthorized: provide an admin API token via Bearer header", http.StatusUnauthorized)
+		return
+	case scrapeForbidden:
+		http.Error(w, "forbidden: metrics are restricted to administrators", http.StatusForbidden)
 		return
 	}
 

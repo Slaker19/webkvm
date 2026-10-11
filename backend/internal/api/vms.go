@@ -257,8 +257,13 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	req.Scope = h.mediaScope(r)
 	vm, err := h.compute.CreateDomain(req)
 	if err != nil {
+		if errors.Is(err, compute.ErrForbidden) {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
 		if strings.Contains(err.Error(), "resolve ISO") || strings.Contains(err.Error(), "media file") || strings.Contains(err.Error(), "ambiguous media") {
 			jsonErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -367,8 +372,13 @@ func (h *Handler) UpdateVM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	req.Scope = h.mediaScope(r)
 	vm, err := h.compute.UpdateDomain(id, req)
 	if err != nil {
+		if errors.Is(err, compute.ErrForbidden) {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
 		if errors.Is(err, compute.ErrDomainMustBeStoppedToRename) {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
@@ -767,6 +777,7 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	req.Scope = h.mediaScope(r)
 	if req.ZVol != "" {
 		_, role, _ := audit.FromRequest(r)
 		if role != models.RoleAdmin {
@@ -808,7 +819,7 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Source != "" {
-		if err := h.validateDiskSourcePath(req.Source); err != nil {
+		if err := h.validateDiskSourceForCaller(r, req.Source); err != nil {
 			jsonErr(w, http.StatusForbidden, err.Error())
 			return
 		}
@@ -817,16 +828,9 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 		// streams into the same qcow2/raw file — silent, inescapable
 		// data corruption. Refuse unless the only existing attachment is
 		// this same VM (idempotent re-attach).
-		if pool, vol, ok := h.resolveVolumeFromSource(req.Source); ok {
-			if atts, aerr := h.compute.FindVolumeAttachments(pool, vol); aerr == nil {
-				for _, a := range atts {
-					if a.VMID != id {
-						jsonErr(w, http.StatusConflict,
-							fmt.Sprintf("disk %s is already attached to VM %q (%s)", vol, a.VMName, a.Target))
-						return
-					}
-				}
-			}
+		if err := h.checkSourceNotAttachedElsewhere(id, req.Source); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
 		}
 		// Refuse to attach a disk image that already contains data unless
 		// the operator explicitly forces it. A disk that already holds a
@@ -937,10 +941,12 @@ func (h *Handler) ProbeDisk(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusNotFound, "disk device not found")
 		return
 	}
-	if err := h.validateDiskSourcePath(path); err != nil {
+	safePath, err := h.validateDiskSourcePath(path)
+	if err != nil {
 		jsonErr(w, http.StatusForbidden, err.Error())
 		return
 	}
+	path = safePath
 
 	deep := r.URL.Query().Get("deep") == "1"
 	if deep {
@@ -989,8 +995,14 @@ func (h *Handler) UpdateDisk(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := h.validateDiskSourcePath(req.Source); err != nil {
+	if err := h.validateDiskSourceForCaller(r, req.Source); err != nil {
 		jsonErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	// Same attachment guard as CreateDisk: swapping a disk's source must
+	// not let the caller grab an image that belongs to another VM.
+	if err := h.checkSourceNotAttachedElsewhere(id, req.Source); err != nil {
+		jsonErr(w, http.StatusConflict, err.Error())
 		return
 	}
 	if err := h.compute.UpdateDiskSource(id, dev, req.Source); err != nil {
@@ -1808,6 +1820,7 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 		}
 	}
 	importOpts := compute.ImportOpts{
+		Admin:   h.mediaScope(r).Admin,
 		Network: network,
 	}
 	if v := r.FormValue("vcpus"); v != "" {
@@ -1982,6 +1995,10 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 			"filename": hdr.Filename,
 			"error":    err.Error(),
 		}))
+		if errors.Is(err, compute.ErrForbidden) {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -2146,6 +2163,7 @@ func (h *Handler) importLocalArchive(sourcePath, sourceFilename string, sourceSi
 		if cerr := vzdump.ImportFromProxmox(sourcePath, convPath, newName, ctPool); cerr != nil {
 			return "", "", nil, format, fmt.Errorf("vzdump convert: %w", cerr)
 		}
+		opts.GeneratedConfig = true // backup.yaml was built by vzdump.ImportFromProxmox
 		uuid, resolvedName, warnings, err = h.compute.ImportDomain(convPath, newName, ctPool, opts)
 
 	default:

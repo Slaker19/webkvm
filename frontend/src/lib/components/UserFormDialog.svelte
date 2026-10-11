@@ -12,6 +12,7 @@
     capabilitiesForRole,
     effectiveCapabilities,
     buildPermissionsPayload,
+    defaultFor,
     applyPreset,
     matchPreset,
     validateUsername,
@@ -129,7 +130,8 @@
   // when the role changes mid-edit.
   function onRoleChange() {
     const next = {};
-    for (const cap of capabilitiesForRole(role)) next[cap.key] = caps[cap.key] ?? true;
+    for (const cap of capabilitiesForRole(role))
+      next[cap.key] = caps[cap.key] ?? defaultFor(role, cap.key);
     caps = next;
   }
 

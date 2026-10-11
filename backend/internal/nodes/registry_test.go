@@ -123,14 +123,14 @@ func TestRegistryProbeLocalAndRemote(t *testing.T) {
 	}
 
 	r.SetLocalProber(func() (string, string, int64, int64, int64, string, error) {
-		return "online", "0.1.6", 3600, 50000000000, 100000000000, "ok", nil
+		return "online", "0.1.7", 3600, 50000000000, 100000000000, "ok", nil
 	})
 
 	localNode, err := r.ProbeNode("local")
 	if err != nil {
 		t.Fatalf("ProbeNode local failed: %v", err)
 	}
-	if localNode.Status != "online" || localNode.Version != "0.1.6" || localNode.LibvirtStatus != "ok" {
+	if localNode.Status != "online" || localNode.Version != "0.1.7" || localNode.LibvirtStatus != "ok" {
 		t.Fatalf("unexpected local node probe: %+v", localNode)
 	}
 

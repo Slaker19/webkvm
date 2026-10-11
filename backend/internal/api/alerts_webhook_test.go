@@ -43,6 +43,7 @@ func TestAlertmanagerWebhookAndIncidents(t *testing.T) {
 
 	body, _ := json.Marshal(payload)
 	req := httptest.NewRequest(http.MethodPost, "/api/alerts/webhook", bytes.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:4242"
 	rec := httptest.NewRecorder()
 
 	h.AlertmanagerWebhook(rec, req)
@@ -72,6 +73,7 @@ func TestAlertmanagerWebhookAndIncidents(t *testing.T) {
 	payload.Alerts[0].Status = "resolved"
 	bodyRes, _ := json.Marshal(payload)
 	reqRes := httptest.NewRequest(http.MethodPost, "/api/alerts/webhook", bytes.NewReader(bodyRes))
+	reqRes.RemoteAddr = "127.0.0.1:4242"
 	recRes := httptest.NewRecorder()
 	h.AlertmanagerWebhook(recRes, reqRes)
 
@@ -128,11 +130,64 @@ func TestAlertmanagerWebhookSecretAuth(t *testing.T) {
 		t.Fatalf("expected 200 OK with Bearer, got %d", recAuthBearer.Code)
 	}
 
-	// 3. Valid secret in query param ?secret=... -> 200
+	// 3. The secret in the query string is no longer accepted -> 401
 	reqAuthQuery := httptest.NewRequest(http.MethodPost, "/api/alerts/webhook?secret=secret-token-123", bytes.NewReader(body))
 	recAuthQuery := httptest.NewRecorder()
 	h.AlertmanagerWebhook(recAuthQuery, reqAuthQuery)
-	if recAuthQuery.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK with query param, got %d", recAuthQuery.Code)
+	if recAuthQuery.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for ?secret=, got %d", recAuthQuery.Code)
+	}
+
+	// 4. X-Webhook-Secret header -> 200; wrong value -> 401
+	reqHdr := httptest.NewRequest(http.MethodPost, "/api/alerts/webhook", bytes.NewReader(body))
+	reqHdr.Header.Set("X-Webhook-Secret", "secret-token-123")
+	recHdr := httptest.NewRecorder()
+	h.AlertmanagerWebhook(recHdr, reqHdr)
+	if recHdr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK with X-Webhook-Secret, got %d", recHdr.Code)
+	}
+	reqBad := httptest.NewRequest(http.MethodPost, "/api/alerts/webhook", bytes.NewReader(body))
+	reqBad.Header.Set("Authorization", "Bearer secret-token-124")
+	recBad := httptest.NewRecorder()
+	h.AlertmanagerWebhook(recBad, reqBad)
+	if recBad.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for wrong secret, got %d", recBad.Code)
+	}
+}
+
+// With no secret configured, only a direct loopback peer may post.
+func TestAlertmanagerWebhookNoSecretIsLoopbackOnly(t *testing.T) {
+	dir := t.TempDir()
+	alerter := metrics.NewAlertEngine(dir, nil, events.NewHub())
+	settings, err := configstore.New(dir, configstore.DefaultSchema())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{alerter: alerter, settings: settings}
+	body := []byte(`{"status":"firing","alerts":[]}`)
+
+	cases := []struct {
+		name   string
+		remote string
+		xff    string
+		want   int
+	}{
+		{"loopback v4", "127.0.0.1:5000", "", http.StatusOK},
+		{"loopback v6", "[::1]:5000", "", http.StatusOK},
+		{"lan peer", "192.168.1.50:5000", "", http.StatusForbidden},
+		{"loopback proxy forwarding a remote", "127.0.0.1:5000", "203.0.113.9", http.StatusForbidden},
+		{"loopback with spoofed xff", "127.0.0.1:5000", "127.0.0.1", http.StatusForbidden},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodPost, "/api/alerts/webhook", bytes.NewReader(body))
+		req.RemoteAddr = c.remote
+		if c.xff != "" {
+			req.Header.Set("X-Forwarded-For", c.xff)
+		}
+		rec := httptest.NewRecorder()
+		h.AlertmanagerWebhook(rec, req)
+		if rec.Code != c.want {
+			t.Errorf("%s: got %d want %d", c.name, rec.Code, c.want)
+		}
 	}
 }

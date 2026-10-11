@@ -68,3 +68,5 @@ packaging/standalone/*.tmp
 
 # Internal planning artifacts (not for the repo)
 .hermes/
+.arena/
+.claude/

@@ -13,13 +13,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"webkvm/internal/backupstore"
 	"webkvm/internal/hostcaps"
+	"webkvm/internal/imgsafe"
 	"webkvm/internal/models"
 
 	"github.com/google/uuid"
@@ -79,18 +79,43 @@ func resolveOVMFFiles() (code, codeSecboot, varsTpl string) {
 	candidates := []struct {
 		code, codeSecboot, varsTpl string
 	}{
-		// Ubuntu 24.04+ / 26.04
+		// Ubuntu 24.04+ / 26.04 / Debian 13
 		{
 			code:        "/usr/share/OVMF/OVMF_CODE_4M.fd",
 			codeSecboot: "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd",
 			varsTpl:     "/usr/share/OVMF/OVMF_VARS_4M.fd",
 		},
-		// Ubuntu 22.04 / Arch
+		// Arch Linux / edk2-ovmf
 		{
 			code:        "/usr/share/edk2-ovmf/x64/OVMF_CODE.4m.fd",
 			codeSecboot: "/usr/share/edk2-ovmf/x64/OVMF_CODE.secboot.4m.fd",
 			varsTpl:     "/usr/share/edk2-ovmf/x64/OVMF_VARS.4m.fd",
 		},
+		// Fedora / RHEL / CentOS Stream (standard edk2-ovmf)
+		{
+			code:        "/usr/share/OVMF/OVMF_CODE.fd",
+			codeSecboot: "/usr/share/OVMF/OVMF_CODE.secboot.fd",
+			varsTpl:     "/usr/share/OVMF/OVMF_VARS.fd",
+		},
+		// Fedora / RHEL alternative location
+		{
+			code:        "/usr/share/edk2/ovmf/OVMF_CODE.fd",
+			codeSecboot: "/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd",
+			varsTpl:     "/usr/share/edk2/ovmf/OVMF_VARS.fd",
+		},
+		// openSUSE / SLES / generic fallback
+		{
+			code:        "/usr/share/qemu/ovmf-x86_64-code.bin",
+			codeSecboot: "/usr/share/qemu/ovmf-x86_64-code.bin",
+			varsTpl:     "/usr/share/qemu/ovmf-x86_64-vars.bin",
+		},
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c.code); err == nil {
+			if _, err := os.Stat(c.varsTpl); err == nil {
+				return c.code, c.codeSecboot, c.varsTpl
+			}
+		}
 	}
 	for _, c := range candidates {
 		if _, err := os.Stat(c.code); err == nil {
@@ -299,6 +324,92 @@ func resolveGraphicsType(requested string) string {
 	return gType
 }
 
+// buildOSFeaturesXML renders the <os> and <features> blocks of a domain
+// created by WebKVM (split out of CreateDomain so tests can assemble the real
+// generated XML).
+func buildOSFeaturesXML(name, firmware, chipset, machine, boot string, secureBoot, kvmHidden bool) (osXML, featuresXML string) {
+	kvmHiddenXML := ""
+	if kvmHidden {
+		kvmHiddenXML = "\n    <kvm>\n      <hidden state='on'/>\n    </kvm>"
+	}
+	if firmware == "uefi" && chipset == "q35" {
+		nvramPath := nvramDir + "/" + name + "_VARS.fd"
+		var loaderStr string
+		var smmStr string
+		if secureBoot {
+			loaderStr = fmt.Sprintf("<loader readonly='yes' secure='yes' type='pflash'>%s</loader>", ovmfCodeSecboot)
+			smmStr = "\n    <smm/>"
+		} else {
+			loaderStr = fmt.Sprintf("<loader readonly='yes' type='pflash'>%s</loader>", ovmfCode)
+			smmStr = ""
+		}
+		osXML = fmt.Sprintf(`<os>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    %s
+    <nvram template='%s'>%s</nvram>
+    %s
+  </os>`, loaderStr, ovmfVarsTemplate, nvramPath, boot)
+		featuresXML = fmt.Sprintf(`<features>
+    <acpi/>
+    <apic/>%s%s
+  </features>`, smmStr, kvmHiddenXML)
+		return osXML, featuresXML
+	}
+	osXML = fmt.Sprintf(`<os>
+    <type arch='x86_64' machine='%s'>hvm</type>
+    %s
+  </os>`, xmlEscape(machine), boot)
+	featuresXML = fmt.Sprintf(`<features>
+    <acpi/>
+    <apic/>%s
+  </features>`, kvmHiddenXML)
+	return osXML, featuresXML
+}
+
+// domainXMLTemplate is the libvirt XML WebKVM generates for a new VM. Every
+// interpolated value is either escaped or comes from a fixed template.
+const domainXMLTemplate = `<domain type='kvm'>
+  <name>%s</name>
+  <uuid>%s</uuid>
+  <title>%s</title>
+  %s
+  <vcpu placement='static'>%d</vcpu>%s%s
+  %s
+  %s
+  %s
+  <clock offset='utc'>
+    <timer name='rtc' tickpolicy='catchup'/>
+    <timer name='pit' tickpolicy='delay'/>
+    <timer name='hpet' present='no'/>
+  </clock>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+    <controller type='usb' model='qemu-xhci'/>
+    %s
+    <disk type='file' device='disk'>
+      <driver %s/>
+      <source file='%s'/>
+      <target dev='%s' bus='%s'/>
+    </disk>
+    %s
+    %s
+    %s
+    %s<channel type='unix'>
+      <target type='virtio' name='org.qemu.guest_agent.0'/>
+    </channel>
+    %s
+    %s
+    %s
+  </devices>
+</domain>`
+
+func buildDomainXML(name, uuid, title, memoryXML string, vcpus int, iothreadsXML, cputuneXML, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, diskPath, targetDev, diskBus, isoXML, virtioISOXML, interfaceXML, serialXML, graphicsXML, videoXML, devicesExtra string) string {
+	return fmt.Sprintf(domainXMLTemplate, xmlEscape(name), uuid, title, memoryXML, vcpus, iothreadsXML, cputuneXML, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, xmlEscape(diskPath), xmlEscape(targetDev), xmlEscape(diskBus), isoXML, virtioISOXML, interfaceXML, serialXML, graphicsXML, videoXML, devicesExtra)
+}
+
 func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) {
 	if err := c.ensureConnected(); err != nil {
 		return models.VM{}, err
@@ -416,7 +527,7 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 
 	isoXML := ""
 	if req.ISO != "" {
-		resolvedISO, err := c.resolveMediaPath(req.ISO)
+		resolvedISO, err := c.resolveMediaPath(req.ISO, req.Scope)
 		if err != nil {
 			return models.VM{}, fmt.Errorf("resolve ISO: %w", err)
 		}
@@ -444,7 +555,7 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 
 	virtioISOXML := ""
 	if req.VirtIOISO != "" {
-		resolvedVirtIO, err := c.resolveMediaPath(req.VirtIOISO)
+		resolvedVirtIO, err := c.resolveMediaPath(req.VirtIOISO, req.Scope)
 		if err != nil {
 			return models.VM{}, fmt.Errorf("resolve virtio ISO: %w", err)
 		}
@@ -485,45 +596,7 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 
 	boot := bootDeviceAttr(req.BootOrder)
 
-	if firmware == "uefi" && chipset == "q35" {
-		nvramPath := nvramDir + "/" + req.Name + "_VARS.fd"
-		var loaderStr string
-		var smmStr string
-		if secureBoot {
-			loaderStr = fmt.Sprintf("<loader readonly='yes' secure='yes' type='pflash'>%s</loader>", ovmfCodeSecboot)
-			smmStr = "\n    <smm/>"
-		} else {
-			loaderStr = fmt.Sprintf("<loader readonly='yes' type='pflash'>%s</loader>", ovmfCode)
-			smmStr = ""
-		}
-		kvmHiddenXML := ""
-		if req.KVMHidden != nil && *req.KVMHidden {
-			kvmHiddenXML = "\n    <kvm>\n      <hidden state='on'/>\n    </kvm>"
-		}
-		osXML = fmt.Sprintf(`<os>
-    <type arch='x86_64' machine='q35'>hvm</type>
-    %s
-    <nvram template='%s'>%s</nvram>
-    %s
-  </os>`, loaderStr, ovmfVarsTemplate, nvramPath, boot)
-		featuresXML = fmt.Sprintf(`<features>
-    <acpi/>
-    <apic/>%s%s
-  </features>`, smmStr, kvmHiddenXML)
-	} else {
-		kvmHiddenXML := ""
-		if req.KVMHidden != nil && *req.KVMHidden {
-			kvmHiddenXML = "\n    <kvm>\n      <hidden state='on'/>\n    </kvm>"
-		}
-		osXML = fmt.Sprintf(`<os>
-    <type arch='x86_64' machine='%s'>hvm</type>
-    %s
-  </os>`, xmlEscape(machine), boot)
-		featuresXML = fmt.Sprintf(`<features>
-    <acpi/>
-    <apic/>%s
-  </features>`, kvmHiddenXML)
-	}
+	osXML, featuresXML = buildOSFeaturesXML(req.Name, firmware, chipset, machine, boot, secureBoot, req.KVMHidden != nil && *req.KVMHidden)
 
 	var controllerXML string
 	if chipset == "q35" {
@@ -593,8 +666,8 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 	gType := resolveGraphicsType(req.GraphicsType)
 	switch gType {
 	case "vnc":
-		graphicsXML = `<graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
-      <listen type='address' address='0.0.0.0'/>
+		graphicsXML = `<graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'>
+      <listen type='address' address='127.0.0.1'/>
     </graphics>`
 	case "spice":
 		graphicsXML = `<channel type='spicevmc'>
@@ -612,8 +685,8 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
       <listen type='address' address='127.0.0.1'/>
       <image compression='auto_glz'/>
     </graphics>
-    <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
-      <listen type='address' address='0.0.0.0'/>
+    <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'>
+      <listen type='address' address='127.0.0.1'/>
     </graphics>`
 	case "none":
 		// no graphics device
@@ -648,45 +721,9 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 		memoryXML += fmt.Sprintf("\n  <currentMemory unit='MiB'>%d</currentMemory>", req.RAMMB)
 	}
 
-	xmlConfig := fmt.Sprintf(`<domain type='kvm'>
-  <name>%s</name>
-  <uuid>%s</uuid>
-  <title>%s</title>
-  %s
-  <vcpu placement='static'>%d</vcpu>%s%s
-  %s
-  %s
-  %s
-  <clock offset='utc'>
-    <timer name='rtc' tickpolicy='catchup'/>
-    <timer name='pit' tickpolicy='delay'/>
-    <timer name='hpet' present='no'/>
-  </clock>
-  <on_poweroff>destroy</on_poweroff>
-  <on_reboot>restart</on_reboot>
-  <on_crash>destroy</on_crash>
-  <devices>
-    <emulator>/usr/bin/qemu-system-x86_64</emulator>
-    <controller type='usb' model='qemu-xhci'/>
-    %s
-    <disk type='file' device='disk'>
-      <driver %s/>
-      <source file='%s'/>
-      <target dev='%s' bus='%s'/>
-    </disk>
-    %s
-    %s
-    %s
-    %s<channel type='unix'>
-      <target type='virtio' name='org.qemu.guest_agent.0'/>
-    </channel>
-    %s
-    %s
-    %s
-  </devices>
-</domain>`, xmlEscape(req.Name), uuidStr, title, memoryXML, req.VCPUs, iothreadsXML, cputuneXML, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, xmlEscape(diskFullPath), xmlEscape(targetDev), xmlEscape(diskBus), isoXML, virtioISOXML, interfaceXMLWithVLAN(req.Network, networkModel, req.VLANTag), serialXML, graphicsXML, videoXML, devicesExtra)
+	xmlConfig := buildDomainXML(req.Name, uuidStr, title, memoryXML, req.VCPUs, iothreadsXML, cputuneXML, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, diskFullPath, targetDev, diskBus, isoXML, virtioISOXML, interfaceXMLWithVLAN(req.Network, networkModel, req.VLANTag), serialXML, graphicsXML, videoXML, devicesExtra)
 
-	dom, err := c.conn.DomainDefineXML(xmlConfig)
+	dom, err := c.defineDomain(xmlConfig, TrustedDomain)
 	if err != nil {
 		return models.VM{}, fmt.Errorf("define domain: %w", err)
 	}
@@ -1410,8 +1447,8 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 		var newGraphics string
 		switch gType {
 		case "vnc":
-			newGraphics = `<graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
-      <listen type='address' address='0.0.0.0'/>
+			newGraphics = `<graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'>
+      <listen type='address' address='127.0.0.1'/>
     </graphics>`
 		case "spice":
 			newGraphics = `<channel type='spicevmc'>
@@ -1429,8 +1466,8 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
       <listen type='address' address='127.0.0.1'/>
       <image compression='auto_glz'/>
     </graphics>
-    <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
-      <listen type='address' address='0.0.0.0'/>
+    <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'>
+      <listen type='address' address='127.0.0.1'/>
     </graphics>`
 		case "none":
 			// Leave graphics stripped
@@ -1451,7 +1488,7 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 		xmlDesc = regexp.MustCompile(`<title>[^<]*</title>`).ReplaceAllString(xmlDesc, "<title>"+xmlEscape(title)+"</title>")
 	}
 
-	newDom, err := c.conn.DomainDefineXML(xmlDesc)
+	newDom, err := c.defineDomain(xmlDesc, TrustedDomain)
 	if err != nil {
 		return models.VM{}, fmt.Errorf("define domain: %w", err)
 	}
@@ -2516,7 +2553,7 @@ func (c *Connector) AttachDisk(id string, req models.AttachDiskRequest) error {
 
 	device := req.Device
 	if device == "cdrom" && req.Source != "" {
-		resolvedSource, err := c.resolveMediaPath(req.Source)
+		resolvedSource, err := c.resolveMediaPath(req.Source, req.Scope)
 		if err != nil {
 			return fmt.Errorf("resolve cdrom media: %w", err)
 		}
@@ -2814,6 +2851,7 @@ func (c *Connector) ChangeDiskBus(id, target, newBus string) error {
 		Bus:    newBus,
 		Source: source,
 		Format: format,
+		Scope:  models.MediaScope{Admin: true}, // re-attaching what the domain already referenced
 	})
 	if attachErr == nil {
 		return nil
@@ -2830,586 +2868,17 @@ func (c *Connector) ChangeDiskBus(id, target, newBus string) error {
 		Bus:    oldBus,
 		Source: source,
 		Format: format,
+		Scope:  models.MediaScope{Admin: true}, // re-attaching what the domain already referenced
 	}); rollbackErr != nil {
 		return fmt.Errorf("bus %q failed (%v), and restoring the original bus %q also failed (%v) — the disk is detached; reattach %q manually via Add Disk", newBus, attachErr, oldBus, rollbackErr, source)
 	}
 	return fmt.Errorf("bus %q is not supported on this VM (%v) — the disk has been restored to its original bus (%s)", newBus, attachErr, oldBus)
 }
 
-var (
-	usbVendorRE  = regexp.MustCompile(`<vendor id='(0x[0-9a-fA-F]+)'(?:>([^<]*)</vendor>|/>)`)
-	usbProductRE = regexp.MustCompile(`<product id='(0x[0-9a-fA-F]+)'(?:>([^<]*)</product>|/>)`)
-	usbBusRE     = regexp.MustCompile(`<bus>(\d+)</bus>`)
-	usbDeviceRE  = regexp.MustCompile(`<device>(\d+)</device>`)
-)
+// USB host device passthrough implementation is located in domain_usb.go.
+// PCI host device & VFIO passthrough implementation is located in domain_pci.go.
+// 9p shared folders implementation is located in domain_shares.go.
 
-// hostUSBRootHubVendor is the Linux Foundation vendor ID shared by
-// every USB root hub; passing one through is never useful, so it's
-// filtered out (same convention virt-manager uses).
-const hostUSBRootHubVendor = "0x1d6b"
-
-// ListHostUSBDevices enumerates USB devices on the host available
-// for passthrough, excluding generic root hubs.
-func (c *Connector) ListHostUSBDevices() ([]models.USBDevice, error) {
-	if err := c.ensureConnected(); err != nil {
-		return nil, err
-	}
-	devs, err := c.conn.ListAllNodeDevices(libvirt.CONNECT_LIST_NODE_DEVICES_CAP_USB_DEV)
-	if err != nil {
-		// On split-daemon setups (Fedora/Arch) virtnodedevd may not be
-		// running; the USB tab must never 500 the whole detail page.
-		slog.Warn("list_host_usb_devices_unavailable", "err", err)
-		return []models.USBDevice{}, nil
-	}
-	out := make([]models.USBDevice, 0, len(devs))
-	for i := range devs {
-		xmlDesc, err := devs[i].GetXMLDesc(0)
-		name, _ := devs[i].GetName()
-		devs[i].Free()
-		if err != nil {
-			continue
-		}
-		vendorID, vendorName := usbMatch(usbVendorRE, xmlDesc)
-		productID, productName := usbMatch(usbProductRE, xmlDesc)
-		if vendorID == "" || productID == "" || vendorID == hostUSBRootHubVendor {
-			continue
-		}
-		bus := ""
-		if m := usbBusRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
-			bus = m[1]
-		}
-		device := ""
-		if m := usbDeviceRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
-			device = m[1]
-		}
-		label := strings.TrimSpace(vendorName + " " + productName)
-		if label == "" {
-			label = name
-		}
-		out = append(out, models.USBDevice{
-			Name:      label,
-			VendorID:  vendorID,
-			ProductID: productID,
-			Bus:       bus,
-			Device:    device,
-		})
-	}
-	return out, nil
-}
-
-func usbMatch(re *regexp.Regexp, xmlDesc string) (id, label string) {
-	m := re.FindStringSubmatch(xmlDesc)
-	if len(m) < 2 {
-		return "", ""
-	}
-	if len(m) > 2 {
-		label = strings.TrimSpace(m[2])
-	}
-	return m[1], label
-}
-
-var usbHostdevBlockRE = regexp.MustCompile(`(?s)<hostdev\b[^>]*type=['"]usb['"][^>]*>.*?</hostdev>`)
-
-// parseUSBHostdevs extracts the USB devices already passed through
-// to a domain from its XML, so the UI can offer a "Detach" action.
-func parseUSBHostdevs(xmlDesc string) []models.USBDevice {
-	blocks := usbHostdevBlockRE.FindAllString(xmlDesc, -1)
-	out := make([]models.USBDevice, 0, len(blocks))
-	for _, b := range blocks {
-		vendorID, _ := usbMatch(usbVendorRE, b)
-		productID, _ := usbMatch(usbProductRE, b)
-		if vendorID == "" || productID == "" {
-			continue
-		}
-		out = append(out, models.USBDevice{VendorID: vendorID, ProductID: productID})
-	}
-	return out
-}
-
-func usbHostdevXML(vendorID, productID string) string {
-	return fmt.Sprintf(`<hostdev mode='subsystem' type='usb' managed='yes'>
-  <source>
-    <vendor id='%s'/>
-    <product id='%s'/>
-  </source>
-</hostdev>`, xmlEscape(vendorID), xmlEscape(productID))
-}
-
-// AttachUSBDevice passes a host USB device (identified by vendor and
-// product ID) through to a VM, live if running.
-func (c *Connector) AttachUSBDevice(id, vendorID, productID string) error {
-	dom, err := c.lookupDomain(id)
-	if err != nil {
-		return err
-	}
-	defer dom.Free()
-
-	// Unlike AttachDisk/DetachDisk's CURRENT|CONFIG (CURRENT==0, so
-	// that combination is really just CONFIG — takes effect on next
-	// boot only), USB passthrough's whole point is being usable
-	// against a running VM, so this explicitly requests LIVE too.
-	flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
-	state, _, err := dom.GetState()
-	if err == nil && state == libvirt.DOMAIN_RUNNING {
-		flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
-	}
-	return dom.AttachDeviceFlags(usbHostdevXML(vendorID, productID), flags)
-}
-
-// DetachUSBDevice removes a previously passed-through USB device from a VM.
-func (c *Connector) DetachUSBDevice(id, vendorID, productID string) error {
-	dom, err := c.lookupDomain(id)
-	if err != nil {
-		return err
-	}
-	defer dom.Free()
-
-	// Unlike AttachDisk/DetachDisk's CURRENT|CONFIG (CURRENT==0, so
-	// that combination is really just CONFIG — takes effect on next
-	// boot only), USB passthrough's whole point is being usable
-	// against a running VM, so this explicitly requests LIVE too.
-	flags := libvirt.DOMAIN_DEVICE_MODIFY_CONFIG
-	state, _, err := dom.GetState()
-	if err == nil && state == libvirt.DOMAIN_RUNNING {
-		flags |= libvirt.DOMAIN_DEVICE_MODIFY_LIVE
-	}
-	return dom.DetachDeviceFlags(usbHostdevXML(vendorID, productID), flags)
-}
-
-// --- PCI passthrough ---
-//
-// Unlike USB (managed='yes', hotplug in/out of a running VM), PCI
-// passthrough here always requires the VM to be shut off first — see
-// AttachPCIDevice/DetachPCIDevice. Two reasons, both explained there.
-
-var (
-	pciDomainRE   = regexp.MustCompile(`<domain>(\d+)</domain>`)
-	pciBusRE      = regexp.MustCompile(`<bus>(\d+)</bus>`)
-	pciSlotRE     = regexp.MustCompile(`<slot>(\d+)</slot>`)
-	pciFunctionRE = regexp.MustCompile(`<function>(\d+)</function>`)
-	pciIOMMURE    = regexp.MustCompile(`<iommuGroup number='(\d+)'`)
-	pciDriverRE   = regexp.MustCompile(`<driver>\s*<name>([^<]+)</name>`)
-	// PCI hostdev address as it appears in a domain's own XML (the format
-	// AttachDeviceFlags/DetachDeviceFlags XML uses), e.g.
-	// <address domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>.
-	pciDomainAttrHexRE = regexp.MustCompile(`domain=['"]0x([0-9a-fA-F]+)['"]`)
-	pciBusAttrHexRE    = regexp.MustCompile(`bus=['"]0x([0-9a-fA-F]+)['"]`)
-	pciSlotAttrHexRE   = regexp.MustCompile(`slot=['"]0x([0-9a-fA-F]+)['"]`)
-	pciFuncAttrHexRE   = regexp.MustCompile(`function=['"]0x([0-9a-fA-F]+)['"]`)
-)
-
-// pciAddress renders the standard lspci-style "DDDD:BB:SS.F" (hex) form
-// from the decimal domain/bus/slot/function values libvirt's PCI nodedev
-// XML reports them in. This is both the sysfs directory name
-// (/sys/bus/pci/devices/<address>) and the value the API/UI use to
-// identify a device.
-func pciAddress(domain, bus, slot, function int) string {
-	return fmt.Sprintf("%04x:%02x:%02x.%d", domain, bus, slot, function)
-}
-
-// pciAddressRE is the exact shape pciAddress() generates ("DDDD:BB:SS.F",
-// all hex, function a single nibble 0-7 per the PCI spec). Addresses in
-// AttachPCIRequest/the DetachPCIDevice URL param come straight from the
-// caller (admin-only, but still HTTP input) and are used to build a real
-// filesystem path in pciSysfsDir before any other check runs — so this
-// validation must happen first, not just inside parsePCIAddressHex's
-// weaker split-based parsing (which only checked colon/dot COUNT, not
-// that each segment was actually hex, so e.g. "../../etc:sh:ad.o" used
-// to parse "successfully" into garbage instead of being rejected).
-var pciAddressRE = regexp.MustCompile(`^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$`)
-
-func validPCIAddress(addr string) bool {
-	return pciAddressRE.MatchString(addr)
-}
-
-// parsePCIAddressHex splits a "DDDD:BB:SS.F" address into the 0x-prefixed
-// hex components pciHostdevXML needs. Rejects anything not matching
-// pciAddressRE — see validPCIAddress.
-func parsePCIAddressHex(addr string) (domain, bus, slot, function string, err error) {
-	if !validPCIAddress(addr) {
-		return "", "", "", "", fmt.Errorf("invalid PCI address %q", addr)
-	}
-	parts := strings.SplitN(addr, ":", 3)
-	slotFn := strings.SplitN(parts[2], ".", 2)
-	return "0x" + parts[0], "0x" + parts[1], "0x" + slotFn[0], "0x" + slotFn[1], nil
-}
-
-func pciSysfsDir(addr string) string {
-	if addr == "" || strings.Contains(addr, "/") || strings.Contains(addr, "\\") || strings.Contains(addr, "..") {
-		return ""
-	}
-	return filepath.Join("/sys/bus/pci/devices", addr)
-}
-
-// pciBootVGA reports whether addr is the host's own boot/console GPU.
-// Passthrough of this device is refused unconditionally — see
-// PCIDevice.BootVGA. Callers with caller-supplied addr (AttachPCIDevice)
-// MUST validate with validPCIAddress before calling this — it does not
-// re-validate itself, since ListHostPCIDevices' own callers always pass
-// an addr it built internally from parsed integers, never raw input.
-func pciBootVGA(addr string) bool {
-	if addr == "" || strings.Contains(addr, "/") || strings.Contains(addr, "\\") || strings.Contains(addr, "..") {
-		return false
-	}
-	b, err := os.ReadFile(filepath.Join(pciSysfsDir(addr), "boot_vga")) // lgtm[go/path-injection] - addr validated by every untrusted-input caller, see func comment
-	return err == nil && strings.TrimSpace(string(b)) == "1"
-}
-
-// pciDriverName reads the kernel driver currently bound to addr straight
-// from sysfs (readlink .../driver), used as a fallback for hosts/libvirt
-// versions whose PCI nodedev XML omits the optional <driver><name> element.
-func pciDriverName(addr string) string {
-	target, err := os.Readlink(filepath.Join(pciSysfsDir(addr), "driver"))
-	if err != nil {
-		return ""
-	}
-	return filepath.Base(target)
-}
-
-// ListHostPCIDevices enumerates PCI devices on the host available for
-// passthrough, grouped by IOMMU group (see PCIIOMMUGroup) since a group
-// normally must be passed through as a whole. Returns a clear error
-// instead of a silently empty list when IOMMU itself is off host-wide —
-// distinguishing "no devices" from "passthrough isn't usable on this host
-// at all" matters here far more than for USB.
-func (c *Connector) ListHostPCIDevices() ([]models.PCIIOMMUGroup, error) {
-	entries, err := os.ReadDir("/sys/kernel/iommu_groups")
-	if err != nil || len(entries) == 0 {
-		return []models.PCIIOMMUGroup{}, nil
-	}
-	if err := c.ensureConnected(); err != nil {
-		return nil, err
-	}
-	devs, err := c.conn.ListAllNodeDevices(libvirt.CONNECT_LIST_NODE_DEVICES_CAP_PCI_DEV)
-	if err != nil {
-		slog.Warn("list_host_pci_devices_unavailable", "err", err)
-		return []models.PCIIOMMUGroup{}, nil
-	}
-	inUse := c.pciAddressesInUse()
-	restrictions := pciHostRestrictions()
-	byGroup := map[int][]models.PCIDevice{}
-	for i := range devs {
-		xmlDesc, err := devs[i].GetXMLDesc(0)
-		name, _ := devs[i].GetName()
-		devs[i].Free()
-		if err != nil {
-			continue
-		}
-		domain, bus, slot, function := -1, -1, -1, -1
-		if m := pciDomainRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
-			domain, _ = strconv.Atoi(m[1])
-		}
-		if m := pciBusRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
-			bus, _ = strconv.Atoi(m[1])
-		}
-		if m := pciSlotRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
-			slot, _ = strconv.Atoi(m[1])
-		}
-		if m := pciFunctionRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
-			function, _ = strconv.Atoi(m[1])
-		}
-		if domain < 0 || bus < 0 || slot < 0 || function < 0 {
-			continue
-		}
-		addr := pciAddress(domain, bus, slot, function)
-		group := -1
-		if m := pciIOMMURE.FindStringSubmatch(xmlDesc); len(m) > 1 {
-			group, _ = strconv.Atoi(m[1])
-		}
-		vendorID, vendorName := usbMatch(usbVendorRE, xmlDesc)
-		productID, productName := usbMatch(usbProductRE, xmlDesc)
-		driver := ""
-		if m := pciDriverRE.FindStringSubmatch(xmlDesc); len(m) > 1 {
-			driver = m[1]
-		} else {
-			driver = pciDriverName(addr)
-		}
-		dev := models.PCIDevice{
-			Name:        strings.TrimSpace(name),
-			Address:     addr,
-			VendorID:    vendorID,
-			VendorName:  vendorName,
-			ProductID:   productID,
-			ProductName: productName,
-			IOMMUGroup:  group,
-			Driver:      driver,
-			VFIOBound:   driver == "vfio-pci",
-			BootVGA:     pciBootVGA(addr),
-			InUse:       inUse[addr],
-		}
-		evaluatePCIDevice(&dev, restrictions)
-		byGroup[group] = append(byGroup[group], dev)
-	}
-	out := make([]models.PCIIOMMUGroup, 0, len(byGroup))
-	for group, devices := range byGroup {
-		allBound := true
-		for _, d := range devices {
-			if !d.VFIOBound {
-				allBound = false
-				break
-			}
-		}
-		grp := models.PCIIOMMUGroup{Group: group, Devices: devices, AllVFIOBound: allBound}
-		evaluatePCIGroup(&grp)
-		out = append(out, grp)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Group < out[j].Group })
-	return out, nil
-}
-
-// pciAddressesInUse scans every domain's XML for PCI hostdevs already
-// passed through, so ListHostPCIDevices can flag them (mirrors how
-// assertMACUnique scans every domain for a conflicting MAC).
-func (c *Connector) pciAddressesInUse() map[string]bool {
-	out := map[string]bool{}
-	if err := c.ensureConnected(); err != nil {
-		return out
-	}
-	doms, err := c.conn.ListAllDomains(0)
-	if err != nil {
-		return out
-	}
-	defer func() {
-		for i := range doms {
-			doms[i].Free()
-		}
-	}()
-	for i := range doms {
-		xmlDesc, err := doms[i].GetXMLDesc(0)
-		if err != nil {
-			continue
-		}
-		for _, d := range parsePCIHostdevs(xmlDesc) {
-			out[d.Address] = true
-		}
-	}
-	return out
-}
-
-var pciHostdevBlockRE = regexp.MustCompile(`(?s)<hostdev\b[^>]*type=['"]pci['"][^>]*>.*?</hostdev>`)
-
-// parsePCIHostdevs extracts the PCI devices already passed through to a
-// domain from its XML, so the UI can offer a "Detach" action. Addresses
-// here are the hex address attrs a domain's own <hostdev> uses, distinct
-// from the decimal tags a host PCI nodedev's XML uses (see
-// ListHostPCIDevices) — hence the separate *AttrHexRE patterns.
-func parsePCIHostdevs(xmlDesc string) []models.PCIDevice {
-	blocks := pciHostdevBlockRE.FindAllString(xmlDesc, -1)
-	out := make([]models.PCIDevice, 0, len(blocks))
-	for _, b := range blocks {
-		dm := pciDomainAttrHexRE.FindStringSubmatch(b)
-		bm := pciBusAttrHexRE.FindStringSubmatch(b)
-		sm := pciSlotAttrHexRE.FindStringSubmatch(b)
-		fm := pciFuncAttrHexRE.FindStringSubmatch(b)
-		if len(dm) < 2 || len(bm) < 2 || len(sm) < 2 || len(fm) < 2 {
-			continue
-		}
-		domain, _ := strconv.ParseInt(dm[1], 16, 32)
-		bus, _ := strconv.ParseInt(bm[1], 16, 32)
-		slot, _ := strconv.ParseInt(sm[1], 16, 32)
-		function, _ := strconv.ParseInt(fm[1], 16, 32)
-		out = append(out, models.PCIDevice{Address: pciAddress(int(domain), int(bus), int(slot), int(function))})
-	}
-	return out
-}
-
-func pciHostdevXML(addr string) (string, error) {
-	domain, bus, slot, function, err := parsePCIAddressHex(addr)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf(`<hostdev mode='subsystem' type='pci' managed='yes'>
-  <source>
-    <address domain='%s' bus='%s' slot='%s' function='%s'/>
-  </source>
-</hostdev>`, domain, bus, slot, function), nil
-}
-
-// AttachPCIDevice passes one or more host PCI devices through to a VM —
-// normally every address in one IOMMU group at once (see
-// models.PCIIOMMUGroup). Unlike USB, this requires the VM to already be
-// DOMAIN_SHUTOFF: (1) a running q35 domain may have no spare
-// pcie-root-port for hotplug — this codebase's controller XML declares a
-// fixed set, and whether libvirt can add one on the fly here is
-// unverified; (2) hot-unplugging a device out from under its guest driver
-// (especially a GPU) is notoriously unreliable. A single simple,
-// conservative rule beats per-device-type casework in a first version.
-//
-// The host's own boot/console GPU (BootVGA) is refused unconditionally,
-// even for admins — see models.PCIDevice.BootVGA.
-func (c *Connector) AttachPCIDevice(id string, addresses []string) error {
-	if len(addresses) == 0 {
-		return fmt.Errorf("no PCI addresses given")
-	}
-	dom, err := c.lookupDomain(id)
-	if err != nil {
-		return err
-	}
-	defer dom.Free()
-
-	state, _, err := dom.GetState()
-	if err != nil {
-		return err
-	}
-	if state != libvirt.DOMAIN_SHUTOFF {
-		return fmt.Errorf("VM must be shut off to attach a PCI device")
-	}
-	// Validate every address's shape BEFORE any of them touch the
-	// filesystem (pciBootVGA) or get built into hostdev XML — addresses
-	// here come straight from the request body.
-	for _, addr := range addresses {
-		if !validPCIAddress(addr) {
-			return fmt.Errorf("invalid PCI address %q", addr)
-		}
-	}
-	restrictions := pciHostRestrictions()
-	for _, addr := range addresses {
-		if pciBootVGA(addr) {
-			return fmt.Errorf("refusing to pass through %s: it is the host's own boot/console GPU", addr)
-		}
-		if pciIsBridge(addr) {
-			return fmt.Errorf("refusing to pass through %s: it is a PCI/system bridge", addr)
-		}
-		if restr, found := restrictions[addr]; found && restr.hostCritical {
-			return fmt.Errorf("refusing to pass through %s: critical host resource (%s)", addr, restr.reason)
-		}
-	}
-	for _, addr := range addresses {
-		hostdevXML, err := pciHostdevXML(addr)
-		if err != nil {
-			return err
-		}
-		if err := dom.AttachDeviceFlags(hostdevXML, libvirt.DOMAIN_DEVICE_MODIFY_CONFIG); err != nil {
-			return fmt.Errorf("attach %s: %w", addr, err)
-		}
-	}
-	return nil
-}
-
-// DetachPCIDevice removes a previously passed-through PCI device from a
-// VM. Requires DOMAIN_SHUTOFF — see AttachPCIDevice.
-func (c *Connector) DetachPCIDevice(id, address string) error {
-	dom, err := c.lookupDomain(id)
-	if err != nil {
-		return err
-	}
-	defer dom.Free()
-
-	state, _, err := dom.GetState()
-	if err != nil {
-		return err
-	}
-	if state != libvirt.DOMAIN_SHUTOFF {
-		return fmt.Errorf("VM must be shut off to detach a PCI device")
-	}
-	hostdevXML, err := pciHostdevXML(address)
-	if err != nil {
-		return err
-	}
-	return dom.DetachDeviceFlags(hostdevXML, libvirt.DOMAIN_DEVICE_MODIFY_CONFIG)
-}
-
-// --- 9p shared folders ---
-//
-// virtiofs was considered and rejected: it needs a separately-supervised
-// virtiofsd helper process per share (a process-supervision class this
-// codebase doesn't have anywhere else) plus <memoryBacking> the domain XML
-// here never sets. 9p needs neither.
-
-var (
-	filesystemBlockRE = regexp.MustCompile(`(?s)<filesystem\b[^>]*>.*?</filesystem>`)
-	fsSourceDirRE     = regexp.MustCompile(`<source\s+dir=['"]([^'"]+)['"]`)
-	fsTargetDirRE     = regexp.MustCompile(`<target\s+dir=['"]([^'"]+)['"]`)
-	fsReadonlyRE      = regexp.MustCompile(`<readonly\s*/>`)
-)
-
-// parseSharedFolders extracts the 9p shared folders already attached to a
-// domain from its XML, so the UI can offer a "Detach" action.
-func parseSharedFolders(xmlDesc string) []models.SharedFolder {
-	blocks := filesystemBlockRE.FindAllString(xmlDesc, -1)
-	out := make([]models.SharedFolder, 0, len(blocks))
-	for _, b := range blocks {
-		sm := fsSourceDirRE.FindStringSubmatch(b)
-		tm := fsTargetDirRE.FindStringSubmatch(b)
-		if len(sm) < 2 || len(tm) < 2 {
-			continue
-		}
-		out = append(out, models.SharedFolder{
-			HostPath: sm[1],
-			Tag:      tm[1],
-			ReadOnly: fsReadonlyRE.MatchString(b),
-		})
-	}
-	return out
-}
-
-func sharedFolderXML(hostPath, tag string, readOnly bool) string {
-	ro := ""
-	if readOnly {
-		ro = "\n  <readonly/>"
-	}
-	return fmt.Sprintf(`<filesystem type='mount' accessmode='mapped'>
-  <driver type='path'/>
-  <source dir='%s'/>
-  <target dir='%s'/>%s
-</filesystem>`, xmlEscape(hostPath), xmlEscape(tag), ro)
-}
-
-// AttachSharedFolder adds a 9p shared folder to a VM. Like PCI passthrough
-// (and unlike USB), this requires the VM to already be DOMAIN_SHUTOFF:
-// hot-plug support for <filesystem> devices is unverified on the
-// libvirt/QEMU versions this codebase targets, so a clean "shut off first"
-// requirement beats risking an unpredictable live-attach result.
-func (c *Connector) AttachSharedFolder(id, hostPath, tag string, readOnly bool) error {
-	dom, err := c.lookupDomain(id)
-	if err != nil {
-		return err
-	}
-	defer dom.Free()
-
-	state, _, err := dom.GetState()
-	if err != nil {
-		return err
-	}
-	if state != libvirt.DOMAIN_SHUTOFF {
-		return fmt.Errorf("VM must be shut off to attach a shared folder")
-	}
-	return dom.AttachDeviceFlags(sharedFolderXML(hostPath, tag, readOnly), libvirt.DOMAIN_DEVICE_MODIFY_CONFIG)
-}
-
-// DetachSharedFolder removes a previously attached 9p shared folder,
-// identified by its guest-visible tag. Requires DOMAIN_SHUTOFF — see
-// AttachSharedFolder.
-func (c *Connector) DetachSharedFolder(id, tag string) error {
-	dom, err := c.lookupDomain(id)
-	if err != nil {
-		return err
-	}
-	defer dom.Free()
-
-	state, _, err := dom.GetState()
-	if err != nil {
-		return err
-	}
-	if state != libvirt.DOMAIN_SHUTOFF {
-		return fmt.Errorf("VM must be shut off to detach a shared folder")
-	}
-	xmlDesc, err := dom.GetXMLDesc(0)
-	if err != nil {
-		return fmt.Errorf("get xml: %w", err)
-	}
-	var target string
-	for _, b := range filesystemBlockRE.FindAllString(xmlDesc, -1) {
-		if tm := fsTargetDirRE.FindStringSubmatch(b); len(tm) > 1 && tm[1] == tag {
-			target = b
-			break
-		}
-	}
-	if target == "" {
-		return fmt.Errorf("shared folder with tag '%s' not found", tag)
-	}
-	return dom.DetachDeviceFlags(target, libvirt.DOMAIN_DEVICE_MODIFY_CONFIG)
-}
 
 func (c *Connector) UpdateDiskSource(id, target, source string) error {
 	dom, err := c.lookupDomain(id)
@@ -3875,7 +3344,7 @@ func (c *Connector) CloneDomain(id string, req models.CloneVMRequest) (models.VM
 		}
 	}
 
-	newDom, err := c.conn.DomainDefineXML(xmlDesc)
+	newDom, err := c.defineDomain(xmlDesc, TrustedDomain)
 	if err != nil {
 		cleanupAll()
 		return models.VM{}, fmt.Errorf("define cloned domain: %w", err)
@@ -3973,7 +3442,10 @@ func (c *Connector) SetBootDevice(id string, device string) error {
 		xmlDesc = strings.Replace(xmlDesc, "</os>", fmt.Sprintf("%s\n  </os>", newBoot), 1)
 	}
 
-	_, err = c.conn.DomainDefineXML(xmlDesc)
+	nd, err := c.defineDomain(xmlDesc, TrustedDomain)
+	if err == nil {
+		nd.Free()
+	}
 	return err
 }
 
@@ -4349,6 +3821,9 @@ type ImportOpts struct {
 	// SourceSize is the compressed archive size in bytes. Used as
 	// the denominator when reporting disk-copy progress.
 	SourceSize int64
+	// Admin is true when the caller is an administrator. Only then are the
+	// RBAC-relevant metadata fields (tags, groups) of the archive carried over.
+	Admin bool
 	// OnProgress is invoked with a 0-100 percentage, a stable stage
 	// code (restore_copying, restore_define, done...) and its
 	// interpolation vars as the import progresses. Optional.
@@ -4429,7 +3904,7 @@ func (c *Connector) ImportDomain(tarPath, newName, poolName string, opts ImportO
 		// streamed straight to the pool in a second pass; loading them
 		// into a []byte would OOM the process on multi-GB imports.
 		if hdr.Name == "domain.xml" {
-			xmlBytes, err = io.ReadAll(tr)
+			xmlBytes, err = readAllLimited(tr, maxDomainXMLBytes)
 			if err != nil {
 				return "", "", nil, err
 			}
@@ -4568,6 +4043,7 @@ func (c *Connector) ImportDomain(tarPath, newName, poolName string, opts ImportO
 	// XML rewrite can map each <source file='...'> reference
 	// to its new on-disk path.
 	diskCounter := 0
+	budget := newDiskBudget(poolPath)
 
 	for {
 		hdr, err := tr2.Next()
@@ -4614,11 +4090,14 @@ func (c *Connector) ImportDomain(tarPath, newName, poolName string, opts ImportO
 		if !strings.HasPrefix(filepath.Clean(dst), filepath.Clean(poolPath)+string(os.PathSeparator)) {
 			return "", "", nil, fmt.Errorf("invalid disk path %q", dst)
 		}
+		if err := budget.take(hdr.Size); err != nil {
+			return "", "", nil, err
+		}
 		f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 		if err != nil {
 			return "", "", nil, fmt.Errorf("create disk %s: %w", dst, err)
 		}
-		if _, err := io.Copy(f, tr2); err != nil {
+		if _, err := copyLimited(f, tr2, hdr.Size); err != nil {
 			f.Close()
 			return "", "", nil, fmt.Errorf("write disk %s: %w", dst, err)
 		}
@@ -4709,14 +4188,34 @@ func (c *Connector) ImportDomain(tarPath, newName, poolName string, opts ImportO
 	}
 
 	opts.report(90, "restore_define", nil)
-	dom, err := c.conn.DomainDefineXML(xmlStr)
+	// The XML comes from the archive: it is untrusted for EVERY role. It is
+	// validated, re-serialised and only disks extracted above may be
+	// referenced (audit #2).
+	allowedDisks := make(map[string]bool, len(diskWritten))
+	for _, dst := range diskWritten {
+		allowedDisks[dst] = true
+	}
+	dom, err := c.defineDomain(xmlStr, DomainPolicy{AllowedDiskFiles: allowedDisks})
 	if err != nil {
+		// Do not leave extracted disks behind for a definition we refused.
+		for _, dst := range diskWritten {
+			_ = os.Remove(dst)
+		}
 		return "", "", nil, fmt.Errorf("define domain: %w", err)
 	}
 	defer dom.Free()
 	uuid, err := dom.GetUUIDString()
 	if err != nil {
 		return "", "", nil, err
+	}
+
+	// The sanitiser dropped <metadata>; carry over only the descriptive
+	// fields (alias, notes...). Ownership and template/shared flags are never
+	// taken from an archive. Best effort.
+	if meta, ok := archiveMeta(xmlBytes, opts.Admin); ok {
+		if merr := c.SetVMMeta(uuid, meta); merr != nil {
+			slog.Warn("import_meta_restore_failed", "uuid", uuid, "err", merr)
+		}
 	}
 
 	// Optional autostart override. The VM is already defined, so a
@@ -4737,15 +4236,77 @@ func (c *Connector) ImportDomain(tarPath, newName, poolName string, opts ImportO
 	if snapWarn != "" {
 		warnings = append(warnings, snapWarn)
 	}
+	// Gate C (audit #6): the extracted disks, and the snapshot chain just
+	// rebuilt behind them, must not reference files outside the pool
+	// (qcow2 backing file / data-file pointing at host files).
+	if cerr := verifyImportedDisks(dom, poolPath, diskWritten); cerr != nil {
+		_ = dom.Undefine()
+		for _, dst := range diskWritten {
+			_ = os.Remove(dst)
+		}
+		return "", "", nil, fmt.Errorf("imported disk rejected: %w", cerr)
+	}
 	opts.report(100, "done", nil)
 
 	return uuid, resolvedName, warnings, nil
 }
 
+// verifyImportedDisks checks every disk this import wrote: qcow2 images must
+// have a backing chain that stays inside poolPath and no external data-file;
+// other formats are inspected for extents pointing outside the image.
+func verifyImportedDisks(dom *libvirt.Domain, poolPath string, written map[string]string) error {
+	if len(written) == 0 || !imgsafe.Available() {
+		return nil
+	}
+	xmlDesc, err := dom.GetXMLDesc(libvirt.DOMAIN_XML_INACTIVE)
+	if err != nil {
+		return fmt.Errorf("read back definition: %w", err)
+	}
+	root, err := parseStrict([]byte(xmlDesc))
+	if err != nil {
+		// libvirt's own output may carry namespaced metadata; fall back to
+		// checking every written file as qcow2-or-probed.
+		root = nil
+	}
+	formats := map[string]string{}
+	if root != nil {
+		if devs := root.child("devices"); devs != nil {
+			for _, d := range devs.Kids {
+				if d.Name != "disk" {
+					continue
+				}
+				src, drv := d.child("source"), d.child("driver")
+				if src == nil || drv == nil {
+					continue
+				}
+				f, _ := src.attr("file")
+				formats[f] = mustAttr(drv, "type")
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	for _, dst := range written {
+		switch f := formats[dst]; f {
+		case "raw":
+			continue
+		case "", "qcow2":
+			if err := imgsafe.CheckChainInside(ctx, dst, f, poolPath); err != nil {
+				return fmt.Errorf("%s: %w", filepath.Base(dst), err)
+			}
+		default:
+			if _, err := imgsafe.Inspect(ctx, dst, f); err != nil {
+				return fmt.Errorf("%s: %w", filepath.Base(dst), err)
+			}
+		}
+	}
+	return nil
+}
+
 // writeArchiveBody streams an archive entry (r) straight to path
 // without buffering it in memory. Snapshot overlays / base disks can
 // be gigabytes; io.ReadAll on them would OOM the backend.
-func writeArchiveBody(r io.Reader, path string) error {
+func writeArchiveBody(r io.Reader, path string, max int64) error {
 	cleaned := filepath.Clean(path)
 	if !filepath.IsAbs(cleaned) || strings.Contains(cleaned, "..") {
 		return fmt.Errorf("invalid archive path %q", path)
@@ -4754,7 +4315,7 @@ func writeArchiveBody(r io.Reader, path string) error {
 	if err != nil {
 		return err
 	}
-	if _, cerr := io.Copy(f, r); cerr != nil {
+	if _, cerr := copyLimited(f, r, max); cerr != nil {
 		_ = f.Close()
 		_ = os.Remove(cleaned)
 		return cerr
@@ -4779,6 +4340,7 @@ func (c *Connector) restoreSnapshots(tarPath, resolvedName, poolPath string, dom
 	defer cleanup3()
 
 	tr3 := tar.NewReader(raw3)
+	snapBudget := newDiskBudget(poolPath)
 
 	// Collect snapshot data from the archive.
 	type snapRestore struct {
@@ -4810,12 +4372,18 @@ func (c *Connector) restoreSnapshots(tarPath, resolvedName, poolPath string, dom
 			continue
 		}
 		snapName := parts[0]
+		if snapName != "_base" && !nameRE.MatchString(strings.TrimSuffix(snapName, ".xml")) {
+			continue // never let an archive path component shape a pool filename
+		}
 
 		if snapName == "_base" {
 			// Root base disk of the backing chain.
 			if len(parts) == 2 {
 				basePath := filepath.Join(poolPath, resolvedName+".base")
-				if werr := writeArchiveBody(tr3, basePath); werr != nil {
+				if werr := snapBudget.take(hdr.Size); werr != nil {
+					return fmt.Sprintf("restore snapshots: %v", werr)
+				}
+				if werr := writeArchiveBody(tr3, basePath, hdr.Size); werr != nil {
 					return fmt.Sprintf("restore snapshots: write _base: %v", werr)
 				}
 				baseVolumeArc = basePath
@@ -4825,7 +4393,7 @@ func (c *Connector) restoreSnapshots(tarPath, resolvedName, poolPath string, dom
 
 		if len(parts) == 1 && strings.HasSuffix(parts[0], ".xml") {
 			// Snapshot metadata XML.
-			body, rerr := io.ReadAll(tr3)
+			body, rerr := readAllLimited(tr3, maxDomainXMLBytes)
 			if rerr != nil {
 				return fmt.Sprintf("restore snapshots: read %s: %v", hdr.Name, rerr)
 			}
@@ -4846,7 +4414,10 @@ func (c *Connector) restoreSnapshots(tarPath, resolvedName, poolPath string, dom
 			snapshots[snapName].volumeArcName = hdr.Name
 			// Write the overlay to the pool.
 			volPath := filepath.Join(poolPath, resolvedName+"."+snapName)
-			if werr := writeArchiveBody(tr3, volPath); werr != nil {
+			if werr := snapBudget.take(hdr.Size); werr != nil {
+				return fmt.Sprintf("restore snapshots: %v", werr)
+			}
+			if werr := writeArchiveBody(tr3, volPath, hdr.Size); werr != nil {
 				return fmt.Sprintf("restore snapshots: write %s: %v", snapName, werr)
 			}
 		}
@@ -4921,7 +4492,18 @@ func (c *Connector) restoreSnapshots(tarPath, resolvedName, poolPath string, dom
 		if len(sr.xmlBytes) == 0 {
 			continue
 		}
-		_, serr := dom.CreateSnapshotXML(string(sr.xmlBytes), 1 /* REDEFINE */)
+		overlay := ""
+		if sr.volumeArcName != "" {
+			overlay = filepath.Join(poolPath, resolvedName+"."+name)
+		}
+		// Untrusted metadata: validated and re-serialised; the embedded
+		// <domain> is dropped so a later revert cannot install a
+		// definition chosen by the archive (audit #2).
+		cleanXML, verr := SanitizeSnapshotXML(string(sr.xmlBytes), overlay)
+		if verr != nil {
+			return fmt.Sprintf("restore snapshots: snapshot %s rejected: %v", name, verr)
+		}
+		_, serr := dom.CreateSnapshotXML(cleanXML, 1 /* REDEFINE */)
 		if serr != nil {
 			return fmt.Sprintf("restore snapshots: redefine %s: %v", name, serr)
 		}
