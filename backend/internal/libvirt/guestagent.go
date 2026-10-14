@@ -1,6 +1,7 @@
 package libvirt
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -142,12 +143,23 @@ func (c *Connector) getClipboardWindows(id string) (string, error) {
 }
 
 func (c *Connector) virshCmd(args ...string) *exec.Cmd {
+	return c.virshCmdContext(context.Background(), 15*time.Second, args...)
+}
+
+func (c *Connector) virshCmdContext(parent context.Context, timeout time.Duration, args ...string) *exec.Cmd {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	ctx, _ := context.WithTimeout(parent, timeout)
 	var fullArgs []string
 	if c.uri != "" {
 		fullArgs = append(fullArgs, "-c", c.uri)
 	}
 	fullArgs = append(fullArgs, args...)
-	return exec.Command("virsh", fullArgs...)
+	return exec.CommandContext(ctx, "virsh", fullArgs...)
 }
 
 // GuestExecResult holds the outcome of executing a command in the guest.
