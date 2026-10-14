@@ -199,15 +199,15 @@
             placeholder="Port"
           />
           <select class="input w-24" bind:value={r.action}>
-            <option value="allow">{t('vmDetail.actionAllow')}</option>
-            <option value="drop">{t('vmDetail.actionDrop')}</option>
-            <option value="reject">{t('vmDetail.actionReject')}</option>
+            <option value="allow">{t('vmDetail.fwAllow')}</option>
+            <option value="drop">{t('vmDetail.fwDrop')}</option>
+            <option value="reject">{t('vmDetail.fwReject')}</option>
           </select>
           <Button size="xs" variant="ghost" onclick={() => removeRule(r.id)}>×</Button>
         </div>
       {/each}
       {#if fwRules.length === 0}
-        <EmptyState compact icon="shieldOff" title={t('vmDetail.noInboundRules')} />
+        <EmptyState compact icon="shieldOff" title={t('vmDetail.noRules')} />
       {/if}
     </div>
     <Button size="xs" variant="outline" class="mt-2" onclick={addRule}>

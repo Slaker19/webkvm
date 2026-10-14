@@ -839,6 +839,7 @@ export const messages = {
       addRule: 'Add rule',
       fwAllow: 'Allow',
       fwDrop: 'Block',
+      fwReject: 'Reject',
       fwApplied: 'Active',
       fwPending: 'VM off / no IP',
       firewallHint:
@@ -4478,6 +4479,7 @@ export const messages = {
       addRule: 'Añadir regla',
       fwAllow: 'Permitir',
       fwDrop: 'Bloquear',
+      fwReject: 'Rechazar',
       fwApplied: 'Activa',
       fwPending: 'VM apagada / sin IP',
       firewallHint:
@@ -8164,6 +8166,7 @@ export const messages = {
       addRule: 'Afegeix regla',
       fwAllow: 'Permetre',
       fwDrop: 'Bloquejar',
+      fwReject: 'Rebutjar',
       fwApplied: 'Activa',
       fwPending: 'VM apagada / sense IP',
       firewallHint:
