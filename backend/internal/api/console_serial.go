@@ -393,7 +393,12 @@ func (h *Handler) HostTerminal(w http.ResponseWriter, r *http.Request) {
 				// If process is still running, retry reading up to a reasonable limit.
 				if errors.Is(err, syscall.EIO) && eioCount < 10 {
 					eioCount++
-					time.Sleep(50 * time.Millisecond)
+					select {
+					case <-done:
+						errc <- err
+						return
+					case <-time.After(50 * time.Millisecond):
+					}
 					continue
 				}
 				errc <- err

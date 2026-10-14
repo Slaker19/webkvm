@@ -585,7 +585,12 @@ func (h *Handler) InitHostDiskDirectory(w http.ResponseWriter, r *http.Request) 
 		}
 
 		_ = exec.CommandContext(ctx, "partprobe", req.DiskPath).Run()
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			jsonErr(w, http.StatusRequestTimeout, "operation cancelled")
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
 
 		// Fallback to disk itself if partition device was not created (e.g. virtual raw loops)
 		targetDevice = partitionPath
