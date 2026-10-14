@@ -927,7 +927,7 @@ User=root
 Group=root
 Environment=DATA_DIR=${DATA_DIR}
 Environment=REPO_DIR=${DATA_DIR}/source
-Environment=BIND_ADDR=127.0.0.1
+Environment=BIND_ADDR=${DEFAULT_BIND}
 Environment=PORT=${DEFAULT_PORT}
 Environment=TMPDIR=/var/tmp
 Environment=WEBKVM_LOG_FILE=${DATA_DIR}/logs/backend.log

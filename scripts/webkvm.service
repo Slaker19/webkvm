@@ -23,7 +23,7 @@ Environment=WEBKVM_ALLOW_UPDATE=1
 # only thing that should reach the backend. Operators running
 # without a front proxy can override this with a drop-in setting
 # BIND_ADDR=0.0.0.0.
-Environment=BIND_ADDR=127.0.0.1
+Environment=BIND_ADDR=0.0.0.0
 # Go's multipart parser and os.CreateTemp use os.Tmpdir() (= $TMPDIR).
 # On many distros /tmp is a small tmpfs; /var/tmp is on the root
 # filesystem and has room for multi-GB uploads.
