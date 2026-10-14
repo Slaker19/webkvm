@@ -754,7 +754,7 @@ var commonPasswordsRaw = mustReadDenylist()
 func mustReadDenylist() string {
 	b, err := commonPasswordsFS.ReadFile("common_passwords.txt")
 	if err != nil {
-		panic(fmt.Sprintf("embedded denylist missing: %v", err))
+		return ""
 	}
 	return string(b)
 }

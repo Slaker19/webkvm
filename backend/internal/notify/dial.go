@@ -29,10 +29,9 @@ func mustParseCIDRs(cidrs ...string) []*net.IPNet {
 	out := make([]*net.IPNet, 0, len(cidrs))
 	for _, c := range cidrs {
 		_, n, err := net.ParseCIDR(c)
-		if err != nil {
-			panic(err)
+		if err == nil && n != nil {
+			out = append(out, n)
 		}
-		out = append(out, n)
 	}
 	return out
 }

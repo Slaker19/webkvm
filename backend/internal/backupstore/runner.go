@@ -156,7 +156,8 @@ func NewRunnerWithConfig(store *Store, dataDir string, config ConfigProvider, vm
 		logger = slog.Default()
 	}
 	if config == nil {
-		panic("backupstore: NewRunnerWithConfig requires a non-nil ConfigProvider")
+		logger.Error("backupstore: NewRunnerWithConfig received nil ConfigProvider, using default empty config")
+		config = func() BackupConfig { return BackupConfig{} }
 	}
 	return &Runner{
 		store:        store,
