@@ -1,6 +1,9 @@
 package libvirt
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -154,5 +157,119 @@ func TestStripCdromDevices(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCloneDiskFile_FullCopy verifies that the default (non-linked)
+// clone mode produces a fully independent qcow2 file with the
+// source's actual data — this is the regression test for the bug
+// where CloneDomain used to create an empty volume of the right size
+// instead of copying the disk contents.
+func TestCloneDiskFile_FullCopy(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not available in test environment")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.qcow2")
+	dst := filepath.Join(dir, "clone.qcow2")
+
+	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", src, "16M").CombinedOutput(); err != nil {
+		t.Fatalf("setup: create source qcow2: %v (%s)", err, out)
+	}
+	// Write recognizable data through the qcow2 file with qemu-img
+	// so we don't need a full guest — dd against the raw file won't
+	// respect the qcow2 format, but writing via `qemu-img convert`
+	// from a small raw seed does.
+	seed := filepath.Join(dir, "seed.raw")
+	if err := os.WriteFile(seed, []byte("WEBKVM-CLONE-TEST-MARKER"), 0644); err != nil {
+		t.Fatalf("setup: write seed: %v", err)
+	}
+	if out, err := exec.Command("qemu-img", "convert", "-n", "-O", "qcow2", seed, src).CombinedOutput(); err != nil {
+		t.Fatalf("setup: seed source qcow2: %v (%s)", err, out)
+	}
+
+	if err := cloneDiskFile(src, dst, "qcow2", false); err != nil {
+		t.Fatalf("cloneDiskFile (linked=false): %v", err)
+	}
+
+	// 1. Destination must exist and have the right virtual size.
+	out, err := exec.Command("qemu-img", "info", "--output=json", dst).CombinedOutput()
+	if err != nil {
+		t.Fatalf("qemu-img info on clone: %v (%s)", err, out)
+	}
+	if !strings.Contains(string(out), `"virtual-size": 16777216`) {
+		t.Errorf("expected virtual size 16M in clone info, got: %s", out)
+	}
+	// 2. Destination must NOT have a backing file (independent copy).
+	if strings.Contains(string(out), "backing-filename") {
+		t.Errorf("clone should not have a backing file: %s", out)
+	}
+	// 3. The data must match: convert back to raw and check contents.
+	rawOut := filepath.Join(dir, "clone.raw")
+	if out, err := exec.Command("qemu-img", "convert", "-O", "raw", dst, rawOut).CombinedOutput(); err != nil {
+		t.Fatalf("convert clone to raw: %v (%s)", err, out)
+	}
+	got, err := os.ReadFile(rawOut)
+	if err != nil {
+		t.Fatalf("read cloned raw: %v", err)
+	}
+	if !strings.HasPrefix(string(got), "WEBKVM-CLONE-TEST-MARKER") {
+		t.Errorf("cloned data does not match source! header=%q", got[:min(len(got), 32)])
+	}
+}
+
+// TestCloneDiskFile_Linked verifies that linked=true produces an
+// overlay file whose backing file points at the source.
+func TestCloneDiskFile_Linked(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not available in test environment")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.qcow2")
+	dst := filepath.Join(dir, "clone.qcow2")
+
+	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", src, "16M").CombinedOutput(); err != nil {
+		t.Fatalf("setup: create source qcow2: %v (%s)", err, out)
+	}
+
+	if err := cloneDiskFile(src, dst, "qcow2", true); err != nil {
+		t.Fatalf("cloneDiskFile (linked=true): %v", err)
+	}
+
+	out, err := exec.Command("qemu-img", "info", "--output=json", dst).CombinedOutput()
+	if err != nil {
+		t.Fatalf("qemu-img info on clone: %v (%s)", err, out)
+	}
+	// Must have backing-filename pointing at src.
+	if !strings.Contains(string(out), "backing-filename") {
+		t.Errorf("expected backing file on linked clone, got: %s", out)
+	}
+	if !strings.Contains(string(out), "source.qcow2") {
+		t.Errorf("expected backing file to point at source.qcow2, got: %s", out)
+	}
+}
+
+// TestCloneDiskFile_LinkedIgnoredForRaw verifies that requesting a
+// linked clone on a raw disk is rejected: raw files cannot have
+// backing files, so we silently fall back to an independent copy
+// rather than failing or creating a broken overlay.
+func TestCloneDiskFile_LinkedIgnoredForRaw(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not available in test environment")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.raw")
+	dst := filepath.Join(dir, "clone.raw")
+
+	if out, err := exec.Command("qemu-img", "create", "-f", "raw", src, "1M").CombinedOutput(); err != nil {
+		t.Fatalf("setup: create source raw: %v (%s)", err, out)
+	}
+
+	if err := cloneDiskFile(src, dst, "raw", true); err != nil {
+		t.Fatalf("cloneDiskFile (linked=true, raw format): %v", err)
+	}
+
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatalf("clone file missing: %v", err)
 	}
 }

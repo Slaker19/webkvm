@@ -3,6 +3,8 @@ package libvirt
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"webkvm/internal/backupstore"
@@ -317,4 +319,78 @@ func (c *Connector) RevertSnapshot(domainID, snapID string) error {
 	defer snap.Free()
 
 	return snap.RevertToSnapshot(0)
+}
+
+func extractSnapshotCreation(xmlDesc string) string {
+	for _, line := range strings.Split(xmlDesc, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "<creationTime>") {
+			ts := strings.TrimSuffix(strings.TrimPrefix(line, "<creationTime>"), "</creationTime>")
+			sec, err := strconv.ParseInt(ts, 10, 64)
+			if err != nil {
+				return ts
+			}
+			return time.Unix(sec, 0).UTC().Format(time.RFC3339)
+		}
+	}
+	return ""
+}
+
+// extractSnapshotEpoch returns the <creationTime> as a raw epoch-seconds
+// int64 (0 if missing/unparseable). Used by the tree UI for sortable
+// timestamps.
+func extractSnapshotEpoch(xmlDesc string) int64 {
+	for _, line := range strings.Split(xmlDesc, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "<creationTime>") {
+			ts := strings.TrimSuffix(strings.TrimPrefix(line, "<creationTime>"), "</creationTime>")
+			sec, err := strconv.ParseInt(ts, 10, 64)
+			if err == nil {
+				return sec
+			}
+			return 0
+		}
+	}
+	return 0
+}
+
+// extractSnapshotParent returns the <parent><name>...</name></parent>
+// value, or "" if there is no parent (i.e. this is a root snapshot).
+func extractSnapshotParent(xmlDesc string) string {
+	s := strings.Index(xmlDesc, "<parent>")
+	if s < 0 {
+		s = strings.Index(xmlDesc, "<parent ")
+		if s < 0 {
+			return ""
+		}
+	}
+	block := xmlDesc[s:]
+	e := strings.Index(block, "</parent>")
+	if e < 0 {
+		return ""
+	}
+	block = block[:e]
+	ns := strings.Index(block, "<name>")
+	if ns < 0 {
+		ns = strings.Index(block, "<name ")
+		if ns < 0 {
+			return ""
+		}
+	}
+	block = block[ns:]
+	ne := strings.Index(block, "</name>")
+	if ne < 0 {
+		return ""
+	}
+	name := strings.TrimPrefix(block[:ne], "<name>")
+	name = strings.TrimSpace(name)
+	// Handle <name attr='x'>name</name> form.
+	if strings.HasPrefix(name, " ") {
+		// The "<name " form: extract just the inner text.
+		closeTag := strings.Index(name, ">")
+		if closeTag >= 0 {
+			name = name[closeTag+1:]
+		}
+	}
+	return strings.TrimSpace(name)
 }
