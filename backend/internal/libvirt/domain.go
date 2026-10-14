@@ -1277,28 +1277,6 @@ func (c *Connector) createDiskInPool(poolName, volName string, sizeMB int64, for
 	return err
 }
 
-// calculateCPUUsage intentionally reports nothing.
-//
-// info.CpuTime is the domain's CUMULATIVE CPU nanoseconds since boot,
-// not a delta. The previous implementation divided it by a hardcoded
-// 1 second, i.e. it computed "seconds of CPU burned since boot, as a
-// percentage", and clamped the result with math.Min(usage, 100). Any
-// VM that had ever accumulated NrVirtCpu seconds of CPU — that is,
-// every VM up for more than a few seconds — therefore reported a
-// constant 100%. An idle 4-vCPU guest with 60s of lifetime CPU showed
-// "100.0% used" on its detail page.
-//
-// A correct instantaneous figure needs two samples over a known
-// interval, which is exactly what MetricsCollector.collectOne already
-// does (see metrics.go): the SSE "vm.metrics" stream and
-// GET /api/vms/{id}/metrics carry the real series. models.VM.CPUUsage
-// is `omitempty` and the UI guards with `!= null`, so returning 0 here
-// omits the field and the detail page falls back to the live metrics
-// instead of rendering a fabricated number.
-func calculateCPUUsage(dom *libvirt.Domain, info *libvirt.DomainInfo) float64 {
-	return 0
-}
-
 // volPoolAndSize resolves the storage pool name and capacity (in GB) for a
 // given volume file path using libvirt's canonical LookupStorageVolByPath API.
 func (c *Connector) volPoolAndSize(volPath string) (pool string, sizeGB int64) {
