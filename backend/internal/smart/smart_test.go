@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"webkvm/internal/sysutil"
 )
 
 const sampleNVMeJSON = `{
@@ -219,5 +221,34 @@ func TestProbe_LiveOrFallback(t *testing.T) {
 		if info.Status == "" {
 			t.Error("expected non-empty status")
 		}
+	}
+}
+
+func TestProbe_MockRunner(t *testing.T) {
+	origCheck := checkAvailable
+	checkAvailable = func() bool { return true }
+	defer func() {
+		checkAvailable = origCheck
+		SetRunner(nil)
+		InvalidateCache("/dev/sda")
+	}()
+
+	mock := sysutil.NewMockRunner()
+	mock.Register("smartctl", []byte(sampleATAJSON), nil)
+	SetRunner(mock)
+	InvalidateCache("/dev/sda")
+
+	info, err := Probe(context.Background(), "/dev/sda")
+	if err != nil {
+		t.Fatalf("Probe with mock runner failed: %v", err)
+	}
+	if info.Device != "/dev/sda" {
+		t.Errorf("expected device /dev/sda, got %s", info.Device)
+	}
+	if info.Model != "ST3000DM008-2DM166" {
+		t.Errorf("expected model ST3000DM008-2DM166, got %s", info.Model)
+	}
+	if !info.Healthy {
+		t.Errorf("expected healthy disk, got false")
 	}
 }

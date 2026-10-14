@@ -1,7 +1,6 @@
 package smart
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"webkvm/internal/sysutil"
 )
 
 var safeDiskDeviceRE = regexp.MustCompile(`^/dev/(sd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+|hd[a-z]+|xvd[a-z]+|mmcblk[0-9]+)$`)
@@ -46,14 +47,27 @@ type cacheEntry struct {
 var (
 	cacheMu sync.RWMutex
 	cache   = make(map[string]cacheEntry)
+	runner  sysutil.CommandRunner = sysutil.DefaultRunner
+	checkAvailable = func() bool {
+		_, err := exec.LookPath("smartctl")
+		return err == nil
+	}
 )
+
+// SetRunner overrides the command runner for testing or custom execution environments.
+func SetRunner(r sysutil.CommandRunner) {
+	if r == nil {
+		runner = sysutil.DefaultRunner
+	} else {
+		runner = r
+	}
+}
 
 const defaultCacheTTL = 60 * time.Second
 
 // IsAvailable reports whether the `smartctl` binary exists on the system.
 func IsAvailable() bool {
-	_, err := exec.LookPath("smartctl")
-	return err == nil
+	return checkAvailable()
 }
 
 // ListPhysicalDisks discovers physical disks present on the system.
@@ -117,14 +131,11 @@ func Probe(ctx context.Context, devPath string) (Info, error) {
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "smartctl", "-j", "-i", "-H", "-A", cleanPath)
-	var out bytes.Buffer
-	cmd.Stdout = &out
 	// smartctl returns non-zero exit codes for warnings (e.g. past errors),
 	// so we inspect stdout as long as output is produced.
-	_ = cmd.Run()
+	out, _ := runner.Run(cctx, "smartctl", "-j", "-i", "-H", "-A", cleanPath)
 
-	if out.Len() == 0 {
+	if len(out) == 0 {
 		return Info{
 			Device:    cleanPath,
 			Available: false,
@@ -132,7 +143,7 @@ func Probe(ctx context.Context, devPath string) (Info, error) {
 		}, fmt.Errorf("smartctl returned no output for %s", cleanPath)
 	}
 
-	info, err := ParseJSON(cleanPath, out.Bytes())
+	info, err := ParseJSON(cleanPath, out)
 	if err != nil {
 		return Info{
 			Device:    cleanPath,

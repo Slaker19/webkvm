@@ -45,3 +45,33 @@ func (m *MockCommandRunner) RunWithTimeout(name string, timeout time.Duration, a
 	defer cancel()
 	return m.Run(ctx, name, args...)
 }
+
+// MockRunner is a MockCommandRunner with a registered command response map for testing.
+type MockRunner struct {
+	MockCommandRunner
+	responses map[string][]byte
+	errors    map[string]error
+}
+
+// NewMockRunner creates a convenient registry-backed MockRunner.
+func NewMockRunner() *MockRunner {
+	m := &MockRunner{
+		responses: make(map[string][]byte),
+		errors:    make(map[string]error),
+	}
+	m.Handler = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if err, ok := m.errors[name]; ok {
+			return m.responses[name], err
+		}
+		return m.responses[name], nil
+	}
+	return m
+}
+
+// Register maps a binary name to a canned output and error response.
+func (m *MockRunner) Register(name string, out []byte, err error) {
+	m.responses[name] = out
+	if err != nil {
+		m.errors[name] = err
+	}
+}
