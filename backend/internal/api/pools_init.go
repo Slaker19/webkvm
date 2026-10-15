@@ -170,7 +170,7 @@ func (h *Handler) createPoolsForSubfolders(ctx context.Context, volumeName, moun
 		seen[req.Name] = true
 		results = append(results, h.createOnePool(ctx, req, backend))
 	}
-	if len(results) == 0 && subfolders == nil {
+	if len(results) == 0 && (subfolders == nil || (fallbackPurpose != "" && len(subfolders) == 0)) {
 		purpose := legacyFallbackPurpose(fallbackPurpose)
 		results = append(results, h.createOnePool(ctx, models.CreatePoolRequest{
 			Name:    volumeName,

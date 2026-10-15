@@ -1504,6 +1504,23 @@ func (h *Handler) ListHostRAID(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, "failed to query software RAID: "+err.Error())
 		return
 	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	mountTable := diskstate.New().Resolve(ctx)
+
+	for i := range arrays {
+		dev := arrays[i].Device
+		ms := mountTable.ForDisk(dev, nil)
+		arrays[i].MountPoints = ms.MountPoints
+		arrays[i].Mounted = len(ms.MountPoints) > 0 || ms.Status() == diskstate.StatusActive
+
+		if out, err := exec.CommandContext(ctx, "blkid", "-s", "TYPE", "-o", "value", dev).Output(); err == nil {
+			arrays[i].FSType = strings.TrimSpace(string(out))
+		}
+	}
+
 	jsonResp(w, http.StatusOK, arrays)
 }
 

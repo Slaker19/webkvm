@@ -194,6 +194,9 @@
   let createRaidFs = $state('ext4');
   let createRaidMount = $state('');
   let createRaidPool = $state(true);
+  let createRaidSubfolders = $state(['discos', 'isos', 'backups']);
+  let createRaidPoolMode = $state('multi');
+  let createRaidSinglePurpose = $state('disk');
   // Cada carpeta marcada con naturaleza crea su propio pool
   // independiente en su subcarpeta (discos -> libvirt, isos ->
   // libvirt, contenedores -> Incus, backups -> libvirt, plantillas
@@ -503,7 +506,21 @@
     createRaidFs = 'ext4';
     createRaidMount = '';
     createRaidPool = true;
+    createRaidSubfolders = ['discos', 'isos', 'backups'];
+    createRaidPoolMode = 'multi';
+    createRaidSinglePurpose = 'disk';
     showCreateRaid = true;
+  }
+
+  function openMountExistingRaid(arr) {
+    const pseudoDisk = {
+      path: arr.device,
+      model: `Linux Software RAID (${arr.level})`,
+      fstype: arr.fstype || '',
+      size_human: arr.size_human,
+      is_system: false,
+    };
+    openInitDiskDialog(pseudoDisk);
   }
 
   function minDisksForRaid(level) {
@@ -545,8 +562,12 @@
         volume_name: createRaidFormat ? raidDevName : undefined,
         create_pool: createRaidFormat ? createRaidPool : undefined,
         subfolders:
-          createRaidFormat && createRaidPool
-            ? ['discos', 'isos', 'backups']
+          createRaidFormat && createRaidPool && createRaidPoolMode === 'multi'
+            ? createRaidSubfolders
+            : undefined,
+        pool_purpose:
+          createRaidFormat && createRaidPool && createRaidPoolMode === 'single'
+            ? createRaidSinglePurpose
             : undefined,
       });
       finishTask(taskId, 'success', `Arreglo RAID ${res.device} creado`, 100);
@@ -2322,8 +2343,31 @@
                     </div>
                   </div>
 
+                  {#if arr.mounted && arr.mountpoints?.length}
+                    <div
+                      class="text-[11px] font-mono text-accent flex items-center gap-1.5 bg-accent/10 p-1.5 rounded-lg border border-accent/20"
+                    >
+                      <Icon name="check" size={12} class="text-accent shrink-0" />
+                      <span>{t('storage.mountedAt', { path: arr.mountpoints.join(', ') })}</span>
+                      {#if arr.fstype}
+                        <span class="text-muted-foreground">({arr.fstype})</span>
+                      {/if}
+                    </div>
+                  {/if}
+
                   {#if auth.isAdmin()}
-                    <div class="pt-2 border-t border-border/50 flex items-center justify-end gap-2">
+                    <div class="pt-2 border-t border-border/50 flex items-center justify-end gap-2 flex-wrap">
+                      {#if !arr.mounted}
+                        <Button
+                          size="xs"
+                          variant="default"
+                          class="!h-7 !text-xs gap-1"
+                          onclick={() => openMountExistingRaid(arr)}
+                        >
+                          <Icon name="plus" size={11} />
+                          {t('storage.mountExistingRaid')}
+                        </Button>
+                      {/if}
                       <Button
                         size="xs"
                         variant="outline"
@@ -5136,9 +5180,72 @@
                   bind:checked={createRaidPool}
                   class="w-4 h-4 rounded border-border"
                 />
-                <span class="text-xs">{t('storage.createPoolsCheck')}</span>
+                <span class="text-xs font-semibold">{t('storage.createPoolsCheck')}</span>
               </label>
             </div>
+
+            {#if createRaidPool}
+              <div class="space-y-2 pt-1 pl-3 border-l border-border/60">
+                <div class="flex items-center gap-4 text-[11px]">
+                  <label class="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="radio"
+                      name="raid-pool-mode"
+                      value="multi"
+                      bind:group={createRaidPoolMode}
+                    />
+                    <span>{t('storage.raidPoolModeMulti')}</span>
+                  </label>
+                  <label class="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="radio"
+                      name="raid-pool-mode"
+                      value="single"
+                      bind:group={createRaidPoolMode}
+                    />
+                    <span>{t('storage.raidPoolModeSingle')}</span>
+                  </label>
+                </div>
+
+                {#if createRaidPoolMode === 'single'}
+                  <div>
+                    <label for="raid-single-purpose" class="block font-semibold mb-1 text-[11px]"
+                      >{t('storage.raidSinglePurposeLabel')}</label
+                    >
+                    <select
+                      id="raid-single-purpose"
+                      bind:value={createRaidSinglePurpose}
+                      class="input w-full text-xs font-mono"
+                    >
+                      <option value="disk">disk (Imágenes de VM / VDI)</option>
+                      <option value="iso">iso (Biblioteca de imágenes ISO)</option>
+                      <option value="backup">backup (Copias de seguridad)</option>
+                      <option value="container">container (Contenedores Incus)</option>
+                    </select>
+                  </div>
+                {:else}
+                  <div class="grid grid-cols-2 gap-2 text-[11px] pt-1">
+                    {#each initDiskSubfolders as sub (sub.id)}
+                      <label class="flex items-center gap-1.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={createRaidSubfolders.includes(sub.id)}
+                          onchange={(e) => {
+                            if (e.target.checked) {
+                              createRaidSubfolders = [...createRaidSubfolders, sub.id];
+                            } else {
+                              createRaidSubfolders = createRaidSubfolders.filter((x) => x !== sub.id);
+                            }
+                          }}
+                          class="w-3.5 h-3.5 rounded border-border"
+                        />
+                        <span>{sub.label} ({sub.path})</span>
+                      </label>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>

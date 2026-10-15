@@ -202,6 +202,9 @@ type Array struct {
 	Size        int64    `json:"size"`
 	SizeHuman   string   `json:"size_human"`
 	MismatchCnt int64    `json:"mismatch_cnt"`
+	FSType      string   `json:"fstype,omitempty"`
+	MountPoints []string `json:"mountpoints,omitempty"`
+	Mounted     bool     `json:"mounted"`
 }
 
 // List discovers all active MD RAID arrays directly from /sys/block/md*/md.
