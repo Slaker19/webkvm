@@ -1606,6 +1606,11 @@ export const messages = {
       creatingRaid: 'Creating RAID...',
       raidCreatedSuccess:
         'RAID array {device} created successfully. You can now format and mount it using "Initialize Directory".',
+      raidAutoFormatLabel: 'Format and mount automatically upon creation',
+      raidAutoFormatDesc:
+        'Applies a filesystem (ext4/xfs/btrfs) and mounts persistently via systemd',
+      createPoolsCheck:
+        'Create Storage Pools on the new array (VM disks, ISOs, backups)',
       minRaidDisksRequired: 'RAID {level} requires at least {min} disks.',
       diskInitialized: 'Disk initialized and mounted successfully',
       wipeDiskTitle: 'Wipe Disk',
@@ -5263,6 +5268,11 @@ export const messages = {
       creatingRaid: 'Creando RAID...',
       raidCreatedSuccess:
         'Array RAID {device} creado con éxito. Ahora puedes formatearlo y montarlo usando «Inicializar Directorio».',
+      raidAutoFormatLabel: 'Formatear y montar automáticamente tras la creación',
+      raidAutoFormatDesc:
+        'Aplica un sistema de archivos (ext4/xfs/btrfs) y monta persistentemente vía systemd',
+      createPoolsCheck:
+        'Crear Grupos de Almacenamiento en el array (Discos VM, ISOs, backups)',
       minRaidDisksRequired: 'RAID {level} requiere al menos {min} discos.',
       diskInitialized: 'Disco inicializado y montado con éxito',
       wipeDiskTitle: 'Limpiar Disco (Wipe)',
@@ -8952,6 +8962,11 @@ export const messages = {
       creatingRaid: 'Creant RAID...',
       raidCreatedSuccess:
         'Array RAID {device} creat amb èxit. Ara pots formatar-lo i muntar-lo usant «Inicialitzar Directori».',
+      raidAutoFormatLabel: 'Formatar i muntar automàticament després de la creació',
+      raidAutoFormatDesc:
+        'Aplica un sistema de fitxers (ext4/xfs/btrfs) i munta persistentment via systemd',
+      createPoolsCheck:
+        "Crear Grups d'Emmagatzematge en l'array (Discs VM, ISOs, còpies de seguretat)",
       minRaidDisksRequired: 'RAID {level} requereix almenys {min} discos.',
       diskInitialized: 'Disc inicialitzat i muntat amb èxit',
       wipeDiskTitle: 'Netejar Disc (Wipe)',

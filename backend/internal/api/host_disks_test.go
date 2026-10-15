@@ -343,3 +343,23 @@ func TestPartitionHasMount(t *testing.T) {
 		t.Error("empty partition list must not match")
 	}
 }
+
+// TestCreateRAIDRequestFormatFields verifies that CreateRAIDRequest carries
+// optional format and mount fields for automated RAID provisioning.
+func TestCreateRAIDRequestFormatFields(t *testing.T) {
+	req := models.CreateRAIDRequest{
+		Name:        "md0",
+		Level:       "1",
+		Devices:     []string{"/dev/sdb", "/dev/sdc"},
+		Format:      true,
+		VolumeName:  "raid-data",
+		MountPoint:  "/mnt/raid-data",
+		Filesystem:  "ext4",
+		CreatePool:  true,
+		Subfolders:  []string{"discos", "isos"},
+		PoolPurpose: "vdi",
+	}
+	if !req.Format || req.Filesystem != "ext4" || req.MountPoint != "/mnt/raid-data" {
+		t.Errorf("CreateRAIDRequest fields not preserved: %+v", req)
+	}
+}

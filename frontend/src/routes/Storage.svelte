@@ -190,6 +190,10 @@
   let createRaidDevice = $state('');
   let createRaidDisks = $state([]);
   let creatingRaid = $state(false);
+  let createRaidFormat = $state(false);
+  let createRaidFs = $state('ext4');
+  let createRaidMount = $state('');
+  let createRaidPool = $state(true);
   // Cada carpeta marcada con naturaleza crea su propio pool
   // independiente en su subcarpeta (discos -> libvirt, isos ->
   // libvirt, contenedores -> Incus, backups -> libvirt, plantillas
@@ -448,6 +452,10 @@
     createRaidLevel = '1';
     createRaidDevice = '';
     createRaidDisks = [];
+    createRaidFormat = false;
+    createRaidFs = 'ext4';
+    createRaidMount = '';
+    createRaidPool = true;
     showCreateRaid = true;
   }
 
@@ -482,10 +490,21 @@
         name: createRaidDevice.trim() || undefined,
         level: createRaidLevel,
         devices: createRaidDisks,
+        format: createRaidFormat,
+        filesystem: createRaidFormat ? createRaidFs : undefined,
+        mount_point: createRaidFormat
+          ? createRaidMount.trim() || `/mnt/${raidDevName}`
+          : undefined,
+        volume_name: createRaidFormat ? raidDevName : undefined,
+        create_pool: createRaidFormat ? createRaidPool : undefined,
+        subfolders:
+          createRaidFormat && createRaidPool
+            ? ['discos', 'isos', 'backups']
+            : undefined,
       });
       finishTask(taskId, 'success', `Arreglo RAID ${res.device} creado`, 100);
       showCreateRaid = false;
-      await loadHostDisks();
+      await Promise.all([loadHostDisks(), loadPools()]);
       alert(t('storage.raidCreatedSuccess', { device: res.device }));
     } catch (e) {
       finishTask(taskId, 'error', e.message || 'Error al crear RAID', 30);
@@ -4947,6 +4966,56 @@
               min: minDisksForRaid(createRaidLevel),
             })}
           </p>
+        {/if}
+      </div>
+
+      <div class="pt-2 border-t border-border space-y-3">
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            bind:checked={createRaidFormat}
+            class="w-4 h-4 rounded border-border"
+          />
+          <span class="font-semibold text-xs">{t('storage.raidAutoFormatLabel')}</span>
+        </label>
+        <p class="text-[11px] text-muted-foreground ml-6">
+          {t('storage.raidAutoFormatDesc')}
+        </p>
+
+        {#if createRaidFormat}
+          <div class="space-y-3 pl-4 pt-1 border-l-2 border-primary/40 ml-2">
+            <div>
+              <label for="raid-fs" class="block font-semibold mb-1"
+                >{t('storage.filesystemTitle')}</label
+              >
+              <select id="raid-fs" bind:value={createRaidFs} class="input w-full text-xs font-mono">
+                <option value="ext4">ext4 (Linux estándar)</option>
+                <option value="xfs">xfs (Alto rendimiento)</option>
+                <option value="btrfs">btrfs (CoW con snapshots)</option>
+              </select>
+            </div>
+            <div>
+              <label for="raid-mount" class="block font-semibold mb-1"
+                >{t('storage.colMountPoint')}</label
+              >
+              <Input
+                id="raid-mount"
+                bind:value={createRaidMount}
+                placeholder={`/mnt/${createRaidDevice.trim() || 'md-' + createRaidLevel}`}
+                class="w-full font-mono text-xs"
+              />
+            </div>
+            <div>
+              <label class="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  bind:checked={createRaidPool}
+                  class="w-4 h-4 rounded border-border"
+                />
+                <span class="text-xs">{t('storage.createPoolsCheck')}</span>
+              </label>
+            </div>
+          </div>
         {/if}
       </div>
     </div>

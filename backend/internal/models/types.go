@@ -312,9 +312,16 @@ type CreateZVolRequest struct {
 }
 
 type CreateRAIDRequest struct {
-	Name    string   `json:"name,omitempty"` // e.g. "/dev/md0" or "md0"
-	Level   string   `json:"level"`          // 0, 1, 5, 6, 10 / raid0, raid1...
-	Devices []string `json:"devices"`
+	Name        string   `json:"name,omitempty"` // e.g. "/dev/md0" or "md0"
+	Level       string   `json:"level"`          // 0, 1, 5, 6, 10 / raid0, raid1...
+	Devices     []string `json:"devices"`
+	Format      bool     `json:"format,omitempty"`
+	VolumeName  string   `json:"volume_name,omitempty"`
+	MountPoint  string   `json:"mount_point,omitempty"`
+	Filesystem  string   `json:"filesystem,omitempty"`
+	CreatePool  bool     `json:"create_pool,omitempty"`
+	Subfolders  []string `json:"subfolders,omitempty"`
+	PoolPurpose string   `json:"pool_purpose,omitempty"`
 }
 
 type AttachDiskRequest struct {

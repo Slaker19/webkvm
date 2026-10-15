@@ -512,6 +512,61 @@ func (h *Handler) InitHostDiskDirectory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	out, isGuard, err := h.executeInitHostDisk(ctx, req)
+	if err != nil {
+		if isGuard {
+			diskGuardErr(w, err)
+			return
+		}
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.audit.Log(auditFor(r, "host.disk_init_directory", req.DiskPath, map[string]any{
+		"mode":            req.Mode,
+		"mount_point":     out.MountPoint,
+		"device":          out.TargetDevice,
+		"filesystem":      out.Filesystem,
+		"volume_name":     req.VolumeName,
+		"mount_options":   out.MountOptions,
+		"mounted":         out.Mounted,
+		"mount_deferred":  out.MountDeferred,
+		"create_pool":     req.CreatePool,
+		"pools":           out.Pools,
+		"subfolders":      out.Subfolders,
+		"register_backup": req.RegisterBackupTarget,
+	}))
+
+	jsonResp(w, http.StatusOK, map[string]any{
+		"status":         "initialized",
+		"mode":           req.Mode,
+		"disk":           req.DiskPath,
+		"device":         out.TargetDevice,
+		"mount_point":    out.MountPoint,
+		"filesystem":     out.Filesystem,
+		"mount_options":  out.MountOptions,
+		"mounted":        out.Mounted,
+		"mount_deferred": out.MountDeferred,
+		"pools":          out.Pools,
+		"subfolders":     out.Subfolders,
+	})
+}
+
+type initHostDiskOutput struct {
+	TargetDevice  string       `json:"device"`
+	MountPoint    string       `json:"mount_point"`
+	Filesystem    string       `json:"filesystem"`
+	MountOptions  string       `json:"mount_options"`
+	Mounted       bool         `json:"mounted"`
+	MountDeferred bool         `json:"mount_deferred"`
+	Pools         []PoolResult `json:"pools"`
+	Subfolders    []string     `json:"subfolders"`
+}
+
+func (h *Handler) executeInitHostDisk(ctx context.Context, req models.InitHostDiskRequest) (*initHostDiskOutput, bool, error) {
 	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
 	if req.Mode != "format" && req.Mode != "mount" {
 		req.Mode = "format"
@@ -520,120 +575,87 @@ func (h *Handler) InitHostDiskDirectory(w http.ResponseWriter, r *http.Request) 
 		req.Filesystem = ""
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-	defer cancel()
-
 	var targetDevice string
 
 	if req.Mode == "mount" {
-		// Non-destructive: locate an existing filesystem on the disk or
-		// any of its partitions. NOTHING is written to the device — no
-		// wipefs, no partitioning, no mkfs.
 		dev, fstype, err := h.findExistingFilesystem(ctx, req.DiskPath, req.Device)
 		if err != nil {
-			jsonErr(w, http.StatusBadRequest, err.Error())
-			return
+			return nil, false, err
 		}
-		// Refuse to mount a filesystem that's already mounted somewhere
-		// else — creating a second mountpoint for the same device is
-		// how a live pool ends up duplicated (and then, if someone later
-		// wipes the "old" mountpoint's disk, corrupted).
 		if err := h.assertDeviceNotMountedElsewhere(ctx, dev, req.MountPoint); err != nil {
-			diskGuardErr(w, err)
-			return
+			return nil, true, err
 		}
 		targetDevice = dev
 		req.Filesystem = fstype
 	} else {
-		// Destructive path: refuse if the disk (or any partition on it)
-		// is mounted anywhere — formatting a live, in-use disk is what
-		// caused a real data-loss incident (GPT wiped out from under
-		// two active mountpoints). See assertDiskNotMounted.
 		if err := h.assertDiskNotMounted(ctx, req.DiskPath); err != nil {
-			diskGuardErr(w, err)
-			return
+			return nil, true, err
 		}
-		// Wipe existing headers, then partition+format. A failure here
-		// must be fatal: silently continuing to sgdisk/mkfs on top of
-		// surviving signatures is how a half-wiped disk ends up with
-		// conflicting superblocks.
 		if out, err := exec.CommandContext(ctx, "wipefs", "-a", "-f", req.DiskPath).CombinedOutput(); err != nil {
-			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("wipefs failed: %v (%s)", err, strings.TrimSpace(string(out))))
-			return
+			return nil, false, fmt.Errorf("wipefs failed: %v (%s)", err, strings.TrimSpace(string(out)))
 		}
 
-		// 2. Create GPT partition using sgdisk or parted
-		partitionPath := req.DiskPath + "1"
-		if strings.Contains(req.DiskPath, "nvme") || strings.Contains(req.DiskPath, "loop") {
-			partitionPath = req.DiskPath + "p1"
-		}
-
-		if _, err := exec.LookPath("sgdisk"); err == nil {
-			cmd := exec.CommandContext(ctx, "sgdisk", "--zap-all", req.DiskPath)
-			_ = cmd.Run()
-			cmdPart := exec.CommandContext(ctx, "sgdisk", "-n", "1:0:0", "-t", "1:8300", req.DiskPath)
-			if out, err := cmdPart.CombinedOutput(); err != nil {
-				jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("partition disk with sgdisk: %v (%s)", err, strings.TrimSpace(string(out))))
-				return
-			}
-		} else {
-			cmdPart := exec.CommandContext(ctx, "parted", "-s", req.DiskPath, "mklabel", "gpt", "mkpart", "primary", "ext4", "1MiB", "100%")
-			if out, err := cmdPart.CombinedOutput(); err != nil {
-				jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("partition disk with parted: %v (%s)", err, strings.TrimSpace(string(out))))
-				return
-			}
-		}
-
-		_ = exec.CommandContext(ctx, "partprobe", req.DiskPath).Run()
-		select {
-		case <-ctx.Done():
-			jsonErr(w, http.StatusRequestTimeout, "operation cancelled")
-			return
-		case <-time.After(500 * time.Millisecond):
-		}
-
-		// Fallback to disk itself if partition device was not created (e.g. virtual raw loops)
-		targetDevice = partitionPath
-		if _, err := os.Stat(partitionPath); err != nil {
+		isMD := strings.HasPrefix(req.DiskPath, "/dev/md")
+		if isMD {
 			targetDevice = req.DiskPath
+		} else {
+			partitionPath := req.DiskPath + "1"
+			if strings.Contains(req.DiskPath, "nvme") || strings.Contains(req.DiskPath, "loop") {
+				partitionPath = req.DiskPath + "p1"
+			}
+
+			if _, err := exec.LookPath("sgdisk"); err == nil {
+				cmd := exec.CommandContext(ctx, "sgdisk", "--zap-all", req.DiskPath)
+				_ = cmd.Run()
+				cmdPart := exec.CommandContext(ctx, "sgdisk", "-n", "1:0:0", "-t", "1:8300", req.DiskPath)
+				if out, err := cmdPart.CombinedOutput(); err != nil {
+					return nil, false, fmt.Errorf("partition disk with sgdisk: %v (%s)", err, strings.TrimSpace(string(out)))
+				}
+			} else {
+				cmdPart := exec.CommandContext(ctx, "parted", "-s", req.DiskPath, "mklabel", "gpt", "mkpart", "primary", "ext4", "1MiB", "100%")
+				if out, err := cmdPart.CombinedOutput(); err != nil {
+					return nil, false, fmt.Errorf("partition disk with parted: %v (%s)", err, strings.TrimSpace(string(out)))
+				}
+			}
+
+			_ = exec.CommandContext(ctx, "partprobe", req.DiskPath).Run()
+			select {
+			case <-ctx.Done():
+				return nil, false, errors.New("operation cancelled")
+			case <-time.After(500 * time.Millisecond):
+			}
+
+			targetDevice = partitionPath
+			if _, err := os.Stat(partitionPath); err != nil {
+				targetDevice = req.DiskPath
+			}
 		}
+
 		if req.Filesystem == "" {
 			req.Filesystem = "ext4"
 		}
 
-		// 3. Format filesystem. The catalog was already validated above
-		// (unknown IDs reset req.Filesystem to "" and defaulted to ext4
-		// just now), so the lookup here can only fail if the chosen
-		// filesystem's mkfs binary isn't installed on this host.
 		fs, ok := filesystemByID(req.Filesystem)
 		if !ok {
-			jsonErr(w, http.StatusBadRequest, "unsupported filesystem: "+req.Filesystem)
-			return
+			return nil, false, fmt.Errorf("unsupported filesystem: %s", req.Filesystem)
 		}
 		if _, err := exec.LookPath(fs.Bin); err != nil {
-			jsonErr(w, http.StatusBadRequest, fmt.Sprintf("%s is not installed on this host (%s)", fs.Bin, fs.Label))
-			return
+			return nil, false, fmt.Errorf("%s is not installed on this host (%s)", fs.Bin, fs.Label)
 		}
 		mkfsArgs := append(append([]string{}, fs.Args...), targetDevice)
 		mkfsCmd := exec.CommandContext(ctx, fs.Bin, mkfsArgs...)
 		if out, err := mkfsCmd.CombinedOutput(); err != nil {
-			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("format filesystem %s: %v (%s)", req.Filesystem, err, strings.TrimSpace(string(out))))
-			return
+			return nil, false, fmt.Errorf("format filesystem %s: %v (%s)", req.Filesystem, err, strings.TrimSpace(string(out)))
 		}
 	}
 
-	// 4. Create mountpoint directory
 	if strings.Contains(req.MountPoint, "..") {
-		jsonErr(w, http.StatusBadRequest, "invalid mount point: traversal not allowed")
-		return
+		return nil, false, errors.New("invalid mount point: traversal not allowed")
 	}
 	if err := os.MkdirAll(req.MountPoint, 0755); err != nil {
-		jsonErr(w, http.StatusInternalServerError, "create mount point: "+err.Error())
-		return
+		return nil, false, fmt.Errorf("create mount point: %w", err)
 	}
 
-	// 5. Get UUID of the target device so the persistent unit is robust
-	// to device-name reordering (/dev/sdb vs /dev/sdc after a reboot).
 	uuidOut, _ := exec.CommandContext(ctx, "blkid", "-s", "UUID", "-o", "value", targetDevice).Output()
 	uuidStr := strings.TrimSpace(string(uuidOut))
 
@@ -645,13 +667,6 @@ func (h *Handler) InitHostDiskDirectory(w http.ResponseWriter, r *http.Request) 
 		req.Filesystem = "auto"
 	}
 
-	// 5b. Assemble the mount option string. The boot-resilience options
-	// are the whole point of a storage pool on a removable/secondary
-	// disk: the host MUST still boot when the disk is absent, slow or
-	// sick, and the filesystem MUST mount automatically once the device
-	// shows up. nofail covers the first, x-systemd.automount covers the
-	// second (lazy mount on first access) and x-systemd.device-timeout
-	// bounds how long boot waits for the device.
 	mountOpts := "defaults,noatime"
 	if req.NoFail == nil || *req.NoFail {
 		mountOpts = "defaults,noatime,nofail,x-systemd.device-timeout=10,x-systemd.default-timeout=10"
@@ -670,17 +685,6 @@ func (h *Handler) InitHostDiskDirectory(w http.ResponseWriter, r *http.Request) 
 		mountOpts += "," + opt
 	}
 
-	// 6. Generate the systemd units for a persistent mount.
-	//
-	// A hand-written .mount unit does NOT get lazy-mount behaviour from
-	// the x-systemd.automount option alone — that expansion only happens
-	// for /etc/fstab entries. To get "boot even if the disk is absent,
-	// then mount when it appears" we must write BOTH:
-	//   .mount     — defines the filesystem to mount.
-	//   .automount — the lazy trigger systemd activates at boot; it
-	//                waits for the device and mounts on first access.
-	// The .automount unit is what we enable/start; systemd then pulls in
-	// the .mount on demand.
 	doAutomount := req.Automount == nil || *req.Automount
 
 	unitNameOut, err := exec.CommandContext(ctx, "systemd-escape", "--path", "--suffix=mount", req.MountPoint).Output()
@@ -688,12 +692,6 @@ func (h *Handler) InitHostDiskDirectory(w http.ResponseWriter, r *http.Request) 
 		unitName := strings.TrimSpace(string(unitNameOut))
 		automountName := strings.TrimSuffix(unitName, ".mount") + ".automount"
 
-		// The automount MUST survive a failed mount. When the lazy trigger
-		// fires while the disk is detached, the .mount attempt fails and
-		// systemd otherwise tears the automount down for good ("hangup on
-		// autofs pipe"). Restart=on-failure + an unlimited start rate keep
-		// the trigger re-arming so the filesystem mounts the moment the
-		// device reappears, with no reboot and no manual action.
 		unitContent := fmt.Sprintf(`[Unit]
 Description=WebKVM Mount for %s (%s)
 After=local-fs.target
@@ -729,38 +727,25 @@ WantedBy=local-fs.target
 `, req.VolumeName, req.MountPoint, req.MountPoint)
 			_ = os.WriteFile(automountPath, []byte(automountContent), 0644)
 		} else {
-			// Remove any stale automount unit from a previous setup.
 			_ = os.Remove(automountPath)
 		}
 
 		_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
 
 		if doAutomount {
-			// Enable + start the automount unit. Starting it never blocks
-			// on the device, so a missing disk cannot stall boot; the
-			// filesystem mounts the first time /mnt/... is accessed.
 			_ = exec.CommandContext(ctx, "systemctl", "enable", automountName).Run()
 			_, _ = exec.CommandContext(ctx, "systemctl", "start", automountName).CombinedOutput()
-			// Trigger an immediate mount if the device is present.
 			_, _ = exec.CommandContext(ctx, "ls", req.MountPoint).CombinedOutput()
 		} else {
-			// No automount: enable (not --now) so a currently-absent
-			// device still sets up for the next boot; start best-effort.
 			_ = exec.CommandContext(ctx, "systemctl", "enable", unitName).Run()
 			_, _ = exec.CommandContext(ctx, "systemctl", "start", unitName).CombinedOutput()
 		}
 	}
 
-	// Direct mount fallback if not mounted yet (device present but the
-	// unit needed a nudge, e.g. fstype=auto resolution).
 	if !isMountpoint(req.MountPoint) {
 		_ = exec.CommandContext(ctx, "mount", targetDevice, req.MountPoint).Run()
 	}
 
-	// Verify the mount. With nofail the device may legitimately be
-	// absent right now; in that case we still succeed (the unit is armed
-	// for the next boot) but report the deferred state instead of
-	// failing the whole operation.
 	mounted := isMountpoint(req.MountPoint)
 	mountDeferred := false
 	if !mounted {
@@ -769,16 +754,9 @@ WantedBy=local-fs.target
 		}
 	}
 	if !mounted && !mountDeferred {
-		jsonErr(w, http.StatusInternalServerError,
-			fmt.Sprintf("device %s could not be mounted at %s", targetDevice, req.MountPoint))
-		return
+		return nil, false, fmt.Errorf("device %s could not be mounted at %s", targetDevice, req.MountPoint)
 	}
 
-	// 6b. Create the standard Proxmox-style subfolder tree. Only the
-	// known folder names are honored (allowedSubfolder, backed by the
-	// same subfolderNature map that decides which pool each folder
-	// gets) so a caller can't turn this into an arbitrary
-	// path-creation primitive.
 	createdSubfolders := []string{}
 	seen := map[string]bool{}
 	for _, raw := range req.Subfolders {
@@ -801,21 +779,16 @@ WantedBy=local-fs.target
 		default:
 			continue
 		}
-		seen[safeSub] = true
 		subPath := filepath.Join(req.MountPoint, safeSub)
-		if strings.Contains(subPath, "..") {
-			continue
-		}
 		if rel, rerr := filepath.Rel(req.MountPoint, subPath); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
 			continue
 		}
-		if err := os.MkdirAll(subPath, 0755); err != nil {
-			continue
+		if err := os.MkdirAll(subPath, 0755); err == nil {
+			createdSubfolders = append(createdSubfolders, safeSub)
+			seen[sub] = true
 		}
-		createdSubfolders = append(createdSubfolders, subPath)
 	}
 
-	// 6c. Optionally register the backups/ subfolder as a local backup target.
 	if req.RegisterBackupTarget && h.backupStore != nil {
 		backupPath := filepath.Join(req.MountPoint, "backups")
 		if rel, rerr := filepath.Rel(req.MountPoint, backupPath); rerr == nil && !strings.HasPrefix(rel, "..") && rel != ".." {
@@ -831,48 +804,21 @@ WantedBy=local-fs.target
 		}
 	}
 
-	// 7. Register one independent storage pool per subfolder that
-	// carries a nature (discos -> <name>-vdi in libvirt, isos ->
-	// <name>-isos in libvirt, contenedores -> <name>-containers in
-	// Incus, backups -> <name>-backups, plantillas ->
-	// <name>-plantillas). Never a unified pool: each purpose lives
-	// in its own pool rooted at its own subfolder. Every row stays
-	// best-effort, as before: the disk is already formatted and
-	// mounted, and a failed registration must not fail the whole
-	// init — the per-pool Status reports what happened.
 	poolResults := []PoolResult{}
 	if req.CreatePool {
 		poolResults = h.createPoolsForSubfolders(ctx, req.VolumeName, req.MountPoint, req.Subfolders, req.PoolPurpose)
 	}
 
-	h.audit.Log(auditFor(r, "host.disk_init_directory", req.DiskPath, map[string]any{
-		"mode":            req.Mode,
-		"mount_point":     req.MountPoint,
-		"device":          targetDevice,
-		"filesystem":      req.Filesystem,
-		"volume_name":     req.VolumeName,
-		"mount_options":   mountOpts,
-		"mounted":         mounted,
-		"mount_deferred":  mountDeferred,
-		"create_pool":     req.CreatePool,
-		"pools":           poolResults,
-		"subfolders":      createdSubfolders,
-		"register_backup": req.RegisterBackupTarget,
-	}))
-
-	jsonResp(w, http.StatusOK, map[string]any{
-		"status":         "initialized",
-		"mode":           req.Mode,
-		"disk":           req.DiskPath,
-		"device":         targetDevice,
-		"mount_point":    req.MountPoint,
-		"filesystem":     req.Filesystem,
-		"mount_options":  mountOpts,
-		"mounted":        mounted,
-		"mount_deferred": mountDeferred,
-		"pools":          poolResults,
-		"subfolders":     createdSubfolders,
-	})
+	return &initHostDiskOutput{
+		TargetDevice:  targetDevice,
+		MountPoint:    req.MountPoint,
+		Filesystem:    req.Filesystem,
+		MountOptions:  mountOpts,
+		Mounted:       mounted,
+		MountDeferred: mountDeferred,
+		Pools:         poolResults,
+		Subfolders:    createdSubfolders,
+	}, false, nil
 }
 
 // findExistingFilesystem locates a usable filesystem on diskPath (or an
@@ -1374,12 +1320,55 @@ func (h *Handler) CreateHostRAID(w http.ResponseWriter, r *http.Request) {
 		"devices": req.Devices,
 	}))
 
-	jsonResp(w, http.StatusCreated, map[string]any{
+	resp := map[string]any{
 		"status":  "created",
 		"device":  mdDev,
 		"level":   req.Level,
 		"devices": req.Devices,
-	})
+	}
+
+	if req.Format || req.Filesystem != "" {
+		volName := req.VolumeName
+		if volName == "" {
+			cleanName := strings.ReplaceAll(strings.TrimPrefix(mdDev, "/dev/"), "-", "")
+			volName = "raid-" + cleanName
+		}
+		mountPt := req.MountPoint
+		if mountPt == "" {
+			mountPt = "/mnt/" + volName
+		}
+		fsType := req.Filesystem
+		if fsType == "" {
+			fsType = "ext4"
+		}
+		initReq := models.InitHostDiskRequest{
+			DiskPath:    mdDev,
+			VolumeName:  volName,
+			MountPoint:  mountPt,
+			Filesystem:  fsType,
+			CreatePool:  req.CreatePool,
+			Subfolders:  req.Subfolders,
+			PoolPurpose: req.PoolPurpose,
+			Mode:        "format",
+		}
+		initOut, _, err := h.executeInitHostDisk(ctx, initReq)
+		if err != nil {
+			resp["format_error"] = err.Error()
+		} else {
+			resp["formatted"] = true
+			resp["mount_point"] = initOut.MountPoint
+			resp["filesystem"] = initOut.Filesystem
+			resp["pools"] = initOut.Pools
+			resp["subfolders"] = initOut.Subfolders
+			h.audit.Log(auditFor(r, "host.raid_format", mdDev, map[string]any{
+				"mount_point": initOut.MountPoint,
+				"filesystem":  initOut.Filesystem,
+				"pools":       initOut.Pools,
+			}))
+		}
+	}
+
+	jsonResp(w, http.StatusCreated, resp)
 }
 
 // ScrubHostZPool triggers a scrub (start or stop) on a ZFS pool.
