@@ -34,6 +34,10 @@ func (v *viewerBackend) GetVNCInfo(string) (compute.GraphicsInfo, error) {
 	return compute.GraphicsInfo{}, nil
 }
 
+func (v *viewerBackend) GetSPICEInfo(string) (compute.GraphicsInfo, error) {
+	return compute.GraphicsInfo{}, nil
+}
+
 func (v *viewerBackend) GetDomain(string) (models.VM, error) {
 	return models.VM{Name: "vm1"}, nil
 }

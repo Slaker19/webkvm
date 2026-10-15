@@ -550,26 +550,24 @@
       status: 'running',
     });
     try {
-      const res = await api.createHostRaid({
+      const raidPayload = {
         name: createRaidDevice.trim() || undefined,
         level: createRaidLevel,
         devices: createRaidDisks,
-        format: createRaidFormat,
-        filesystem: createRaidFormat ? createRaidFs : undefined,
-        mount_point: createRaidFormat
-          ? createRaidMount.trim() || `/mnt/${raidDevName}`
-          : undefined,
-        volume_name: createRaidFormat ? raidDevName : undefined,
-        create_pool: createRaidFormat ? createRaidPool : undefined,
-        subfolders:
-          createRaidFormat && createRaidPool && createRaidPoolMode === 'multi'
-            ? createRaidSubfolders
-            : undefined,
-        pool_purpose:
-          createRaidFormat && createRaidPool && createRaidPoolMode === 'single'
-            ? createRaidSinglePurpose
-            : undefined,
-      });
+      };
+      if (createRaidFormat) {
+        raidPayload.format = true;
+        raidPayload.filesystem = createRaidFs;
+        raidPayload.mount_point = createRaidMount.trim() || `/mnt/${raidDevName}`;
+        raidPayload.volume_name = raidDevName;
+        raidPayload.create_pool = createRaidPool;
+        if (createRaidPool && createRaidPoolMode === 'multi') {
+          raidPayload.subfolders = createRaidSubfolders;
+        } else if (createRaidPool && createRaidPoolMode === 'single') {
+          raidPayload.pool_purpose = createRaidSinglePurpose;
+        }
+      }
+      const res = await api.createHostRaid(raidPayload);
       finishTask(taskId, 'success', `Arreglo RAID ${res.device} creado`, 100);
       showCreateRaid = false;
       await Promise.all([loadHostDisks(), loadPools()]);
@@ -2538,17 +2536,19 @@
                       {#if hostDiskStatus(disk).key === 'free'}
                         <td class="p-3 pr-4 text-right">
                           <div class="flex items-center justify-end gap-1.5">
-                            <Button
-                              size="xs"
-                              variant="outline"
-                              class="!h-7 !text-xs gap-1"
-                              onclick={() => {
-                                selectedSmartDisk = disk;
-                                showSmartModal = true;
-                              }}
-                            >
-                              SMART
-                            </Button>
+                            {#if disk.type !== 'raid' && !disk.path.startsWith('/dev/md')}
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                class="!h-7 !text-xs gap-1"
+                                onclick={() => {
+                                  selectedSmartDisk = disk;
+                                  showSmartModal = true;
+                                }}
+                              >
+                                SMART
+                              </Button>
+                            {/if}
                             {#if auth.isAdmin()}
                               <Button
                                 size="xs"
@@ -2578,17 +2578,19 @@
                       {:else}
                         <td class="p-3 pr-4 text-right">
                           <div class="flex items-center justify-end gap-2">
-                            <Button
-                              size="xs"
-                              variant="outline"
-                              class="!h-7 !text-xs gap-1"
-                              onclick={() => {
-                                selectedSmartDisk = disk;
-                                showSmartModal = true;
-                              }}
-                            >
-                              SMART
-                            </Button>
+                            {#if disk.type !== 'raid' && !disk.path.startsWith('/dev/md')}
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                class="!h-7 !text-xs gap-1"
+                                onclick={() => {
+                                  selectedSmartDisk = disk;
+                                  showSmartModal = true;
+                                }}
+                              >
+                                SMART
+                              </Button>
+                            {/if}
                             <span class="text-[11px] text-muted-foreground/80 italic">
                               {hostDiskStatus(disk).key === 'system'
                                 ? t('storage.diskProtected')

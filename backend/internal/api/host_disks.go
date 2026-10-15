@@ -1560,6 +1560,16 @@ func (h *Handler) ProbeHostDiskSMART(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.HasPrefix(diskPath, "/dev/md") {
+		jsonResp(w, http.StatusOK, map[string]any{
+			"device":    diskPath,
+			"available": false,
+			"status":    "NOT_SUPPORTED",
+			"message":   "S.M.A.R.T. telemetry is not applicable to software RAID arrays",
+		})
+		return
+	}
+
 	clean, err := smart.ValidateDevice(diskPath)
 	if err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
@@ -1592,6 +1602,11 @@ func (h *Handler) RunHostDiskSelfTest(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeBody(r, &req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if strings.HasPrefix(req.DiskPath, "/dev/md") {
+		jsonErr(w, http.StatusBadRequest, "S.M.A.R.T. self-test is not applicable to software RAID arrays")
 		return
 	}
 
