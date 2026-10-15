@@ -413,6 +413,55 @@ func (h *Handler) ListHostDisks(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Also surface active Linux MD RAID arrays as top-level storage devices
+	if mdArrays, err := mdraid.List(); err == nil {
+		for _, arr := range mdArrays {
+			alreadyPresent := false
+			for _, d := range disks {
+				if d.Path == arr.Device {
+					alreadyPresent = true
+					break
+				}
+			}
+			if alreadyPresent {
+				continue
+			}
+
+			ms := mountTable.ForDisk(arr.Device, nil)
+			mountPoints := []string{}
+			var fsType string
+			if out, err := exec.CommandContext(ctx, "blkid", "-s", "TYPE", "-o", "value", arr.Device).Output(); err == nil {
+				fsType = strings.TrimSpace(string(out))
+			}
+			for _, mp := range ms.MountPoints {
+				if mp != "" && !containsString(mountPoints, mp) {
+					mountPoints = append(mountPoints, mp)
+				}
+			}
+
+			disks = append(disks, models.HostDisk{
+				Name:         arr.Name,
+				Path:         arr.Device,
+				Size:         arr.Size,
+				SizeHuman:    arr.SizeHuman,
+				Type:         "raid",
+				FSType:       fsType,
+				MountPoints:  mountPoints,
+				Model:        fmt.Sprintf("Linux Software RAID (%s)", arr.Level),
+				Serial:       fmt.Sprintf("md-%s", arr.State),
+				Rotational:   false,
+				Transport:    "md",
+				IsSystem:     ms.HasSystemMount(),
+				Children:     nil,
+				MountState:   string(ms.Status()),
+				MountSources: ms.SourceStrings(),
+				MountUnits:   ms.Units,
+				MountPools:   ms.Pools,
+				MountDetail:  mountDetail(ms),
+			})
+		}
+	}
+
 	// Probe SMART telemetry concurrently across all disks to minimize response latency
 	var smartWG sync.WaitGroup
 	for i := range disks {
@@ -1444,6 +1493,44 @@ func (h *Handler) SyncHostRAID(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"device": device,
 		"action": req.Action,
+	})
+}
+
+// ListHostRAID returns all active software RAID arrays discovered directly via kernel sysfs.
+// Restricted to administrators.
+func (h *Handler) ListHostRAID(w http.ResponseWriter, r *http.Request) {
+	arrays, err := mdraid.List()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "failed to query software RAID: "+err.Error())
+		return
+	}
+	jsonResp(w, http.StatusOK, arrays)
+}
+
+// StopHostRAID stops and unregisters an MD RAID array.
+// Restricted to administrators.
+func (h *Handler) StopHostRAID(w http.ResponseWriter, r *http.Request) {
+	device := chi.URLParam(r, "device")
+	if !strings.HasPrefix(device, "/dev/") {
+		device = "/dev/" + device
+	}
+	if err := h.assertDiskNotMounted(r.Context(), device); err != nil {
+		diskGuardErr(w, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	if err := mdraid.Stop(ctx, device); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.audit.Log(auditFor(r, "host.raid_stop", device, nil))
+	jsonResp(w, http.StatusOK, map[string]string{
+		"status": "stopped",
+		"device": device,
 	})
 }
 

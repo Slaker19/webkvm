@@ -188,6 +188,123 @@ func SyncAction(ctx context.Context, mdDevice, action string) error {
 	return os.WriteFile(syncActionFile, []byte(action+"\n"), 0644)
 }
 
+// Array represents a Linux software RAID array parsed directly from kernel sysfs.
+type Array struct {
+	Name        string   `json:"name"`        // "md0"
+	Device      string   `json:"device"`      // "/dev/md0"
+	Level       string   `json:"level"`       // "raid1"
+	State       string   `json:"state"`       // "clean", "active", "degraded"
+	Degraded    bool     `json:"degraded"`    // true if degraded
+	SyncAction  string   `json:"sync_action"` // "idle", "resync", "check", "repair"
+	DisksTotal  int      `json:"disks_total"`
+	DisksActive int      `json:"disks_active"`
+	Devices     []string `json:"devices"` // ["/dev/sdb", "/dev/sdc"]
+	Size        int64    `json:"size"`
+	SizeHuman   string   `json:"size_human"`
+	MismatchCnt int64    `json:"mismatch_cnt"`
+}
+
+// List discovers all active MD RAID arrays directly from /sys/block/md*/md.
+func List() ([]Array, error) {
+	matches, err := filepath.Glob("/sys/block/md*/md")
+	if err != nil {
+		return nil, err
+	}
+
+	arrays := make([]Array, 0, len(matches))
+	for _, mdDir := range matches {
+		blockDir := filepath.Dir(mdDir)
+		devName := filepath.Base(blockDir)
+
+		readSys := func(name string) string {
+			b, err := os.ReadFile(filepath.Join(mdDir, name))
+			if err != nil {
+				return ""
+			}
+			return strings.TrimSpace(string(b))
+		}
+
+		level := readSys("level")
+		if level == "" {
+			continue
+		}
+
+		state := readSys("array_state")
+		syncAction := readSys("sync_action")
+		if syncAction == "" {
+			syncAction = "idle"
+		}
+		degraded := readSys("degraded") == "1"
+
+		var disksTotal, disksActive int
+		_, _ = fmt.Sscanf(readSys("raid_disks"), "%d", &disksTotal)
+
+		var mismatchCnt int64
+		_, _ = fmt.Sscanf(readSys("mismatch_cnt"), "%d", &mismatchCnt)
+
+		devMatches, _ := filepath.Glob(filepath.Join(mdDir, "dev-*"))
+		memberDevs := make([]string, 0, len(devMatches))
+		for _, dm := range devMatches {
+			base := filepath.Base(dm)
+			memberDev := "/dev/" + strings.TrimPrefix(base, "dev-")
+			memberDevs = append(memberDevs, memberDev)
+			rdevState, _ := os.ReadFile(filepath.Join(dm, "state"))
+			if strings.Contains(string(rdevState), "in_sync") {
+				disksActive++
+			}
+		}
+
+		var sizeBytes int64
+		if sizeSecStr, err := os.ReadFile(filepath.Join(blockDir, "size")); err == nil {
+			var sec int64
+			if _, err := fmt.Sscanf(strings.TrimSpace(string(sizeSecStr)), "%d", &sec); err == nil {
+				sizeBytes = sec * 512
+			}
+		}
+
+		sizeHuman := fmt.Sprintf("%.1f GB", float64(sizeBytes)/(1024*1024*1024))
+		if sizeBytes < 1024*1024*1024 {
+			sizeHuman = fmt.Sprintf("%.1f MB", float64(sizeBytes)/(1024*1024))
+		}
+
+		arrays = append(arrays, Array{
+			Name:        devName,
+			Device:      "/dev/" + devName,
+			Level:       level,
+			State:       state,
+			Degraded:    degraded,
+			SyncAction:  syncAction,
+			DisksTotal:  disksTotal,
+			DisksActive: disksActive,
+			Devices:     memberDevs,
+			Size:        sizeBytes,
+			SizeHuman:   sizeHuman,
+			MismatchCnt: mismatchCnt,
+		})
+	}
+
+	return arrays, nil
+}
+
+// Stop halts an MD RAID array using mdadm --stop and updates mdadm.conf.
+func Stop(ctx context.Context, mdDevice string) error {
+	clean := filepath.Clean(strings.TrimSpace(mdDevice))
+	if !strings.HasPrefix(clean, "/dev/") {
+		clean = "/dev/" + clean
+	}
+	if !safeMDDeviceRE.MatchString(clean) {
+		return fmt.Errorf("invalid MD device %q", mdDevice)
+	}
+
+	out, err := exec.CommandContext(ctx, "mdadm", "--stop", clean).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("stop raid %s: %v (%s)", clean, err, strings.TrimSpace(string(out)))
+	}
+
+	persistConfig(ctx)
+	return nil
+}
+
 func persistConfig(ctx context.Context) {
 	out, err := exec.CommandContext(ctx, "mdadm", "--detail", "--scan").Output()
 	if err != nil || len(out) == 0 {

@@ -314,7 +314,54 @@
     }
     if (auth.isAdmin()) {
       loadZfsData();
+      loadRaidData();
     }
+  }
+
+  let raidArrays = $state([]);
+  let raidLoading = $state(false);
+
+  async function loadRaidData() {
+    raidLoading = true;
+    try {
+      raidArrays = (await api.listHostRaid().catch(() => [])) || [];
+    } catch {
+      raidArrays = [];
+    } finally {
+      raidLoading = false;
+    }
+  }
+
+  async function doSyncRaid(device, action = 'check') {
+    try {
+      await api.syncHostRaid(device, action);
+      await loadRaidData();
+      toast.success(`Acción ${action} iniciada en ${device}`);
+    } catch (e) {
+      showStorageErr('RAID Sync Error', e);
+    }
+  }
+
+  function doStopRaid(device) {
+    showConfirm({
+      title: t('storage.stopRaidTitle', { device }),
+      description: t('storage.stopRaidDesc', { device }),
+      confirmLabel: t('storage.raidStopAction'),
+      variant: 'destructive',
+      onConfirm: async () => {
+        confirmState.loading = true;
+        try {
+          await api.stopHostRaid(device);
+          confirmState.open = false;
+          await Promise.all([loadHostDisks(), loadRaidData()]);
+          toast.success(`Array RAID ${device} detenido`);
+        } catch (e) {
+          toast.error(e.message || 'Error al detener array RAID');
+        } finally {
+          confirmState.loading = false;
+        }
+      },
+    });
   }
 
   async function loadZfsData() {
@@ -2222,6 +2269,83 @@
               <p class="text-xs text-muted-foreground pt-0.5">
                 {t('storage.orphanMountFix')}
               </p>
+            </div>
+          </div>
+        {/if}
+
+        {#if raidArrays.length > 0}
+          <div class="space-y-2">
+            <h4
+              class="text-xs font-bold flex items-center gap-1.5 uppercase tracking-wider text-muted-foreground"
+            >
+              <Icon name="layers" size={13} class="text-primary" />
+              {t('storage.raidArraysTitle')} ({raidArrays.length})
+            </h4>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {#each raidArrays as arr (arr.device)}
+                <div class="border border-border/70 rounded-xl bg-card p-3.5 space-y-2.5 shadow-xs">
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                      <span class="font-mono font-bold text-sm text-foreground">{arr.device}</span>
+                      <span
+                        class="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold uppercase border border-primary/30 bg-primary/10 text-primary"
+                      >
+                        {arr.level}
+                      </span>
+                      <span
+                        class="px-1.5 py-0.5 rounded text-[10px] font-semibold border {arr.degraded
+                          ? 'bg-destructive/15 text-destructive border-destructive/30'
+                          : 'bg-success/15 text-success border-success/30'}"
+                      >
+                        {arr.degraded ? t('storage.raidDegraded') : t('storage.raidHealthy')}
+                      </span>
+                    </div>
+                    <span class="font-mono font-bold text-xs text-foreground">{arr.size_human}</span>
+                  </div>
+
+                  <div class="flex items-center justify-between text-xs text-muted-foreground">
+                    <div class="flex items-center gap-1.5">
+                      <span>{t('storage.membersLabel')}:</span>
+                      <span class="font-mono text-foreground font-medium"
+                        >{arr.devices?.join(', ') || 'N/A'}</span
+                      >
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <span>Sync:</span>
+                      <span
+                        class="font-mono font-medium {arr.sync_action === 'idle'
+                          ? 'text-muted-foreground'
+                          : 'text-warning'}"
+                      >
+                        {arr.sync_action}
+                      </span>
+                    </div>
+                  </div>
+
+                  {#if auth.isAdmin()}
+                    <div class="pt-2 border-t border-border/50 flex items-center justify-end gap-2">
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        class="!h-7 !text-xs gap-1"
+                        onclick={() => doSyncRaid(arr.device, 'check')}
+                      >
+                        <Icon name="shield" size={11} />
+                        {t('storage.raidCheckAction')}
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="destructive"
+                        class="!h-7 !text-xs gap-1"
+                        onclick={() => doStopRaid(arr.device)}
+                      >
+                        <Icon name="power" size={11} />
+                        {t('storage.raidStopAction')}
+                      </Button>
+                    </div>
+                  {/if}
+                </div>
+              {/each}
             </div>
           </div>
         {/if}

@@ -741,7 +741,15 @@ export const api = {
   createHostZpool: (data) =>
     request('/host/zpools', { method: 'POST', body: JSON.stringify(data) }),
   createHostZvol: (data) => request('/host/zvols', { method: 'POST', body: JSON.stringify(data) }),
+  listHostRaid: () => request('/host/raid'),
   createHostRaid: (data) => request('/host/raid', { method: 'POST', body: JSON.stringify(data) }),
+  syncHostRaid: (device, action = 'check') =>
+    request(`/host/raid/${encodeURIComponent(device)}/sync`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
+  stopHostRaid: (device) =>
+    request(`/host/raid/${encodeURIComponent(device)}`, { method: 'DELETE' }),
   getStorageBreakdown: () => request('/storage/pools/breakdown'),
   listFilesystems: () => request('/host/disks/filesystems'),
   listOrphanMounts: () => request('/host/disks/orphan-mounts'),

@@ -1611,6 +1611,15 @@ export const messages = {
         'Applies a filesystem (ext4/xfs/btrfs) and mounts persistently via systemd',
       createPoolsCheck:
         'Create Storage Pools on the new array (VM disks, ISOs, backups)',
+      raidArraysTitle: 'Software RAID Arrays',
+      raidDegraded: 'Degraded',
+      raidHealthy: 'Healthy',
+      membersLabel: 'Members',
+      raidCheckAction: 'Scrub (Check)',
+      raidStopAction: 'Stop Array',
+      stopRaidTitle: 'Stop RAID Array {device}',
+      stopRaidDesc:
+        'This will stop the RAID array and release its member disks. Ensure the filesystem is unmounted before stopping.',
       minRaidDisksRequired: 'RAID {level} requires at least {min} disks.',
       diskInitialized: 'Disk initialized and mounted successfully',
       wipeDiskTitle: 'Wipe Disk',
@@ -5273,6 +5282,15 @@ export const messages = {
         'Aplica un sistema de archivos (ext4/xfs/btrfs) y monta persistentemente vía systemd',
       createPoolsCheck:
         'Crear Grupos de Almacenamiento en el array (Discos VM, ISOs, backups)',
+      raidArraysTitle: 'Arreglos RAID por Software',
+      raidDegraded: 'Degradado',
+      raidHealthy: 'Saludable',
+      membersLabel: 'Miembros',
+      raidCheckAction: 'Comprobar (Scrub)',
+      raidStopAction: 'Detener Array',
+      stopRaidTitle: 'Detener Arreglo RAID {device}',
+      stopRaidDesc:
+        'Esto detendrá el array RAID y liberará sus discos miembros. Asegúrate de que el sistema de archivos esté desmontado antes de detenerlo.',
       minRaidDisksRequired: 'RAID {level} requiere al menos {min} discos.',
       diskInitialized: 'Disco inicializado y montado con éxito',
       wipeDiskTitle: 'Limpiar Disco (Wipe)',
@@ -8967,6 +8985,15 @@ export const messages = {
         'Aplica un sistema de fitxers (ext4/xfs/btrfs) i munta persistentment via systemd',
       createPoolsCheck:
         "Crear Grups d'Emmagatzematge en l'array (Discs VM, ISOs, còpies de seguretat)",
+      raidArraysTitle: 'Arranjaments RAID per Programari',
+      raidDegraded: 'Degradat',
+      raidHealthy: 'Saludable',
+      membersLabel: 'Membres',
+      raidCheckAction: 'Comprovar (Scrub)',
+      raidStopAction: 'Aturar Array',
+      stopRaidTitle: 'Aturar Arranjament RAID {device}',
+      stopRaidDesc:
+        "Això aturarà l'array RAID i alliberarà els seus discs membres. Assegura't que el sistema de fitxers estigui desmuntat abans d'aturar-lo.",
       minRaidDisksRequired: 'RAID {level} requereix almenys {min} discos.',
       diskInitialized: 'Disc inicialitzat i muntat amb èxit',
       wipeDiskTitle: 'Netejar Disc (Wipe)',
