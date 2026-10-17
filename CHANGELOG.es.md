@@ -6,6 +6,20 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.8-dev] — 2026-10-17
+
+### Añadido
+- **Software RAID Nativo por Kernel sysfs:**
+  - Formateo directo, montaje persistente systemd y asignación granular de storage pools multicarpetas o de raíz dedicado (`CreateHostRAID`).
+  - Descubrimiento de arrays en tiempo real por sysfs (`/sys/block/md*/md`) eliminando sobrecarga de subprocesos.
+  - Comprobación y sincronización en vivo (`SyncAction`) y control del ciclo de vida (`StopHostRAID`).
+  - Montaje no destructivo de arrays RAID existentes sin formatear (`mode: "mount"`).
+
+### Modificado y Refactorizado
+- **Arquitectura Frontend:** Descomposición de `frontend/src/routes/Storage.svelte` (de 5.295 líneas a 542 líneas) en 14 componentes modulares en `src/lib/components/storage/`.
+- **Arquitectura Backend:** Descomposición del monolito `backend/internal/api/storage.go` (2.003 líneas) en 6 submódulos limpios de dominio (`storage_pools.go`, `storage_volumes.go`, `storage_isos.go`, `storage_uploads.go`, `storage_jobs.go`, `storage_download_client.go`).
+- **Abstracción CommandRunner:** Inyección de `sysutil.CommandRunner` en `internal/mdraid` e `internal/zvol`, permitiendo tests unitarios con mocks sin depender de binarios de sistema.
+
 ## [0.1.7] — 2026-10-11
 
 ### Añadido
