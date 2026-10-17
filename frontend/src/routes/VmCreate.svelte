@@ -32,6 +32,7 @@
   import VmReviewStep from '$lib/components/VmReviewStep.svelte';
   import InstanceTypePicker from '$lib/components/InstanceTypePicker.svelte';
   import OsPresetPicker from '$lib/components/OsPresetPicker.svelte';
+  import { safeStorage } from '$lib/utils/storage.js';
 
   import CpuFlagPicker from '$lib/components/CpuFlagPicker.svelte';
   import CpuPrioritySelector from '$lib/components/CpuPrioritySelector.svelte';
@@ -495,11 +496,7 @@
 
   function setWizardMode(mode) {
     wizardMode = mode;
-    try {
-      localStorage.setItem('webkvm.createWizardMode', mode);
-    } catch {
-      /* ignore */
-    }
+    safeStorage.setItem('webkvm.createWizardMode', mode);
   }
 
   // ---- Wizard steps -------------------------------------------------
@@ -931,13 +928,9 @@
   }
 
   onMount(async () => {
-    try {
-      const savedMode = localStorage.getItem('webkvm.createWizardMode');
-      if (savedMode === 'easy' || savedMode === 'advanced') {
-        wizardMode = savedMode;
-      }
-    } catch {
-      /* ignore */
+    const savedMode = safeStorage.getItem('webkvm.createWizardMode');
+    if (savedMode === 'easy' || savedMode === 'advanced') {
+      wizardMode = savedMode;
     }
 
     // Host capabilities gate the device-model pickers. Fire-and-forget

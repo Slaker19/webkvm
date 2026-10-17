@@ -5,6 +5,7 @@
 // Supports both dockable bottom drawer and notifications.
 import { SvelteDate } from 'svelte/reactivity';
 import { browser } from '$lib/utils/browser.js';
+import { safeStorage } from '$lib/utils/storage.js';
 
 /** @type {Array<{id:string, kind:string, title:string, pct:number, status:string, message:string, minimized:boolean, logs:string[], startedAt:number, endedAt:number|null, target_id?:string, vm_id?:string}>} */
 let tasks = $state([]);
@@ -16,12 +17,8 @@ const DRAWER_HEIGHT_KEY = 'webkvm.taskdrawer.height.v1';
 
 function initialDrawerHeight() {
   if (!browser) return 280;
-  try {
-    const v = parseInt(localStorage.getItem(DRAWER_HEIGHT_KEY) || '280', 10);
-    if (!isNaN(v) && v >= 160 && v <= 600) return v;
-  } catch {
-    /* ignore */
-  }
+  const v = parseInt(safeStorage.getItem(DRAWER_HEIGHT_KEY) || '280', 10);
+  if (!isNaN(v) && v >= 160 && v <= 600) return v;
   return 280;
 }
 
@@ -171,11 +168,7 @@ function setTaskDrawerHeight(h) {
   const clamped = Math.max(160, Math.min(600, h));
   taskDrawer.height = clamped;
   if (browser) {
-    try {
-      localStorage.setItem(DRAWER_HEIGHT_KEY, clamped.toString());
-    } catch {
-      /* ignore */
-    }
+    safeStorage.setItem(DRAWER_HEIGHT_KEY, clamped.toString());
   }
 }
 

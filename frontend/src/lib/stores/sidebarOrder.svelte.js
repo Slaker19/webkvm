@@ -16,13 +16,14 @@
  */
 import { SvelteMap } from 'svelte/reactivity';
 import { browser } from '$lib/utils/browser.js';
+import { safeStorage } from '$lib/utils/storage.js';
 
 const KEY = 'webkvm.sidebar.order.v1';
 
 function initial() {
   if (!browser) return { mode: 'default', order: [], hidden: [] };
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY));
+    const raw = JSON.parse(safeStorage.getItem(KEY));
     if (raw && typeof raw === 'object') {
       return {
         mode: typeof raw.mode === 'string' ? raw.mode : 'default',
@@ -40,7 +41,7 @@ export const sidebarOrder = $state(initial());
 
 function save() {
   if (!browser) return;
-  localStorage.setItem(
+  safeStorage.setItem(
     KEY,
     JSON.stringify({
       mode: sidebarOrder.mode,

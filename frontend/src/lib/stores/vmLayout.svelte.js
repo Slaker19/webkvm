@@ -6,13 +6,14 @@
  * ordering no longer earned its complexity.)
  */
 import { browser } from '$lib/utils/browser.js';
+import { safeStorage } from '$lib/utils/storage.js';
 
 const KEY = 'webkvm.vmDetail.layout.v2';
 
 function initial() {
   if (!browser) return { collapsed: {} };
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY));
+    const raw = JSON.parse(safeStorage.getItem(KEY));
     if (raw && typeof raw.collapsed === 'object' && raw.collapsed) {
       return { collapsed: raw.collapsed };
     }
@@ -26,7 +27,7 @@ export const layout = $state(initial());
 
 export function saveLayout() {
   if (!browser) return;
-  localStorage.setItem(KEY, JSON.stringify({ collapsed: layout.collapsed }));
+  safeStorage.setItem(KEY, JSON.stringify({ collapsed: layout.collapsed }));
 }
 
 export function toggleCollapsed(id) {

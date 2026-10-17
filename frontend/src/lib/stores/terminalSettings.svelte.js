@@ -11,6 +11,7 @@
  * settings stay synchronized.
  */
 import { browser } from '$lib/utils/browser.js';
+import { safeStorage } from '$lib/utils/storage.js';
 import { TERMINAL_THEMES } from '$lib/utils/terminalConfig.js';
 
 const THEME_KEY = 'webkvm.term.theme';
@@ -20,34 +21,22 @@ const FNKEYS_KEY = 'webkvm.term.fnkeys';
 
 function getInitialTheme() {
   if (!browser) return 'webkvm';
-  try {
-    const saved = localStorage.getItem(THEME_KEY);
-    if (saved && TERMINAL_THEMES[saved]) return saved;
-  } catch {
-    /* ignore */
-  }
+  const saved = safeStorage.getItem(THEME_KEY);
+  if (saved && TERMINAL_THEMES[saved]) return saved;
   return 'webkvm';
 }
 
 function getInitialFontSize() {
   if (!browser) return 14;
-  try {
-    const saved = parseInt(localStorage.getItem(FONTSIZE_KEY) || '14', 10);
-    if (saved >= 10 && saved <= 24) return saved;
-  } catch {
-    /* ignore */
-  }
+  const saved = parseInt(safeStorage.getItem(FONTSIZE_KEY) || '14', 10);
+  if (saved >= 10 && saved <= 24) return saved;
   return 14;
 }
 
 function getInitialBool(key, def = false) {
   if (!browser) return def;
-  try {
-    const saved = localStorage.getItem(key);
-    if (saved !== null) return saved === 'true' || saved === '1';
-  } catch {
-    /* ignore */
-  }
+  const saved = safeStorage.getItem(key);
+  if (saved !== null) return saved === 'true' || saved === '1';
   return def;
 }
 
@@ -62,11 +51,7 @@ export function setTerminalTheme(themeId) {
   if (!TERMINAL_THEMES[themeId]) return;
   terminalSettings.theme = themeId;
   if (browser) {
-    try {
-      localStorage.setItem(THEME_KEY, themeId);
-    } catch {
-      /* ignore */
-    }
+    safeStorage.setItem(THEME_KEY, themeId);
   }
 }
 
@@ -74,32 +59,20 @@ export function setTerminalFontSize(size) {
   const clamped = Math.max(10, Math.min(24, size));
   terminalSettings.fontSize = clamped;
   if (browser) {
-    try {
-      localStorage.setItem(FONTSIZE_KEY, String(clamped));
-    } catch {
-      /* ignore */
-    }
+    safeStorage.setItem(FONTSIZE_KEY, String(clamped));
   }
 }
 
 export function setTerminalTuiBar(show) {
   terminalSettings.showTuiBar = !!show;
   if (browser) {
-    try {
-      localStorage.setItem(TUIBAR_KEY, terminalSettings.showTuiBar ? '1' : '0');
-    } catch {
-      /* ignore */
-    }
+    safeStorage.setItem(TUIBAR_KEY, terminalSettings.showTuiBar ? '1' : '0');
   }
 }
 
 export function setTerminalFnKeys(show) {
   terminalSettings.showFnKeys = !!show;
   if (browser) {
-    try {
-      localStorage.setItem(FNKEYS_KEY, terminalSettings.showFnKeys ? '1' : '0');
-    } catch {
-      /* ignore */
-    }
+    safeStorage.setItem(FNKEYS_KEY, terminalSettings.showFnKeys ? '1' : '0');
   }
 }

@@ -12,6 +12,8 @@
  * The selection is persisted in localStorage.
  */
 
+import { safeStorage } from '$lib/utils/storage.js';
+
 export const LOCALES = [
   { code: 'en', label: 'English' },
   { code: 'es', label: 'Español' },
@@ -31,11 +33,7 @@ export function getLocale() {
 export function setLocale(code) {
   if (!messages[code]) return;
   current = code;
-  try {
-    localStorage.setItem('webkvm.locale', code);
-  } catch {
-    /* ignore */
-  }
+  safeStorage.setItem('webkvm.locale', code);
 }
 
 // escapeHtml prevents an interpolated value from being able to inject
@@ -86,12 +84,8 @@ export function t(key, vars) {
 }
 
 function load() {
-  try {
-    const l = localStorage.getItem('webkvm.locale');
-    if (messages[l]) return l;
-  } catch {
-    /* ignore */
-  }
+  const l = safeStorage.getItem('webkvm.locale');
+  if (messages[l]) return l;
   // Default to the browser language when it's one we support.
   try {
     const nav = (navigator.language || 'en').toLowerCase().slice(0, 2);

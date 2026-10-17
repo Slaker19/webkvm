@@ -12,6 +12,7 @@
   import Spinner from '$lib/components/Spinner.svelte';
   import { toast } from '$lib/components/ui/toast';
   import { browser } from '$lib/utils/browser.js';
+  import { safeStorage } from '$lib/utils/storage.js';
 
   let vms = $state([]);
   let loading = $state(true);
@@ -41,11 +42,7 @@
 
   function persistTileHeight() {
     if (!browser) return;
-    try {
-      localStorage.setItem('webkvm.multiview.height.v3', tileHeight.toString());
-    } catch {
-      /* ignore */
-    }
+    safeStorage.setItem('webkvm.multiview.height.v3', tileHeight.toString());
   }
 
   // The handle was focusable (tabindex=0) but only reacted to the mouse,
@@ -98,11 +95,7 @@
       window.removeEventListener('touchmove', onMove);
       window.removeEventListener('touchend', onEnd);
       if (browser) {
-        try {
-          localStorage.setItem('webkvm.multiview.height.v3', tileHeight.toString());
-        } catch {
-          /* ignore */
-        }
+        safeStorage.setItem('webkvm.multiview.height.v3', tileHeight.toString());
       }
     };
 
@@ -115,21 +108,13 @@
   function setColumns(c) {
     columns = c;
     if (browser) {
-      try {
-        localStorage.setItem('webkvm.multiview.cols.v3', c.toString());
-      } catch {
-        /* ignore */
-      }
+      safeStorage.setItem('webkvm.multiview.cols.v3', c.toString());
     }
   }
 
   function saveTileHeight() {
     if (browser) {
-      try {
-        localStorage.setItem('webkvm.multiview.height.v3', tileHeight.toString());
-      } catch {
-        /* ignore */
-      }
+      safeStorage.setItem('webkvm.multiview.height.v3', tileHeight.toString());
     }
   }
 
@@ -183,22 +168,14 @@
   function setDensity(d) {
     density = d;
     if (browser) {
-      try {
-        localStorage.setItem('webkvm.multiview.density.v1', d);
-      } catch {
-        /* ignore */
-      }
+      safeStorage.setItem('webkvm.multiview.density.v1', d);
     }
   }
 
   function toggleHeaderCompact() {
     headerCompact = !headerCompact;
     if (browser) {
-      try {
-        localStorage.setItem('webkvm.multiview.compact.v1', headerCompact.toString());
-      } catch {
-        /* ignore */
-      }
+      safeStorage.setItem('webkvm.multiview.compact.v1', headerCompact.toString());
     }
   }
 
@@ -438,16 +415,12 @@
     document.addEventListener('fullscreenchange', fsHandler);
 
     if (browser) {
-      try {
-        density = localStorage.getItem('webkvm.multiview.density.v1') || 'compact';
-        headerCompact = localStorage.getItem('webkvm.multiview.compact.v1') === 'true';
-        const savedCols = parseInt(localStorage.getItem('webkvm.multiview.cols.v3') || '2', 10);
-        columns = savedCols >= 1 && savedCols <= 6 ? savedCols : 2;
-        const savedH = parseInt(localStorage.getItem('webkvm.multiview.height.v3') || '480', 10);
-        tileHeight = savedH >= 260 && savedH <= 1000 ? savedH : 480;
-      } catch {
-        /* ignore */
-      }
+      density = safeStorage.getItem('webkvm.multiview.density.v1') || 'compact';
+      headerCompact = safeStorage.getItem('webkvm.multiview.compact.v1') === 'true';
+      const savedCols = parseInt(safeStorage.getItem('webkvm.multiview.cols.v3') || '2', 10);
+      columns = savedCols >= 1 && savedCols <= 6 ? savedCols : 2;
+      const savedH = parseInt(safeStorage.getItem('webkvm.multiview.height.v3') || '480', 10);
+      tileHeight = savedH >= 260 && savedH <= 1000 ? savedH : 480;
     }
 
     return () => {

@@ -13,6 +13,7 @@
  */
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { browser } from '$lib/utils/browser.js';
+import { safeStorage } from '$lib/utils/storage.js';
 
 const KEY = 'webkvm.vmList.order.v1';
 
@@ -27,7 +28,7 @@ function normalizeSortMode(mode) {
 function initial() {
   if (!browser) return { sortMode: 'custom', customOrder: [], pinned: [] };
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY));
+    const raw = JSON.parse(safeStorage.getItem(KEY));
     if (raw && typeof raw === 'object') {
       return {
         sortMode: normalizeSortMode(typeof raw.sortMode === 'string' ? raw.sortMode : 'custom'),
@@ -45,7 +46,7 @@ export const vmOrder = $state(initial());
 
 function save() {
   if (!browser) return;
-  localStorage.setItem(
+  safeStorage.setItem(
     KEY,
     JSON.stringify({
       sortMode: vmOrder.sortMode,

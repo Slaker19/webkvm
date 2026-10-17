@@ -1,4 +1,5 @@
 <script>
+  import { onMount, onDestroy } from 'svelte';
   import Alert from '$lib/components/Alert.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import StatCard from '$lib/components/StatCard.svelte';
@@ -267,7 +268,7 @@
     }
   }
 
-  $effect(() => {
+  onMount(() => {
     if (auth.isAdmin()) {
       loadStatus();
       loadLogs();
@@ -277,10 +278,11 @@
     }
     loadDashboard();
     loadCapabilities();
-    return () => {
-      if (logInterval) clearInterval(logInterval);
-      clearAllTimers();
-    };
+  });
+
+  onDestroy(() => {
+    if (logInterval) clearInterval(logInterval);
+    clearAllTimers();
   });
 </script>
 
