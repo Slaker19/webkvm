@@ -576,7 +576,7 @@
       !isContainerVm ? { id: 'guest', label: t('vmDetail.guestTab') } : null,
       { id: 'history', label: t('vmDetail.history') },
       { id: 'alerts', label: t('vmDetail.alerts') },
-      { id: 'snaps', label: t('vmDetail.snapshots') },
+      !isContainerVm ? { id: 'snaps', label: t('vmDetail.snapshots') } : null,
     ].filter(Boolean)
   );
 

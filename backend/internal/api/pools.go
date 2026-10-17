@@ -235,7 +235,7 @@ func (h *Handler) validateSharedFolderPath(path string) error {
 			return fmt.Errorf("sharing %q is never allowed", resolved)
 		}
 	}
-	if h.lv == nil {
+	if h.compute == nil {
 		return fmt.Errorf("storage backend unavailable")
 	}
 	pools, err := h.compute.ListStoragePools()

@@ -398,7 +398,7 @@ func normalizeMAC(s string) (string, error) {
 // VMs, so the admin UI can offer them for policy assignment (AllowedTags,
 // backup-by-tag). Admin/operator scoped.
 func (h *Handler) ListAllTags(w http.ResponseWriter, r *http.Request) {
-	if h.lv == nil {
+	if h.compute == nil {
 		jsonResp(w, http.StatusOK, map[string]any{"tags": []string{}})
 		return
 	}

@@ -232,8 +232,8 @@ func (h *Handler) DeleteAppliance(w http.ResponseWriter, r *http.Request) {
 // DeployAppliance downloads a catalog image and creates a ready VM.
 // The request body is optional: {name, network, cloud_init}.
 func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
-	if h.lv == nil {
-		jsonErr(w, http.StatusServiceUnavailable, "libvirt not initialized")
+	if h.compute == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "compute backend not initialized")
 		return
 	}
 	id := chi.URLParam(r, "id")
