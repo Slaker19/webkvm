@@ -447,18 +447,13 @@ func NewRouter(
 	})
 
 	// Community helper scripts (third-party installers from the
-	// community-scripts project). Listing the cached catalog is open to
-	// any authenticated user, but everything that reaches the network or
-	// reveals the code to be executed is admin-only: a refresh makes the
-	// server issue hundreds of outbound requests, and the provision
-	// endpoint returns third-party shell that will run as root.
+	// community-scripts project). Strictly admin-only in full: third-party shell
+	// that runs as root.
 	r.Route("/api/helper-scripts", func(r chi.Router) {
+		r.Use(auth.RequireRole(modelsRoleAdmin()))
 		r.Get("/", h.ListHelperScripts)
-		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireRole(modelsRoleAdmin()))
-			r.Post("/refresh", h.RefreshHelperScripts)
-			r.Get("/{slug}/provision", h.GetHelperScriptProvision)
-		})
+		r.Post("/refresh", h.RefreshHelperScripts)
+		r.Get("/{slug}/provision", h.GetHelperScriptProvision)
 	})
 
 	r.Route("/api/images", func(r chi.Router) {

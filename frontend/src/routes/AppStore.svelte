@@ -592,27 +592,29 @@ EOF\n`;
       shell run as root), and blending them would hide that distinction
       exactly where the user is choosing what to install.
     -->
-    <div class="mt-4 inline-flex rounded-xl bg-muted/60 p-1 border border-border text-xs gap-1">
-      <button
-        onclick={() => (sourceView = 'curated')}
-        class="px-3.5 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 {sourceView === 'curated'
-          ? 'bg-background text-foreground shadow-xs font-semibold'
-          : 'text-muted-foreground hover:text-foreground'}"
-      >
-        <Icon name="package" size={13} class={sourceView === 'curated' ? 'text-accent' : ''} />
-        <span>Oficiales WebKVM</span>
-      </button>
-      <button
-        onclick={() => (sourceView = 'community')}
-        class="px-3.5 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 {sourceView === 'community'
-          ? 'bg-background text-foreground shadow-xs font-semibold'
-          : 'text-muted-foreground hover:text-foreground'}"
-      >
-        <Icon name="code" size={13} class={sourceView === 'community' ? 'text-accent' : ''} />
-        <span>Comunitarias (Helper Scripts)</span>
-        <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-accent/15 text-accent font-bold">630+</span>
-      </button>
-    </div>
+    {#if auth.isAdmin()}
+      <div class="mt-4 inline-flex rounded-xl bg-muted/60 p-1 border border-border text-xs gap-1">
+        <button
+          onclick={() => (sourceView = 'curated')}
+          class="px-3.5 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 {sourceView === 'curated'
+            ? 'bg-background text-foreground shadow-xs font-semibold'
+            : 'text-muted-foreground hover:text-foreground'}"
+        >
+          <Icon name="package" size={13} class={sourceView === 'curated' ? 'text-accent' : ''} />
+          <span>Oficiales WebKVM</span>
+        </button>
+        <button
+          onclick={() => (sourceView = 'community')}
+          class="px-3.5 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 {sourceView === 'community'
+            ? 'bg-background text-foreground shadow-xs font-semibold'
+            : 'text-muted-foreground hover:text-foreground'}"
+        >
+          <Icon name="code" size={13} class={sourceView === 'community' ? 'text-accent' : ''} />
+          <span>Comunitarias (Helper Scripts)</span>
+          <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-accent/15 text-accent font-bold">630+</span>
+        </button>
+      </div>
+    {/if}
 
     {#if sourceView === 'curated'}
       <!-- Search & Filters Toolbar -->
@@ -691,7 +693,7 @@ EOF\n`;
 
   <!-- Main Content Grid -->
   <div class="p-4 sm:p-6">
-    {#if sourceView === 'community'}
+    {#if sourceView === 'community' && auth.isAdmin()}
       <HelperScriptsPanel onDeploy={openDeployModal} />
     {:else if loading}
       <CardGridSkeleton count={8} cols="grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" />

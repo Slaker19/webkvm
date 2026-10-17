@@ -20,6 +20,8 @@
   import EmptyState from '$lib/components/EmptyState.svelte';
   import { t } from '$lib/i18n.svelte.js';
   import { safeHref } from '$lib/utils/safeHref.js';
+  import { useCopyFeedback } from '$lib/utils/copyFeedback.svelte.js';
+  import { navigate } from '$lib/router.svelte.js';
 
   /**
    * onDeploy receives a script shaped like a catalog entry, so the App
@@ -52,6 +54,18 @@
   // plain viewer and the import button never rendered — leaving the
   // catalog impossible to populate from the UI.
   const isAdmin = $derived(auth.role === 'admin');
+  const copyState = useCopyFeedback();
+
+  function terminalCommand(slug) {
+    return `curl -fsSL https://raw.githubusercontent.com/community-scripts/Incus/main/ct/${slug}.sh | bash`;
+  }
+
+  function launchInHostTerminal(slug, name) {
+    const cmd = terminalCommand(slug);
+    copyState.copy(cmd);
+    toast.info(`Comando de ${name} copiado. Pégalo en la terminal del host para iniciar la TUI.`);
+    navigate('/host-console');
+  }
 
   async function load() {
     loading = true;
@@ -326,27 +340,57 @@
             {/if}
           </div>
 
-          <div class="mt-auto pt-3 border-t border-border/50 flex items-center justify-between gap-2">
-            <div class="flex items-center gap-2">
+          <div class="mt-auto pt-3 border-t border-border/50 flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-1.5">
+              <Button
+                size="sm"
+                variant="primary"
+                onclick={() => launchInHostTerminal(s.slug, s.name)}
+                class="h-8 shadow-xs text-xs font-semibold"
+                title="Abre la terminal del host con el comando interactivo"
+              >
+                <Icon name="terminal" size={13} />
+                <span class="ml-1.5">Terminal Host (TUI)</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onclick={() => {
+                  copyState.copy(terminalCommand(s.slug));
+                  toast.success(t('common.copied') || 'Copiado al portapapeles');
+                }}
+                class="h-8 px-2"
+                title="Copiar comando interactivo para ejecutar manualmente"
+              >
+                <Icon name="copy" size={13} />
+              </Button>
               {#if onDeploy}
-                <Button size="sm" onclick={() => confirmDeploy(s)} class="h-8 shadow-xs">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onclick={() => confirmDeploy(s)}
+                  class="h-8 px-2 text-muted-foreground hover:text-foreground"
+                  title="Despliegue automatizado en segundo plano (Experimental)"
+                >
                   <Icon name="play" size={13} />
-                  <span class="ml-1.5 font-medium">{t('helperScripts.deploy')}</span>
                 </Button>
               {/if}
-              {#if isAdmin}
-                <Button variant="outline" size="sm" onclick={() => inspect(s)} class="h-8">
-                  <Icon name="file-text" size={13} />
-                  <span class="ml-1.5">{t('helperScripts.inspect')}</span>
-                </Button>
-              {/if}
+              <Button
+                variant="ghost"
+                size="sm"
+                onclick={() => inspect(s)}
+                class="h-8 px-2 text-muted-foreground hover:text-foreground"
+                title={t('helperScripts.inspect')}
+              >
+                <Icon name="file-text" size={13} />
+              </Button>
             </div>
             {#if s.website}
               <a
                 href={safeHref(s.website)}
                 target="_blank"
                 rel="noopener noreferrer"
-                class="text-xs text-accent hover:underline inline-flex items-center gap-1 shrink-0"
+                class="text-xs text-accent hover:underline inline-flex items-center gap-1 shrink-0 ml-auto"
               >
                 {t('helperScripts.project')}
                 <Icon name="external-link" size={11} />
