@@ -6,7 +6,7 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
-## [0.1.8-dev] — 2026-10-17
+## [0.1.8] — 2026-10-17
 
 ### Añadido
 - **Software RAID Nativo por Kernel sysfs:**
@@ -14,11 +14,16 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
   - Descubrimiento de arrays en tiempo real por sysfs (`/sys/block/md*/md`) eliminando sobrecarga de subprocesos.
   - Comprobación y sincronización en vivo (`SyncAction`) y control del ciclo de vida (`StopHostRAID`).
   - Montaje no destructivo de arrays RAID existentes sin formatear (`mode: "mount"`).
+- **Descubrimiento Nativo de Redes y Pools:**
+  - Desbloqueo de redes de virtualización nativas (`incusbr0`, `virbr0`, etc.) y storage pools por defecto sin filtrado artificial por nombre.
+- **Ingesta Ultrarrápida de Helper Scripts:**
+  - Descarga e indexación streaming en memoria desde tarball (625 aplicaciones en menos de 1 segundo).
+  - Bloqueo exclusivo para administradores y lanzador directo de TUI interactiva en consola.
 
 ### Modificado y Refactorizado
 - **Arquitectura Frontend:** Descomposición de `frontend/src/routes/Storage.svelte` (de 5.295 líneas a 542 líneas) en 14 componentes modulares en `src/lib/components/storage/`.
-- **Arquitectura Backend:** Descomposición del monolito `backend/internal/api/storage.go` (2.003 líneas) en 6 submódulos limpios de dominio (`storage_pools.go`, `storage_volumes.go`, `storage_isos.go`, `storage_uploads.go`, `storage_jobs.go`, `storage_download_client.go`).
-- **Abstracción CommandRunner:** Inyección de `sysutil.CommandRunner` en `internal/mdraid` e `internal/zvol`, permitiendo tests unitarios con mocks sin depender de binarios de sistema.
+- **Arquitectura Backend:** Descomposición del monolito `backend/internal/api/storage.go` (2.003 líneas) en 6 submódulos limpios de dominio.
+- **Seguridad y Resiliencia:** Wrapper universal `safeStorage` con fallback en memoria, corrección de fugas de memoria en `Status.svelte`, soporte de `<firmware>` para restauración de backups UEFI.
 
 ## [0.1.7] — 2026-10-11
 
