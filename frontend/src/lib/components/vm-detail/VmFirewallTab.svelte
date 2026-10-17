@@ -13,11 +13,7 @@
     VM_TEMPLATE_PRESETS,
   } from '$lib/utils/firewallTemplates.js';
 
-  let {
-    vmId,
-    fwRules = $bindable([]),
-    fwForwards = $bindable([]),
-  } = $props();
+  let { vmId, fwRules = $bindable([]), fwForwards = $bindable([]) } = $props();
 
   let fwTplSel = $state('');
   let fwSaving = $state(false);
@@ -118,9 +114,7 @@
     <div class="space-y-2">
       {#each fwForwards as fw (fw.id)}
         <div class="flex items-center gap-2 {fw.disabled ? 'opacity-50' : ''}">
-          <span
-            title={fw.disabled ? t('firewall.enableRule') : t('firewall.disableRule')}
-          >
+          <span title={fw.disabled ? t('firewall.enableRule') : t('firewall.disableRule')}>
             <Switch
               size="sm"
               checked={!fw.disabled}
@@ -176,14 +170,8 @@
     <div class="space-y-2">
       {#each fwRules as r (r.id)}
         <div class="flex items-center gap-2 {r.disabled ? 'opacity-50' : ''}">
-          <span
-            title={r.disabled ? t('firewall.enableRule') : t('firewall.disableRule')}
-          >
-            <Switch
-              size="sm"
-              checked={!r.disabled}
-              onchange={() => (r.disabled = !r.disabled)}
-            />
+          <span title={r.disabled ? t('firewall.enableRule') : t('firewall.disableRule')}>
+            <Switch size="sm" checked={!r.disabled} onchange={() => (r.disabled = !r.disabled)} />
           </span>
           <select class="input w-24" bind:value={r.proto}>
             <option value="tcp">tcp</option>

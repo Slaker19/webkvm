@@ -9,11 +9,7 @@
   import { api } from '$lib/stores/auth.svelte.js';
   import { t } from '$lib/i18n.svelte.js';
 
-  let {
-    lxcImages = [],
-    onRefresh = () => {},
-    askConfirm = () => {},
-  } = $props();
+  let { lxcImages = [], onRefresh = () => {}, askConfirm = () => {} } = $props();
 
   let lxcSearch = $state('');
   let lxcFilter = $state('all');
@@ -81,9 +77,7 @@
     class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-muted/20 border border-border p-3.5 rounded-xl"
   >
     <div class="flex items-center gap-3">
-      <div
-        class="w-8 h-8 rounded-lg bg-success/15 flex items-center justify-center text-success"
-      >
+      <div class="w-8 h-8 rounded-lg bg-success/15 flex items-center justify-center text-success">
         <Icon name="box" size={16} />
       </div>
       <div>
@@ -182,9 +176,7 @@
               {/if}
             </div>
 
-            <div
-              class="my-2 flex items-center gap-2 text-[10px] font-mono text-muted-foreground"
-            >
+            <div class="my-2 flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
               <span>{img.arch || 'x86_64'}</span>
               <span>•</span>
               <span>{img.size > 0 ? formatBytes(img.size) : '~130 MB'}</span>

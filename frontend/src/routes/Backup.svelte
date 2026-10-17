@@ -2039,7 +2039,11 @@
         {testing ? t('backup.testing') : t('backup.test')}
       </Button>
       {#if testResult}
-        <span class="text-xs inline-flex items-center gap-1 {testResult.ok ? 'text-success' : 'text-destructive'}">
+        <span
+          class="text-xs inline-flex items-center gap-1 {testResult.ok
+            ? 'text-success'
+            : 'text-destructive'}"
+        >
           <Icon name={testResult.ok ? 'check' : 'x'} size={12} />
           <span>{testResult.message}</span>
         </span>

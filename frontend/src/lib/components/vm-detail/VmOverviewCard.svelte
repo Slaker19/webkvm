@@ -100,8 +100,8 @@
     </div>
     {#if vm?.os_type}
       <div class="flex gap-2">
-        <span class="text-muted-foreground shrink-0">{t('vmDetail.os')}</span><span
-          class="truncate">{vm.os_type}{vm.os_version ? ' ' + vm.os_version : ''}</span
+        <span class="text-muted-foreground shrink-0">{t('vmDetail.os')}</span><span class="truncate"
+          >{vm.os_type}{vm.os_version ? ' ' + vm.os_version : ''}</span
         >
       </div>
     {/if}
@@ -112,8 +112,9 @@
         >
       </div>
       <div class="flex gap-2">
-        <span class="text-muted-foreground shrink-0">{t('vmDetail.secureBoot')}</span
-        ><span>{vm?.secure_boot ? t('common.yes') : t('common.no')}</span>
+        <span class="text-muted-foreground shrink-0">{t('vmDetail.secureBoot')}</span><span
+          >{vm?.secure_boot ? t('common.yes') : t('common.no')}</span
+        >
       </div>
       <div class="flex gap-2">
         <span class="text-muted-foreground shrink-0">{t('vmDetail.tpm')}</span><span

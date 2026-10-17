@@ -115,9 +115,7 @@
           </span>
         </div>
         {#if ciStatus?.user}
-          <span
-            class="text-xs font-mono px-2 py-0.5 rounded bg-background border border-border"
-          >
+          <span class="text-xs font-mono px-2 py-0.5 rounded bg-background border border-border">
             {t('vmCreate.cloudInitUser')}: {ciStatus.user}
           </span>
         {/if}
@@ -129,22 +127,13 @@
 
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label
-            for="ci-detail-user"
-            class="text-xs font-semibold text-foreground block mb-1"
+          <label for="ci-detail-user" class="text-xs font-semibold text-foreground block mb-1"
             >{t('vmCreate.cloudInitUser')}</label
           >
-          <Input
-            id="ci-detail-user"
-            bind:value={ciUser}
-            placeholder="webkvm"
-            class="w-full"
-          />
+          <Input id="ci-detail-user" bind:value={ciUser} placeholder="webkvm" class="w-full" />
         </div>
         <div>
-          <label
-            for="ci-detail-password"
-            class="text-xs font-semibold text-foreground block mb-1"
+          <label for="ci-detail-password" class="text-xs font-semibold text-foreground block mb-1"
             >{t('common.password')}</label
           >
           <Input
@@ -156,9 +145,7 @@
           />
         </div>
         <div>
-          <label
-            for="ci-detail-hostname"
-            class="text-xs font-semibold text-foreground block mb-1"
+          <label for="ci-detail-hostname" class="text-xs font-semibold text-foreground block mb-1"
             >{t('vmCreate.cloudInitHostname')}</label
           >
           <Input
@@ -169,9 +156,7 @@
           />
         </div>
         <div>
-          <label
-            for="ci-detail-sshkey"
-            class="text-xs font-semibold text-foreground block mb-1"
+          <label for="ci-detail-sshkey" class="text-xs font-semibold text-foreground block mb-1"
             >{t('vmCreate.cloudInitSSHKey')}</label
           >
           <Input

@@ -211,10 +211,7 @@
         <span class="text-xs font-semibold text-muted-foreground"
           >{t('storage.storagePoolLabel')}</span
         >
-        <select
-          bind:value={selectedDiskPool}
-          class="input !py-1 !text-xs !w-auto font-medium"
-        >
+        <select bind:value={selectedDiskPool} class="input !py-1 !text-xs !w-auto font-medium">
           {#each kvmPools as p (p.name)}
             <option value={p.name}>{p.name} ({p.type || 'dir'})</option>
           {/each}
@@ -303,9 +300,7 @@
                 </span>
               {/if}
               {#if vol.children.length > 0}
-                <span
-                  class="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-mono"
-                >
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-mono">
                   {vol.children.length} snap{vol.children.length > 1 ? 's' : ''}
                 </span>
               {/if}
@@ -412,7 +407,8 @@
       </div>
     </div>
     <Dialog.Footer class="gap-2">
-      <Button variant="outline" onclick={() => (showResizeVol = false)}>{t('common.cancel')}</Button>
+      <Button variant="outline" onclick={() => (showResizeVol = false)}>{t('common.cancel')}</Button
+      >
       <Button disabled={volResizing || resizeVolSize <= resizeVolCurrent} onclick={resizeVolume}>
         {#if volResizing}<Spinner size="xs" class="mr-1" />{/if}
         {t('storage.resize')}

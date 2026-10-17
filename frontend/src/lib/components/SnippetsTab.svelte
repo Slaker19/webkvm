@@ -510,7 +510,10 @@ write_files:
                 <span>Generando...</span>
               </div>
             {:else}
-              <Badge variant="success" class="font-mono text-[10px] font-bold flex items-center gap-1">
+              <Badge
+                variant="success"
+                class="font-mono text-[10px] font-bold flex items-center gap-1"
+              >
                 <Icon name="check" size={11} />
                 <span>Renderizado</span>
               </Badge>

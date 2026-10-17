@@ -72,10 +72,7 @@
   async function loadIsos(pool) {
     loadingIsos = true;
     try {
-      isos =
-        (await api
-          .listISOs(pool === '__all__' ? undefined : pool)
-          .catch(() => [])) || [];
+      isos = (await api.listISOs(pool === '__all__' ? undefined : pool).catch(() => [])) || [];
     } finally {
       loadingIsos = false;
     }
@@ -198,7 +195,12 @@
             } else if (job.status === 'error') {
               clearInterval(downloadInterval);
               downloadInterval = null;
-              finishTask(taskId, 'error', job.error || t('storage.downloadFailed'), downloadProgress);
+              finishTask(
+                taskId,
+                'error',
+                job.error || t('storage.downloadFailed'),
+                downloadProgress
+              );
               toast.error(job.error || t('storage.downloadFailed'));
               resolve();
             }
@@ -261,10 +263,7 @@
 <div class="p-4 sm:p-5 space-y-4">
   <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
     <div class="flex flex-wrap items-center gap-3">
-      <select
-        bind:value={selectedISOPool}
-        class="input !py-1 !text-xs !w-auto"
-      >
+      <select bind:value={selectedISOPool} class="input !py-1 !text-xs !w-auto">
         <option value="__all__">{t('storage.allPoolsOption')}</option>
         {#each pools as p (p.name)}
           <option value={p.name}>{p.name} ({purposeLabel(p)})</option>
@@ -342,11 +341,7 @@
           placeholder="https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop-amd64.iso"
           class="flex-1 min-w-[280px]"
         />
-        <Input
-          bind:value={downloadName}
-          placeholder={t('storage.filenameOptional')}
-          class="w-48"
-        />
+        <Input bind:value={downloadName} placeholder={t('storage.filenameOptional')} class="w-48" />
         <Button
           onclick={handleDownloadISO}
           disabled={!downloadURL || downloading || !isoTargetPool}
@@ -397,13 +392,10 @@
               <Icon name="disc" size={16} />
             </div>
             <div class="min-w-0">
-              <span
-                class="text-sm font-semibold text-foreground truncate block"
-                title={iso.name}>{iso.name}</span
+              <span class="text-sm font-semibold text-foreground truncate block" title={iso.name}
+                >{iso.name}</span
               >
-              <div
-                class="flex items-center gap-2 text-[11px] text-muted-foreground font-mono"
-              >
+              <div class="flex items-center gap-2 text-[11px] text-muted-foreground font-mono">
                 <span>{bytesToStr(iso.size)}</span>
                 <span>•</span>
                 <span>{t('storage.poolLabelShort')} {iso.pool || '—'}</span>

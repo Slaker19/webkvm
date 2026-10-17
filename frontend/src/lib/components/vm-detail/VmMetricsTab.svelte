@@ -20,9 +20,7 @@
   <div class="flex items-center justify-between mb-3">
     <span class="text-xs text-muted-foreground tnum"
       >{t('vmDetail.updatedAt', {
-        time: metrics?.sampled_at
-          ? new Date(metrics.sampled_at * 1000).toLocaleTimeString()
-          : '—',
+        time: metrics?.sampled_at ? new Date(metrics.sampled_at * 1000).toLocaleTimeString() : '—',
       })}</span
     >
   </div>
@@ -40,9 +38,7 @@
             >{t('vms.cpu')}</span
           >
           <span class="text-sm tnum"
-            >{cpuPoints.length
-              ? cpuPoints[cpuPoints.length - 1].v.toFixed(1)
-              : '0.0'}%</span
+            >{cpuPoints.length ? cpuPoints[cpuPoints.length - 1].v.toFixed(1) : '0.0'}%</span
           >
         </div>
         <Chart points={cpuPoints} yMax={100} height={70} />
@@ -53,9 +49,7 @@
             >{t('common.ram')}</span
           >
           <span class="text-sm tnum"
-            >{ramPoints.length
-              ? ramPoints[ramPoints.length - 1].v.toFixed(1)
-              : '0.0'}%</span
+            >{ramPoints.length ? ramPoints[ramPoints.length - 1].v.toFixed(1) : '0.0'}%</span
           >
         </div>
         <Chart points={ramPoints} yMax={100} height={70} />

@@ -9,7 +9,6 @@
   import { Input } from '$lib/components/ui/input';
 
   let {
-    vmId,
     schedStart = $bindable(''),
     schedStop = $bindable(''),
     schedSnap = $bindable(''),
@@ -118,8 +117,7 @@
               class="!h-8 w-24 tnum text-xs"
             />
             <span class="text-xs text-muted-foreground">
-              {t('vmDetail.retentionCount', { n: schedSnapMax }) ||
-                `${schedSnapMax} instantáneas`}
+              {t('vmDetail.retentionCount', { n: schedSnapMax }) || `${schedSnapMax} instantáneas`}
             </span>
           </div>
         </div>
@@ -129,8 +127,6 @@
 
   <p class="text-xs text-muted-foreground mb-3">{t('vmDetail.scheduleHint')}</p>
   <Button size="sm" onclick={saveSchedule} disabled={schedSaving}>
-    {#if schedSaving}<Spinner size="xs" color="text-white" />{:else}{t(
-        'common.save'
-      )}{/if}
+    {#if schedSaving}<Spinner size="xs" color="text-white" />{:else}{t('common.save')}{/if}
   </Button>
 </BlockCard>

@@ -10,12 +10,7 @@
   import { t } from '$lib/i18n.svelte.js';
   import { poolForFolder, poolsForFolders } from '$lib/purpose.js';
 
-  let {
-    open = $bindable(false),
-    disk = null,
-    hostDisks = [],
-    onInitialized = () => {},
-  } = $props();
+  let { open = $bindable(false), disk = null, hostDisks = [], onInitialized = () => {} } = $props();
 
   let initDiskPath = $state('');
   let initDiskName = $state('');
@@ -445,7 +440,8 @@
           />
           <div class="min-w-0">
             <span class="text-xs font-medium">{t('storage.optNoFail')}</span>
-            <span class="text-[11px] text-muted-foreground block">{t('storage.optNoFailDesc')}</span>
+            <span class="text-[11px] text-muted-foreground block">{t('storage.optNoFailDesc')}</span
+            >
           </div>
         </label>
 

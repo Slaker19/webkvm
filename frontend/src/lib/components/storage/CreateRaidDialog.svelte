@@ -303,7 +303,9 @@
                             if (e.target.checked) {
                               createRaidSubfolders = [...createRaidSubfolders, sub.id];
                             } else {
-                              createRaidSubfolders = createRaidSubfolders.filter((x) => x !== sub.id);
+                              createRaidSubfolders = createRaidSubfolders.filter(
+                                (x) => x !== sub.id
+                              );
                             }
                           }}
                           class="w-3.5 h-3.5 rounded border-border"

@@ -320,7 +320,8 @@
       >
         <Icon name="hardDrive" size={15} />
         <span>{t('storage.storagePools')}</span>
-        <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-muted font-mono">{pools.length}</span>
+        <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-muted font-mono">{pools.length}</span
+        >
       </button>
 
       <button
@@ -466,51 +467,27 @@
 
     <!-- TAB 4: VM DISKS -->
     {#if activeTab === 'vm-disks'}
-      <StorageVmDisksTab
-        {pools}
-        bind:selectedDiskPool
-        {askConfirm}
-        {showStorageErr}
-      />
+      <StorageVmDisksTab {pools} bind:selectedDiskPool {askConfirm} {showStorageErr} />
     {/if}
 
     <!-- TAB 5: LXC DISKS -->
     {#if activeTab === 'lxc-disks'}
-      <StorageLxcDisksTab
-        {pools}
-        bind:selectedLxcPool
-        {askConfirm}
-        {showStorageErr}
-      />
+      <StorageLxcDisksTab {pools} bind:selectedLxcPool {askConfirm} {showStorageErr} />
     {/if}
 
     <!-- TAB 6: ISO LIBRARY -->
     {#if activeTab === 'isos'}
-      <StorageIsosTab
-        {pools}
-        bind:selectedISOPool
-        {askConfirm}
-        {showStorageErr}
-      />
+      <StorageIsosTab {pools} bind:selectedISOPool {askConfirm} {showStorageErr} />
     {/if}
 
     <!-- TAB 7: LXC TEMPLATES -->
     {#if activeTab === 'lxc-templates'}
-      <StorageLxcTemplatesTab
-        {lxcImages}
-        onRefresh={load}
-        {askConfirm}
-      />
+      <StorageLxcTemplatesTab {lxcImages} onRefresh={load} {askConfirm} />
     {/if}
 
     <!-- TAB 8: CLOUD-INIT STUDIO -->
     {#if activeTab === 'cloud-init'}
-      <StorageCloudInitTab
-        {cloudInitSnippets}
-        onRefresh={load}
-        {askConfirm}
-        {showStorageErr}
-      />
+      <StorageCloudInitTab {cloudInitSnippets} onRefresh={load} {askConfirm} {showStorageErr} />
     {/if}
   </div>
 </div>

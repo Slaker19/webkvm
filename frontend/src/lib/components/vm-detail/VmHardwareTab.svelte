@@ -408,12 +408,7 @@
       {#if editTab === 'general'}
         <div class="space-y-3 pt-1">
           <SettingRow label={t('common.name')} helper={t('vmCreate.nameHelper')}>
-            <Input
-              id="edit-name"
-              bind:value={eName}
-              type="text"
-              class="max-w-xs font-medium"
-            />
+            <Input id="edit-name" bind:value={eName} type="text" class="max-w-xs font-medium" />
           </SettingRow>
 
           <SettingRow
@@ -449,17 +444,11 @@
             {/if}
           </SettingRow>
 
-          <SettingRow
-            label={t('vmCreate.startAtBoot')}
-            helper={t('vmCreate.startAtBootHelper')}
-          >
+          <SettingRow label={t('vmCreate.startAtBoot')} helper={t('vmCreate.startAtBootHelper')}>
             <Switch bind:checked={eAutostart} ariaLabel={t('vmCreate.startAtBoot')} />
           </SettingRow>
 
-          <SettingRow
-            label={t('vmDetail.networkLabel')}
-            helper={t('vmCreate.networkHelper')}
-          >
+          <SettingRow label={t('vmDetail.networkLabel')} helper={t('vmCreate.networkHelper')}>
             <select id="edit-net" bind:value={eNetwork} class="input max-w-xs">
               {#each vmNetworks as net (net.name)}
                 <option value={net.name}>{networkLabel(net)}</option>
@@ -468,15 +457,8 @@
           </SettingRow>
 
           {#if !isContainerVm}
-            <SettingRow
-              label={t('vmDetail.adapter')}
-              helper={t('vmCreate.adapterHelper')}
-            >
-              <select
-                id="edit-netmodel"
-                bind:value={eNetworkModel}
-                class="input max-w-xs"
-              >
+            <SettingRow label={t('vmDetail.adapter')} helper={t('vmCreate.adapterHelper')}>
+              <select id="edit-netmodel" bind:value={eNetworkModel} class="input max-w-xs">
                 {#each networkModels as m (m.value)}
                   <option value={m.value} disabled={!supports('network', m.value)}>
                     {m.label}{!supports('network', m.value)
@@ -505,14 +487,9 @@
           </SettingRow>
 
           {#if !isContainerVm}
-            <SettingRow
-              label={t('vmDetail.cpuModeLabel')}
-              helper={t('vmCreate.cpuModeHelper')}
-            >
+            <SettingRow label={t('vmDetail.cpuModeLabel')} helper={t('vmCreate.cpuModeHelper')}>
               <select id="edit-cpu" bind:value={eCPUMode} class="input max-w-xs">
-                <option value="host-passthrough"
-                  >host-passthrough (Rendimiento nativo)</option
-                >
+                <option value="host-passthrough">host-passthrough (Rendimiento nativo)</option>
                 <option value="host-model">host-model (Compatible con migración)</option>
                 <option value="max">max (Todas las características QEMU)</option>
                 <option value="custom">custom</option>
@@ -520,16 +497,11 @@
             </SettingRow>
 
             {#if eCPUMode === 'custom'}
-              <SettingRow
-                label={t('vmCreate.cpuModel')}
-                helper={t('vmCreate.cpuModelHelper')}
-              >
+              <SettingRow label={t('vmCreate.cpuModel')} helper={t('vmCreate.cpuModelHelper')}>
                 <select bind:value={eCPUModel} class="input max-w-xs">
                   {#each cpuModelPresets as m (m)}
                     <option value={m} disabled={!supports('cpu', m)}
-                      >{m}{!supports('cpu', m)
-                        ? ' — ' + unavailableReason('cpu', m)
-                        : ''}</option
+                      >{m}{!supports('cpu', m) ? ' — ' + unavailableReason('cpu', m) : ''}</option
                     >
                   {/each}
                 </select>
@@ -544,10 +516,7 @@
               <CpuPrioritySelector bind:value={eCPUUnits} />
             </SettingRow>
 
-            <SettingRow
-              label={t('vmDetail.kvmHidden')}
-              helper={t('vmDetail.kvmHiddenHelper')}
-            >
+            <SettingRow label={t('vmDetail.kvmHidden')} helper={t('vmDetail.kvmHiddenHelper')}>
               <Switch bind:checked={eKVMHidden} ariaLabel={t('vmDetail.kvmHidden')} />
             </SettingRow>
 
@@ -590,8 +559,7 @@
                   <button
                     type="button"
                     onclick={() => (eRamMB = p)}
-                    class="text-[11px] px-2 py-0.5 rounded border transition-colors {eRamMB ===
-                    p
+                    class="text-[11px] px-2 py-0.5 rounded border transition-colors {eRamMB === p
                       ? 'border-accent bg-accent/15 text-accent font-semibold'
                       : 'border-border bg-background text-muted-foreground hover:bg-muted/60'}"
                   >
@@ -603,10 +571,7 @@
           </SettingRow>
 
           {#if !isContainerVm}
-            <SettingRow
-              label={t('vmDetail.minRamLabel')}
-              helper={t('vmDetail.minRamHelper')}
-            >
+            <SettingRow label={t('vmDetail.minRamLabel')} helper={t('vmDetail.minRamHelper')}>
               <div class="flex items-center gap-2">
                 <Input
                   id="edit-min-ram"
@@ -625,10 +590,7 @@
               </div>
             </SettingRow>
 
-            <SettingRow
-              label={t('vmDetail.iothreadsLabel')}
-              helper={t('vmDetail.iothreadsHelper')}
-            >
+            <SettingRow label={t('vmDetail.iothreadsLabel')} helper={t('vmDetail.iothreadsHelper')}>
               <div class="flex items-center gap-2">
                 <Input
                   id="edit-iothreads"
@@ -669,20 +631,13 @@
                 <option value="cirrus" disabled={!supports('video', 'cirrus')}
                   >Cirrus (Legado / SO antiguos)</option
                 >
-                <option value="vmvga" disabled={!supports('video', 'vmvga')}
-                  >VMware SVGA II</option
-                >
-                <option value="bochs" disabled={!supports('video', 'bochs')}
-                  >Bochs Display</option
-                >
+                <option value="vmvga" disabled={!supports('video', 'vmvga')}>VMware SVGA II</option>
+                <option value="bochs" disabled={!supports('video', 'bochs')}>Bochs Display</option>
                 <option value="none">{t('vmCreate.serialOnly')}</option>
               </select>
             </SettingRow>
 
-            <SettingRow
-              label={t('vmCreate.audioDevice')}
-              helper={t('vmCreate.audioDeviceHelper')}
-            >
+            <SettingRow label={t('vmCreate.audioDevice')} helper={t('vmCreate.audioDeviceHelper')}>
               <select bind:value={eAudioModel} class="input max-w-xs">
                 {#each audioModels as m (m.value)}
                   <option value={m.value} disabled={!supports('sound', m.value)}>
@@ -702,38 +657,26 @@
                 <option value="both">Ambas activas (noVNC + SPICE)</option>
                 <option value="vnc">Solo noVNC (RFB estándar)</option>
                 <option value="spice">Solo SPICE (Alto rendimiento / Web SPICE)</option>
-                <option value="none">Desactivadas (Sin consola gráfica / Headless)</option
-                >
+                <option value="none">Desactivadas (Sin consola gráfica / Headless)</option>
               </select>
             </SettingRow>
 
-            <SettingRow
-              label={t('vmCreate.serialPort')}
-              helper={t('vmCreate.serialPortHelper')}
-            >
+            <SettingRow label={t('vmCreate.serialPort')} helper={t('vmCreate.serialPortHelper')}>
               <Switch bind:checked={eSerialPort} ariaLabel={t('vmCreate.serialPort')} />
             </SettingRow>
 
-            <SettingRow
-              label={t('vmCreate.watchdog')}
-              helper={t('vmCreate.watchdogHelper')}
-            >
+            <SettingRow label={t('vmCreate.watchdog')} helper={t('vmCreate.watchdogHelper')}>
               <Switch bind:checked={eWatchdog} ariaLabel={t('vmCreate.watchdog')} />
             </SettingRow>
           {:else}
-            <div
-              class="p-4 rounded-lg bg-muted/20 text-center text-xs text-muted-foreground"
-            >
+            <div class="p-4 rounded-lg bg-muted/20 text-center text-xs text-muted-foreground">
               {t('vmDetail.containerConsoleDesc')}
             </div>
           {/if}
         </div>
       {:else if editTab === 'boot' && !isContainerVm}
         <div class="space-y-3 pt-1">
-          <SettingRow
-            label={t('vmCreate.bootOrder')}
-            helper={t('vmCreate.bootOrderHelper')}
-          >
+          <SettingRow label={t('vmCreate.bootOrder')} helper={t('vmCreate.bootOrderHelper')}>
             <select id="edit-boot" bind:value={eBootOrder} class="input max-w-xs">
               {#each bootOrderOptions as opt (opt.value)}
                 <option value={opt.value}>{opt.label}</option>
@@ -775,10 +718,7 @@
               label={t('vmDetail.secureBootLabel')}
               helper={t('vmCreate.secureBootHelper')}
             >
-              <Switch
-                bind:checked={eSecureBoot}
-                ariaLabel={t('vmDetail.secureBootLabel')}
-              />
+              <Switch bind:checked={eSecureBoot} ariaLabel={t('vmDetail.secureBootLabel')} />
             </SettingRow>
 
             <SettingRow label={t('vmDetail.tpm2')} helper={t('vmCreate.tpmHelper')}>
@@ -798,10 +738,7 @@
         </div>
       {:else if editTab === 'container' && isContainerVm}
         <div class="space-y-3 pt-1">
-          <SettingRow
-            label={t('vmCreate.privileged')}
-            helper={t('vmCreate.privilegedHelper')}
-          >
+          <SettingRow label={t('vmCreate.privileged')} helper={t('vmCreate.privilegedHelper')}>
             <Switch
               bind:checked={ePrivileged}
               ariaLabel={t('vmCreate.privileged')}
@@ -813,16 +750,8 @@
             <Switch bind:checked={eNesting} ariaLabel={t('vmCreate.nesting')} />
           </SettingRow>
 
-          <SettingRow
-            label={t('vmCreate.profiles')}
-            helper={t('vmCreate.profilesHelper')}
-          >
-            <select
-              id="edit-profiles"
-              bind:value={eProfiles}
-              multiple
-              class="input h-28 max-w-xs"
-            >
+          <SettingRow label={t('vmCreate.profiles')} helper={t('vmCreate.profilesHelper')}>
+            <select id="edit-profiles" bind:value={eProfiles} multiple class="input h-28 max-w-xs">
               {#each incusProfiles as p (p)}
                 <option value={p}>{p}</option>
               {/each}
@@ -875,12 +804,8 @@
   {:else}
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <!-- Cómputo -->
-      <div
-        class="rounded-xl border border-border bg-card/60 overflow-hidden flex flex-col"
-      >
-        <div
-          class="px-4 py-2.5 bg-muted/30 border-b border-border flex items-center gap-2"
-        >
+      <div class="rounded-xl border border-border bg-card/60 overflow-hidden flex flex-col">
+        <div class="px-4 py-2.5 bg-muted/30 border-b border-border flex items-center gap-2">
           <Icon name="cpu" size={14} class="text-accent" />
           <span class="text-xs font-semibold uppercase tracking-wider text-foreground">
             {t('vmCreate.compute')}
@@ -935,12 +860,7 @@
               )}
             {/if}
             {#if vm.cpu_flags && vm.cpu_flags.length > 0}
-              {@render hwRow(
-                'zap',
-                t('vmDetail.cpuFlags'),
-                vm.cpu_flags.join(', '),
-                'cpu'
-              )}
+              {@render hwRow('zap', t('vmDetail.cpuFlags'), vm.cpu_flags.join(', '), 'cpu')}
             {/if}
           {/if}
         </div>
@@ -948,12 +868,8 @@
 
       <!-- Pantalla & Audio / Periféricos -->
       {#if !isContainerVm}
-        <div
-          class="rounded-xl border border-border bg-card/60 overflow-hidden flex flex-col"
-        >
-          <div
-            class="px-4 py-2.5 bg-muted/30 border-b border-border flex items-center gap-2"
-          >
+        <div class="rounded-xl border border-border bg-card/60 overflow-hidden flex flex-col">
+          <div class="px-4 py-2.5 bg-muted/30 border-b border-border flex items-center gap-2">
             <Icon name="monitor" size={14} class="text-accent" />
             <span class="text-xs font-semibold uppercase tracking-wider text-foreground">
               {t('vmCreate.graphicsAudio')}
@@ -990,9 +906,7 @@
                 ? t('common.disabled')
                 : vm.audio_model.toUpperCase(),
               'display',
-              !vm.audio_model || vm.audio_model === 'none'
-                ? t('common.off')
-                : vm.audio_model,
+              !vm.audio_model || vm.audio_model === 'none' ? t('common.off') : vm.audio_model,
               false,
               !vm.audio_model || vm.audio_model === 'none' ? 'muted' : 'accent'
             )}
@@ -1020,12 +934,8 @@
         </div>
 
         <!-- Arranque & Seguridad -->
-        <div
-          class="rounded-xl border border-border bg-card/60 overflow-hidden flex flex-col"
-        >
-          <div
-            class="px-4 py-2.5 bg-muted/30 border-b border-border flex items-center gap-2"
-          >
+        <div class="rounded-xl border border-border bg-card/60 overflow-hidden flex flex-col">
+          <div class="px-4 py-2.5 bg-muted/30 border-b border-border flex items-center gap-2">
             <Icon name="lock" size={14} class="text-accent" />
             <span class="text-xs font-semibold uppercase tracking-wider text-foreground">
               {t('vmCreate.bootSecurity')}
@@ -1070,9 +980,7 @@
             {@render hwRow(
               'key',
               t('vmDetail.tpm'),
-              vm.tpm_enabled
-                ? `TPM ${vm.tpm_version || '2.0'} (swtpm)`
-                : t('common.disabled'),
+              vm.tpm_enabled ? `TPM ${vm.tpm_version || '2.0'} (swtpm)` : t('common.disabled'),
               'boot',
               vm.tpm_enabled ? t('common.on') : t('common.off'),
               vm.tpm_enabled,
@@ -1082,12 +990,8 @@
         </div>
       {:else}
         <!-- Contenedor Incus / LXC -->
-        <div
-          class="rounded-xl border border-border bg-card/60 overflow-hidden flex flex-col"
-        >
-          <div
-            class="px-4 py-2.5 bg-muted/30 border-b border-border flex items-center gap-2"
-          >
+        <div class="rounded-xl border border-border bg-card/60 overflow-hidden flex flex-col">
+          <div class="px-4 py-2.5 bg-muted/30 border-b border-border flex items-center gap-2">
             <Icon name="box" size={14} class="text-accent" />
             <span class="text-xs font-semibold uppercase tracking-wider text-foreground">
               Incus / LXC
@@ -1097,9 +1001,7 @@
             {@render hwRow(
               'shield',
               t('vmCreate.privileged'),
-              vm.privileged
-                ? t('vmDetail.privilegedRoot')
-                : t('vmDetail.privilegedIsolated'),
+              vm.privileged ? t('vmDetail.privilegedRoot') : t('vmDetail.privilegedIsolated'),
               'container',
               vm.privileged ? t('common.yes') : t('common.no'),
               vm.privileged,
@@ -1126,12 +1028,8 @@
       {/if}
 
       <!-- Sistema & Identidad -->
-      <div
-        class="rounded-xl border border-border bg-card/60 overflow-hidden flex flex-col"
-      >
-        <div
-          class="px-4 py-2.5 bg-muted/30 border-b border-border flex items-center gap-2"
-        >
+      <div class="rounded-xl border border-border bg-card/60 overflow-hidden flex flex-col">
+        <div class="px-4 py-2.5 bg-muted/30 border-b border-border flex items-center gap-2">
           <Icon name="tag" size={14} class="text-accent" />
           <span class="text-xs font-semibold uppercase tracking-wider text-foreground">
             {t('vmCreate.general')}
@@ -1191,9 +1089,7 @@
                       </span>
                     {/each}
                   {:else}
-                    <span class="text-xs text-muted-foreground"
-                      >{t('vmDetail.noGroups')}</span
-                    >
+                    <span class="text-xs text-muted-foreground">{t('vmDetail.noGroups')}</span>
                   {/if}
                 </div>
               </div>

@@ -90,19 +90,9 @@
             <option value={true}>{t('vmDetail.alertAbove')}</option>
             <option value={false}>{t('vmDetail.alertBelow')}</option>
           </select>
-          <Input
-            type="number"
-            class="h-8 w-24 tnum"
-            bind:value={rule.threshold}
-            min="0"
-          />
+          <Input type="number" class="h-8 w-24 tnum" bind:value={rule.threshold} min="0" />
           <span class="text-xs text-muted-foreground">{t('vmDetail.alertFor')}</span>
-          <Input
-            type="number"
-            class="h-8 w-20 tnum"
-            bind:value={rule.duration_secs}
-            min="1"
-          />
+          <Input type="number" class="h-8 w-20 tnum" bind:value={rule.duration_secs} min="1" />
           <span class="text-xs text-muted-foreground">{t('vmDetail.alertSecs')}</span>
           {#if ruleStatus(rule.id)}
             <span

@@ -15,7 +15,6 @@
     hostDisksLoading = false,
     orphanMounts = [],
     raidArrays = [],
-    raidLoading = false,
     onRefresh = () => {},
     onOpenSmart = () => {},
     askConfirm = () => {},
@@ -154,11 +153,7 @@
         onclick={onRefresh}
         disabled={hostDisksLoading}
       >
-        <Icon
-          name="refresh"
-          size={13}
-          class={hostDisksLoading ? 'animate-spin mr-1' : 'mr-1'}
-        />
+        <Icon name="refresh" size={13} class={hostDisksLoading ? 'animate-spin mr-1' : 'mr-1'} />
         {t('common.refresh')}
       </Button>
       {#if auth.isAdmin()}
@@ -171,11 +166,7 @@
           <Icon name="hardDrive" size={13} />
           {t('storage.createRaidBtn')}
         </Button>
-        <Button
-          size="sm"
-          class="!h-8 !text-xs gap-1.5"
-          onclick={() => openInitDiskDialog(null)}
-        >
+        <Button size="sm" class="!h-8 !text-xs gap-1.5" onclick={() => openInitDiskDialog(null)}>
           <Icon name="plus" size={13} />
           {t('storage.initDirButton')}
         </Button>
@@ -271,7 +262,9 @@
             {/if}
 
             {#if auth.isAdmin()}
-              <div class="pt-2 border-t border-border/50 flex items-center justify-end gap-2 flex-wrap">
+              <div
+                class="pt-2 border-t border-border/50 flex items-center justify-end gap-2 flex-wrap"
+              >
                 {#if !arr.mounted}
                   <Button
                     size="xs"
@@ -318,9 +311,7 @@
       <div class="overflow-x-auto">
         <table class="w-full text-xs text-left border-collapse">
           <thead>
-            <tr
-              class="border-b border-border bg-muted/30 text-muted-foreground font-semibold"
-            >
+            <tr class="border-b border-border bg-muted/30 text-muted-foreground font-semibold">
               <th class="p-3 pl-4">{t('storage.colDevice')}</th>
               <th class="p-3">{t('storage.colModelSerial')}</th>
               <th class="p-3">{t('storage.colTypeBus')}</th>
@@ -412,8 +403,7 @@
                     </div>
                   {/if}
                 </td>
-                <td class="p-3 text-right font-mono font-bold text-foreground"
-                  >{disk.size_human}</td
+                <td class="p-3 text-right font-mono font-bold text-foreground">{disk.size_human}</td
                 >
                 <td class="p-3 font-mono text-muted-foreground">
                   {disk.fstype ||
@@ -429,14 +419,10 @@
                         : 'text-accent font-semibold'}>{disk.mountpoints.join(', ')}</span
                     >
                   {:else if disk.children?.some((c) => c.mountpoints?.length)}
-                    {@const mnts = disk.children
-                      .flatMap((c) => c.mountpoints)
-                      .filter(Boolean)}
+                    {@const mnts = disk.children.flatMap((c) => c.mountpoints).filter(Boolean)}
                     <span class="text-foreground font-medium">{mnts.join(', ')}</span>
                   {:else}
-                    <span class="text-muted-foreground/60 italic"
-                      >{t('storage.notMounted')}</span
-                    >
+                    <span class="text-muted-foreground/60 italic">{t('storage.notMounted')}</span>
                   {/if}
                   {#if disk.mount_state === 'configured' && disk.mount_detail}
                     <span

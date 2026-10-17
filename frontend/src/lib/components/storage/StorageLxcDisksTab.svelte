@@ -81,10 +81,7 @@
         <span class="text-xs font-semibold text-muted-foreground"
           >{t('storage.incusPoolLabel')}</span
         >
-        <select
-          bind:value={selectedLxcPool}
-          class="input !py-1 !text-xs !w-auto font-medium"
-        >
+        <select bind:value={selectedLxcPool} class="input !py-1 !text-xs !w-auto font-medium">
           {#each lxcPools as p (p.name)}
             <option value={p.name}>{p.name} ({p.type || 'dir'})</option>
           {/each}

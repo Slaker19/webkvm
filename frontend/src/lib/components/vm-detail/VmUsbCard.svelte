@@ -6,11 +6,7 @@
   import BlockCard from '$lib/components/BlockCard.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
 
-  let {
-    vm = {},
-    vmId = '',
-    load,
-  } = $props();
+  let { vm = {}, vmId = '', load } = $props();
 
   let hostUSBDevices = $state([]);
   let hostUSBLoaded = false;
@@ -93,8 +89,7 @@
         </div>
         <button
           onclick={() => loadHostUSBDevices(true)}
-          class="text-xs text-accent hover:text-accent-hover"
-          >{t('common.refresh')}</button
+          class="text-xs text-accent hover:text-accent-hover">{t('common.refresh')}</button
         >
       </div>
       {#if hostUSBDevices.length === 0}

@@ -182,16 +182,13 @@
         {/if}
         {#if guestInfo.hostname}
           <div class="flex gap-2">
-            <span class="text-muted-foreground shrink-0"
-              >{t('vmDetail.guestHostname')}</span
-            >
+            <span class="text-muted-foreground shrink-0">{t('vmDetail.guestHostname')}</span>
             <span class="font-mono truncate">{guestInfo.hostname}</span>
           </div>
         {/if}
         {#if guestInfo.os?.kernel_release}
           <div class="flex gap-2">
-            <span class="text-muted-foreground shrink-0">{t('vmDetail.guestKernel')}</span
-            >
+            <span class="text-muted-foreground shrink-0">{t('vmDetail.guestKernel')}</span>
             <span class="font-mono truncate">{guestInfo.os.kernel_release}</span>
           </div>
         {/if}
@@ -203,9 +200,7 @@
         {/if}
         {#if guestInfo.timezone?.zone}
           <div class="flex gap-2">
-            <span class="text-muted-foreground shrink-0"
-              >{t('vmDetail.guestTimezone')}</span
-            >
+            <span class="text-muted-foreground shrink-0">{t('vmDetail.guestTimezone')}</span>
             <span class="font-mono">{guestInfo.timezone.zone}</span>
           </div>
         {/if}
@@ -224,9 +219,7 @@
           >
             <Icon name="user" size={13} class="text-muted-foreground" />
             <span>{u.user}</span>
-            {#if u.domain}<span class="text-[10px] text-muted-foreground"
-                >({u.domain})</span
-              >{/if}
+            {#if u.domain}<span class="text-[10px] text-muted-foreground">({u.domain})</span>{/if}
           </span>
         {/each}
       </div>
@@ -275,9 +268,7 @@
             <div class="min-w-0">
               <span class="font-mono text-sm font-medium">{iface.name}</span>
               {#if iface.mac}
-                <span class="ml-2 text-[11px] font-mono text-muted-foreground"
-                  >{iface.mac}</span
-                >
+                <span class="ml-2 text-[11px] font-mono text-muted-foreground">{iface.mac}</span>
               {/if}
             </div>
             <div class="flex flex-col items-end gap-0.5 min-w-0">
@@ -285,9 +276,7 @@
                 <span class="font-mono text-xs text-accent truncate">{ip}</span>
               {/each}
               {#each iface.ipv6 || [] as ip (ip)}
-                <span class="font-mono text-[10px] text-muted-foreground truncate"
-                  >{ip}</span
-                >
+                <span class="font-mono text-[10px] text-muted-foreground truncate">{ip}</span>
               {/each}
             </div>
           </div>
@@ -299,18 +288,14 @@
     <div class="mt-6 pt-4 border-t border-border space-y-3">
       <div class="flex items-center justify-between">
         <div>
-          <h3
-            class="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-          >
+          <h3 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             {t('vmDetail.guestConsole')}
           </h3>
           <p class="text-xs text-muted-foreground">
             {t('vmDetail.guestConsoleDesc')}
           </p>
         </div>
-        <span
-          class="text-[10px] px-1.5 py-0.5 rounded font-mono bg-accent/10 text-accent"
-        >
+        <span class="text-[10px] px-1.5 py-0.5 rounded font-mono bg-accent/10 text-accent">
           guest-exec
         </span>
       </div>
@@ -391,15 +376,12 @@
 
       <!-- Output Box -->
       {#if guestExecResult}
-        <div
-          class="rounded-md border border-border bg-black/90 p-3 font-mono text-xs space-y-2"
-        >
+        <div class="rounded-md border border-border bg-black/90 p-3 font-mono text-xs space-y-2">
           <div class="flex items-center justify-between border-b border-border/40 pb-2">
             <div class="flex items-center gap-2">
               <span class="text-muted-foreground">{t('vmDetail.guestExitCode')}:</span>
               <span
-                class="px-1.5 py-0.5 rounded text-[10px] font-bold {guestExecResult.exit_code ===
-                0
+                class="px-1.5 py-0.5 rounded text-[10px] font-bold {guestExecResult.exit_code === 0
                   ? 'bg-emerald-500/20 text-emerald-400'
                   : 'bg-destructive/20 text-destructive'}"
               >

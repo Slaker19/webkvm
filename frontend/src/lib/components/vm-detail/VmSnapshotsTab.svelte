@@ -10,7 +10,6 @@
   import { Input } from '$lib/components/ui/input';
 
   let {
-    vmId,
     snapshots = [],
     snapName = $bindable(''),
     snapDesc = $bindable(''),
@@ -137,11 +136,7 @@
   <label
     class="flex items-center gap-2 text-sm text-muted-foreground mb-3 cursor-pointer select-none"
   >
-    <input
-      type="checkbox"
-      bind:checked={snapMemory}
-      class="w-4 h-4 rounded border-border"
-    />
+    <input type="checkbox" bind:checked={snapMemory} class="w-4 h-4 rounded border-border" />
     {t('vmDetail.snapshotWithMemory')}
   </label>
   {#if snapshots.length === 0}
@@ -203,17 +198,14 @@
             class="!h-8 w-24 tnum text-xs"
           />
           <span class="text-xs text-muted-foreground">
-            {t('vmDetail.retentionCount', { n: schedSnapMax }) ||
-              `${schedSnapMax} instantáneas`}
+            {t('vmDetail.retentionCount', { n: schedSnapMax }) || `${schedSnapMax} instantáneas`}
           </span>
         </div>
       </div>
     {/if}
     <div class="mt-3 flex justify-end">
       <Button size="xs" onclick={saveSchedule} disabled={schedSaving}>
-        {#if schedSaving}<Spinner size="xs" color="text-white" />{:else}{t(
-            'common.save'
-          )}{/if}
+        {#if schedSaving}<Spinner size="xs" color="text-white" />{:else}{t('common.save')}{/if}
       </Button>
     </div>
   </div>

@@ -77,7 +77,8 @@
               >
                 <span class="inline-flex items-center gap-1">
                   <Icon name={iface.link_state === 'down' ? 'link' : 'unlink'} size={12} />
-                  <span>{iface.link_state === 'down' ? 'Conectar cable' : 'Desconectar cable'}</span>
+                  <span>{iface.link_state === 'down' ? 'Conectar cable' : 'Desconectar cable'}</span
+                  >
                 </span>
               </button>
             {/if}

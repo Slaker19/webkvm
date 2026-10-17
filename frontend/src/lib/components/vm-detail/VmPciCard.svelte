@@ -8,12 +8,7 @@
   import PciPreflightPanel from '$lib/components/PciPreflightPanel.svelte';
   import PciGroupCard from '$lib/components/PciGroupCard.svelte';
 
-  let {
-    vm = {},
-    vmId = '',
-    isContainerVm = false,
-    load,
-  } = $props();
+  let { vm = {}, vmId = '', isContainerVm = false, load } = $props();
 
   let hostPCIGroups = $state([]);
   let hostPCIError = $state('');
@@ -147,8 +142,7 @@
               loadHostPCIDevices(true);
               loadHostPCIPreflight();
             }}
-            class="text-xs text-accent hover:text-accent-hover"
-            >{t('common.refresh')}</button
+            class="text-xs text-accent hover:text-accent-hover">{t('common.refresh')}</button
           >
         </div>
         {#if hostPCIError}

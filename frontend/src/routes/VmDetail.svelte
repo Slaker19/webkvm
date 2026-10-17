@@ -5,17 +5,7 @@
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import PasswordModal from '$lib/components/PasswordModal.svelte';
   import CredentialsModal from '$lib/components/CredentialsModal.svelte';
-  import TerminalPanel from '$lib/components/TerminalPanel.svelte';
-  import CronPicker from '$lib/components/CronPicker.svelte';
-  import Gauge from '$lib/components/Gauge.svelte';
-  import CpuFlagPicker from '$lib/components/CpuFlagPicker.svelte';
-  import CpuPrioritySelector from '$lib/components/CpuPrioritySelector.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
-  import EmptyState from '$lib/components/EmptyState.svelte';
-  import BlockCard from '$lib/components/BlockCard.svelte';
-  import SettingRow from '$lib/components/SettingRow.svelte';
-  import PciPreflightPanel from '$lib/components/PciPreflightPanel.svelte';
-  import PciGroupCard from '$lib/components/PciGroupCard.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import Checkbox from '$lib/components/Checkbox.svelte';
   import Tabs from '$lib/components/Tabs.svelte';
@@ -23,23 +13,12 @@
   import { onMount, onDestroy } from 'svelte';
   import { fade } from 'svelte/transition';
   import { api, auth } from '$lib/stores/auth.svelte.js';
-  import {
-    capabilities,
-    loadCapabilities,
-    supports,
-    unavailableReason,
-  } from '$lib/stores/capabilities.svelte.js';
+  import { capabilities, loadCapabilities, supports } from '$lib/stores/capabilities.svelte.js';
   import { t } from '../lib/i18n.svelte.js';
   import { vmDiskPools, deployablePools, movablePools } from '$lib/purpose.js';
-  import {
-    buildVMTemplate,
-    mergeFirewall,
-    VM_TEMPLATE_PRESETS,
-  } from '$lib/utils/firewallTemplates.js';
   import { isContainer } from '$lib/utils/computeType.js';
-  import { networkLabel, networkLabelFor } from '$lib/utils/networkLabel.js';
+  import { networkLabel } from '$lib/utils/networkLabel.js';
   import { vmIps } from '$lib/utils/vmIps.js';
-  import { formatRate, formatBytes } from '$lib/utils/format.js';
   import { events } from '$lib/stores/events.svelte.js';
   import { navigate, getRoute } from '$lib/router.svelte.js';
   import { toast } from '$lib/components/ui/toast';
@@ -67,7 +46,6 @@
   import VmUsbCard from '$lib/components/vm-detail/VmUsbCard.svelte';
   import VmPciCard from '$lib/components/vm-detail/VmPciCard.svelte';
   import * as Dialog from '$lib/components/ui/dialog';
-  import Chart from '$lib/components/Chart.svelte';
   import Switch from '$lib/components/Switch.svelte';
   import {
     Play,
@@ -101,7 +79,6 @@
   // Firewall rules + port forwards (local editing state).
   let fwRules = $state([]);
   let fwForwards = $state([]);
-  let fwSaving = $state(false);
   // VM metadata (template flag, owner, etc.).
   let vmMeta = $state(null);
   // Power & Snapshot schedule.
@@ -169,182 +146,11 @@
     }
   }
 
-  async function runGuestFSTrim() {
-    if (!vm || vm.state !== 'running') return;
-    actionLoading = 'fstrim';
-    try {
-      const res = await api.guestFSTrim(vm.id);
-      const totalTrimmed = (res.paths || []).reduce((acc, p) => acc + (p.trimmed || 0), 0);
-      toast.success(t('vmDetail.fstrimSuccess', { size: formatBytes(totalTrimmed) }));
-      await loadGuestInfo();
-    } catch (e) {
-      toast.error(e.message || t('vmDetail.fstrimError'));
-    } finally {
-      actionLoading = '';
-    }
-  }
-
-  // QEMU Guest Agent interactive tools (guest-exec, clock sync, fsfreeze)
-  let guestCommand = $state('');
-  let guestExecRunning = $state(false);
-  let guestExecResult = $state(null);
-  let guestFreezeStatus = $state('thawed');
-  let guestFreezeLoading = $state(false);
-  let guestSyncingClock = $state(false);
-
-  async function runGuestExec(cmd) {
-    const toRun = (cmd || guestCommand || '').trim();
-    if (!toRun || !vm || vm.state !== 'running') return;
-    guestExecRunning = true;
-    try {
-      const res = await api.guestExec(vm.id, { command: toRun });
-      guestExecResult = res;
-    } catch (e) {
-      toast.error(e.message);
-    } finally {
-      guestExecRunning = false;
-    }
-  }
-
-  async function handleGuestSyncTime() {
-    if (!vm || vm.state !== 'running') return;
-    guestSyncingClock = true;
-    try {
-      await api.guestSyncTime(vm.id);
-      toast.success(t('vmDetail.guestClockSynced'));
-    } catch (e) {
-      toast.error(e.message);
-    } finally {
-      guestSyncingClock = false;
-    }
-  }
-
-  async function handleGuestFSFreeze(freeze) {
-    if (!vm || vm.state !== 'running') return;
-    guestFreezeLoading = true;
-    try {
-      const res = await api.guestFSFreeze(vm.id, freeze);
-      guestFreezeStatus = freeze ? 'frozen' : 'thawed';
-      if (freeze) {
-        toast.success(t('vmDetail.guestFreezeSuccess', { count: res.count }));
-      } else {
-        toast.success(t('vmDetail.guestThawSuccess', { count: res.count }));
-      }
-    } catch (e) {
-      toast.error(e.message);
-    } finally {
-      guestFreezeLoading = false;
-    }
-  }
-
   $effect(() => {
     if (activeSection === 'guest' && guestInfo === null && !guestLoading) {
       loadGuestInfo();
     }
   });
-
-  // V13-C-03: metric history (downsampled 24h/7d/30d from the backend).
-  let historyWindow = $state('24h');
-  let history = $state(null); // VMMetrics-like series
-  let historyLoading = $state(false);
-  const historyCpu = $derived(history?.cpu?.points || []);
-  const historyRam = $derived(history?.ram?.points || []);
-  const historyDiskR = $derived(history?.disk_read?.points || []);
-  const historyDiskW = $derived(history?.disk_write?.points || []);
-  const historyNetRx = $derived(history?.net_rx?.points || []);
-  const historyNetTx = $derived(history?.net_tx?.points || []);
-
-  // V13-C-04: alert rules + live state machine for this VM.
-  let alertRules = $state([]);
-  let alertStatuses = $state([]);
-  let alertsLoading = $state(false);
-
-  // Hypervisor logs
-  let vmLogs = $state('');
-  let vmLogsLoading = $state(false);
-  let vmLogsLines = $state(200);
-
-  async function loadVMLogs() {
-    if (!vmId || deleting) return;
-    vmLogsLoading = true;
-    try {
-      const res = await api.getVMLogs(vmId, vmLogsLines);
-      const text = res?.logs || '';
-      // The backend reports a missing log file as an English
-      // placeholder string; treat it as "no logs" so the translated
-      // empty state renders instead.
-      vmLogs = /^\(No hypervisor log file found/.test(text) ? '' : text;
-    } catch (e) {
-      vmLogs = `(${t('common.error')}: ${e.message})`;
-    } finally {
-      vmLogsLoading = false;
-    }
-  }
-
-  function downloadVMLogs() {
-    if (!vmLogs) return;
-    const blob = new Blob([vmLogs], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${vm?.name || vmId}-qemu.log`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  async function loadHistory() {
-    if (!vmId || deleting) return;
-    historyLoading = true;
-    try {
-      history = await api.getVMMetricsHistory(vmId, historyWindow);
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      historyLoading = false;
-    }
-  }
-
-  async function loadAlerts() {
-    if (!vmId || deleting) return;
-    alertsLoading = true;
-    try {
-      const r = await api.getVMAlerterRules(vmId);
-      alertRules = (r.rules || []).map((x) => ({ ...x }));
-      alertStatuses = r.statuses || [];
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      alertsLoading = false;
-    }
-  }
-
-  function newAlertRule() {
-    return {
-      id: `al_${Date.now().toString(36)}`,
-      name: '',
-      metric: 'cpu',
-      threshold: 90,
-      above: true,
-      duration_secs: 300,
-      cooldown_secs: 3600,
-      enabled: true,
-    };
-  }
-
-  function ruleStatus(ruleId) {
-    const s = alertStatuses.find((x) => x.rule?.id === ruleId);
-    return s?.state || 'idle';
-  }
-
-  async function saveAlertRules() {
-    try {
-      await api.setVMAlerterRules(vmId, alertRules);
-      toast.success(t('vmDetail.alertsSaved'));
-      await loadAlerts();
-    } catch (err) {
-      toast.error(err.message);
-    }
-  }
 
   const networkModels = [
     { value: 'virtio', label: 'virtio (recommended)' },
@@ -430,74 +236,6 @@
       ...(vmMeta?.template && !isContainerVm ? movablePools(pools, 'template') : []),
     ].filter((p) => p.name !== currentPool)
   );
-
-  // Cloud-Init tab state
-  let ciStatus = $state(null); // { has_seed_iso, cdrom_dev, user, supported }
-  let ciStatusLoading = $state(false);
-  let ciUser = $state('');
-  let ciPassword = $state('');
-  let ciSSHKey = $state('');
-  let ciHostname = $state('');
-  let ciApplying = $state(false);
-  let ciSnippetIds = $state([]);
-  let ciAvailableSnippets = $state([]);
-
-  async function loadCloudInitStatus() {
-    if (isContainerVm) return;
-    ciStatusLoading = true;
-    try {
-      ciStatus = await api.getCloudInitStatus(vmId);
-      if (ciStatus?.user && !ciUser) ciUser = ciStatus.user;
-    } catch (_e) {
-      ciStatus = null;
-    } finally {
-      ciStatusLoading = false;
-    }
-  }
-
-  async function loadCloudInitSnippets() {
-    if (ciAvailableSnippets.length) return;
-    try {
-      const list = await api.listCloudInitSnippets();
-      ciAvailableSnippets = list || [];
-    } catch (_e) {
-      ciAvailableSnippets = [];
-    }
-  }
-
-  async function reapplyCloudInit() {
-    if (!ciUser && !ciSSHKey && !ciHostname && ciSnippetIds.length === 0) {
-      toast.warning(t('vmDetail.cloudInitEmptyWarning'));
-      return;
-    }
-    if (ciUser && !ciPassword) {
-      toast.warning(t('vmDetail.cloudInitPasswordRequired'));
-      return;
-    }
-    ciApplying = true;
-    try {
-      const payload = {
-        user: ciUser || undefined,
-        password: ciPassword || undefined,
-        ssh_key: ciSSHKey || undefined,
-        hostname: ciHostname || undefined,
-        snippet_ids: ciSnippetIds.length ? ciSnippetIds : undefined,
-      };
-      const res = await api.reapplyCloudInit(vmId, payload);
-      ciPassword = '';
-      toast.success(
-        res?.reprovisioned
-          ? t('vmDetail.cloudInitAppliedLive')
-          : t('vmDetail.cloudInitAppliedNeedsReboot')
-      );
-      await loadCloudInitStatus();
-      await load();
-    } catch (e) {
-      toast.error(e.message);
-    } finally {
-      ciApplying = false;
-    }
-  }
 
   // Export state
   let showExport = $state(false);
@@ -634,7 +372,6 @@
     loadCapabilities();
     load();
     loadMetrics();
-    loadAlerts();
     // Deep link: /vms/:id?serial=1 scrolls to the embedded serial console.
     if (getRoute().query?.serial === '1') later(gotoSerial, 400);
     const offMetrics = events.onVmMetrics((e) => {
@@ -1032,10 +769,6 @@
     hardwareTabRef?.openEdit(tab);
   }
 
-  function openEditTab(tab = 'general') {
-    openEdit(tab);
-  }
-
   function askConfirm(opts) {
     confirmState = { ...opts, open: true, loading: false };
   }
@@ -1220,80 +953,6 @@
       await new Promise((r) => setTimeout(r, 500));
     }
     throw new Error(t('vmDetail.timeoutState', { state: targetState }));
-  }
-
-  function fwUid() {
-    return 'fw_' + Math.random().toString(36).slice(2, 10);
-  }
-
-  function addForward() {
-    fwForwards = [
-      ...fwForwards,
-      { id: fwUid(), proto: 'tcp', host_port: '', guest_port: '', target_ip: '' },
-    ];
-  }
-
-  function removeForward(id) {
-    fwForwards = fwForwards.filter((f) => f.id !== id);
-  }
-
-  function addRule() {
-    fwRules = [...fwRules, { id: fwUid(), proto: 'tcp', port: '', action: 'allow' }];
-  }
-
-  function removeRule(id) {
-    fwRules = fwRules.filter((r) => r.id !== id);
-  }
-
-  let fwTplSel = $state('');
-
-  // Merge a per-VM preset into the editor (same dedupe as the host
-  // page; mergeFirewall keys fit both shapes).
-  function applyVmTemplate() {
-    if (!fwTplSel) return;
-    const built = buildVMTemplate(fwTplSel);
-    const merged = mergeFirewall(
-      { input: fwRules, forwards: fwForwards },
-      { input: built.rules, forwards: built.forwards || [] }
-    );
-    const n = merged.addedInput + merged.addedForwards;
-    fwRules = merged.input;
-    fwForwards = merged.forwards;
-    fwTplSel = '';
-    toast.success(t('firewall.vmTemplateApplied', { added: n }));
-  }
-
-  async function saveFirewall() {
-    if (!vmId) return;
-    fwSaving = true;
-    try {
-      const rules = fwRules
-        .filter((r) => r.port)
-        .map((r) => ({
-          id: r.id,
-          proto: r.proto,
-          port: Number(r.port),
-          action: r.action,
-          disabled: !!r.disabled,
-        }));
-      const forwards = fwForwards
-        .filter((f) => f.host_port && f.guest_port)
-        .map((f) => ({
-          id: f.id,
-          proto: f.proto,
-          host_port: Number(f.host_port),
-          guest_port: Number(f.guest_port),
-          target_ip: f.target_ip || '',
-          disabled: !!f.disabled,
-        }));
-      const res = await api.setVMFirewall(vmId, { rules, forwards });
-      fwForwards = (res.vm?.forwards || []).map((f) => ({ ...f }));
-      toast.success(t('vmDetail.firewallSaved'));
-    } catch (e) {
-      toast.error(e.message);
-    } finally {
-      fwSaving = false;
-    }
   }
 
   // Admin-only "share with all users" flag on a template. Same
@@ -1611,20 +1270,6 @@
     }
   });
 
-  $effect(() => {
-    if (activeSection === 'cloudinit' && vm && !isContainerVm) {
-      loadCloudInitStatus();
-      loadCloudInitSnippets();
-    }
-  });
-
-  $effect(() => {
-    if (activeSection === 'history' && vmId) {
-      loadHistory();
-      loadVMLogs();
-    }
-  });
-
   function removeDisk(target) {
     askConfirm({
       title: t('vmDetail.removeDiskTitle', { target }),
@@ -1889,18 +1534,6 @@
     navigate('/vms');
   }
 
-  function formatUptime(s) {
-    if (!s) return '—';
-    const d = Math.floor(s / 86400),
-      h = Math.floor((s % 86400) / 3600),
-      m = Math.floor((s % 3600) / 60);
-    const parts = [];
-    if (d) parts.push(d + 'd');
-    if (h) parts.push(h + 'h');
-    if (m) parts.push(m + 'm');
-    return parts.join(' ') || '<1m';
-  }
-
   function bytesToStr(b) {
     if (!b) return '0 B';
     const u = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -1911,49 +1544,6 @@
       i++;
     }
     return n.toFixed(i > 0 ? 1 : 0) + ' ' + u[i];
-  }
-
-  function diskLabel(d) {
-    if (d.device === 'cdrom') return d.name || (d.source ? d.source.split('/').pop() : '(empty)');
-    if (d.zvol) return `zvol: ${d.zvol}`;
-    if (d.block_dev) return d.block_dev;
-    return d.name || (d.source ? d.source.split('/').pop() : d.target);
-  }
-
-  // Build a snapshot tree from the flat list. Roots have parent_name == "".
-  const snapshotTree = $derived.by(() => buildSnapshotTree(snapshots));
-
-  function buildSnapshotTree(flat) {
-    if (!Array.isArray(flat) || flat.length === 0) return { roots: [], byId: {} };
-    const byId = {};
-    for (const s of flat) byId[s.name] = { ...s, children: [] };
-    const roots = [];
-    for (const k of Object.keys(byId)) {
-      const node = byId[k];
-      if (node.parent_name && byId[node.parent_name]) {
-        byId[node.parent_name].children.push(node);
-      } else {
-        roots.push(node);
-      }
-    }
-    // Sort by creation time ascending so children appear below parents.
-    const sortRec = (nodes) => {
-      nodes.sort((a, b) => (a.creation_time || 0) - (b.creation_time || 0));
-      nodes.forEach((n) => sortRec(n.children));
-    };
-    sortRec(roots);
-    return { roots, byId };
-  }
-
-  function formatSnapshotDate(epoch) {
-    if (!epoch) return '—';
-    const d = new Date(epoch * 1000);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
-    return `${y}-${m}-${day} ${hh}:${mm}`;
   }
 
   // Deep-link from external routes: ?tab=snapshots or ?tab=hardware
@@ -3497,4 +3087,3 @@
     {/if}
   </Dialog.Content>
 </Dialog.Root>
-

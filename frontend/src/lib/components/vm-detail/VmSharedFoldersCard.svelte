@@ -7,12 +7,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
 
-  let {
-    vm = {},
-    vmId = '',
-    isContainerVm = false,
-    load,
-  } = $props();
+  let { vm = {}, vmId = '', isContainerVm = false, load } = $props();
 
   let actionLoading = $state('');
   let newSharedFolderPath = $state('');
@@ -62,11 +57,7 @@
   <div class="space-y-3">
     <p class="text-xs text-muted-foreground">{t('vmDetail.sharedFoldersHint')}</p>
     {#if !vm?.shared_folders || vm.shared_folders.length === 0}
-      <EmptyState
-        compact
-        icon="folderOpen"
-        title={t('vmDetail.sharedFoldersNoneAttached')}
-      />
+      <EmptyState compact icon="folderOpen" title={t('vmDetail.sharedFoldersNoneAttached')} />
     {:else}
       <div class="space-y-2">
         {#each vm.shared_folders as f (f.tag)}

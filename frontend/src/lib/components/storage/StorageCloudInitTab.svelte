@@ -144,8 +144,7 @@
   <div class="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs font-medium">
     <button
       onclick={() => (snippetCategoryFilter = 'all')}
-      class="px-3 py-1 rounded-lg transition-all whitespace-nowrap {snippetCategoryFilter ===
-      'all'
+      class="px-3 py-1 rounded-lg transition-all whitespace-nowrap {snippetCategoryFilter === 'all'
         ? 'bg-accent text-accent-foreground font-bold shadow-xs'
         : 'bg-muted/40 text-muted-foreground hover:bg-muted'}"
     >
@@ -198,8 +197,7 @@
     </button>
     <button
       onclick={() => (snippetCategoryFilter = 'web')}
-      class="px-3 py-1 rounded-lg transition-all whitespace-nowrap {snippetCategoryFilter ===
-      'web'
+      class="px-3 py-1 rounded-lg transition-all whitespace-nowrap {snippetCategoryFilter === 'web'
         ? 'bg-accent text-accent-foreground font-bold shadow-xs'
         : 'bg-muted/40 text-muted-foreground hover:bg-muted'}"
     >

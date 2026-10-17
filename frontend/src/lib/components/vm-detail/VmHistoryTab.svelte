@@ -102,9 +102,7 @@
             >{t('vms.cpu')}</span
           >
           <span class="text-sm tnum"
-            >{historyCpu.length
-              ? historyCpu[historyCpu.length - 1].v.toFixed(1)
-              : '0.0'}%</span
+            >{historyCpu.length ? historyCpu[historyCpu.length - 1].v.toFixed(1) : '0.0'}%</span
           >
         </div>
         <Chart points={historyCpu} yMax={100} height={80} />
@@ -115,27 +113,16 @@
             >{t('common.ram')}</span
           >
           <span class="text-sm tnum"
-            >{historyRam.length
-              ? historyRam[historyRam.length - 1].v.toFixed(1)
-              : '0.0'}%</span
+            >{historyRam.length ? historyRam[historyRam.length - 1].v.toFixed(1) : '0.0'}%</span
           >
         </div>
-        <Chart
-          points={historyRam}
-          yMax={100}
-          height={80}
-          color="var(--info, var(--accent))"
-        />
+        <Chart points={historyRam} yMax={100} height={80} color="var(--info, var(--accent))" />
       </div>
       <div>
         <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider"
           >{t('vmDetail.diskIo')}</span
         >
-        <Chart
-          points={[...historyDiskR, ...historyDiskW]}
-          height={80}
-          color="var(--success)"
-        />
+        <Chart points={[...historyDiskR, ...historyDiskW]} height={80} color="var(--success)" />
       </div>
       <div>
         <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider"
@@ -154,11 +141,7 @@
 <BlockCard bid="hypervisor-logs" title={t('vmDetail.hypervisorLogs')}>
   {#snippet headerActions()}
     <div class="flex items-center gap-1.5">
-      <select
-        bind:value={vmLogsLines}
-        onchange={loadVMLogs}
-        class="input !h-7 !text-xs !py-0 w-24"
-      >
+      <select bind:value={vmLogsLines} onchange={loadVMLogs} class="input !h-7 !text-xs !py-0 w-24">
         <option value={50}>50 líneas</option>
         <option value={100}>100 líneas</option>
         <option value={200}>200 líneas</option>
@@ -172,11 +155,7 @@
         onclick={loadVMLogs}
         disabled={vmLogsLoading}
       >
-        <Icon
-          name="refresh"
-          size={12}
-          class={vmLogsLoading ? 'animate-spin mr-1' : 'mr-1'}
-        />
+        <Icon name="refresh" size={12} class={vmLogsLoading ? 'animate-spin mr-1' : 'mr-1'} />
         {t('common.refresh')}
       </Button>
       <Button

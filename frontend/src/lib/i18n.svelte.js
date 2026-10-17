@@ -1603,8 +1603,7 @@ export const messages = {
       raidAutoFormatLabel: 'Format and mount automatically upon creation',
       raidAutoFormatDesc:
         'Applies a filesystem (ext4/xfs/btrfs) and mounts persistently via systemd',
-      createPoolsCheck:
-        'Create Storage Pools on the new array (VM disks, ISOs, backups)',
+      createPoolsCheck: 'Create Storage Pools on the new array (VM disks, ISOs, backups)',
       raidArraysTitle: 'Software RAID Arrays',
       raidDegraded: 'Degraded',
       raidHealthy: 'Healthy',
@@ -5279,8 +5278,7 @@ export const messages = {
       raidAutoFormatLabel: 'Formatear y montar automáticamente tras la creación',
       raidAutoFormatDesc:
         'Aplica un sistema de archivos (ext4/xfs/btrfs) y monta persistentemente vía systemd',
-      createPoolsCheck:
-        'Crear Grupos de Almacenamiento en el array (Discos VM, ISOs, backups)',
+      createPoolsCheck: 'Crear Grupos de Almacenamiento en el array (Discos VM, ISOs, backups)',
       raidArraysTitle: 'Arreglos RAID por Software',
       raidDegraded: 'Degradado',
       raidHealthy: 'Saludable',

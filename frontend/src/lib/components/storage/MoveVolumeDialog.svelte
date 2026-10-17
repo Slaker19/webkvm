@@ -97,12 +97,7 @@
       {:else}
         <div class="space-y-1.5">
           <Label for="move-vol-pool">{t('vmDetail.moveDestPool')}</Label>
-          <select
-            id="move-vol-pool"
-            bind:value={destPool}
-            class="input w-full"
-            disabled={busy}
-          >
+          <select id="move-vol-pool" bind:value={destPool} class="input w-full" disabled={busy}>
             {#each options as p (p.name)}<option value={p.name}>{p.name}</option>{/each}
           </select>
         </div>
@@ -110,11 +105,7 @@
         <div class="rounded-lg border border-border p-3 space-y-2">
           <div class="flex items-center justify-between gap-2">
             <span class="text-sm font-medium">{t('storage.moveKeepSource')}</span>
-            <Switch
-              bind:checked={copy}
-              disabled={busy}
-              ariaLabel={t('storage.moveKeepSource')}
-            />
+            <Switch bind:checked={copy} disabled={busy} ariaLabel={t('storage.moveKeepSource')} />
           </div>
           <p class="text-xs text-muted-foreground">
             {copy ? t('storage.moveKeepSourceOn') : t('storage.moveKeepSourceOff')}
@@ -125,9 +116,7 @@
           <p class="text-xs text-muted-foreground flex items-start gap-1.5">
             <Icon name="alert-triangle" size={13} class="mt-0.5 shrink-0 text-warning" />
             <span>
-              {kind === 'iso'
-                ? t('storage.moveIsoInUseHint')
-                : t('storage.moveDiskInUseHint')}
+              {kind === 'iso' ? t('storage.moveIsoInUseHint') : t('storage.moveDiskInUseHint')}
             </span>
           </p>
         {/if}

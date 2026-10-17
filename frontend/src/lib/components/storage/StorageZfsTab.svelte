@@ -194,9 +194,7 @@
         <div class="overflow-x-auto">
           <table class="w-full text-left text-xs border-collapse">
             <thead>
-              <tr
-                class="border-b border-border bg-muted/30 text-muted-foreground font-semibold"
-              >
+              <tr class="border-b border-border bg-muted/30 text-muted-foreground font-semibold">
                 <th class="p-3">{t('common.name')}</th>
                 <th class="p-3">{t('storage.colHealth')}</th>
                 <th class="p-3">{t('common.size')}</th>
@@ -271,11 +269,7 @@
         <p class="text-xs text-muted-foreground">{t('storage.zfsVolsDesc')}</p>
       </div>
       {#if auth.isAdmin() && zpools.length > 0}
-        <Button
-          size="sm"
-          class="!h-8 !text-xs gap-1.5"
-          onclick={() => openCreateZVolDialog('')}
-        >
+        <Button size="sm" class="!h-8 !text-xs gap-1.5" onclick={() => openCreateZVolDialog('')}>
           <Icon name="plus" size={13} />
           {t('storage.createZVolBtn')}
         </Button>
@@ -298,9 +292,7 @@
         <div class="overflow-x-auto">
           <table class="w-full text-left text-xs border-collapse">
             <thead>
-              <tr
-                class="border-b border-border bg-muted/30 text-muted-foreground font-semibold"
-              >
+              <tr class="border-b border-border bg-muted/30 text-muted-foreground font-semibold">
                 <th class="p-3">{t('common.name')}</th>
                 <th class="p-3">{t('storage.targetPoolLabel')}</th>
                 <th class="p-3">{t('common.size')}</th>
@@ -314,9 +306,7 @@
                   <td class="p-3 font-mono font-medium text-foreground">{zvol.name}</td>
                   <td class="p-3 font-mono text-muted-foreground">{zvol.pool}</td>
                   <td class="p-3 font-mono">{formatBytes(zvol.volsize)}</td>
-                  <td class="p-3 font-mono text-[11px] text-muted-foreground"
-                    >{zvol.device}</td
-                  >
+                  <td class="p-3 font-mono text-[11px] text-muted-foreground">{zvol.device}</td>
                   <td class="p-3">
                     {#if zvol.used_by}
                       <span
@@ -353,7 +343,8 @@
 
     <div class="space-y-3.5 my-2 text-xs">
       <div>
-        <label for="zpool-name" class="block font-semibold mb-1">{t('storage.poolNameLabel')}</label>
+        <label for="zpool-name" class="block font-semibold mb-1">{t('storage.poolNameLabel')}</label
+        >
         <Input
           id="zpool-name"
           bind:value={createZPoolName}

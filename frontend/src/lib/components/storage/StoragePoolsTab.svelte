@@ -8,12 +8,7 @@
   import { auth, api } from '$lib/stores/auth.svelte.js';
   import { toast } from '$lib/components/ui/toast';
   import { t } from '$lib/i18n.svelte.js';
-  import {
-    hasPurpose,
-    isIsoOnly,
-    purposeLabel,
-    isBuiltinPool,
-  } from '$lib/purpose.js';
+  import { hasPurpose, isIsoOnly, purposeLabel, isBuiltinPool } from '$lib/purpose.js';
   import CreatePoolDialog from './CreatePoolDialog.svelte';
   import RetagPoolDialog from './RetagPoolDialog.svelte';
 
@@ -66,11 +61,7 @@
 
   {#if pools.length === 0}
     <div class="py-12">
-      <EmptyState
-        icon="disk"
-        title={t('storage.noPools')}
-        description={t('storage.noPoolsHint')}
-      >
+      <EmptyState icon="disk" title={t('storage.noPools')} description={t('storage.noPoolsHint')}>
         {#snippet action()}
           {#if auth.isAdmin()}
             <Button size="sm" onclick={() => (showCreatePool = true)}>
@@ -84,9 +75,7 @@
     <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
       {#each pools as p (p.name)}
         {@const isISO = isIsoOnly(p)}
-        {@const isLXC =
-          hasPurpose(p, 'container') ||
-          (p.type && p.type.includes('incus'))}
+        {@const isLXC = hasPurpose(p, 'container') || (p.type && p.type.includes('incus'))}
         <div
           class="relative flex flex-col justify-between gap-3 p-4 rounded-xl border border-border bg-background hover:border-accent/40 hover:shadow-sm transition-all duration-150 cursor-pointer group"
           onclick={() => onOpenPool(p)}

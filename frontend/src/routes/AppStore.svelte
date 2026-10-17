@@ -596,7 +596,8 @@ EOF\n`;
       <div class="mt-4 inline-flex rounded-xl bg-muted/60 p-1 border border-border text-xs gap-1">
         <button
           onclick={() => (sourceView = 'curated')}
-          class="px-3.5 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 {sourceView === 'curated'
+          class="px-3.5 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 {sourceView ===
+          'curated'
             ? 'bg-background text-foreground shadow-xs font-semibold'
             : 'text-muted-foreground hover:text-foreground'}"
         >
@@ -605,13 +606,16 @@ EOF\n`;
         </button>
         <button
           onclick={() => (sourceView = 'community')}
-          class="px-3.5 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 {sourceView === 'community'
+          class="px-3.5 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 {sourceView ===
+          'community'
             ? 'bg-background text-foreground shadow-xs font-semibold'
             : 'text-muted-foreground hover:text-foreground'}"
         >
           <Icon name="code" size={13} class={sourceView === 'community' ? 'text-accent' : ''} />
           <span>Comunitarias (Helper Scripts)</span>
-          <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-accent/15 text-accent font-bold">630+</span>
+          <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-accent/15 text-accent font-bold"
+            >630+</span
+          >
         </button>
       </div>
     {/if}
