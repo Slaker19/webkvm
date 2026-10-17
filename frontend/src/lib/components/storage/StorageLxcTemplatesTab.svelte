@@ -174,9 +174,10 @@
 
               {#if img.is_local}
                 <span
-                  class="px-1.5 py-0.5 rounded-full bg-success/15 text-success font-mono text-[9px] font-bold border border-success/30 shrink-0"
+                  class="px-2 py-0.5 rounded-full bg-success/15 text-success font-mono text-[9px] font-bold border border-success/30 shrink-0 inline-flex items-center gap-1"
                 >
-                  ✓ {t('storage.cached')}
+                  <Icon name="check" size={10} />
+                  <span>{t('storage.cached')}</span>
                 </span>
               {/if}
             </div>

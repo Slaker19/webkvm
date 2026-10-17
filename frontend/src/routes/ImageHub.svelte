@@ -840,7 +840,7 @@
                     <span
                       class="px-2 py-0.5 rounded-full bg-success/15 text-success font-mono text-[10px] font-bold border border-success/30 shrink-0 flex items-center gap-1"
                     >
-                      <span>✓</span>
+                      <Icon name="check" size={11} />
                       <span>En Pool Local</span>
                     </span>
                   {:else}

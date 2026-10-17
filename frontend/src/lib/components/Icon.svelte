@@ -94,11 +94,17 @@
     Boxes,
     SearchX,
     FolderOpen,
+    Folder,
     Usb,
     CircuitBoard,
     CalendarClock,
     ShieldOff,
     BellOff,
+    Link as LinkIcon,
+    Unlink as UnlinkIcon,
+    User as UserIcon,
+    SquareTerminal,
+    CloudCog,
   } from '@lucide/svelte';
 
   const registry = {
@@ -206,6 +212,22 @@
     'shield-off': ShieldOff,
     bellOff: BellOff,
     'bell-off': BellOff,
+    folder: Folder,
+    link: LinkIcon,
+    unlink: UnlinkIcon,
+    user: UserIcon,
+    alertCircle: AlertCircle,
+    'alert-circle': AlertCircle,
+    checkCircle: CheckCircle2,
+    'check-circle': CheckCircle2,
+    cloudCog: CloudCog,
+    'cloud-cog': CloudCog,
+    edit: Pencil,
+    'file-text': FileText,
+    'refresh-cw': RefreshCw,
+    refreshCw: RefreshCw,
+    squareTerminal: SquareTerminal,
+    'square-terminal': SquareTerminal,
   };
 
   let { name, size = 16, class: className = '' } = $props();

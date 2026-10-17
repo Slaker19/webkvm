@@ -1348,7 +1348,7 @@
             onclick={() => (editingIface = null)}
             class="text-muted-foreground hover:text-foreground text-sm"
           >
-            ✕
+            <Icon name="x" size={14} />
           </button>
         </div>
 
@@ -1413,7 +1413,7 @@
             onclick={() => (showBondModal = false)}
             class="text-muted-foreground hover:text-foreground text-sm"
           >
-            ✕
+            <Icon name="x" size={14} />
           </button>
         </div>
 
@@ -1563,7 +1563,7 @@
             onclick={() => (attachingIface = null)}
             class="text-muted-foreground hover:text-foreground text-sm"
           >
-            ✕
+            <Icon name="x" size={14} />
           </button>
         </div>
 
@@ -1583,7 +1583,10 @@
             <div
               class="mt-2.5 p-2.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-500 text-xs space-y-1"
             >
-              <span class="font-semibold block">⚠️ Advertencia de Bucles / STP:</span>
+              <span class="font-semibold flex items-center gap-1.5">
+                <Icon name="warning" size={13} />
+                <span>Advertencia de Bucles / STP:</span>
+              </span>
               <p>
                 Si ambas tarjetas van conectadas al mismo switch o router, se activará Spanning Tree
                 (STP) para evitar bucles. Para balanceo de carga real o tolerancia a fallos

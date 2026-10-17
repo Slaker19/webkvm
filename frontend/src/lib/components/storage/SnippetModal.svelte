@@ -237,9 +237,10 @@
             <span>{t('storage.snippetContent')}</span>
             {#if snippetForm.content.trim().startsWith('#cloud-config')}
               <span
-                class="text-[10px] font-mono font-bold text-success bg-success/10 px-1.5 py-0.2 rounded border border-success/20"
+                class="text-[10px] font-mono font-bold text-success bg-success/10 px-1.5 py-0.2 rounded border border-success/20 inline-flex items-center gap-1"
               >
-                {t('storage.cloudConfigValid')}
+                <Icon name="check" size={10} />
+                <span>{t('storage.cloudConfigValid')}</span>
               </span>
             {:else}
               <span

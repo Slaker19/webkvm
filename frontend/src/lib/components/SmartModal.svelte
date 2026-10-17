@@ -3,6 +3,7 @@
   import { toast } from '$lib/components/ui/toast';
   import { Button } from '$lib/components/ui/button';
   import { Card } from '$lib/components/ui/card';
+  import Icon from '$lib/components/Icon.svelte';
   import { t } from '$lib/i18n.svelte.js';
 
   let { disk = null, open = false, onClose = () => {} } = $props();
@@ -93,7 +94,7 @@
             onclick={onClose}
             class="text-muted-foreground hover:text-foreground text-sm font-semibold p-1"
           >
-            ✕
+            <Icon name="x" size={14} />
           </button>
         </div>
       </div>

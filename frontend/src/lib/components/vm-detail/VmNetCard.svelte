@@ -2,6 +2,7 @@
   import { t } from '$lib/i18n.svelte.js';
   import BlockCard from '$lib/components/BlockCard.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
+  import Icon from '$lib/components/Icon.svelte';
   import { Button } from '$lib/components/ui/button';
   import { networkLabelFor } from '$lib/utils/networkLabel.js';
 
@@ -74,9 +75,10 @@
                 class="text-xs px-2 py-1 rounded border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                 title="Conectar o desconectar cable virtual en caliente"
               >
-                {iface.link_state === 'down'
-                  ? '🔌 Conectar cable'
-                  : '🔌 Desconectar cable'}
+                <span class="inline-flex items-center gap-1">
+                  <Icon name={iface.link_state === 'down' ? 'link' : 'unlink'} size={12} />
+                  <span>{iface.link_state === 'down' ? 'Conectar cable' : 'Desconectar cable'}</span>
+                </span>
               </button>
             {/if}
             <button

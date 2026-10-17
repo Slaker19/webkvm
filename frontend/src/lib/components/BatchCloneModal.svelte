@@ -4,6 +4,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
+  import Icon from '$lib/components/Icon.svelte';
   import { t } from '$lib/i18n.svelte.js';
 
   let { vmId, open = false, onClose = () => {}, onSuccess = () => {} } = $props();
@@ -67,7 +68,7 @@
           onclick={onClose}
           class="text-muted-foreground hover:text-foreground text-sm font-semibold p-1"
         >
-          ✕
+          <Icon name="x" size={14} />
         </button>
       </div>
 

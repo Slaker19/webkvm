@@ -57,7 +57,7 @@
         copy,
       });
       await api.waitJob(res.id, {
-        title: `Mover volumen: ${name} (${srcPool} ➔ ${destPool})`,
+        title: `Mover volumen: ${name} (${srcPool} -> ${destPool})`,
         kind: 'storage',
         timeout: 4 * 60 * 60 * 1000,
         onPoll: (job) => {

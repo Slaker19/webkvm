@@ -22,6 +22,7 @@
   import EmptyState from '$lib/components/EmptyState.svelte';
   import RemoteFolderBrowser from '$lib/components/RemoteFolderBrowser.svelte';
   import * as Dialog from '$lib/components/ui/dialog';
+  import Icon from '$lib/components/Icon.svelte';
   import { Loader2 } from '@lucide/svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
@@ -2038,9 +2039,10 @@
         {testing ? t('backup.testing') : t('backup.test')}
       </Button>
       {#if testResult}
-        <span class="text-xs {testResult.ok ? 'text-success' : 'text-destructive'}"
-          >{testResult.ok ? '✓ ' : '✗ '}{testResult.message}</span
-        >
+        <span class="text-xs inline-flex items-center gap-1 {testResult.ok ? 'text-success' : 'text-destructive'}">
+          <Icon name={testResult.ok ? 'check' : 'x'} size={12} />
+          <span>{testResult.message}</span>
+        </span>
       {/if}
     </div>
 

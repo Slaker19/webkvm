@@ -1808,7 +1808,7 @@ export const messages = {
       varUser: '+ User',
       varIp: '+ IP',
       varSshKey: '+ SSH Key',
-      cloudConfigValid: '✓ valid #cloud-config',
+      cloudConfigValid: 'valid #cloud-config',
       cloudConfigRecommendation: 'Recommended: start with #cloud-config',
       testRenderButton: 'Test Render',
       previewResultHeader:
@@ -5486,7 +5486,7 @@ export const messages = {
       varUser: '+ Usuario',
       varIp: '+ IP',
       varSshKey: '+ Clave SSH',
-      cloudConfigValid: '✓ #cloud-config válido',
+      cloudConfigValid: '#cloud-config válido',
       cloudConfigRecommendation: 'Recomendado: iniciar con #cloud-config',
       testRenderButton: 'Probar Render',
       previewResultHeader:
@@ -9193,7 +9193,7 @@ export const messages = {
       varUser: '+ Usuari',
       varIp: '+ IP',
       varSshKey: '+ Clau SSH',
-      cloudConfigValid: '✓ #cloud-config vàlid',
+      cloudConfigValid: '#cloud-config vàlid',
       cloudConfigRecommendation: 'Recomanat: comença amb #cloud-config',
       testRenderButton: 'Prova el Render',
       previewResultHeader:

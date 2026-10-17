@@ -333,7 +333,7 @@ apt-get update -y
           const cloneTargetName = `${vm.name}-clone`;
           const res = await api.cloneVM(vm.id, { name: cloneTargetName });
           const cloned = await api.waitJob(res.job, {
-            title: `Clonando VM: ${vm.alias || vm.name} ➔ ${cloneTargetName}`,
+            title: `Clonando VM: ${vm.alias || vm.name} -> ${cloneTargetName}`,
             kind: 'clone',
           });
           const cloneName = cloned?.name || cloneTargetName;

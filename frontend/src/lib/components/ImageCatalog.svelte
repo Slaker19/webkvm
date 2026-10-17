@@ -161,7 +161,7 @@
               class="font-semibold text-xs text-foreground tracking-tight flex items-center gap-1.5 truncate"
             >
               {#if isSelected}
-                <span class="{accentText} text-xs shrink-0">✓</span>
+                <Icon name="check" size={12} class="{accentText} shrink-0" />
               {/if}
               <span class="truncate">{getItemName(item)}</span>
             </span>

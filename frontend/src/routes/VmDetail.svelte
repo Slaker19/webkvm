@@ -1688,7 +1688,7 @@
     try {
       const res = await api.cloneVM(vmId, { name: cName, pool: cPool, linked: cLinked });
       const cloned = await api.waitJob(res.job, {
-        title: `Clonando VM: ${vm?.name || vmId} ➔ ${cName}`,
+        title: `Clonando VM: ${vm?.name || vmId} -> ${cName}`,
         kind: 'clone',
       });
       showClone = false;
@@ -1726,7 +1726,7 @@
     try {
       const res = await api.moveVMStorage(vmId, movePool);
       await api.waitJob(res.id, {
-        title: `Moviendo almacenamiento: ${vm?.name || vmId} ➔ ${movePool}`,
+        title: `Moviendo almacenamiento: ${vm?.name || vmId} -> ${movePool}`,
         kind: 'storage',
         // A cross-device copy of a large disk can run well past the
         // default 10-minute ceiling; a timeout here would report
@@ -2718,7 +2718,7 @@
                   {/if}
                 </option>
               {/each}
-              <option value="__custom__">➕ {t('vmDetail.zvolCustomOption')}</option>
+              <option value="__custom__">+ {t('vmDetail.zvolCustomOption')}</option>
             </select>
           {/if}
           <p class="text-[11px] text-muted-foreground mt-1">{t('vmDetail.zvolHint')}</p>
