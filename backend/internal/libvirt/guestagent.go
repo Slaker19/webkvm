@@ -142,24 +142,21 @@ func (c *Connector) getClipboardWindows(id string) (string, error) {
 	return c.guestExecCapture(id, qcmd)
 }
 
-func (c *Connector) virshCmd(args ...string) *exec.Cmd {
-	return c.virshCmdContext(context.Background(), 15*time.Second, args...)
+// runVirshCmd runs virsh with a bounded 15s timeout and releases the
+// context (and its timer) as soon as the process exits.
+func (c *Connector) runVirshCmd(args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "virsh", c.virshArgs(args...)...).CombinedOutput()
 }
 
-func (c *Connector) virshCmdContext(parent context.Context, timeout time.Duration, args ...string) *exec.Cmd {
-	if parent == nil {
-		parent = context.Background()
+// virshArgs prefixes `-c <uri>` when the connector targets a specific
+// hypervisor URI.
+func (c *Connector) virshArgs(args ...string) []string {
+	if c.uri == "" {
+		return args
 	}
-	if timeout <= 0 {
-		timeout = 15 * time.Second
-	}
-	ctx, _ := context.WithTimeout(parent, timeout)
-	var fullArgs []string
-	if c.uri != "" {
-		fullArgs = append(fullArgs, "-c", c.uri)
-	}
-	fullArgs = append(fullArgs, args...)
-	return exec.CommandContext(ctx, "virsh", fullArgs...)
+	return append([]string{"-c", c.uri}, args...)
 }
 
 // GuestExecResult holds the outcome of executing a command in the guest.
@@ -187,8 +184,7 @@ func (c *Connector) GuestExec(id, path string, args []string, timeoutSec int) (G
 		return GuestExecResult{}, err
 	}
 
-	raw := c.virshCmd("qemu-agent-command", id, "--cmd", qcmd)
-	out, err := raw.CombinedOutput()
+	out, err := c.runVirshCmd("qemu-agent-command", id, "--cmd", qcmd)
 	if err != nil {
 		return GuestExecResult{}, fmt.Errorf("virsh: %w (out: %s)", err, string(out))
 	}
@@ -223,8 +219,7 @@ func (c *Connector) GuestExec(id, path string, args []string, timeoutSec int) (G
 	statusCmd := fmt.Sprintf(`{"execute":"guest-exec-status","arguments":{"pid":%d}}`, pid)
 
 	for time.Now().Before(deadline) {
-		rawStatus := c.virshCmd("qemu-agent-command", id, "--cmd", statusCmd)
-		outStatus, errStatus := rawStatus.CombinedOutput()
+		outStatus, errStatus := c.runVirshCmd("qemu-agent-command", id, "--cmd", statusCmd)
 		if errStatus != nil {
 			return GuestExecResult{}, fmt.Errorf("virsh status: %w (out: %s)", errStatus, string(outStatus))
 		}
@@ -323,8 +318,7 @@ func (c *Connector) GuestSyncTime(id string) error {
 
 // guestExec fires a guest-exec command and returns the PID. Does NOT poll for completion.
 func (c *Connector) guestExec(id, qcmd string) error {
-	raw := c.virshCmd("qemu-agent-command", id, "--cmd", qcmd)
-	out, err := raw.CombinedOutput()
+	out, err := c.runVirshCmd("qemu-agent-command", id, "--cmd", qcmd)
 	if err != nil {
 		return fmt.Errorf("virsh: %w (out: %s)", err, string(out))
 	}
@@ -350,8 +344,7 @@ func (c *Connector) guestExec(id, qcmd string) error {
 
 // guestExecCapture fires a guest-exec with capture-output and polls for the result.
 func (c *Connector) guestExecCapture(id, qcmd string) (string, error) {
-	raw := c.virshCmd("qemu-agent-command", id, "--cmd", qcmd)
-	out, err := raw.CombinedOutput()
+	out, err := c.runVirshCmd("qemu-agent-command", id, "--cmd", qcmd)
 	if err != nil {
 		return "", fmt.Errorf("virsh: %w (out: %s)", err, string(out))
 	}
@@ -377,8 +370,7 @@ func (c *Connector) guestExecCapture(id, qcmd string) (string, error) {
 	pid := resp.Return.PID
 	for i := 0; i < 50; i++ {
 		statusCmd := fmt.Sprintf(`{"execute":"guest-exec-status","arguments":{"pid":%d}}`, pid)
-		raw2 := c.virshCmd("qemu-agent-command", id, "--cmd", statusCmd)
-		out2, err2 := raw2.CombinedOutput()
+		out2, err2 := c.runVirshCmd("qemu-agent-command", id, "--cmd", statusCmd)
 		if err2 != nil {
 			return "", fmt.Errorf("virsh status: %w (out: %s)", err2, string(out2))
 		}
@@ -432,8 +424,7 @@ func (c *Connector) agentQueryWithArgs(id, command string, args any, out any) er
 	if err != nil {
 		return fmt.Errorf("marshal agent query: %w", err)
 	}
-	raw := c.virshCmd("qemu-agent-command", id, "--cmd", string(cmdBytes))
-	stdout, err := raw.CombinedOutput()
+	stdout, err := c.runVirshCmd("qemu-agent-command", id, "--cmd", string(cmdBytes))
 	if err != nil {
 		return fmt.Errorf("guest agent unreachable (is qemu-guest-agent running?): %w", err)
 	}

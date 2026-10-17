@@ -1,10 +1,8 @@
 package libvirt
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
-	"time"
 )
 
 func TestBuildGuestExec(t *testing.T) {
@@ -32,25 +30,24 @@ func TestBuildGuestExec(t *testing.T) {
 	}
 }
 
-func TestVirshCmdContext(t *testing.T) {
+func TestVirshArgsIncludeURI(t *testing.T) {
 	c := &Connector{uri: "qemu:///system"}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	cmd := c.virshCmdContext(ctx, 5*time.Second, "version")
-	if cmd == nil {
-		t.Fatal("virshCmdContext returned nil")
-	}
-
-	// Verify args include -c URI
+	args := c.virshArgs("version")
 	foundURI := false
-	for i, arg := range cmd.Args {
-		if arg == "-c" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "qemu:///system" {
+	for i, arg := range args {
+		if arg == "-c" && i+1 < len(args) && args[i+1] == "qemu:///system" {
 			foundURI = true
 			break
 		}
 	}
 	if !foundURI {
-		t.Errorf("cmd.Args %v missing expected '-c qemu:///system'", cmd.Args)
+		t.Errorf("virshArgs %v missing expected '-c qemu:///system'", args)
+	}
+
+	// No URI configured -> args pass through untouched.
+	bare := (&Connector{}).virshArgs("version")
+	if len(bare) != 1 || bare[0] != "version" {
+		t.Errorf("virshArgs = %v, want [version]", bare)
 	}
 }
