@@ -743,13 +743,17 @@ export const api = {
   createHostZvol: (data) => request('/host/zvols', { method: 'POST', body: JSON.stringify(data) }),
   listHostRaid: () => request('/host/raid'),
   createHostRaid: (data) => request('/host/raid', { method: 'POST', body: JSON.stringify(data) }),
-  syncHostRaid: (device, action = 'check') =>
-    request(`/host/raid/${encodeURIComponent(device)}/sync`, {
+  syncHostRaid: (device, action = 'check') => {
+    const dev = String(device || '').replace(/^\/dev\//, '');
+    return request(`/host/raid/${encodeURIComponent(dev)}/sync`, {
       method: 'POST',
       body: JSON.stringify({ action }),
-    }),
-  stopHostRaid: (device) =>
-    request(`/host/raid/${encodeURIComponent(device)}`, { method: 'DELETE' }),
+    });
+  },
+  stopHostRaid: (device) => {
+    const dev = String(device || '').replace(/^\/dev\//, '');
+    return request(`/host/raid/${encodeURIComponent(dev)}`, { method: 'DELETE' });
+  },
   getStorageBreakdown: () => request('/storage/pools/breakdown'),
   listFilesystems: () => request('/host/disks/filesystems'),
   listOrphanMounts: () => request('/host/disks/orphan-mounts'),
@@ -780,11 +784,6 @@ export const api = {
     }),
   scrubZpool: (name, action = 'start') =>
     request(`/host/zpools/${encodeURIComponent(name)}/scrub`, {
-      method: 'POST',
-      body: JSON.stringify({ action }),
-    }),
-  syncHostRaid: (device, action = 'check') =>
-    request(`/host/raid/${encodeURIComponent(device)}/sync`, {
       method: 'POST',
       body: JSON.stringify({ action }),
     }),

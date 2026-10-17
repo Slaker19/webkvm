@@ -597,7 +597,6 @@ func NewRouter(
 			r.Get("/disks/smart", h.ProbeHostDiskSMART)
 			r.Post("/disks/selftest", h.RunHostDiskSelfTest)
 			r.Post("/zpools/{name}/scrub", h.ScrubHostZPool)
-			r.Post("/raid/{device}/sync", h.SyncHostRAID)
 			r.Post("/interfaces/{name}/configure", h.ConfigureHostInterface)
 			r.Post("/bonds", h.CreateHostBond)
 			r.Delete("/bonds/{name}", h.DeleteHostBond)

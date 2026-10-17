@@ -13,4 +13,4 @@
 export const SITE_NAME = 'WebKVM';
 export const SITE_TAGLINE = 'Sign in to manage virtual machines';
 
-export const APP_VERSION = __APP_VERSION__ || 'dev';
+export const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';

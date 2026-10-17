@@ -543,13 +543,13 @@
     </div>
     <Skeleton class="h-32 w-full mb-4" />
     <Skeleton class="h-24 w-full" />
-  {:else if status}
+  {:else if status && status.backend && status.host && status.disk && status.load}
     <!-- Stat cards -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
       <StatCard
         label={t('status.backend')}
-        status={status.backend.version ? 'running' : 'crashed'}
-        value={status.backend.version
+        status={status.backend?.version ? 'running' : 'crashed'}
+        value={status.backend?.version
           ? status.backend.version.startsWith('v')
             ? status.backend.version
             : `v${status.backend.version}`
@@ -558,15 +558,15 @@
       />
       <StatCard
         label={t('status.libvirt')}
-        status={status.libvirt.connected ? 'running' : 'crashed'}
-        value={status.libvirt.uri}
-        hint={status.libvirt.connected ? t('status.connected') : t('status.disconnected')}
+        status={status.libvirt?.connected ? 'running' : 'crashed'}
+        value={status.libvirt?.uri || '—'}
+        hint={status.libvirt?.connected ? t('status.connected') : t('status.disconnected')}
       />
       <StatCard
         label={t('status.host')}
         status="running"
-        value={status.host.hostname}
-        hint={status.host.os}
+        value={status.host?.hostname || '—'}
+        hint={status.host?.os || ''}
       />
       <StatCard
         label={t('status.update')}
@@ -575,7 +575,7 @@
           ? t('status.updateAvailable', { version: status.latest_version })
           : t('status.upToDate')}
         hint={t('status.currentVersion', {
-          version: status.backend.version ? status.backend.version.replace(/^v/, '') : '',
+          version: status.backend?.version ? status.backend.version.replace(/^v/, '') : '',
         })}
       />
     </div>
@@ -584,18 +584,18 @@
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
       <StatCard
         label={t('status.diskTitle')}
-        status={status.disk.used_pct > 90
+        status={status.disk?.used_pct > 90
           ? 'crashed'
-          : status.disk.used_pct > 75
+          : status.disk?.used_pct > 75
             ? 'paused'
             : 'running'}
-        value={`${fmtBytes(status.disk.used_bytes)} / ${fmtBytes(status.disk.total_bytes)}`}
-        hint={`${status.disk.used_pct.toFixed(1)}%`}
+        value={`${fmtBytes(status.disk?.used_bytes || 0)} / ${fmtBytes(status.disk?.total_bytes || 0)}`}
+        hint={`${(status.disk?.used_pct || 0).toFixed(1)}%`}
       />
       <StatCard
         label={t('status.loadTitle')}
         status="running"
-        value={`${status.load.load1.toFixed(2)} ${status.load.load5.toFixed(2)} ${status.load.load15.toFixed(2)}`}
+        value={`${(status.load?.load1 || 0).toFixed(2)} ${(status.load?.load5 || 0).toFixed(2)} ${(status.load?.load15 || 0).toFixed(2)}`}
         hint={t('status.hostUptime', { uptime: fmtUptime(status.host_uptime_sec) })}
       />
     </div>

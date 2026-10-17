@@ -1465,6 +1465,9 @@ func (h *Handler) ScrubHostZPool(w http.ResponseWriter, r *http.Request) {
 // Restricted to administrators.
 func (h *Handler) SyncHostRAID(w http.ResponseWriter, r *http.Request) {
 	device := chi.URLParam(r, "device")
+	device = strings.TrimPrefix(device, "/")
+	device = strings.TrimPrefix(device, "dev/")
+	device = "/dev/" + device
 	var req struct {
 		Action string `json:"action"` // "check", "repair", "idle"
 	}
@@ -1528,9 +1531,9 @@ func (h *Handler) ListHostRAID(w http.ResponseWriter, r *http.Request) {
 // Restricted to administrators.
 func (h *Handler) StopHostRAID(w http.ResponseWriter, r *http.Request) {
 	device := chi.URLParam(r, "device")
-	if !strings.HasPrefix(device, "/dev/") {
-		device = "/dev/" + device
-	}
+	device = strings.TrimPrefix(device, "/")
+	device = strings.TrimPrefix(device, "dev/")
+	device = "/dev/" + device
 	if err := h.assertDiskNotMounted(r.Context(), device); err != nil {
 		diskGuardErr(w, err)
 		return
