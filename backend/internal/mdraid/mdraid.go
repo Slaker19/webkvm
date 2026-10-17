@@ -10,12 +10,29 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"webkvm/internal/sysutil"
 )
 
-var safeMDDeviceRE = regexp.MustCompile(`^/dev/md[0-9]+$|^/dev/md/[a-zA-Z0-9_\-]+$`)
+var (
+	safeMDDeviceRE = regexp.MustCompile(`^/dev/md[0-9]+$|^/dev/md/[a-zA-Z0-9_\-]+$`)
+	runner         sysutil.CommandRunner = sysutil.DefaultRunner
+)
+
+// SetRunner overrides the command runner for testing or custom environments.
+func SetRunner(r sysutil.CommandRunner) {
+	if r == nil {
+		runner = sysutil.DefaultRunner
+	} else {
+		runner = r
+	}
+}
 
 // IsAvailable reports whether the `mdadm` utility is present on the host.
 func IsAvailable() bool {
+	if _, ok := runner.(*sysutil.OSCommandRunner); !ok {
+		return true
+	}
 	_, err := exec.LookPath("mdadm")
 	return err == nil
 }
@@ -116,13 +133,13 @@ func Create(ctx context.Context, mdDevice, level string, devices []string) (stri
 	cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "mdadm", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := runner.Run(cctx, "mdadm", args...)
+	if err != nil {
 		return "", fmt.Errorf("mdadm create: %s (%w)", strings.TrimSpace(string(out)), err)
 	}
 
 	// Settle udev so /dev/mdX node is fully created and available
-	_ = exec.CommandContext(cctx, "udevadm", "settle", "--timeout=5").Run()
+	_, _ = runner.Run(cctx, "udevadm", "settle", "--timeout=5")
 
 	// Persist to mdadm.conf best-effort
 	persistConfig(cctx)
@@ -141,22 +158,22 @@ func ensureDeviceNode(ctx context.Context, mdDevice string) {
 	if strings.HasPrefix(mdDevice, "/dev/md") {
 		var minor int
 		if _, err := fmt.Sscanf(mdDevice, "/dev/md%d", &minor); err == nil {
-			_ = exec.CommandContext(ctx, "mknod", "-m", "660", mdDevice, "b", "9", fmt.Sprintf("%d", minor)).Run()
+			_, _ = runner.Run(ctx, "mknod", "-m", "660", mdDevice, "b", "9", fmt.Sprintf("%d", minor))
 		}
 	}
 }
 
 func ensureModules(ctx context.Context, level string) {
-	_ = exec.CommandContext(ctx, "modprobe", "md_mod").Run()
+	_, _ = runner.Run(ctx, "modprobe", "md_mod")
 	switch level {
 	case "0":
-		_ = exec.CommandContext(ctx, "modprobe", "raid0").Run()
+		_, _ = runner.Run(ctx, "modprobe", "raid0")
 	case "1":
-		_ = exec.CommandContext(ctx, "modprobe", "raid1").Run()
+		_, _ = runner.Run(ctx, "modprobe", "raid1")
 	case "5", "6":
-		_ = exec.CommandContext(ctx, "modprobe", "raid456").Run()
+		_, _ = runner.Run(ctx, "modprobe", "raid456")
 	case "10":
-		_ = exec.CommandContext(ctx, "modprobe", "raid10").Run()
+		_, _ = runner.Run(ctx, "modprobe", "raid10")
 	}
 }
 
@@ -299,7 +316,7 @@ func Stop(ctx context.Context, mdDevice string) error {
 		return fmt.Errorf("invalid MD device %q", mdDevice)
 	}
 
-	out, err := exec.CommandContext(ctx, "mdadm", "--stop", clean).CombinedOutput()
+	out, err := runner.Run(ctx, "mdadm", "--stop", clean)
 	if err != nil {
 		return fmt.Errorf("stop raid %s: %v (%s)", clean, err, strings.TrimSpace(string(out)))
 	}
@@ -309,7 +326,7 @@ func Stop(ctx context.Context, mdDevice string) error {
 }
 
 func persistConfig(ctx context.Context) {
-	out, err := exec.CommandContext(ctx, "mdadm", "--detail", "--scan").Output()
+	out, err := runner.Run(ctx, "mdadm", "--detail", "--scan")
 	if err != nil || len(out) == 0 {
 		return
 	}

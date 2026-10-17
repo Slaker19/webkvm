@@ -2,7 +2,10 @@ package zvol
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"webkvm/internal/sysutil"
 )
 
 func TestValidPoolName(t *testing.T) {
@@ -97,5 +100,84 @@ func TestListPools_FallbackWhenNoZFS(t *testing.T) {
 	}
 	if pools == nil {
 		t.Fatalf("ListPools() returned nil slice")
+	}
+}
+
+func TestListPools_MockRunner(t *testing.T) {
+	mock := &sysutil.MockCommandRunner{
+		Handler: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if name == "zpool" && len(args) > 0 && args[0] == "list" {
+				return []byte("tank\t107374182400\t10737418240\t96636764160\tONLINE\n"), nil
+			}
+			if name == "zpool" && len(args) > 0 && args[0] == "status" {
+				return []byte("  pool: tank\n state: ONLINE\nconfig:\n\tNAME\tSTATE\n\ttank\tONLINE\n\t  /dev/sdb\tONLINE\n"), nil
+			}
+			return nil, nil
+		},
+	}
+
+	SetRunner(mock)
+	defer SetRunner(nil)
+
+	if !IsPoolAvailable() {
+		t.Errorf("IsPoolAvailable() should be true when using MockCommandRunner")
+	}
+
+	pools, err := ListPools(context.Background())
+	if err != nil {
+		t.Fatalf("ListPools() unexpected error: %v", err)
+	}
+	if len(pools) != 1 {
+		t.Fatalf("expected 1 pool, got %d", len(pools))
+	}
+	if pools[0].Name != "tank" || pools[0].Health != "ONLINE" {
+		t.Errorf("unexpected pool: %+v", pools[0])
+	}
+	if len(pools[0].Devices) != 1 || pools[0].Devices[0] != "/dev/sdb" {
+		t.Errorf("expected device /dev/sdb, got: %v", pools[0].Devices)
+	}
+}
+
+func TestCreatePool_MockRunner(t *testing.T) {
+	var executed []string
+	mock := &sysutil.MockCommandRunner{
+		Handler: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			executed = append([]string{name}, args...)
+			return []byte(""), nil
+		},
+	}
+
+	SetRunner(mock)
+	defer SetRunner(nil)
+
+	err := CreatePool(context.Background(), "tank", "mirror", []string{"/dev/sdb", "/dev/sdc"})
+	if err != nil {
+		t.Fatalf("CreatePool() unexpected error: %v", err)
+	}
+	cmdStr := strings.Join(executed, " ")
+	if !strings.Contains(cmdStr, "zpool create -f tank mirror /dev/sdb /dev/sdc") {
+		t.Errorf("unexpected command executed: %q", cmdStr)
+	}
+}
+
+func TestScrubPool_MockRunner(t *testing.T) {
+	var executed []string
+	mock := &sysutil.MockCommandRunner{
+		Handler: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			executed = append([]string{name}, args...)
+			return []byte(""), nil
+		},
+	}
+
+	SetRunner(mock)
+	defer SetRunner(nil)
+
+	err := ScrubPool(context.Background(), "tank", "start")
+	if err != nil {
+		t.Fatalf("ScrubPool() unexpected error: %v", err)
+	}
+	cmdStr := strings.Join(executed, " ")
+	if !strings.Contains(cmdStr, "zpool scrub tank") {
+		t.Errorf("unexpected scrub command: %q", cmdStr)
 	}
 }

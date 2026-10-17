@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"webkvm/internal/sysutil"
 )
 
 var safePoolNameRE = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_.\-:]*$`)
@@ -98,6 +100,9 @@ func ValidVolumeName(name string) error {
 
 // IsPoolAvailable reports whether the `zpool` userland utility is present on the host.
 func IsPoolAvailable() bool {
+	if _, ok := runner.(*sysutil.OSCommandRunner); !ok {
+		return true
+	}
 	_, err := exec.LookPath("zpool")
 	return err == nil
 }
@@ -111,8 +116,7 @@ func ListPools(ctx context.Context) ([]PoolInfo, error) {
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "zpool", "list", "-Hp", "-o", "name,size,alloc,free,health")
-	out, err := cmd.CombinedOutput()
+	out, err := runner.Run(cctx, "zpool", "list", "-Hp", "-o", "name,size,alloc,free,health")
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if strings.Contains(msg, "no pools available") || strings.Contains(msg, "Permission denied") || strings.Contains(msg, "must be run as root") {
@@ -168,8 +172,7 @@ func parseZpoolListOutput(out []byte) []PoolInfo {
 }
 
 func getPoolDevices(ctx context.Context, pool string) []string {
-	cmd := exec.CommandContext(ctx, "zpool", "status", "-P", "-v", pool)
-	out, err := cmd.CombinedOutput()
+	out, err := runner.Run(ctx, "zpool", "status", "-P", "-v", pool)
 	if err != nil {
 		return nil
 	}
@@ -245,8 +248,8 @@ func CreatePool(ctx context.Context, name, topology string, devices []string) er
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "zpool", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := runner.Run(cctx, "zpool", args...)
+	if err != nil {
 		return fmt.Errorf("zpool create: %s (%w)", strings.TrimSpace(string(out)), err)
 	}
 
@@ -280,8 +283,8 @@ func CreateVolume(ctx context.Context, pool, name string, sizeBytes int64, spars
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "zfs", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := runner.Run(cctx, "zfs", args...)
+	if err != nil {
 		return Info{}, fmt.Errorf("zfs create: %s (%w)", strings.TrimSpace(string(out)), err)
 	}
 
@@ -314,8 +317,8 @@ func ScrubPool(ctx context.Context, poolName, action string) error {
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "zpool", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := runner.Run(cctx, "zpool", args...)
+	if err != nil {
 		return fmt.Errorf("zpool scrub %s: %s (%w)", action, strings.TrimSpace(string(out)), err)
 	}
 	return nil
@@ -324,8 +327,7 @@ func ScrubPool(ctx context.Context, poolName, action string) error {
 var scrubPercentRE = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)%\s+done`)
 
 func getPoolScrub(ctx context.Context, poolName string) *PoolScrub {
-	cmd := exec.CommandContext(ctx, "zpool", "status", poolName)
-	out, err := cmd.Output()
+	out, err := runner.Run(ctx, "zpool", "status", poolName)
 	if err != nil {
 		return nil
 	}

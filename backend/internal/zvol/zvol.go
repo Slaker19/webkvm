@@ -13,7 +13,20 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"webkvm/internal/sysutil"
 )
+
+var runner sysutil.CommandRunner = sysutil.DefaultRunner
+
+// SetRunner overrides the command runner for testing or custom environments.
+func SetRunner(r sysutil.CommandRunner) {
+	if r == nil {
+		runner = sysutil.DefaultRunner
+	} else {
+		runner = r
+	}
+}
 
 // safeZVolNameRE requires at least pool/volume, allowing alphanumeric,
 // underscores, periods, hyphens and colons in each segment.
@@ -59,6 +72,9 @@ func DevicePath(name string) string {
 
 // IsAvailable reports whether the `zfs` userland utility is present on the host.
 func IsAvailable() bool {
+	if _, ok := runner.(*sysutil.OSCommandRunner); !ok {
+		return true
+	}
 	_, err := exec.LookPath("zfs")
 	return err == nil
 }
@@ -77,8 +93,7 @@ func Resolve(ctx context.Context, name string) (Info, error) {
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "zfs", "get", "-Hp", "-o", "property,value", "type,volsize,used", name)
-	out, err := cmd.CombinedOutput()
+	out, err := runner.Run(cctx, "zfs", "get", "-Hp", "-o", "property,value", "type,volsize,used", name)
 	if err != nil {
 		return Info{}, fmt.Errorf("zfs get %s: %s (%w)", name, strings.TrimSpace(string(out)), err)
 	}
@@ -102,7 +117,7 @@ func Resolve(ctx context.Context, name string) (Info, error) {
 		if err == nil {
 			break
 		}
-		_ = exec.CommandContext(cctx, "udevadm", "settle", "--timeout=1").Run()
+		_, _ = runner.Run(cctx, "udevadm", "settle", "--timeout=1")
 		time.Sleep(150 * time.Millisecond)
 	}
 	if err != nil {
@@ -176,8 +191,7 @@ func List(ctx context.Context) ([]Info, error) {
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "zfs", "list", "-Hp", "-t", "volume", "-o", "name,volsize,used")
-	out, err := cmd.CombinedOutput()
+	out, err := runner.Run(cctx, "zfs", "list", "-Hp", "-t", "volume", "-o", "name,volsize,used")
 	if err != nil {
 		// If "no datasets available", "no pools available", or running unprivileged without permissions,
 		// return empty list cleanly.

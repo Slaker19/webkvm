@@ -3,6 +3,8 @@ package zvol
 import (
 	"context"
 	"testing"
+
+	"webkvm/internal/sysutil"
 )
 
 func TestValidName(t *testing.T) {
@@ -119,5 +121,30 @@ func TestResolve_InvalidName(t *testing.T) {
 	_, err := Resolve(context.Background(), "invalid@snap")
 	if err == nil {
 		t.Fatalf("expected error for invalid name, got nil")
+	}
+}
+
+func TestList_MockRunner(t *testing.T) {
+	mock := &sysutil.MockCommandRunner{
+		Handler: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if name == "zfs" && len(args) > 0 && args[0] == "list" {
+				return []byte("tank/vol1\t10737418240\t1048576\n"), nil
+			}
+			return nil, nil
+		},
+	}
+
+	SetRunner(mock)
+	defer SetRunner(nil)
+
+	zvols, err := List(context.Background())
+	if err != nil {
+		t.Fatalf("List() unexpected error: %v", err)
+	}
+	if len(zvols) != 1 {
+		t.Fatalf("expected 1 zvol, got %d", len(zvols))
+	}
+	if zvols[0].Name != "tank/vol1" || zvols[0].VolSize != 10737418240 {
+		t.Errorf("unexpected zvol: %+v", zvols[0])
 	}
 }
