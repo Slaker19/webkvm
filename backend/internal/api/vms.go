@@ -484,6 +484,7 @@ func (h *Handler) vmActionErr(w http.ResponseWriter, err error, humanize func(er
 	// resume while not paused, ...) are a 409, not a 500.
 	if errors.Is(err, compute.ErrDomainNotRunning) ||
 		errors.Is(err, compute.ErrDomainNotPaused) ||
+		errors.Is(err, compute.ErrDomainAlreadyPaused) ||
 		errors.Is(err, compute.ErrDomainAlreadyRunning) {
 		jsonErr(w, http.StatusConflict, err.Error())
 		return

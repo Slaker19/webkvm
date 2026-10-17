@@ -48,4 +48,7 @@ func TestNeutralSentinels(t *testing.T) {
 	if ErrMemorySnapshotRequiresRunning == nil {
 		t.Error("ErrMemorySnapshotRequiresRunning must be set")
 	}
+	if ErrDomainAlreadyPaused == nil {
+		t.Error("ErrDomainAlreadyPaused must be set")
+	}
 }

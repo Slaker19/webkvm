@@ -6,6 +6,7 @@ import "errors"
 // HTTP response codes (e.g. 409 Conflict) instead of a generic 500.
 var (
 	ErrDomainNotPaused             = errors.New("the VM is not paused")
+	ErrDomainAlreadyPaused         = errors.New("the VM is already paused")
 	ErrDomainAlreadyRunning        = errors.New("the VM is already running")
 	ErrDomainMustBeStoppedToRename = errors.New("the VM must be stopped to rename it")
 	ErrDomainMustBeStoppedToClone  = errors.New("the VM must be stopped to clone it (its disk cannot be safely copied while running)")

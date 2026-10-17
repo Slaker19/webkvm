@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -52,6 +53,10 @@ func (h *Handler) ListISOs(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteISO(w http.ResponseWriter, r *http.Request) {
 	pool := chi.URLParam(r, "pool")
 	name := chi.URLParam(r, "name")
+	if strings.Contains(name, "..") || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		jsonErr(w, http.StatusBadRequest, "invalid name: path traversal not allowed")
+		return
+	}
 	if pool == "" {
 		pool = config.ISOPoolName
 	}
@@ -77,6 +82,10 @@ func (h *Handler) DeleteISO(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) RenameISO(w http.ResponseWriter, r *http.Request) {
 	pool := chi.URLParam(r, "pool")
 	name := chi.URLParam(r, "name")
+	if strings.Contains(name, "..") || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		jsonErr(w, http.StatusBadRequest, "invalid name: path traversal not allowed")
+		return
+	}
 	if pool == "" {
 		pool = config.ISOPoolName
 	}

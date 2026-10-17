@@ -31,8 +31,11 @@ var (
 	// period.
 	ErrNoSerialDevice = errors.New("this VM has no serial console device; add one to its hardware to use the text console")
 	// ErrDomainNotPaused is returned when a resume targets a VM that is
-	// not paused (or a suspend a VM that is already paused).
+	// not paused.
 	ErrDomainNotPaused = errors.New("the VM is not paused")
+	// ErrDomainAlreadyPaused is returned when a suspend targets a VM that is
+	// already paused.
+	ErrDomainAlreadyPaused = errors.New("the VM is already paused")
 	// ErrDomainAlreadyRunning is returned when a start targets a VM that
 	// is already running.
 	ErrDomainAlreadyRunning = errors.New("the VM is already running")

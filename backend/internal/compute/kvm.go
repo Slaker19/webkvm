@@ -47,6 +47,8 @@ func kvmErr(err error) error {
 		return ErrNoSerialDevice
 	case errors.Is(err, libvirt.ErrDomainNotPaused):
 		return ErrDomainNotPaused
+	case errors.Is(err, libvirt.ErrDomainAlreadyPaused):
+		return ErrDomainAlreadyPaused
 	case errors.Is(err, libvirt.ErrDomainAlreadyRunning):
 		return ErrDomainAlreadyRunning
 	case errors.Is(err, libvirt.ErrDomainMustBeStoppedToRename):

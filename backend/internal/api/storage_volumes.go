@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -134,6 +135,10 @@ func (h *Handler) CreateVolume(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteVolume(w http.ResponseWriter, r *http.Request) {
 	pool := chi.URLParam(r, "pool")
 	name := chi.URLParam(r, "name")
+	if strings.Contains(name, "..") || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		jsonErr(w, http.StatusBadRequest, "invalid volume name: path traversal not allowed")
+		return
+	}
 	if !h.poolVisibleTo(r, pool) {
 		jsonErr(w, http.StatusForbidden, "access denied to storage pool")
 		return
@@ -160,6 +165,10 @@ func (h *Handler) DeleteVolume(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ResizeVolume(w http.ResponseWriter, r *http.Request) {
 	pool := chi.URLParam(r, "pool")
 	name := chi.URLParam(r, "name")
+	if strings.Contains(name, "..") || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		jsonErr(w, http.StatusBadRequest, "invalid volume name: path traversal not allowed")
+		return
+	}
 	var req struct {
 		Capacity int64 `json:"capacity"`
 	}

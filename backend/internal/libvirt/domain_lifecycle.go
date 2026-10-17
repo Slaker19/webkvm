@@ -78,8 +78,13 @@ func (c *Connector) SuspendDomain(id string) error {
 	}
 	defer dom.Free()
 	state, _, err := dom.GetState()
-	if err == nil && state == libvirt.DOMAIN_PAUSED {
-		return ErrDomainNotPaused
+	if err == nil {
+		if state == libvirt.DOMAIN_PAUSED {
+			return ErrDomainAlreadyPaused
+		}
+		if state != libvirt.DOMAIN_RUNNING {
+			return ErrDomainNotRunning
+		}
 	}
 	return dom.Suspend()
 }
