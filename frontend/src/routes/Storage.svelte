@@ -212,17 +212,16 @@
       cloudInitSnippets = snips || [];
       loadBreakdown();
 
-      const diskPools = pools.filter((p) => hasPurpose(p, 'disk') && p.name !== 'default');
+      const diskPools = pools.filter((p) => hasPurpose(p, 'disk'));
       if (!selectedDiskPool || !diskPools.find((p) => p.name === selectedDiskPool)) {
         selectedDiskPool = diskPools[0]?.name || pools[0]?.name || '';
       }
 
       const lxcList = pools.filter(
-        (p) =>
-          hasPurpose(p, 'container') || p.name === 'default' || (p.type && p.type.includes('incus'))
+        (p) => hasPurpose(p, 'container') || (p.type && p.type.includes('incus'))
       );
       if (!selectedLxcPool || !lxcList.find((p) => p.name === selectedLxcPool)) {
-        selectedLxcPool = lxcList[0]?.name || 'default';
+        selectedLxcPool = lxcList[0]?.name || '';
       }
     } catch (e) {
       error = e.message;
@@ -245,11 +244,7 @@
     if (isIsoOnly(p)) {
       selectedISOPool = p.name;
       switchTab('isos');
-    } else if (
-      hasPurpose(p, 'container') ||
-      p.name === 'default' ||
-      (p.type && p.type.includes('incus'))
-    ) {
+    } else if (hasPurpose(p, 'container') || (p.type && p.type.includes('incus'))) {
       selectedLxcPool = p.name;
       switchTab('lxc-disks');
     } else {

@@ -47,7 +47,7 @@
   let moveVolName = $state('');
   let moveVolSrcPool = $state('');
 
-  const kvmPools = $derived(pools.filter((p) => hasPurpose(p, 'disk') && p.name !== 'default'));
+  const kvmPools = $derived(pools.filter((p) => hasPurpose(p, 'disk')));
 
   $effect(() => {
     if (selectedDiskPool) {

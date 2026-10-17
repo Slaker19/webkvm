@@ -20,10 +20,7 @@
   let lxcDiskSearch = $state('');
 
   const lxcPools = $derived(
-    pools.filter(
-      (p) =>
-        hasPurpose(p, 'container') || (p.type && p.type.includes('incus')) || p.name === 'default'
-    )
+    pools.filter((p) => hasPurpose(p, 'container') || (p.type && p.type.includes('incus')))
   );
 
   $effect(() => {
