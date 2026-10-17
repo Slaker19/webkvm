@@ -2364,9 +2364,9 @@ export const messages = {
     },
     helperScripts: {
       tab: 'Community scripts',
-      securityTitle: 'Third-party scripts, run as root',
+      securityTitle: 'Experimental third-party scripts (run as root)',
       securityBody:
-        'These installers are maintained by the community-scripts project, not by WebKVM. Deploying one downloads it at install time and runs it as root inside the new container. Review a script before you trust it.',
+        'These installers are maintained by the external community-scripts project, not WebKVM. This integration is experimental and some applications or dependencies may fail. For optimal reliability, it is often better to run the original command directly in the container or VM terminal. Review a script before you trust it.',
       viewUpstream: 'View the upstream project',
       searchPlaceholder: 'Search applications…',
       allTags: 'All',
@@ -6049,9 +6049,9 @@ export const messages = {
     },
     helperScripts: {
       tab: 'Scripts de la comunidad',
-      securityTitle: 'Scripts de terceros, ejecutados como root',
+      securityTitle: 'Integración experimental de scripts de terceros (ejecutados como root)',
       securityBody:
-        'Estos instaladores los mantiene el proyecto community-scripts, no WebKVM. Al desplegar uno se descarga en ese momento y se ejecuta como root dentro del contenedor nuevo. Revisa el script antes de confiar en él.',
+        'Estos instaladores los mantiene el proyecto externo community-scripts, no WebKVM. Esta función es experimental y algunas aplicaciones o dependencias interactivas pueden fallar. Para mayor fiabilidad se recomienda lanzar el comando original directamente desde la terminal del contenedor o máquina virtual. Revisa el script antes de confiar en él.',
       viewUpstream: 'Ver el proyecto original',
       searchPlaceholder: 'Buscar aplicaciones…',
       allTags: 'Todas',
@@ -9757,9 +9757,9 @@ export const messages = {
     },
     helperScripts: {
       tab: 'Scripts de la comunitat',
-      securityTitle: 'Scripts de tercers, executats com a root',
+      securityTitle: 'Integració experimental de scripts de tercers (executats com a root)',
       securityBody:
-        "Aquests instal·ladors els manté el projecte community-scripts, no WebKVM. En desplegar-ne un es descarrega en aquell moment i s'executa com a root dins del contenidor nou. Revisa el script abans de confiar-hi.",
+        "Aquests instal·ladors els manté el projecte extern community-scripts, no WebKVM. Aquesta funció és experimental i algunes aplicacions o dependències interactives poden fallar. Per a major fiabilitat es recomana llançar l'ordre original directament des del terminal del contenidor o màquina virtual. Revisa el script abans de confiar-hi.",
       viewUpstream: 'Veure el projecte original',
       searchPlaceholder: 'Cercar aplicacions…',
       allTags: 'Totes',

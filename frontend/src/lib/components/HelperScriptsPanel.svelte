@@ -441,8 +441,17 @@
           {/if}
         </div>
 
+        <div class="rounded-lg bg-muted/60 p-3 border border-border space-y-1.5">
+          <span class="text-[11px] font-semibold text-foreground uppercase tracking-wider block">
+            Comando para terminal interactiva:
+          </span>
+          <code class="text-xs font-mono text-accent block select-all break-all bg-background/80 p-2 rounded border border-border">
+            curl -fsSL {detail.launcher_url || `https://raw.githubusercontent.com/community-scripts/Incus/main/ct/${detail.slug}.sh`} | bash
+          </code>
+        </div>
+
         <pre
-          class="max-h-[50vh] overflow-auto rounded-lg bg-muted/60 p-3 text-xs leading-relaxed"><code
+          class="max-h-[40vh] overflow-auto rounded-lg bg-muted/60 p-3 text-xs leading-relaxed"><code
             >{detail.provision || ''}</code
           ></pre>
       </div>
