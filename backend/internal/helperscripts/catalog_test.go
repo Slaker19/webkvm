@@ -1,6 +1,9 @@
 package helperscripts
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -52,6 +55,49 @@ func newTestStore(t *testing.T, srv *httptest.Server) *Store {
 	s.HTTP = srv.Client()
 	s.indexURL = srv.URL + "/index"
 	return s
+}
+
+func TestRefresh_FromArchive(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	files := map[string]string{
+		"Incus-main/ct/jellyfin.sh": jellyfinLauncher,
+		"Incus-main/ct/adguard.sh":  adguardLauncher,
+		"Incus-main/README.md":      "ignore this",
+	}
+	for name, content := range files {
+		_ = tw.WriteHeader(&tar.Header{
+			Name: name,
+			Mode: 0644,
+			Size: int64(len(content)),
+		})
+		_, _ = tw.Write([]byte(content))
+	}
+	_ = tw.Close()
+	_ = gw.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		_, _ = w.Write(buf.Bytes())
+	}))
+	defer srv.Close()
+
+	s := NewStore(filepath.Join(t.TempDir(), "archive_cache.json"))
+	s.HTTP = srv.Client()
+	s.archiveURL = srv.URL
+
+	cat, err := s.Refresh(context.Background())
+	if err != nil {
+		t.Fatalf("Refresh archive: %v", err)
+	}
+	if len(cat.Scripts) != 2 {
+		t.Fatalf("got %d scripts from archive, want 2", len(cat.Scripts))
+	}
+	if cat.Scripts[0].Name != "Adguard" || cat.Scripts[1].Name != "Jellyfin" {
+		t.Errorf("unexpected script names: %v", []string{cat.Scripts[0].Name, cat.Scripts[1].Name})
+	}
 }
 
 func TestRefresh_ParsesAndPersists(t *testing.T) {

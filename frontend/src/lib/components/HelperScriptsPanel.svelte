@@ -164,7 +164,12 @@
     return d.toLocaleString();
   }
 
-  onMount(load);
+  onMount(async () => {
+    await load();
+    if (scripts.length === 0 && isAdmin) {
+      refresh();
+    }
+  });
 </script>
 
 <div class="space-y-4">
@@ -281,12 +286,17 @@
 
     <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {#each filtered as s (s.slug)}
-        <div class="rounded-xl border border-border bg-card p-4 flex flex-col gap-2">
+        <div class="rounded-xl border border-border bg-card p-4 flex flex-col gap-2.5 hover:border-accent/40 transition-colors shadow-xs">
           <div class="flex items-start justify-between gap-2">
-            <h3 class="font-semibold text-foreground leading-tight">{s.name}</h3>
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div class="w-8 h-8 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center font-bold text-accent text-xs shrink-0 select-none">
+                {(s.name || 'AP').slice(0, 2).toUpperCase()}
+              </div>
+              <h3 class="font-semibold text-foreground leading-tight truncate">{s.name}</h3>
+            </div>
             {#if s.needs_gpu}
               <span
-                class="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0"
+                class="text-[10px] px-1.5 py-0.5 rounded bg-warning/15 text-warning border border-warning/30 font-semibold shrink-0"
                 title={t('helperScripts.needsGpuHint')}
               >
                 GPU
@@ -294,36 +304,49 @@
             {/if}
           </div>
 
-          <div class="text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
-            {#if s.vcpus}<span>{s.vcpus} vCPU</span>{/if}
-            {#if s.ram_mb}<span>{s.ram_mb} MB</span>{/if}
-            {#if s.disk_gb}<span>{s.disk_gb} GB</span>{/if}
-            {#if s.port}<span>:{s.port}{s.web_path || ''}</span>{/if}
+          <div class="text-xs text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            {#if s.vcpus}<span class="inline-flex items-center font-mono bg-muted/60 px-1.5 py-0.5 rounded text-[11px]">{s.vcpus} vCPU</span>{/if}
+            {#if s.ram_mb}<span class="inline-flex items-center font-mono bg-muted/60 px-1.5 py-0.5 rounded text-[11px]">{s.ram_mb} MB</span>{/if}
+            {#if s.disk_gb}<span class="inline-flex items-center font-mono bg-muted/60 px-1.5 py-0.5 rounded text-[11px]">{s.disk_gb} GB</span>{/if}
+            {#if s.port}
+              <span class="inline-flex items-center font-mono bg-accent/15 text-accent font-semibold px-2 py-0.5 rounded text-[11px] border border-accent/20">
+                :{s.port}{s.web_path || ''}
+              </span>
+            {/if}
           </div>
 
-          {#if s.os}
-            <div class="text-xs text-muted-foreground">{s.os} {s.version || ''}</div>
-          {/if}
+          <div class="text-xs text-muted-foreground flex items-center justify-between gap-2 mt-0.5">
+            {#if s.os}
+              <span class="text-[11px] text-muted-foreground/80 font-medium capitalize">{s.os} {s.version || ''}</span>
+            {/if}
+            {#if (s.tags || []).length > 0}
+              <span class="text-[10px] text-muted-foreground/60 truncate max-w-[150px]">
+                {s.tags.slice(0, 2).join(' · ')}
+              </span>
+            {/if}
+          </div>
 
-          <div class="mt-auto pt-2 flex items-center gap-2">
-            {#if onDeploy}
-              <Button size="sm" onclick={() => confirmDeploy(s)}>
-                <Icon name="play" size={13} />
-                <span class="ml-1.5">{t('helperScripts.deploy')}</span>
-              </Button>
-            {/if}
-            {#if isAdmin}
-              <Button variant="outline" size="sm" onclick={() => inspect(s)}>
-                <Icon name="file-text" size={13} />
-                <span class="ml-1.5">{t('helperScripts.inspect')}</span>
-              </Button>
-            {/if}
+          <div class="mt-auto pt-3 border-t border-border/50 flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2">
+              {#if onDeploy}
+                <Button size="sm" onclick={() => confirmDeploy(s)} class="h-8 shadow-xs">
+                  <Icon name="play" size={13} />
+                  <span class="ml-1.5 font-medium">{t('helperScripts.deploy')}</span>
+                </Button>
+              {/if}
+              {#if isAdmin}
+                <Button variant="outline" size="sm" onclick={() => inspect(s)} class="h-8">
+                  <Icon name="file-text" size={13} />
+                  <span class="ml-1.5">{t('helperScripts.inspect')}</span>
+                </Button>
+              {/if}
+            </div>
             {#if s.website}
               <a
                 href={safeHref(s.website)}
                 target="_blank"
                 rel="noopener noreferrer"
-                class="text-xs text-accent hover:underline inline-flex items-center gap-1"
+                class="text-xs text-accent hover:underline inline-flex items-center gap-1 shrink-0"
               >
                 {t('helperScripts.project')}
                 <Icon name="external-link" size={11} />

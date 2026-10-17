@@ -491,8 +491,11 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 		if ciReq == nil {
 			ciReq = &models.CloudInitRequest{
 				User:     "ubuntu",
+				Password: cloudinit.GeneratePassword(12),
 				Hostname: vmName,
 			}
+		} else if ciReq.User != "" && ciReq.Password == "" && ciReq.SSHKey == "" {
+			ciReq.Password = cloudinit.GeneratePassword(12)
 		}
 		ciReq.ProvisionScript = provisionScript
 
@@ -547,11 +550,22 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 			}))
 		}
 
+		started := false
+		if err := h.compute.StartDomain(vm.ID); err == nil {
+			started = true
+		} else {
+			slog.Warn("container_appliance_start_failed", "id", vm.ID, "err", err.Error())
+		}
+
 		resp := map[string]any{
-			"id":     vm.ID,
-			"name":   vm.Name,
-			"type":   "container",
-			"status": "created",
+			"id":      vm.ID,
+			"name":    vm.Name,
+			"type":    "container",
+			"status":  "created",
+			"started": started,
+		}
+		if started {
+			resp["status"] = "started"
 		}
 		if meta != nil {
 			resp["app_info"] = meta

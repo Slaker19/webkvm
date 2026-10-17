@@ -222,12 +222,14 @@
     // Catalog ids are not held to that charset — an imported script's id
     // is "cs:<slug>" — so the suggestion is sanitised instead of handing
     // the operator a pre-filled name the server will reject.
+    const rawId = app.slug || String(app.id || 'app').replace(/^cs:/i, '');
     const base =
-      String(app.id || 'app')
+      rawId
         .replace(/[^A-Za-z0-9_.-]+/g, '-')
         .replace(/^-+|-+$/g, '')
-        .slice(0, 48) || 'app';
-    deployName = base + '-' + Math.floor(100 + Math.random() * 900);
+        .slice(0, 48)
+        .toLowerCase() || 'app';
+    deployName = base;
     deployType = app.default_type || (app.is_helper_script ? 'container' : 'container');
     deployVcpus = app.vcpus || 2;
     deployRamMB = app.ram_mb || 2048;
@@ -320,6 +322,8 @@
       // path: closeDeployModal() bails out while deploying is true, so
       // the modal could only be dismissed by reloading the page.
       deployJobId = res?.job_id || '';
+      const isContainer = deployType === 'container' || res?.type === 'container';
+      const realInstanceId = res?.id || deployJobId || deployName;
       if (deployJobId) {
         upsertTask({
           id: 'async:' + deployJobId,
@@ -332,19 +336,21 @@
       }
       deploySuccess = {
         job_id: deployJobId,
-        id: deployJobId,
-        name: deployName,
+        id: realInstanceId,
+        name: res?.name || deployName,
         type: deployType,
         port: deployModalApp.port || 80,
         web_path: deployModalApp.web_path || '/',
-        app_info: deployModalApp,
+        app_info: res?.app_info || deployModalApp,
         user: deployUser,
         password: deployPassword,
-        queued: true,
+        queued: !isContainer && !!deployJobId,
       };
       deploying = false;
       toast.success(
-        `${deployModalApp.name} en cola de despliegue (trabajo ${deployJobId || 'en curso'})`
+        isContainer
+          ? `${deployModalApp.name} desplegado con éxito`
+          : `${deployModalApp.name} en cola de despliegue (trabajo ${deployJobId || 'en curso'})`
       );
     } catch (err) {
       toast.error(err.message || t('appstore.deployError'));
@@ -586,22 +592,25 @@ EOF\n`;
       shell run as root), and blending them would hide that distinction
       exactly where the user is choosing what to install.
     -->
-    <div class="mt-4 inline-flex rounded-xl bg-muted/60 p-1 border border-border text-xs">
+    <div class="mt-4 inline-flex rounded-xl bg-muted/60 p-1 border border-border text-xs gap-1">
       <button
         onclick={() => (sourceView = 'curated')}
-        class="px-3 py-1 rounded-lg font-medium transition-colors {sourceView === 'curated'
-          ? 'bg-background text-foreground shadow-sm font-semibold'
+        class="px-3.5 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 {sourceView === 'curated'
+          ? 'bg-background text-foreground shadow-xs font-semibold'
           : 'text-muted-foreground hover:text-foreground'}"
       >
-        {t('appstore.filterAll')}
+        <Icon name="package" size={13} class={sourceView === 'curated' ? 'text-accent' : ''} />
+        <span>Oficiales WebKVM</span>
       </button>
       <button
         onclick={() => (sourceView = 'community')}
-        class="px-3 py-1 rounded-lg font-medium transition-colors {sourceView === 'community'
-          ? 'bg-background text-foreground shadow-sm font-semibold'
+        class="px-3.5 py-1.5 rounded-lg font-medium transition-colors flex items-center gap-1.5 {sourceView === 'community'
+          ? 'bg-background text-foreground shadow-xs font-semibold'
           : 'text-muted-foreground hover:text-foreground'}"
       >
-        {t('helperScripts.tab')}
+        <Icon name="code" size={13} class={sourceView === 'community' ? 'text-accent' : ''} />
+        <span>Comunitarias (Helper Scripts)</span>
+        <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-accent/15 text-accent font-bold">630+</span>
       </button>
     </div>
 
@@ -921,10 +930,20 @@ EOF\n`;
           </div>
 
           <div class="flex items-center gap-3 w-full mt-2">
-            <!-- No "Ver Instancia" link: the deployment is still queued,
-                 so the instance does not exist yet and its id is not
-                 known. Navigating to /vms/<job_id> just opened a
-                 not-found page. -->
+            {#if !deploySuccess.queued && deploySuccess.id}
+              <Button
+                variant="outline"
+                class="w-full font-semibold"
+                onclick={() => {
+                  const targetId = deploySuccess.id;
+                  closeDeployModal();
+                  navigate(`/vms/${targetId}`);
+                }}
+              >
+                <Icon name="terminal" size={14} class="mr-1.5" />
+                <span>Ver Instancia</span>
+              </Button>
+            {/if}
             <Button
               variant="primary"
               class="w-full font-semibold"
