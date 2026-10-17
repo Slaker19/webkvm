@@ -20,6 +20,18 @@ const (
 	tlsModeLetsEncrypt TLSMode = "letsencrypt"
 )
 
+// cookiesSecure decides whether session/CSRF cookies carry the Secure flag.
+// With TLS off, browsers silently drop Secure cookies on plain HTTP and every
+// login bounces back to the login page (GitHub issue #5), so the flag is
+// disabled — unless the operator explicitly chose a value via
+// WEBKVM_COOKIE_SECURE (envSet), which always wins.
+func cookiesSecure(configured bool, tlsMode TLSMode, envSet bool) bool {
+	if tlsMode == tlsModeOff && !envSet {
+		return false
+	}
+	return configured
+}
+
 // configureTLS builds the *tls.Config for the backend HTTP server based on
 // the persisted server.tls_* settings:
 //

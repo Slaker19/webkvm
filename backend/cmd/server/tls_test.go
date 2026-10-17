@@ -127,3 +127,27 @@ func TestConfigureTLS_KeyOnly(t *testing.T) {
 		t.Fatalf("expected off when only cert set, got mode=%s", mode)
 	}
 }
+
+// TestCookiesSecure pins the issue #5 rule: with TLS off the Secure flag is
+// dropped (browsers discard such cookies on plain HTTP and logins loop),
+// unless the operator explicitly set WEBKVM_COOKIE_SECURE.
+func TestCookiesSecure(t *testing.T) {
+	cases := []struct {
+		name       string
+		configured bool
+		mode       TLSMode
+		envSet     bool
+		want       bool
+	}{
+		{"tls off, no explicit env -> drop Secure", true, tlsModeOff, false, false},
+		{"tls off, explicit env=true wins", true, tlsModeOff, true, true},
+		{"tls off, explicit env=false stays false", false, tlsModeOff, true, false},
+		{"self-signed keeps configured", true, tlsModeSelfSigned, false, true},
+		{"letsencrypt keeps configured", true, tlsModeLetsEncrypt, false, true},
+	}
+	for _, tc := range cases {
+		if got := cookiesSecure(tc.configured, tc.mode, tc.envSet); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

@@ -25,6 +25,12 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 - **Arquitectura Backend:** Descomposición del monolito `backend/internal/api/storage.go` (2.003 líneas) en 6 submódulos limpios de dominio.
 - **Seguridad y Resiliencia:** Wrapper universal `safeStorage` con fallback en memoria, corrección de fugas de memoria en `Status.svelte`, soporte de `<firmware>` para restauración de backups UEFI.
 
+### Corregido
+- **Bucle de login en HTTP plano ([#5](https://github.com/Slaker19/webkvm/issues/5)):** las cookies de sesión/CSRF ya no llevan el flag `Secure` cuando no hay TLS, así el navegador deja de descartar la sesión en instalaciones LAN con `http://` (el dashboard parpadeaba y volvía al login). Un `WEBKVM_COOKIE_SECURE` explícito sigue teniendo prioridad.
+- **`webkvm-cli users update`:** el subcomando anunciado en la ayuda ahora existe — cambia contraseña, rol, email o estado activo desde la terminal (`PUT /api/users/{username}`).
+- **Autodetección del endpoint local en `webkvm-cli`:** el CLI lee `{DATA_DIR}/config.json` (puerto personalizado, dirección de bind, HTTP o HTTPS) en lugar de asumir `https://127.0.0.1:8080`, reintenta una vez con el otro esquema ante un desajuste HTTPS/HTTP, y trata una IP de bind local a la máquina como local para el acceso admin zero-token.
+- **El instalador ya no fuerza el puente NAT `vmbr1` + dnsmasq en modo solo-bridge:** el NAT aislado queda como opt-in (`--network=both` o `WEBKVM_NAT_BRIDGE=1`), cumpliendo el contrato documentado del modo.
+
 ## [0.1.7] — 2026-10-11
 
 ### Añadido

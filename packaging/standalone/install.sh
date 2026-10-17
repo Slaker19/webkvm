@@ -21,6 +21,9 @@
 #   --domain=NAME               Optional cert SAN domain (default: none).
 #   --network=bridge|nat|both|none   Instance networking (default: bridge
 #                             interactively, both when --yes/unattended).
+#                             Bridge-only mode does NOT create the isolated
+#                             vmbr1 + dnsmasq; set WEBKVM_NAT_BRIDGE=1 to
+#                             create them anyway (--network=both does too).
 #   --incus=yes|no             Install + enable Incus containers (default:
 #                             yes).
 #   --prefix=PATH               Install prefix (default: /usr/local).
@@ -1114,7 +1117,7 @@ fi
 echo ""
   echo "  Networks:"
   echo "    - vmbr0: physical bridge on the real LAN (shared Layer-2, IPs from the router)"
-  if [[ "${NETWORK_MODE}" == "both" || "${NETWORK_MODE}" == "bridge" ]]; then
+  if [[ "${NETWORK_MODE}" == "both" || "${WEBKVM_NAT_BRIDGE:-0}" == "1" ]]; then
     echo "    - vmbr1: NAT bridge (100.0.0.0/24) — isolated tenants with internet via MASQUERADE"
   fi
   echo ""

@@ -161,6 +161,64 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+// TestClient_SchemeFlipRetry is a regression test for GitHub issue #5: a
+// plain-HTTP backend guessed as https made every request die with
+// "http: server gave HTTP response to HTTPS client". The client must flip
+// the scheme once and remember it.
+func TestClient_SchemeFlipRetry(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+	c := newClient("https://"+strings.TrimPrefix(srv.URL, "http://"), "", true)
+	out, err := c.get("/api/health")
+	if err != nil {
+		t.Fatalf("scheme flip retry failed: %v", err)
+	}
+	if !strings.Contains(string(out), `"ok":true`) {
+		t.Errorf("got body %q", out)
+	}
+	if !strings.HasPrefix(c.server, "http://") {
+		t.Errorf("expected remembered scheme http://, got %q", c.server)
+	}
+}
+
+// TestDetectLocalServer covers the config.json autodetection that lets
+// webkvm-cli work on a custom port / plain HTTP without --server (issue #5).
+func TestDetectLocalServer(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DATA_DIR", dir)
+
+	// No config.json yet -> historical default.
+	if got := detectLocalServer(); got != "https://127.0.0.1:8080" {
+		t.Errorf("missing config: got %q, want https://127.0.0.1:8080", got)
+	}
+
+	write := func(values map[string]any) {
+		t.Helper()
+		b, _ := json.Marshal(map[string]any{"values": values})
+		if err := os.WriteFile(filepath.Join(dir, "config.json"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Plain HTTP, custom port, wildcard bind not dialable -> loopback.
+	write(map[string]any{"server.port": 9000.0, "server.bind_addr": "0.0.0.0"})
+	if got := detectLocalServer(); got != "http://127.0.0.1:9000" {
+		t.Errorf("plain http: got %q, want http://127.0.0.1:9000", got)
+	}
+
+	// TLS pair present -> https on the configured bind.
+	write(map[string]any{
+		"server.port": 9443.0, "server.bind_addr": "192.168.1.40",
+		"server.tls_cert": "/opt/webkvm/certs/webkvm.crt",
+		"server.tls_key":  "/opt/webkvm/certs/webkvm.key",
+	})
+	if got := detectLocalServer(); got != "https://192.168.1.40:9443" {
+		t.Errorf("tls: got %q, want https://192.168.1.40:9443", got)
+	}
+}
+
 // captureStdout runs fn with os.Stdout redirected to a pipe and returns
 // everything written to it.
 func captureStdout(t *testing.T, fn func()) string {

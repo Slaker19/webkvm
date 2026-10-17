@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,7 +31,7 @@ var (
 func main() {
 	server := os.Getenv("WEBKVM_SERVER")
 	if server == "" {
-		server = "https://127.0.0.1:8080"
+		server = detectLocalServer()
 	}
 	tokenFlag := os.Getenv("WEBKVM_TOKEN")
 	insecure := os.Getenv("WEBKVM_INSECURE") != "0"
@@ -100,13 +101,51 @@ func main() {
 	}
 }
 
+// detectLocalServer reads {DATA_DIR}/config.json (written by the installer
+// and the Settings page) so a host-local admin on a custom port or plain
+// HTTP does not have to pass --server (GitHub issue #5). Falls back to the
+// historical default when the file is missing or unreadable (non-root).
+func detectLocalServer() string {
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = "/opt/webkvm"
+	}
+	raw, err := os.ReadFile(filepath.Join(dataDir, "config.json"))
+	if err == nil {
+		var f struct {
+			Values map[string]any `json:"values"`
+		}
+		if json.Unmarshal(raw, &f) == nil {
+			scheme := "http"
+			if s, _ := f.Values["server.tls_cert"].(string); s != "" {
+				scheme = "https"
+			}
+			if s, _ := f.Values["server.tls_domain"].(string); s != "" {
+				scheme = "https"
+			}
+			// A wildcard bind is not dialable; use loopback instead.
+			host := "127.0.0.1"
+			if b, _ := f.Values["server.bind_addr"].(string); b != "" && b != "0.0.0.0" && b != "::" && b != "[::]" {
+				host = b
+			}
+			port := 8080
+			if p, ok := f.Values["server.port"].(float64); ok && p > 0 {
+				port = int(p)
+			}
+			return fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(host, strconv.Itoa(port)))
+		}
+	}
+	return "https://127.0.0.1:8080"
+}
+
 func usage() {
 	fmt.Println(`webkvm-cli — WebKVM Management CLI
 
 Usage: webkvm-cli [OPTIONS] <COMMAND> [ARGS...]
 
 Options:
-  --server URL    WebKVM server URL (default: https://127.0.0.1:8080 or $WEBKVM_SERVER)
+  --server URL    WebKVM server URL (default: {DATA_DIR}/config.json autodetect,
+                  then https://127.0.0.1:8080 or $WEBKVM_SERVER)
   --token TOKEN   API token or JWT (or $WEBKVM_TOKEN). Auto-detected on localhost!
   --insecure      Skip TLS verification for self-signed certificates (default: true)
   --json          Output raw JSON (ideal for jq and scripting)
@@ -192,6 +231,7 @@ Network Commands:
 User & Token Commands:
   users list           List user accounts
   users create <user> <pass> [--role admin|operator|viewer]
+  users update <user> [--password <p>] [--role <r>] [--email <e>] [--active <bool>]
   users delete <user>
   tokens list          List API tokens
   tokens create <name> Create new API token
@@ -231,6 +271,15 @@ func resolveToken(server, tokenFlag string) string {
 		h := u.Hostname()
 		if h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "" {
 			isLocal = true
+		} else if addrs, err := net.InterfaceAddrs(); err == nil {
+			// The server may bind a specific LAN IP (config.json) — still
+			// local if that address belongs to this machine.
+			for _, a := range addrs {
+				if ipn, ok := a.(*net.IPNet); ok && ipn.IP.String() == h {
+					isLocal = true
+					break
+				}
+			}
 		}
 	}
 
@@ -415,6 +464,13 @@ func (c *client) do(method, path string, body any) ([]byte, error) {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		// Issue #5: an https guess against a plain-HTTP listener dies in the
+		// TLS handshake. Flip to http:// on the same host:port and retry once,
+		// then remember the working scheme for the rest of the run.
+		if strings.Contains(err.Error(), "HTTP response to HTTPS client") && strings.HasPrefix(c.server, "https://") {
+			c.server = "http://" + strings.TrimPrefix(c.server, "https://")
+			return c.do(method, path, body)
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -1413,6 +1469,37 @@ func runUsers(c *client, cmd []string) error {
 			return printRawJSON(out)
 		}
 		fmt.Printf("user %s created ok\n", cmd[2])
+		return nil
+
+	case "update":
+		if len(cmd) < 3 {
+			return fmt.Errorf("users update requires <username> [--password <p>] [--role <r>] [--email <e>] [--active <bool>]")
+		}
+		flags, _ := parseFlags(cmd[3:])
+		body := map[string]any{}
+		if v := flags["password"]; v != "" {
+			body["password"] = v
+		}
+		if v := flags["role"]; v != "" {
+			body["role"] = v
+		}
+		if v := flags["email"]; v != "" {
+			body["email"] = v
+		}
+		if v := flags["active"]; v == "true" || v == "false" {
+			body["active"] = v == "true"
+		}
+		if len(body) == 0 {
+			return fmt.Errorf("users update requires at least one of --password, --role, --email, --active")
+		}
+		out, err := c.put("/api/users/"+url.PathEscape(cmd[2]), body)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printRawJSON(out)
+		}
+		fmt.Printf("user %s updated ok\n", cmd[2])
 		return nil
 
 	case "delete":

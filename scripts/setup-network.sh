@@ -2071,7 +2071,15 @@ if [[ "${MODE}" == "bridge" || "${MODE}" == "both" ]]; then
     allow_bridge_forward "${BR_NAME}"
     configure_incus_default_profile "${BR_NAME}"
     disable_libvirt_nat_default
-    ensure_vmbr1_nat
+    # vmbr1 + its dnsmasq are OPT-IN: bridge-only installs want plain vmbr0 on
+    # the real LAN, not a surprise 100.0.0.0/24 DHCP server (GitHub issue #5).
+    # `--both` always gets it; re-add it to a bridge install with
+    # WEBKVM_NAT_BRIDGE=1.
+    if [[ "${MODE}" == "both" || "${WEBKVM_NAT_BRIDGE:-0}" == "1" ]]; then
+        ensure_vmbr1_nat
+    else
+        echo "  = vmbr1 NAT bridge skipped (bridge-only mode; set WEBKVM_NAT_BRIDGE=1 to create it)"
+    fi
     echo "[4/5] wiring KVM/Incus to physical bridge ${BR_NAME} (no libvirt virtual networks)"
     if [ -n "${IFACE:-}" ]; then
         verify_post_state_bridge "${BR_NAME}" "${IFACE}"
@@ -2146,12 +2154,16 @@ EOF
         bridge_ip="$(ip -4 -o addr show dev "${BR_NAME}" scope global 2>/dev/null | awk '{print $4}' | head -1 || true)"
         phys_ip="$(ip -4 -o addr show dev "${IFACE:-}" scope global 2>/dev/null | awk '{print $4}' | head -1 || true)"
         if [ -n "${bridge_ip}" ]; then ip_type=""; else ip_type=" (<acquiring>)"; fi
+        nat_bridge_line=""
+        if [[ -d "/sys/class/net/${VM1_BR}/bridge" ]]; then
+            nat_bridge_line="  - vmbr1: NAT bridge 100.0.0.0/24 (isolated tenants with internet)"
+        fi
         cat <<EOF
   Mode: Bridge only (physical L2)
   - ${BR_NAME} IP: ${bridge_ip:-<acquiring>}${ip_type}
   - ${IFACE} enslaved into ${BR_NAME} (no standalone IP)
   - VMs/containers attach DIRECTLY to the physical bridge (visible on LAN)
-  - vmbr1: NAT bridge 100.0.0.0/24 (isolated tenants with internet)
+${nat_bridge_line}
 EOF
     fi
 else

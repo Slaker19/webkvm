@@ -330,7 +330,17 @@ func main() {
 	// invocation (allow_api_tokens), so a Settings page change takes
 	// effect on the next request — no restart.
 	authMgr := auth.NewManagerWithPath(cfg.JWTSecret, settingsStore, cfg.RevokedFile())
-	authMgr.SetSecureCookies(cfg.SecureCookies)
+
+	// Cookie security: without TLS the Secure flag makes browsers drop the
+	// session cookie on plain HTTP and logins bounce straight back to the
+	// login page (GitHub issue #5) — see cookiesSecure.
+	effectiveSecureCookies := cookiesSecure(cfg.SecureCookies, tlsMode, os.Getenv("WEBKVM_COOKIE_SECURE") != "")
+	if !effectiveSecureCookies && cfg.SecureCookies {
+		logger.Info("plain_http_cookies",
+			"secure", false,
+			"msg", "TLS is off; cookies written without the Secure flag so LAN HTTP login works (set WEBKVM_COOKIE_SECURE=true to force it back)")
+	}
+	authMgr.SetSecureCookies(effectiveSecureCookies)
 
 	// V13-SEC-02: global per-IP rate limiter (token bucket + sweeper).
 	// settingsStore implements auth.RateLimitSettings, so enabled/rps/
