@@ -103,13 +103,17 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "tpm_version must be \"1.2\" or \"2.0\"")
 		return
 	}
-	if req.RAMMB <= 0 {
+	if req.RAMMB < 0 || req.VCPUs < 0 || req.DiskGB < 0 {
+		jsonErr(w, http.StatusBadRequest, "vcpus, ram_mb and disk_gb must be non-negative")
+		return
+	}
+	if req.RAMMB == 0 {
 		req.RAMMB = 2048
 	}
-	if req.VCPUs <= 0 {
+	if req.VCPUs == 0 {
 		req.VCPUs = 2
 	}
-	if req.DiskGB <= 0 {
+	if req.DiskGB == 0 {
 		req.DiskGB = 20
 	}
 
@@ -399,7 +403,10 @@ func (h *Handler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 	// Capture the VM name BEFORE undefining: the disk-cleanup naming
 	// convention (<vm>.qcow2, <vm>-<dev>.qcow2) is name-based.
 	vm, _ := h.compute.GetDomain(id)
-	deleteDisks := r.URL.Query().Get("disks") == "true"
+	deleteDisks := r.URL.Query().Get("disks") == "true" ||
+		r.URL.Query().Get("delete_disks") == "true" ||
+		r.URL.Query().Get("deleteDisks") == "true" ||
+		r.URL.Query().Get("disks") == "1"
 	if err := h.compute.DeleteDomain(id); err != nil {
 		h.vmActionErr(w, err, nil)
 		return

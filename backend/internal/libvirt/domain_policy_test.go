@@ -147,6 +147,44 @@ func TestSanitize_AcceptsLibvirtDump(t *testing.T) {
 	}
 }
 
+func TestSanitize_ModernUEFIDump(t *testing.T) {
+	in := `<domain type='kvm'>
+  <name>uefi-vm</name>
+  <memory unit='KiB'>1048576</memory>
+  <vcpu placement='static'>2</vcpu>
+  <os firmware='efi'>
+    <type arch='x86_64' machine='pc-q35-10.2'>hvm</type>
+    <firmware>
+      <feature enabled='no' name='enrolled-keys'/>
+      <feature enabled='no' name='secure-boot'/>
+    </firmware>
+    <loader readonly='yes' type='pflash' format='raw'>/usr/share/OVMF/OVMF_CODE_4M.fd</loader>
+    <nvram template='/usr/share/OVMF/OVMF_VARS_4M.fd' templateFormat='raw' format='raw'>/var/lib/libvirt/qemu/nvram/uefi-vm_VARS.fd</nvram>
+    <boot dev='hd'/>
+  </os>
+  <features><acpi/><apic/></features>
+  <devices>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='` + testDisk + `'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+  </devices>
+</domain>`
+	policy := DomainPolicy{
+		AllowedDiskFiles: map[string]bool{
+			testDisk: true,
+		},
+	}
+	out, err := SanitizeDomainXML(in, policy)
+	if err != nil {
+		t.Fatalf("modern UEFI libvirt dump rejected: %v", err)
+	}
+	if !strings.Contains(out, "<firmware>") {
+		t.Errorf("expected <firmware> in sanitized XML, got:\n%s", out)
+	}
+}
+
 func TestSanitize_Negative(t *testing.T) {
 	wrap := func(devices string) string {
 		return `<domain type='kvm'><name>x</name><memory unit='KiB'>1</memory><vcpu>1</vcpu><os><type>hvm</type></os><devices>` + devices + `</devices></domain>`

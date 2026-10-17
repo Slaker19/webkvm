@@ -286,7 +286,7 @@ var allowedTopLevel = map[string]bool{
 
 var allowedOSChildren = map[string]bool{
 	"type": true, "boot": true, "bootmenu": true, "loader": true, "nvram": true,
-	"smbios": true, "bios": true,
+	"smbios": true, "bios": true, "firmware": true, "acpi": true,
 }
 
 // forbiddenAttrs may not appear anywhere except where explicitly handled.
@@ -421,6 +421,12 @@ func validateOS(os *xnode) error {
 			k.Text = ""
 			if tpl, ok := k.attr("template"); ok && !validateFirmwarePath(tpl) {
 				return fmt.Errorf("nvram template %q is outside the firmware directories", tpl)
+			}
+		case "firmware":
+			for _, fk := range k.Kids {
+				if fk.Name != "feature" {
+					return fmt.Errorf("element <%s> is not allowed in <firmware>", fk.Name)
+				}
 			}
 		}
 	}
