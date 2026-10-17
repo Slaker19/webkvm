@@ -86,7 +86,6 @@
         {@const isISO = isIsoOnly(p)}
         {@const isLXC =
           hasPurpose(p, 'container') ||
-          p.name === 'default' ||
           (p.type && p.type.includes('incus'))}
         <div
           class="relative flex flex-col justify-between gap-3 p-4 rounded-xl border border-border bg-background hover:border-accent/40 hover:shadow-sm transition-all duration-150 cursor-pointer group"

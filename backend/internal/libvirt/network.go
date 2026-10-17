@@ -75,9 +75,8 @@ func IsManagedNetwork(id string) bool {
 	return IsManagedBridge(id)
 }
 
-// ListNetworks returns the host's REAL Linux bridges. Virtual/NAT
-// bridges (virbr*, lxdbr*, lxcbr*, docker, br-*) are excluded — they
-// are plumbing, never a place to attach a VM/container.
+// ListNetworks returns the host's Linux bridges, including native virtualization
+// bridges (virbr*, incusbr*).
 func (c *Connector) ListNetworks() ([]models.Network, error) {
 	bridges := listLinuxBridges()
 	result := make([]models.Network, 0, len(bridges))
@@ -133,6 +132,10 @@ func networkView(name string) models.Network {
 	if gateway == "" {
 		gateway = gatewayFromCIDR(cidr)
 	}
+	dhcp := dnsmasqUnitExists(name)
+	if !dhcp && (strings.HasPrefix(name, "virbr") || strings.HasPrefix(name, "incusbr") || strings.HasPrefix(name, "lxdbr")) && cidr != "" {
+		dhcp = true
+	}
 	return models.Network{
 		Name:         name,
 		Kind:         kind,
@@ -140,7 +143,7 @@ func networkView(name string) models.Network {
 		Bridge:       name,
 		Interface:    iface,
 		CIDR:         cidr,
-		DHCP:         dnsmasqUnitExists(name),
+		DHCP:         dhcp,
 		DHCPStart:    dhcpStart,
 		DHCPEnd:      dhcpEnd,
 		Gateway:      gateway,
@@ -176,6 +179,9 @@ func inferKind(name string, realSlaves []string) (kind, iface string) {
 		if isPhysicalOrBondInterface(s) {
 			return "direct", s
 		}
+	}
+	if strings.HasPrefix(name, "virbr") || strings.HasPrefix(name, "incusbr") || strings.HasPrefix(name, "lxdbr") {
+		return "nat", ""
 	}
 	if natChecker != nil && natChecker(name) {
 		return "nat", ""

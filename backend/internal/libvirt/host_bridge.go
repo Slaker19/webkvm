@@ -142,16 +142,9 @@ func listLinuxBridges() []string {
 	out := []string{}
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasPrefix(name, "virbr") {
-			continue
-		}
 		// docker* — Docker's default bridge (docker0) and
 		// user-defined Docker bridges (br-<name>).
 		if strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "br-") {
-			continue
-		}
-		// lxdbr* / lxcbr* / incusbr* — LXD/Incus bridges.
-		if strings.HasPrefix(name, "lxdbr") || strings.HasPrefix(name, "lxcbr") || strings.HasPrefix(name, "incusbr") {
 			continue
 		}
 		if _, err := os.Stat("/sys/class/net/" + name + "/bridge"); err == nil {

@@ -1916,7 +1916,36 @@ func (b *IncusBackend) RefreshCIFSSecretIfNeeded(ctx context.Context, poolName s
 // --- Networking ---
 
 func (b *IncusBackend) ListNetworks() ([]models.Network, error) {
-	return nil, compute.ErrNotImplemented
+	if b.client == nil {
+		return nil, compute.ErrNotImplemented
+	}
+	nets, err := b.client.GetNetworks()
+	if err != nil {
+		return nil, err
+	}
+	var result []models.Network
+	for _, n := range nets {
+		if n.Type != "bridge" {
+			continue
+		}
+		kind := "isolated"
+		if n.Config["ipv4.nat"] == "true" {
+			kind = "nat"
+		}
+		cidr := n.Config["ipv4.address"]
+		dhcp := n.Config["ipv4.dhcp"] != "false" && cidr != "" && cidr != "none"
+		result = append(result, models.Network{
+			Name:      n.Name,
+			Kind:      kind,
+			Forward:   kind,
+			Bridge:    n.Name,
+			CIDR:      cidr,
+			DHCP:      dhcp,
+			Active:    n.Status == "Created" || n.Status == "",
+			Autostart: true,
+		})
+	}
+	return result, nil
 }
 func (b *IncusBackend) CreateNetwork(req models.CreateNetworkRequest) (models.Network, error) {
 	return models.Network{}, compute.ErrNotImplemented
@@ -1935,7 +1964,22 @@ func (b *IncusBackend) CheckVLANSupport(networkName string) (models.VlanSupport,
 	return models.VlanSupport{}, compute.ErrNotImplemented
 }
 func (b *IncusBackend) NetworkLeases(name string) ([]models.DHCPLease, error) {
-	return nil, compute.ErrNotImplemented
+	if b.client == nil {
+		return nil, compute.ErrNotImplemented
+	}
+	leases, err := b.client.GetNetworkLeases(name)
+	if err != nil {
+		return nil, err
+	}
+	var result []models.DHCPLease
+	for _, l := range leases {
+		result = append(result, models.DHCPLease{
+			IP:       l.Address,
+			MAC:      l.Hwaddr,
+			Hostname: l.Hostname,
+		})
+	}
+	return result, nil
 }
 func (b *IncusBackend) ReleaseNetworkLease(br, ip, mac string) error {
 	return compute.ErrNotImplemented

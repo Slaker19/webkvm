@@ -172,9 +172,9 @@ func TestListNetworksReturnsOnlyBridges(t *testing.T) {
 		if n.Forward != n.Kind {
 			t.Errorf("network %q: deprecated Forward alias (%q) should mirror Kind (%q)", n.Name, n.Forward, n.Kind)
 		}
-		for _, p := range []string{"virbr", "lxdbr", "lxcbr", "docker", "br-"} {
+		for _, p := range []string{"docker", "br-"} {
 			if strings.HasPrefix(n.Name, p) {
-				t.Errorf("virtual bridge %q leaked into ListNetworks", n.Name)
+				t.Errorf("docker bridge %q leaked into ListNetworks", n.Name)
 			}
 		}
 	}

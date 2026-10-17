@@ -347,6 +347,41 @@ func (c *Combined) SetIncusImagesVolume(pool, volume string) error {
 	return ErrNotImplemented
 }
 
+func (c *Combined) ListNetworks() ([]models.Network, error) {
+	primaryNets, err := c.Backend.ListNetworks()
+	if err != nil {
+		return nil, err
+	}
+	if c.secondary != nil {
+		if secNets, sErr := c.secondary.ListNetworks(); sErr == nil {
+			primaryNets = append(primaryNets, secNets...)
+		}
+	}
+	seen := make(map[string]bool, len(primaryNets))
+	deduped := make([]models.Network, 0, len(primaryNets))
+	for _, n := range primaryNets {
+		if seen[n.Name] {
+			continue
+		}
+		seen[n.Name] = true
+		deduped = append(deduped, n)
+	}
+	return deduped, nil
+}
+
+func (c *Combined) NetworkLeases(name string) ([]models.DHCPLease, error) {
+	leases, err := c.Backend.NetworkLeases(name)
+	if err == nil && len(leases) > 0 {
+		return leases, nil
+	}
+	if c.secondary != nil {
+		if secLeases, sErr := c.secondary.NetworkLeases(name); sErr == nil && len(secLeases) > 0 {
+			return secLeases, nil
+		}
+	}
+	return leases, err
+}
+
 func (c *Combined) ListStoragePools() ([]models.StoragePool, error) {
 	// A primary (libvirt) failure is FATAL here, mirroring ListDomains
 	// above. Swallowing it into an empty slice rendered the storage
