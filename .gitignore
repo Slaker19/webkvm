@@ -31,10 +31,13 @@ frontend/.svelte-kit/
 
 # Local development context — never committed.
 CLAUDE.md
+CONTEXT_NOTES.md
 
 # TLS certs (self-signed, host-specific, generated on first deploy)
 certs/
 *.pem
+*.key
+*.crt
 !scripts/Caddyfile
 
 # OS
@@ -66,7 +69,14 @@ coverage.out
 packaging/standalone/*.tmp
 /install.log
 
-# Internal planning artifacts (not for the repo)
+# Python cache (ephemeral audit scripts)
+__pycache__/
+*.py[cod]
+
+# Internal planning & AI harness artifacts (not for the repo)
 .hermes/
 .arena/
 .claude/
+.opencode/
+.planning/
+graphify-out/
