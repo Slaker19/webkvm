@@ -1,7 +1,7 @@
 {
   "name": "webkvm-frontend",
   "private": true,
-  "version": "0.1.8-fix01",
+  "version": "0.1.9-dev",
   "type": "module",
   "engines": {
     "node": ">=20"
