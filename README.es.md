@@ -117,13 +117,31 @@ curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/instal
 - **Dialer Seguro Anti-SSRF**: Las descargas bloquean rangos privados, loopback y CGNAT, re-validando cada salto HTTP.
 - **Firewall con Auto-Rollback**: Las modificaciones del firewall incluyen un temporizador de confirmación de 30s para evitar bloqueos accidentales.
 
+### 7. Software RAID Nativo por Kernel y Pools de Almacenamiento
+- **Descubrimiento Instantáneo**: Lectura directa de sysfs del kernel (`/sys/block/md*/md`) sin sobrecarga de subprocesos.
+- **Ciclo de Vida Automatizado**: Formateo en 1 clic (ext4, xfs, btrfs), generación de unidades de montaje persistentes en systemd y aprovisionamiento automático de pools para WebKVM.
+- **Montaje No Destructivo**: Conexión de arrays RAID existentes conservando los datos intactos.
+- **Mantenimiento en Vivo**: Monitorización en tiempo real del progreso de sincronización, comprobación y verificación (scrub) en la interfaz.
+
+### 8. Tienda de Aplicaciones y Helper Scripts (+600 Appliances)
+- **Catálogo Ultrarrápido**: Ingesta streaming comprimida que indexa más de 600 scripts comunitarios de Proxmox/Incus en menos de 1 segundo.
+- **Despliegues Automáticos e Interactivos**: Creación desatendida en segundo plano o lanzador de instaladores TUI interactivos en la consola del host.
+
+### 9. Gestor de Hardware y Passthrough VFIO
+- **Diagnóstico IOMMU**: Comprobación en vivo de Intel VT-d / AMD-Vi y agrupación visual de la jerarquía de dispositivos por grupo IOMMU.
+- **Aislamiento Seguro**: Asignación a `vfio-pci` en 1 clic con reprobado y rollback automático si el enlace falla.
+
+### 10. Gestor de Actualizaciones del Sistema Operativo
+- **Soporte Multi-Distribución**: Actualizaciones integradas para APT (Debian/Ubuntu), DNF (RHEL/Fedora) y Pacman (Arch).
+- **Visibilidad de Seguridad**: Distintivos de avisos de seguridad, filtros por categoría (Seguridad, Normales, Retenidos) y detección de reinicio pendiente.
+
 ---
 
 ## CLI Local Zero-Token (`webkvm-cli`)
 
 WebKVM incluye una herramienta de línea de comandos completa para administración por SSH y automatizaciones.
 
-Al ejecutarse como root en el servidor local, **se auto-autentica sin requerir tokens ni contraseñas**:
+Al ejecutarse como root en el servidor local, **se auto-autentica sin requerir tokens ni contraseñas** (autodetección del puerto y protocolo local vía `/opt/webkvm/config.json`):
 
 ```bash
 # Listar todas las máquinas virtuales y contenedores
@@ -137,6 +155,9 @@ webkvm-cli vms create --name alpine-ct --ram 512 --vcpus 1 --type container --im
 
 # Descargar una imagen cloud oficial
 webkvm-cli images pull-cloud ubuntu-24.04
+
+# Gestionar cuentas de usuario directamente desde la terminal
+webkvm-cli users update admin --password "ClaveSegura123!"
 
 # Salida estructurada en JSON para scripts con jq
 webkvm-cli --json vms list | jq '.[] | select(.state=="running") | .name'

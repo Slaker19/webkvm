@@ -312,6 +312,10 @@ webkvm-cli users list
 # Create operator account
 webkvm-cli users create operator1 "SecurePass123!" --role operator --email user@example.com
 
+# Update user password, role, email, or active status
+webkvm-cli users update operator1 --password "NewSecurePass456!" --role admin
+webkvm-cli users update operator1 --active false
+
 # Delete account
 webkvm-cli users delete operator1
 

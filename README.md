@@ -117,13 +117,31 @@ curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/instal
 - **Anti-SSRF Safe Dialer**: Remote image downloads validate and block private/loopback/link-local IPv4 and IPv6 address ranges with strict redirect re-validation.
 - **Firewall Safe-Apply**: Host firewall changes include an automated 30-second rollback timer to prevent accidental lockouts.
 
+### 7. Native Kernel Software RAID & Storage Pools
+- **Instant Discovery**: Native kernel sysfs parsing (`/sys/block/md*/md`) without subprocess overhead.
+- **Automated Lifecycle**: 1-click array formatting (ext4, xfs, btrfs), persistent systemd mount unit generation, and automated WebKVM storage pool provisioning.
+- **Non-Destructive Mount**: Attach existing RAID arrays without data loss.
+- **Live Maintenance**: Real-time sync, check, and scrub progress reporting directly in the UI.
+
+### 8. App Store & Helper Scripts (600+ Appliances)
+- **High-Speed Catalog**: Streaming tarball ingestion indexes over 600 Proxmox/Incus community appliances in under 1 second.
+- **Unattended & Interactive**: Background automated deployments or interactive TUI terminal installers launched directly in the host console.
+
+### 9. Hardware & VFIO Passthrough Manager
+- **IOMMU Diagnostics**: Instant preflight check (Intel VT-d / AMD-Vi) and device hierarchy grouped by IOMMU group.
+- **Safe Device Isolation**: 1-click `vfio-pci` driver override with automated driver reprobing and rollback if binding fails.
+
+### 10. Host Operating System Updates
+- **Multi-Distribution Support**: Integrated package updates for APT (Debian/Ubuntu), DNF (RHEL/Fedora), and Pacman (Arch).
+- **Security Visibility**: Security advisory badges, category filtering (Security, Regular, Held), and pending reboot detection.
+
 ---
 
 ## Zero-Token Command Line Interface (`webkvm-cli`)
 
 WebKVM includes a full-featured CLI tool (`webkvm-cli`) designed for automation, scripting, and SSH administration.
 
-When run on the host as root, **it requires zero tokens or login steps** (auto-authenticates via local key):
+When run on the host as root, **it requires zero tokens or login steps** (auto-authenticates via local key and autodetects the local listener from `/opt/webkvm/config.json`):
 
 ```bash
 # List all virtual machines and containers
@@ -137,6 +155,9 @@ webkvm-cli vms create --name alpine-ct --ram 512 --vcpus 1 --type container --im
 
 # Download an official cloud image
 webkvm-cli images pull-cloud ubuntu-24.04
+
+# Manage user accounts directly from the terminal
+webkvm-cli users update admin --password "NewSecurePassword123!"
 
 # Scripting with jq (--json flag)
 webkvm-cli --json vms list | jq '.[] | select(.state=="running") | .name'

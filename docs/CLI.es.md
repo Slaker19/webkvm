@@ -310,6 +310,10 @@ webkvm-cli users list
 # Crear cuenta de operador
 webkvm-cli users create operador1 "ClaveSegura123!" --role operator --email user@example.com
 
+# Actualizar contraseña, rol, email o estado activo de un usuario
+webkvm-cli users update operador1 --password "NuevaClave456!" --role admin
+webkvm-cli users update operador1 --active false
+
 # Eliminar cuenta
 webkvm-cli users delete operador1
 
