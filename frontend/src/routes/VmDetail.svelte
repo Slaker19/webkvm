@@ -1755,9 +1755,7 @@
           />
           {#if auth.isAdmin()}
             <VmUsbCard {vm} {vmId} {load} />
-            {#if !isContainerVm}
-              <VmPciCard {vm} {vmId} {isContainerVm} {load} />
-            {/if}
+            <VmPciCard {vm} {vmId} {isContainerVm} {load} />
           {/if}
         </div>
         {#if !isContainerVm}

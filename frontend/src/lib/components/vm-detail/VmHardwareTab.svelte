@@ -97,6 +97,7 @@
   let eBootOrder = $state('disk');
   let ePrivileged = $state(false);
   let eNesting = $state(false);
+  let eGPU = $state(false);
   let eProfiles = $state(['default']);
   let incusProfiles = $state([]);
   let editSaving = $state(false);
@@ -159,6 +160,7 @@
     eSelectedGroups = Array.isArray(vm.groups) ? [...vm.groups] : [];
     ePrivileged = vm.privileged;
     eNesting = vm.nesting;
+    eGPU = !!vm.gpu;
     eProfiles = vm.profiles?.length ? vm.profiles : ['default'];
     if (isContainerVm && !incusProfiles.length) {
       api
@@ -213,6 +215,7 @@
       if (eAutostart !== !!vm.autostart) data.autostart = eAutostart;
       if (ePrivileged !== vm.privileged) data.privileged = ePrivileged;
       if (eNesting !== vm.nesting) data.nesting = eNesting;
+      if (isContainerVm && eGPU !== !!vm.gpu) data.gpu = eGPU;
       const curProfiles = JSON.stringify(vm.profiles || ['default']);
       if (JSON.stringify(eProfiles || []) !== curProfiles) data.profiles = eProfiles;
 
@@ -750,6 +753,13 @@
             <Switch bind:checked={eNesting} ariaLabel={t('vmCreate.nesting')} />
           </SettingRow>
 
+          <SettingRow
+            label={t('vmCreate.gpuAcceleration')}
+            helper={t('vmCreate.gpuAccelerationHelper')}
+          >
+            <Switch bind:checked={eGPU} ariaLabel={t('vmCreate.gpuAcceleration')} />
+          </SettingRow>
+
           <SettingRow label={t('vmCreate.profiles')} helper={t('vmCreate.profilesHelper')}>
             <select id="edit-profiles" bind:value={eProfiles} multiple class="input h-28 max-w-xs">
               {#each incusProfiles as p (p)}
@@ -1015,6 +1025,15 @@
               vm.nesting ? t('common.yes') : t('common.no'),
               vm.nesting,
               vm.nesting ? 'success' : 'muted'
+            )}
+            {@render hwRow(
+              'cpu',
+              t('vmCreate.gpuAcceleration'),
+              vm.gpu ? t('vmDetail.gpuEnabled') : t('common.disabled'),
+              'container',
+              vm.gpu ? t('common.on') : t('common.off'),
+              vm.gpu,
+              vm.gpu ? 'success' : 'muted'
             )}
             {@render hwRow(
               'layers',

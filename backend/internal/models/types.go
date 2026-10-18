@@ -62,6 +62,7 @@ type VM struct {
 	BootOrder    string   `json:"boot_order,omitempty"`
 	Privileged   bool     `json:"privileged"`
 	Nesting      bool     `json:"nesting"`
+	GPU          bool     `json:"gpu,omitempty"`
 	Profiles     []string `json:"profiles,omitempty"`
 	IP           string   `json:"ip,omitempty"`
 	// IPs lists every IPv4 the instance holds across its NICs (containers
@@ -244,6 +245,7 @@ type UpdateVMRequest struct {
 	Autostart       *bool    `json:"autostart,omitempty"`
 	Privileged      *bool    `json:"privileged,omitempty"`
 	Nesting         *bool    `json:"nesting,omitempty"`
+	GPU             *bool    `json:"gpu,omitempty"`
 	Profiles        []string `json:"profiles,omitempty"`
 }
 

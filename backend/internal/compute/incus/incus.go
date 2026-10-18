@@ -740,8 +740,8 @@ func (b *IncusBackend) UpdateDomain(id string, req models.UpdateVMRequest) (mode
 		}
 	}
 	// Advanced container options (privileged, nesting, autostart,
-	// profiles) also require a full read-modify-write config update.
-	if req.Privileged != nil || req.Nesting != nil || req.Autostart != nil || req.Profiles != nil {
+	// profiles, gpu) also require a full read-modify-write config update.
+	if req.Privileged != nil || req.Nesting != nil || req.Autostart != nil || req.Profiles != nil || req.GPU != nil {
 		inst, etag, err := b.client.GetInstance(id)
 		if err != nil {
 			return models.VM{}, err
@@ -769,9 +769,25 @@ func (b *IncusBackend) UpdateDomain(id string, req models.UpdateVMRequest) (mode
 			}
 			profiles = req.Profiles
 		}
+		devices := inst.Devices
+		if devices == nil {
+			devices = make(map[string]map[string]string)
+		}
+		if req.GPU != nil {
+			if *req.GPU {
+				devices["gpu0"] = map[string]string{"type": "gpu"}
+			} else {
+				delete(devices, "gpu0")
+				for devName, dev := range devices {
+					if dev["type"] == "gpu" && dev["pci"] == "" && dev["id"] == "" {
+						delete(devices, devName)
+					}
+				}
+			}
+		}
 		op, err := b.client.UpdateInstance(id, api.InstancePut{
 			Config:      cfg,
-			Devices:     inst.Devices,
+			Devices:     devices,
 			Profiles:    profiles,
 			Description: inst.Description,
 		}, etag)
@@ -1318,10 +1334,77 @@ func (b *IncusBackend) ListHostUSBDevices() ([]models.USBDevice, error) {
 	return nil, compute.ErrNotImplemented
 }
 func (b *IncusBackend) AttachPCIDevice(id string, addresses []string) error {
-	return compute.ErrNotImplemented
+	if b.client == nil {
+		return compute.ErrNotImplemented
+	}
+	if len(addresses) == 0 {
+		return errors.New("no PCI addresses provided")
+	}
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return err
+	}
+	if inst.StatusCode == api.Running {
+		return errors.New("container must be stopped to attach PCI devices")
+	}
+	if inst.Devices == nil {
+		inst.Devices = make(map[string]map[string]string)
+	}
+	for _, addr := range addresses {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			continue
+		}
+		safeName := "pci-" + strings.ReplaceAll(strings.ReplaceAll(addr, ":", "-"), ".", "-")
+		inst.Devices[safeName] = map[string]string{
+			"type":    "pci",
+			"address": addr,
+		}
+	}
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
 }
 func (b *IncusBackend) DetachPCIDevice(id, address string) error {
-	return compute.ErrNotImplemented
+	if b.client == nil {
+		return compute.ErrNotImplemented
+	}
+	inst, etag, err := b.client.GetInstance(id)
+	if err != nil {
+		return err
+	}
+	if inst.StatusCode == api.Running {
+		return errors.New("container must be stopped to detach PCI devices")
+	}
+	found := false
+	norm := "pci-" + strings.ReplaceAll(strings.ReplaceAll(address, ":", "-"), ".", "-")
+	for devName, dev := range inst.Devices {
+		if (dev["type"] == "pci" && dev["address"] == address) || devName == norm {
+			delete(inst.Devices, devName)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("PCI device %s not found on container", address)
+	}
+	op, err := b.client.UpdateInstance(id, api.InstancePut{
+		Config:      inst.Config,
+		Devices:     inst.Devices,
+		Profiles:    inst.Profiles,
+		Description: inst.Description,
+	}, etag)
+	if err != nil {
+		return err
+	}
+	return waitOperation(op)
 }
 func (b *IncusBackend) ListHostPCIDevices() ([]models.PCIIOMMUGroup, error) {
 	return nil, compute.ErrNotImplemented
@@ -3952,6 +4035,15 @@ func instanceToVM(i *api.Instance) models.VM {
 				Type:    "incus",
 				Source:  parent,
 			})
+		case "gpu":
+			vm.GPU = true
+		case "pci":
+			if addr := dev["address"]; addr != "" {
+				vm.PCIDevices = append(vm.PCIDevices, models.PCIDevice{
+					Address: addr,
+					Name:    "PCI " + addr,
+				})
+			}
 		}
 	}
 	// v1.4 Fase 3: surface the webkvm metadata (tags for RBAC and

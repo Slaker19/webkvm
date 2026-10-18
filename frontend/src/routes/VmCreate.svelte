@@ -292,6 +292,7 @@
   let bootOrder = $state('cdrom');
   let privileged = $state(false);
   let nesting = $state(auth.isAdmin());
+  let gpuAcceleration = $state(false);
   let profiles = $state(['default']);
   // Off by default: a new VM should not silently start with the host.
   // The switch is visible in both easy and advanced mode.
@@ -1125,6 +1126,7 @@
             network,
             privileged,
             nesting,
+            gpu: gpuAcceleration,
             profiles,
             autostart: startAtBoot,
           }
@@ -2099,6 +2101,15 @@
                     </SettingRow>
                     <SettingRow label={t('vmCreate.nesting')} helper={t('vmCreate.nestingHelper')}>
                       <Switch bind:checked={nesting} ariaLabel={t('vmCreate.nesting')} />
+                    </SettingRow>
+                    <SettingRow
+                      label={t('vmCreate.gpuAcceleration')}
+                      helper={t('vmCreate.gpuAccelerationHelper')}
+                    >
+                      <Switch
+                        bind:checked={gpuAcceleration}
+                        ariaLabel={t('vmCreate.gpuAcceleration')}
+                      />
                     </SettingRow>
                     <SettingRow
                       label={t('vmCreate.profiles')}

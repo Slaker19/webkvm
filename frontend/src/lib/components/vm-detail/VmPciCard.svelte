@@ -87,7 +87,7 @@
   }
 
   onMount(() => {
-    if (auth.isAdmin() && !isContainerVm) {
+    if (auth.isAdmin()) {
       loadHostPCIDevices();
       loadHostPCIPreflight();
     }
