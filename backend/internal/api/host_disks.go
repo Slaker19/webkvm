@@ -653,9 +653,9 @@ func (h *Handler) executeInitHostDisk(ctx context.Context, req models.InitHostDi
 			if strings.Contains(cleanDisk, "nvme") || strings.Contains(cleanDisk, "loop") {
 				partitionPath = cleanDisk + "p1"
 			}
-			partitionPath = filepath.Clean(partitionPath)
-			if !safeDiskPathRE.MatchString(partitionPath) {
-				partitionPath = cleanDisk
+			cleanPartition := filepath.Clean(partitionPath)
+			if !safeDiskPathRE.MatchString(cleanPartition) {
+				return nil, false, fmt.Errorf("invalid partition path: %s", cleanPartition)
 			}
 
 			if _, err := exec.LookPath("sgdisk"); err == nil {
@@ -679,8 +679,8 @@ func (h *Handler) executeInitHostDisk(ctx context.Context, req models.InitHostDi
 			case <-time.After(500 * time.Millisecond):
 			}
 
-			targetDevice = partitionPath
-			if _, err := os.Stat(partitionPath); err != nil {
+			targetDevice = cleanPartition
+			if _, err := os.Stat(cleanPartition); err != nil {
 				targetDevice = cleanDisk
 			}
 		}
