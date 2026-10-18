@@ -6,6 +6,25 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
+## [0.1.9-dev] — 2026-10-19
+
+### Added
+- **1-Click Incus GPU Hardware Acceleration**:
+  - Support for container GPU sharing (`type: gpu`, exposing `/dev/dri/renderD128`) without detaching from host kernel, both in container creation (`VmCreate`) and hot-toggle in hardware settings (`VmHardwareTab`).
+- **Incus Container PCI Passthrough**:
+  - Implemented `AttachPCIDevice` and `DetachPCIDevice` in `IncusBackend`, and enabled `VmPciCard` for container instances.
+- **On-Demand Backup Retention Pruning**:
+  - Added `POST /api/backup/targets/{id}/prune` endpoint and CLI command `webkvm-cli backup prune <target>`.
+  - Added "Prune" action button in `Backup` page for targets with retention policies configured.
+- **Unified VM Scheduler**:
+  - Re-routed power and automatic snapshot scheduler through neutral `compute.Backend`, ensuring cron power operations and automated snapshot retention work identically for both KVM VMs and Incus containers.
+- **802.1Q VLAN Tagging in VM Detail**:
+  - Added optional VLAN Tag parameter to the "Add Interface" dialog in `VmDetail` and visual VLAN badge in `VmNetCard`.
+
+### Changed & Refactored
+- **Modular Refactoring of `api/vms.go`**:
+  - Decomposed 2,216-line monolith into 5 clean domain modules (`vm_lifecycle.go`, `vm_snapshots.go`, `vm_devices.go`, `vm_clones.go`, `vm_export_import.go`), reducing `vms.go` to 494 lines while retaining 100% API compatibility.
+
 ## [0.1.8-fix01] — 2026-10-18
 
 ### Security & Hardening

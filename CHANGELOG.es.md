@@ -6,6 +6,25 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.9-dev] — 2026-10-19
+
+### Añadido
+- **Aceleración GPU 1-clic para Incus**:
+  - Soporte de aceleración gráfica compartida (`type: gpu`, exponiendo `/dev/dri/renderD128`) sin desvincular la tarjeta del kernel anfitrión, tanto en el asistente de creación (`VmCreate`) como en caliente en la pestaña Hardware (`VmHardwareTab`).
+- **Passthrough PCI en Contenedores Incus**:
+  - Implementación de `AttachPCIDevice` y `DetachPCIDevice` en `IncusBackend`, y activación de la tarjeta de gestión PCI (`VmPciCard`) para contenedores.
+- **Poda de Retención de Backups Bajo Demanda**:
+  - Endpoint `POST /api/backup/targets/{id}/prune` y comando CLI `webkvm-cli backup prune <target>`.
+  - Botón de acción "Podar" en la vista de destinos de `Backup` para destinos con política de retención configurada.
+- **Planificador de VMs Unificado**:
+  - Redirección del planificador de encendido/apagado y retención de instantáneas automáticas a través de `compute.Backend`, haciendo que las operaciones programadas funcionen tanto en VMs KVM como en contenedores Incus.
+- **Etiquetado 802.1Q VLAN en VM Detail**:
+  - Campo de etiqueta VLAN opcional en el modal de añadir interfaz de red en `VmDetail` e insignia visual de VLAN en `VmNetCard`.
+
+### Cambiado y Refactorizado
+- **Refactorización Modular de `api/vms.go`**:
+  - Descomposición del monolito de 2.216 líneas en 5 submódulos de dominio (`vm_lifecycle.go`, `vm_snapshots.go`, `vm_devices.go`, `vm_clones.go`, `vm_export_import.go`), reduciendo `vms.go` a 494 líneas con 100% de compatibilidad en la API.
+
 ## [0.1.8-fix01] — 2026-10-18
 
 ### Seguridad y Blindaje
