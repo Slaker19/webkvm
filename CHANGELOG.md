@@ -6,6 +6,12 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
+## [0.1.8-fix01] — 2026-10-18
+
+### Security & Hardening
+- **Path Injection Guard**: Enforce strict `filepath.Clean` and `safeDiskPathRE` sanitization on disk and partition target devices prior to filesystem probes in `InitHostDiskDirectory`, resolving CodeQL security alerts #125 and #126.
+- **Dependency Security**: Updated `source-map-js` to 1.2.2 and `postcss-selector-parser` to 7.1.6, addressing Dependabot vulnerability alerts.
+
 ## [0.1.8] — 2026-10-17
 
 ### Added

@@ -1,7 +1,7 @@
 # WebKVM — Contexto para desarrollo (AGENTS)
 
 > Documento vivo para agentes y humanos. Actualizar al cerrar cada fase.
-> Última actualización: 2026-10-18. Rama `main` en `v0.1.8`. Working tree limpio.
+> Última actualización: 2026-10-18. Rama `main` en `v0.1.8-fix01`. Working tree limpio.
 
 ## 1. Qué es
 

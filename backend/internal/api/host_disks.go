@@ -646,28 +646,33 @@ func (h *Handler) executeInitHostDisk(ctx context.Context, req models.InitHostDi
 
 		isMD := strings.HasPrefix(req.DiskPath, "/dev/md")
 		if isMD {
-			targetDevice = req.DiskPath
+			targetDevice = filepath.Clean(req.DiskPath)
 		} else {
-			partitionPath := req.DiskPath + "1"
-			if strings.Contains(req.DiskPath, "nvme") || strings.Contains(req.DiskPath, "loop") {
-				partitionPath = req.DiskPath + "p1"
+			cleanDisk := filepath.Clean(req.DiskPath)
+			partitionPath := cleanDisk + "1"
+			if strings.Contains(cleanDisk, "nvme") || strings.Contains(cleanDisk, "loop") {
+				partitionPath = cleanDisk + "p1"
+			}
+			partitionPath = filepath.Clean(partitionPath)
+			if !safeDiskPathRE.MatchString(partitionPath) {
+				partitionPath = cleanDisk
 			}
 
 			if _, err := exec.LookPath("sgdisk"); err == nil {
-				cmd := exec.CommandContext(ctx, "sgdisk", "--zap-all", req.DiskPath)
+				cmd := exec.CommandContext(ctx, "sgdisk", "--zap-all", cleanDisk)
 				_ = cmd.Run()
-				cmdPart := exec.CommandContext(ctx, "sgdisk", "-n", "1:0:0", "-t", "1:8300", req.DiskPath)
+				cmdPart := exec.CommandContext(ctx, "sgdisk", "-n", "1:0:0", "-t", "1:8300", cleanDisk)
 				if out, err := cmdPart.CombinedOutput(); err != nil {
 					return nil, false, fmt.Errorf("partition disk with sgdisk: %v (%s)", err, strings.TrimSpace(string(out)))
 				}
 			} else {
-				cmdPart := exec.CommandContext(ctx, "parted", "-s", req.DiskPath, "mklabel", "gpt", "mkpart", "primary", "ext4", "1MiB", "100%")
+				cmdPart := exec.CommandContext(ctx, "parted", "-s", cleanDisk, "mklabel", "gpt", "mkpart", "primary", "ext4", "1MiB", "100%")
 				if out, err := cmdPart.CombinedOutput(); err != nil {
 					return nil, false, fmt.Errorf("partition disk with parted: %v (%s)", err, strings.TrimSpace(string(out)))
 				}
 			}
 
-			_ = exec.CommandContext(ctx, "partprobe", req.DiskPath).Run()
+			_ = exec.CommandContext(ctx, "partprobe", cleanDisk).Run()
 			select {
 			case <-ctx.Done():
 				return nil, false, errors.New("operation cancelled")
@@ -676,7 +681,7 @@ func (h *Handler) executeInitHostDisk(ctx context.Context, req models.InitHostDi
 
 			targetDevice = partitionPath
 			if _, err := os.Stat(partitionPath); err != nil {
-				targetDevice = req.DiskPath
+				targetDevice = cleanDisk
 			}
 		}
 
@@ -793,6 +798,11 @@ WantedBy=local-fs.target
 
 	if !isMountpoint(req.MountPoint) {
 		_ = exec.CommandContext(ctx, "mount", targetDevice, req.MountPoint).Run()
+	}
+
+	targetDevice = filepath.Clean(targetDevice)
+	if !safeDiskPathRE.MatchString(targetDevice) {
+		return nil, false, fmt.Errorf("invalid target device path: %s", targetDevice)
 	}
 
 	mounted := isMountpoint(req.MountPoint)

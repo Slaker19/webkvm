@@ -6,6 +6,12 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.8-fix01] — 2026-10-18
+
+### Seguridad y Blindaje
+- **Blindaje contra Inyección de Rutas**: Saneamiento estricto con `filepath.Clean` y validación con `safeDiskPathRE` sobre rutas de particiones y dispositivos antes de operaciones en el sistema de archivos en `InitHostDiskDirectory`, resolviendo las alertas de CodeQL #125 y #126.
+- **Seguridad en Dependencias**: Actualización de `source-map-js` a 1.2.2 y `postcss-selector-parser` a 7.1.6, resolviendo las alertas de vulnerabilidad de Dependabot.
+
 ## [0.1.8] — 2026-10-17
 
 ### Añadido
