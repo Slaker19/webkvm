@@ -544,6 +544,38 @@ func (h *Handler) ReconcileBackupTarget(w http.ResponseWriter, r *http.Request) 
 	jsonResp(w, http.StatusOK, report)
 }
 
+// PruneBackupTarget runs the retention engine immediately on a target,
+// deleting old runs according to the target's RetentionPolicy.
+func (h *Handler) PruneBackupTarget(w http.ResponseWriter, r *http.Request) {
+	if h.backupStore == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "backup store not initialized")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	tgt, ok := h.backupStore.GetTarget(id)
+	if !ok {
+		jsonErr(w, http.StatusNotFound, "target not found")
+		return
+	}
+	if !tgt.Retention.Enabled() {
+		jsonErr(w, http.StatusBadRequest, "no retention policy configured on this target")
+		return
+	}
+	removed, err := backupstore.ApplyRetention(h.backupStore, tgt)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, "retention error: "+err.Error())
+		return
+	}
+	h.audit.Log(auditFor(r, "backup.prune", id, map[string]interface{}{
+		"target":  tgt.Name,
+		"removed": removed,
+	}))
+	jsonResp(w, http.StatusOK, map[string]interface{}{
+		"status":  "pruned",
+		"removed": removed,
+	})
+}
+
 // ListBackupChains returns the incremental backup chains for a target.
 func (h *Handler) ListBackupChains(w http.ResponseWriter, r *http.Request) {
 	if h.backupStore == nil {

@@ -1852,7 +1852,7 @@ func runTokens(c *client, cmd []string) error {
 
 func runBackup(c *client, cmd []string) error {
 	if len(cmd) < 2 {
-		return fmt.Errorf("backup requires a subcommand (targets|run|jobs|schedules)")
+		return fmt.Errorf("backup requires a subcommand (targets|run|prune|jobs|schedules)")
 	}
 	switch cmd[1] {
 	case "targets":
@@ -1884,6 +1884,22 @@ func runBackup(c *client, cmd []string) error {
 			return printRawJSON(out)
 		}
 		fmt.Println("backup job triggered")
+		return nil
+
+	case "prune":
+		if len(cmd) < 3 {
+			return fmt.Errorf("backup prune requires target name/ID")
+		}
+		out, err := c.post("/api/backup/targets/"+cmd[2]+"/prune", nil)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printRawJSON(out)
+		}
+		var res map[string]any
+		_ = json.Unmarshal(out, &res)
+		fmt.Printf("Retention applied on %s: %v old runs removed.\n", cmd[2], res["removed"])
 		return nil
 
 	case "jobs":

@@ -2730,6 +2730,9 @@ export const messages = {
       retentionKeepWeekly: 'Newest per week',
       retentionKeepMonthly: 'Newest per month',
       retentionUnlimited: 'Unlimited (0)',
+      pruneBtn: 'Prune',
+      pruneTooltip: 'Apply retention policy now and remove obsolete backup runs',
+      pruneSuccess: 'Retention policy applied: {n} old runs removed',
       retentionHint:
         'Runs are removed as whole units; the most recent run and the configuration snapshot are never deleted. Leave both at 0 to keep everything (manual cleanup).',
       vmFilter: 'VM filter',
@@ -6430,6 +6433,9 @@ export const messages = {
       retentionKeepWeekly: 'Más reciente por semana',
       retentionKeepMonthly: 'Más reciente por mes',
       retentionUnlimited: 'Ilimitado (0)',
+      pruneBtn: 'Podar',
+      pruneTooltip: 'Aplicar política de retención ahora y eliminar copias obsoletas',
+      pruneSuccess: 'Política de retención aplicada: {n} copias antiguas eliminadas',
       retentionHint:
         'Las ejecuciones se eliminan como un todo; la ejecución más reciente y la copia de configuración nunca se borran. Deja ambos en 0 para conservarlo todo (limpieza manual).',
       vmFilter: 'Filtro de VMs',
@@ -10145,6 +10151,9 @@ export const messages = {
       retentionKeepWeekly: 'Més recent per setmana',
       retentionKeepMonthly: 'Més recent per mes',
       retentionUnlimited: 'Il·limitat (0)',
+      pruneBtn: 'Podar',
+      pruneTooltip: 'Aplicar política de retenció ara i eliminar còpies obsoletes',
+      pruneSuccess: 'Política de retenció aplicada: {n} còpies antigues eliminades',
       retentionHint:
         "Les execucions s'eliminen com un tot; l'execució més recent i la còpia de configuració mai no se suprimeixen. Deixa tots dos en 0 per conservar-ho tot (neteja manual).",
       vmFilter: 'Filtre de VMs',

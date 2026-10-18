@@ -738,6 +738,7 @@ func NewRouter(
 			r.Post("/{id}/restore-as-vm", h.RestoreAsVM)
 			r.Get("/{id}/verify", h.VerifyBackup)
 			r.Post("/{id}/reconcile", h.ReconcileBackupTarget)
+			r.Post("/{id}/prune", h.PruneBackupTarget)
 			r.Get("/{id}/chains", h.ListBackupChains)
 			r.Delete("/{id}/chains/{vmid}", h.DeleteBackupChain)
 		})

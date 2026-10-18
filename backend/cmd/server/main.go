@@ -760,60 +760,6 @@ func main() {
 		logger.Info("firewall_ready")
 	}
 
-	// VM power scheduler: automatic start/stop via cron. Schedules
-	// are re-registered at startup.
-	vmSchedStore := vmsched.NewStore(cfg.DataDir)
-	if serr := vmSchedStore.Load(); serr != nil {
-		logger.Warn("vmsched_load_failed", "err", serr)
-	}
-	vmScheduler := vmsched.NewScheduler(vmSchedStore, func(vmID, action string) error {
-		if lv == nil {
-			return fmt.Errorf("libvirt not connected")
-		}
-		switch action {
-		case "start":
-			return lv.StartDomain(vmID)
-		case "stop":
-			return lv.ShutdownDomain(vmID)
-		}
-		return fmt.Errorf("unknown action %q", action)
-	}, func(vmID string, maxKeep int) error {
-		if lv == nil {
-			return fmt.Errorf("libvirt not connected")
-		}
-		snapName := "auto-" + time.Now().Format("20060102-150405")
-		_, err := lv.CreateSnapshot(vmID, models.CreateSnapshotRequest{
-			Name:        snapName,
-			Description: "Automated snapshot by scheduler",
-		})
-		if err != nil {
-			return err
-		}
-		if maxKeep > 0 {
-			snaps, err := lv.ListSnapshots(vmID)
-			if err == nil {
-				var autoSnaps []models.Snapshot
-				for _, s := range snaps {
-					if strings.HasPrefix(s.Name, "auto-") {
-						autoSnaps = append(autoSnaps, s)
-					}
-				}
-				sort.Slice(autoSnaps, func(i, j int) bool {
-					return autoSnaps[i].CreationTime < autoSnaps[j].CreationTime
-				})
-				if len(autoSnaps) > maxKeep {
-					toDelete := len(autoSnaps) - maxKeep
-					for i := 0; i < toDelete; i++ {
-						_, _ = lv.DeleteSnapshot(vmID, autoSnaps[i].Name)
-					}
-				}
-			}
-		}
-		return nil
-	}, logger)
-	vmScheduler.Start()
-	logger.Info("vmsched_ready")
-
 	// V1.4-Fase 0: the ComputeBackend seam. KVM is the only backend; the
 	// adapter wraps the existing connector so api handlers never touch
 	// libvirt types. Bind the managed-bridge/network predicates too.
@@ -851,6 +797,65 @@ func main() {
 			}
 		}
 	}
+
+	// VM power scheduler: automatic start/stop via cron and automatic
+	// snapshot retention. Operates through computeBackend so both KVM VMs
+	// and Incus containers benefit identically.
+	vmSchedStore := vmsched.NewStore(cfg.DataDir)
+	if serr := vmSchedStore.Load(); serr != nil {
+		logger.Warn("vmsched_load_failed", "err", serr)
+	}
+	vmScheduler := vmsched.NewScheduler(vmSchedStore, func(vmID, action string) error {
+		if computeBackend == nil {
+			return fmt.Errorf("compute backend not connected")
+		}
+		switch action {
+		case "start":
+			return computeBackend.StartDomain(vmID)
+		case "stop":
+			return computeBackend.ShutdownDomain(vmID)
+		}
+		return fmt.Errorf("unknown action %q", action)
+	}, func(vmID string, maxKeep int) error {
+		if computeBackend == nil {
+			return fmt.Errorf("compute backend not connected")
+		}
+		snapName := "auto-" + time.Now().Format("20060102-150405")
+		_, err := computeBackend.CreateSnapshot(vmID, models.CreateSnapshotRequest{
+			Name:        snapName,
+			Description: "Automated snapshot by scheduler",
+		})
+		if err != nil {
+			return err
+		}
+		if maxKeep > 0 {
+			snaps, err := computeBackend.ListSnapshots(vmID)
+			if err == nil {
+				var autoSnaps []models.Snapshot
+				for _, s := range snaps {
+					if strings.HasPrefix(s.Name, "auto-") {
+						autoSnaps = append(autoSnaps, s)
+					}
+				}
+				sort.Slice(autoSnaps, func(i, j int) bool {
+					return autoSnaps[i].CreationTime < autoSnaps[j].CreationTime
+				})
+				if len(autoSnaps) > maxKeep {
+					toDelete := len(autoSnaps) - maxKeep
+					for i := 0; i < toDelete; i++ {
+						targetID := autoSnaps[i].ID
+						if targetID == "" {
+							targetID = autoSnaps[i].Name
+						}
+						_, _ = computeBackend.DeleteSnapshot(vmID, targetID)
+					}
+				}
+			}
+		}
+		return nil
+	}, logger)
+	vmScheduler.Start()
+	logger.Info("vmsched_ready")
 
 	jail, err := netguard.New(cfg.DataDir, logger)
 	if err != nil {

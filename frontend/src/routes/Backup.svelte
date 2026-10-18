@@ -654,6 +654,20 @@
     }
   }
 
+  async function pruneTarget(target) {
+    if (!target?.id) return;
+    try {
+      actionLoading = `prune-${target.id}`;
+      const res = await api.post(`/backup/targets/${target.id}/prune`, {});
+      toast.success(t('backup.pruneSuccess', { n: res?.removed || 0 }));
+      await loadBackupsForTarget(target.id);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      actionLoading = null;
+    }
+  }
+
   // loadFiles fetches the per-target archive list. Called lazily
   // on first visit to the Files tab and again after a backup.
   async function loadFiles(targetId) {
@@ -1338,6 +1352,22 @@
               >
                 {activeBackup?.targetId === target.id ? t('backup.running') : t('backup.backupNow')}
               </Button>
+              {#if target.retention && (target.retention.keep_last > 0 || target.retention.keep_days > 0 || target.retention.keep_daily > 0 || target.retention.keep_weekly > 0 || target.retention.keep_monthly > 0)}
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onclick={() => pruneTarget(target)}
+                  disabled={actionLoading === `prune-${target.id}`}
+                  title={t('backup.pruneTooltip')}
+                >
+                  {#if actionLoading === `prune-${target.id}`}
+                    <Spinner size="xs" />
+                  {:else}
+                    <Icon name="trash-2" size={12} class="mr-1" />
+                    {t('backup.pruneBtn')}
+                  {/if}
+                </Button>
+              {/if}
               {#if target.id !== 'default'}
                 <Button size="xs" variant="outline" onclick={() => editTarget(target)}
                   >{t('common.edit')}</Button
