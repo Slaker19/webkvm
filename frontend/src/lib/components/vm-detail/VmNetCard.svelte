@@ -47,6 +47,13 @@
               >{iface.model}</span
             >
             <span class="text-sm">{networkLabelFor(iface.network, networks)}</span>
+            {#if iface.vlan_tag}
+              <span
+                class="text-xs px-1.5 py-0.5 rounded border border-accent/30 bg-accent/15 text-accent font-mono font-medium"
+              >
+                VLAN {iface.vlan_tag}
+              </span>
+            {/if}
             {#if iface.link_state === 'down'}
               <span
                 class="text-xs px-1.5 py-0.5 rounded bg-destructive/10 border border-destructive/20 text-destructive font-mono"

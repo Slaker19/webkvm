@@ -204,6 +204,7 @@
   let showAddNet = $state(false);
   let aNetNetwork = $state('default');
   let aNetModel = $state('virtio');
+  let aNetVlanTag = $state('');
 
   // Clone state
   let showClone = $state(false);
@@ -1294,8 +1295,13 @@
   async function addNet() {
     actionLoading = 'addnet';
     try {
-      await api.createNetIface(vmId, { network: aNetNetwork, model: aNetModel });
+      const payload = { network: aNetNetwork, model: aNetModel };
+      if (aNetVlanTag && parseInt(aNetVlanTag, 10) > 0) {
+        payload.vlan_tag = parseInt(aNetVlanTag, 10);
+      }
+      await api.createNetIface(vmId, payload);
       showAddNet = false;
+      aNetVlanTag = '';
       toast.success(t('vmDetail.netAdded'));
       await load();
     } catch (e) {
@@ -2527,6 +2533,22 @@
           </select>
         </div>
       {/if}
+      <div>
+        <label for="anet-vlan" class="block text-sm font-medium mb-1.5"
+          >{t('vmDetail.vlanTag')}
+          <span class="text-xs text-muted-foreground font-normal">({t('common.optional')})</span></label
+        >
+        <Input
+          id="anet-vlan"
+          type="number"
+          min="1"
+          max="4094"
+          bind:value={aNetVlanTag}
+          placeholder="e.g. 10, 20"
+          class="tnum"
+        />
+        <p class="text-xs text-muted-foreground mt-1">{t('vmDetail.vlanTagHelper')}</p>
+      </div>
     </div>
     <Dialog.Footer class="gap-2">
       <Button

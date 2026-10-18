@@ -28,6 +28,7 @@
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import AddScheduleDialog from '$lib/components/AddScheduleDialog.svelte';
   import Switch from '$lib/components/Switch.svelte';
+  import Spinner from '$lib/components/Spinner.svelte';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import { tasks, upsertTask, finishTask } from '$lib/stores/tasks.svelte.js';
   import { progressLabel } from '$lib/progress.js';
