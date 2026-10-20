@@ -1135,8 +1135,16 @@ func (h *Handler) unmountDeviceAndChildren(ctx context.Context, devPath string) 
 			_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
 		}
 		if out, uerr := exec.CommandContext(ctx, "umount", "-f", m).CombinedOutput(); uerr != nil {
+			errStr := strings.ToLower(string(out))
+			if strings.Contains(errStr, "not mounted") || strings.Contains(errStr, "no mount point specified") {
+				unmounted = append(unmounted, m)
+				continue
+			}
 			if _, lerr := exec.CommandContext(ctx, "umount", "-l", m).CombinedOutput(); lerr != nil {
-				return unmounted, fmt.Errorf("failed to unmount %s: %s (%v)", m, strings.TrimSpace(string(out)), uerr)
+				lerrStr := strings.ToLower(string(out))
+				if !strings.Contains(lerrStr, "not mounted") {
+					return unmounted, fmt.Errorf("failed to unmount %s: %s (%v)", m, strings.TrimSpace(string(out)), uerr)
+				}
 			}
 		}
 		unmounted = append(unmounted, m)
@@ -1189,9 +1197,15 @@ func (h *Handler) UnmountHostDisk(w http.ResponseWriter, r *http.Request) {
 			_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
 		}
 		if out, uerr := exec.CommandContext(ctx, "umount", "-f", mountPoint).CombinedOutput(); uerr != nil {
-			if _, lerr := exec.CommandContext(ctx, "umount", "-l", mountPoint).CombinedOutput(); lerr != nil {
-				jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("failed to unmount %s: %s (%v)", mountPoint, strings.TrimSpace(string(out)), uerr))
-				return
+			errStr := strings.ToLower(string(out))
+			if !strings.Contains(errStr, "not mounted") && !strings.Contains(errStr, "no mount point specified") {
+				if _, lerr := exec.CommandContext(ctx, "umount", "-l", mountPoint).CombinedOutput(); lerr != nil {
+					lerrStr := strings.ToLower(string(out))
+					if !strings.Contains(lerrStr, "not mounted") {
+						jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("failed to unmount %s: %s (%v)", mountPoint, strings.TrimSpace(string(out)), uerr))
+						return
+					}
+				}
 			}
 		}
 		unmounted = append(unmounted, mountPoint)
