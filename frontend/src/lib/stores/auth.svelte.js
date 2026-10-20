@@ -814,7 +814,7 @@ export const api = {
   resizeVmDisk: (vmId, dev, sizeGb) =>
     request(`/vms/${vmId}/disks/${dev}/resize`, {
       method: 'POST',
-      body: JSON.stringify({ size_gb: sizeGb }),
+      body: JSON.stringify({ size_gb: Number(sizeGb) }),
     }),
   changeDiskBus: (vmId, dev, bus) =>
     request(`/vms/${vmId}/disks/${dev}/bus`, {

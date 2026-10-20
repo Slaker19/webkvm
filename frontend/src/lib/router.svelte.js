@@ -136,6 +136,11 @@ export function navigate(path, opts = {}) {
     const s = qs.toString();
     if (s) target += (target.includes('?') ? '&' : '?') + s;
   }
+  if (browser && typeof document !== 'undefined' && document.body) {
+    if (document.body.style.pointerEvents === 'none') {
+      document.body.style.pointerEvents = '';
+    }
+  }
   if (location.hash === target) {
     // Force re-parse to trigger reactivity even when hash is unchanged
     _route = parseHash();

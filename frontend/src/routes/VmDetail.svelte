@@ -1180,7 +1180,7 @@
         data.force = aDiskForce;
       } else {
         data.format = aDiskFormat;
-        data.size_gb = aDiskSize;
+        data.size_gb = Number(aDiskSize) || 20;
         data.pool = aDiskPool;
       }
       if (aDiskDevice !== 'cdrom') {
