@@ -18,6 +18,7 @@
   import Icon from './Icon.svelte';
   import Avatar from './Avatar.svelte';
   import { branding } from '../stores/branding.svelte.js';
+  import { events } from '../stores/events.svelte.js';
   import * as Dialog from './ui/dialog';
   import { Button } from './ui/button';
 
@@ -49,12 +50,59 @@
 
   const route = $derived(getRoute());
 
+  let runningCount = $state(0);
+  let storageUsedPct = $state(0);
+  const storageWarning = $derived(storageUsedPct >= 85);
+
   // The "Snapshots" link is hidden until the fleet has at least one
   // snapshot — nothing to see there on a fresh install. Checked once
   // here (not on every navigation); Snapshots.svelte's own load()
   // refreshes the same store, so visiting it directly self-heals this.
   onMount(() => {
     if (!fleetSnapshots.checked) checkFleetSnapshots(api.listAllSnapshots);
+
+    api
+      .listVMs()
+      .then((vms) => {
+        if (Array.isArray(vms)) {
+          runningCount = vms.filter((v) => v.state === 'running').length;
+        }
+      })
+      .catch(() => {});
+
+    api
+      .hostMetrics()
+      .then((history) => {
+        if (Array.isArray(history) && history.length > 0) {
+          const last = history[history.length - 1];
+          if (last && last.total_disk > 0) {
+            storageUsedPct = Math.round((last.used_disk / last.total_disk) * 100);
+          }
+        }
+      })
+      .catch(() => {});
+
+    const offState = events.onVmState(() => {
+      api
+        .listVMs()
+        .then((vms) => {
+          if (Array.isArray(vms)) {
+            runningCount = vms.filter((v) => v.state === 'running').length;
+          }
+        })
+        .catch(() => {});
+    });
+
+    const offHost = events.onHostMetrics((data) => {
+      if (data && data.total_disk > 0) {
+        storageUsedPct = Math.round((data.used_disk / data.total_disk) * 100);
+      }
+    });
+
+    return () => {
+      offState?.();
+      offHost?.();
+    };
   });
 
   // Grouped so each area shows only what belongs to it. Labels are
@@ -344,7 +392,28 @@
             {/if}
             <Icon name={item.icon} size={16} class="shrink-0" />
             {#if showLabels}
-              <span class="truncate min-w-0">{item.label}</span>
+              <span class="truncate min-w-0 flex-1 text-left">{item.label}</span>
+              {#if item.id === 'vms' && runningCount > 0}
+                <span
+                  class="px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold bg-success/15 text-success border border-success/30 shrink-0"
+                >
+                  {runningCount}
+                </span>
+              {/if}
+              {#if item.id === 'storage' && storageWarning}
+                <span
+                  class="px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold bg-destructive/15 text-destructive border border-destructive/30 shrink-0"
+                  title="Storage high: {storageUsedPct}%"
+                >
+                  {storageUsedPct}%
+                </span>
+              {/if}
+            {:else if item.id === 'vms' && runningCount > 0}
+              <span class="absolute top-1 right-1 w-2 h-2 rounded-full bg-success"></span>
+            {:else if item.id === 'storage' && storageWarning}
+              <span
+                class="absolute top-1 right-1 w-2 h-2 rounded-full bg-destructive animate-pulse"
+              ></span>
             {/if}
           </button>
         {/each}

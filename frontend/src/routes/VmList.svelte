@@ -153,6 +153,11 @@
   // two independently-maintained lists.
   const palette = CATEGORICAL_COLORS;
 
+  const totalVcpus = $derived(vms.reduce((acc, v) => acc + (v.vcpus || 0), 0));
+  const totalRamGB = $derived(
+    (vms.reduce((acc, v) => acc + (v.ram_mb || 0), 0) / 1024).toFixed(1)
+  );
+
   // Confirm dialog state
   let confirmDeleteOpen = $state(false);
   let confirmDeleteVm = $state(null);
@@ -1489,7 +1494,7 @@ apt-get update -y
 <div class="p-3 sm:p-5 w-full max-w-[1800px] mx-auto">
   <PageHeader
     title={t('vms.title')}
-    subtitle={`${vms.length} ${vms.length === 1 ? t('vms.machine') : t('vms.machines')}`}
+    subtitle={`${vms.length} ${vms.length === 1 ? t('vms.machine') : t('vms.machines')}${vms.length > 0 ? ` · ${runningVms.length} ${t('common.running')} · ${totalVcpus} vCPU · ${totalRamGB} GB RAM` : ''}`}
   >
     {#snippet actions()}
       <!-- Gauge shape preference (rings vs bars). Per-browser, so the

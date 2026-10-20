@@ -241,7 +241,13 @@
     // those turns a detail the operator would have to know into one the
     // catalog already knows — and it stays a checkbox, so it can be
     // turned off.
-    deployGPU = hostHasGPU && deployType === 'container' && !!app.needs_gpu;
+    deployGPU =
+      hostHasGPU &&
+      deployType === 'container' &&
+      (!!app.needs_gpu ||
+        app.category === 'media' ||
+        app.category === 'ai' ||
+        /jellyfin|plex|emby|ollama|whisper|frigate/i.test(app.name || app.id || ''));
     deployProfiles = [];
     deployNesting = auth.isAdmin();
     deployPrivileged = false;

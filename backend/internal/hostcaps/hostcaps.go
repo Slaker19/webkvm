@@ -240,14 +240,19 @@ type qemuProbeResult struct {
 // no render node (some server VGA chips) cannot accelerate anything, so
 // advertising a GPU there would be a promise that fails at runtime.
 func renderNodes() []string {
-	entries, err := os.ReadDir("/dev/dri")
-	if err != nil {
-		return nil
-	}
 	var nodes []string
-	for _, e := range entries {
-		if name := e.Name(); strings.HasPrefix(name, "renderD") {
-			nodes = append(nodes, "/dev/dri/"+name)
+	if entries, err := os.ReadDir("/dev/dri"); err == nil {
+		for _, e := range entries {
+			if name := e.Name(); strings.HasPrefix(name, "renderD") || strings.HasPrefix(name, "card") {
+				nodes = append(nodes, "/dev/dri/"+name)
+			}
+		}
+	}
+	if entries, err := os.ReadDir("/dev"); err == nil {
+		for _, e := range entries {
+			if name := e.Name(); strings.HasPrefix(name, "nvidia") && (name == "nvidia0" || name == "nvidiactl" || name == "nvidia-uvm") {
+				nodes = append(nodes, "/dev/"+name)
+			}
 		}
 	}
 	sort.Strings(nodes)
