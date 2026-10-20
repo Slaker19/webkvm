@@ -75,7 +75,8 @@ webkvm-cli logout
 | Comando | Qué hace |
 |---------|----------|
 | `webkvm-cli backup targets` | Lista los destinos de copia configurados. |
-| `webkvm-cli backup run` | Lanza una copia ahora. |
+| `webkvm-cli backup run <target>` | Lanza una copia ahora. |
+| `webkvm-cli backup prune <target>` | Aplica la política de retención y poda copias obsoletas bajo demanda. |
 | `webkvm-cli backup jobs` | Lista los trabajos de copia con estado, inicio y tamaño. |
 | `webkvm-cli backup schedules` | Lista las copias programadas. |
 
@@ -222,6 +223,10 @@ webkvm-cli host disks probe /opt/webkvm/pools/webkvm-disks/ubuntu-26.04.qcow2
 
 # Inspección profunda (SO/particiones, requiere libguestfs en el host; usa un job)
 webkvm-cli host disks probe /opt/webkvm/pools/webkvm-disks/ubuntu-26.04.qcow2 --deep
+
+# Desmontar un disco, partición o punto de montaje no perteneciente al sistema y limpiar unidades systemd
+webkvm-cli host disks unmount /mnt/data
+webkvm-cli host disks unmount /dev/sdb1
 ```
 
 ---
