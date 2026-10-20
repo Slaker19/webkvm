@@ -1521,7 +1521,7 @@ func runUsers(c *client, cmd []string) error {
 // so cmd[0] is the subcommand.
 func runHostDisks(c *client, cmd []string) error {
 	if len(cmd) < 1 {
-		return fmt.Errorf("disks requires a subcommand (list|filesystems|wipe|init)")
+		return fmt.Errorf("disks requires a subcommand (list|filesystems|wipe|init|unmount)")
 	}
 	switch cmd[0] {
 	case "list":
@@ -1654,6 +1654,37 @@ func runHostDisks(c *client, cmd []string) error {
 			return printRawJSON(out)
 		}
 		fmt.Printf("disk %s wiped\n", disk)
+		return nil
+
+	case "unmount", "umount":
+		flags, pos := parseFlags(cmd[1:])
+		target := ""
+		if len(pos) > 0 {
+			target = pos[0]
+		}
+		if target == "" {
+			target = flags["path"]
+		}
+		if target == "" {
+			target = flags["mount"]
+		}
+		if target == "" {
+			return fmt.Errorf("disks unmount requires a disk path or mount point: webkvm-cli disks unmount <device|mount_point>")
+		}
+		body := map[string]string{}
+		if strings.HasPrefix(target, "/dev/") {
+			body["path"] = target
+		} else {
+			body["mount_point"] = target
+		}
+		out, err := c.post("/api/host/disks/unmount", body)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printRawJSON(out)
+		}
+		fmt.Printf("unmounted: %s\n", target)
 		return nil
 
 	case "init":

@@ -23,6 +23,7 @@
   let createRaidFs = $state('ext4');
   let createRaidMount = $state('');
   let createRaidPool = $state(true);
+  let createRaidAutoUnmount = $state(true);
   let createRaidSubfolders = $state(['discos', 'isos', 'backups']);
   let createRaidPoolMode = $state('multi');
   let createRaidSinglePurpose = $state('disk');
@@ -101,6 +102,7 @@
         name: createRaidDevice.trim() || undefined,
         level: createRaidLevel,
         devices: createRaidDisks,
+        auto_unmount: createRaidAutoUnmount,
       };
       if (createRaidFormat) {
         raidPayload.format = true;
@@ -204,6 +206,15 @@
             })}
           </p>
         {/if}
+
+        <label class="flex items-center gap-2 mt-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            bind:checked={createRaidAutoUnmount}
+            class="w-4 h-4 rounded border-border text-accent focus:ring-accent"
+          />
+          <span class="text-xs text-foreground font-medium">{t('storage.raidAutoUnmount')}</span>
+        </label>
       </div>
 
       <div class="pt-2 border-t border-border space-y-3">

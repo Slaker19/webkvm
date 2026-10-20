@@ -123,3 +123,28 @@ func TestStop_MockRunner(t *testing.T) {
 		t.Errorf("Stop() called with device %q, want /dev/md0", stoppedDev)
 	}
 }
+
+func TestDestroy_MockRunner(t *testing.T) {
+	var stoppedDev string
+	mock := &sysutil.MockCommandRunner{
+		Handler: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if name == "mdadm" && len(args) >= 2 && args[0] == "--stop" {
+				stoppedDev = args[1]
+				return []byte("mdadm: stopped /dev/md0\n"), nil
+			}
+			return nil, nil
+		},
+	}
+
+	SetRunner(mock)
+	defer SetRunner(nil)
+
+	members, err := Destroy(context.Background(), "/dev/md0", true)
+	if err != nil {
+		t.Fatalf("Destroy() unexpected error: %v", err)
+	}
+	if stoppedDev != "/dev/md0" {
+		t.Errorf("Destroy() stopped dev %q, want /dev/md0", stoppedDev)
+	}
+	_ = members
+}

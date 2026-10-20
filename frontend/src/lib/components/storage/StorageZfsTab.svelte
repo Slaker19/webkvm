@@ -17,6 +17,7 @@
     hostDisks = [],
     onRefresh = () => {},
     showStorageErr = () => {},
+    askConfirm = () => {},
   } = $props();
 
   let scrubbingPool = $state({});
@@ -26,6 +27,10 @@
   let createZPoolName = $state('');
   let createZPoolTopology = $state('stripe');
   let createZPoolDisks = $state([]);
+  let createZPoolAshift = $state(12);
+  let createZPoolCompression = $state('lz4');
+  let createZPoolMountPoint = $state('');
+  let createZPoolAutoUnmount = $state(true);
   let creatingZPool = $state(false);
 
   // Create ZVol State
@@ -40,6 +45,10 @@
     createZPoolName = '';
     createZPoolTopology = 'stripe';
     createZPoolDisks = [];
+    createZPoolAshift = 12;
+    createZPoolCompression = 'lz4';
+    createZPoolMountPoint = '';
+    createZPoolAutoUnmount = true;
     showCreateZPool = true;
   }
 
@@ -51,6 +60,8 @@
         return 3;
       case 'raidz2':
         return 4;
+      case 'raidz3':
+        return 5;
       default:
         return 1;
     }
@@ -74,6 +85,10 @@
         name: createZPoolName.trim(),
         topology: createZPoolTopology,
         devices: createZPoolDisks,
+        ashift: Number(createZPoolAshift) || 12,
+        compression: createZPoolCompression || 'lz4',
+        mount_point: createZPoolMountPoint.trim() || undefined,
+        auto_unmount: createZPoolAutoUnmount,
       });
       finishTask(taskId, 'success', `ZPool ${createZPoolName.trim()} creado con éxito`, 100);
       showCreateZPool = false;
@@ -84,6 +99,24 @@
     } finally {
       creatingZPool = false;
     }
+  }
+
+  function doDestroyZPool(poolName) {
+    askConfirm({
+      title: t('storage.destroyZPoolTitle', { name: poolName }),
+      description: t('storage.destroyZPoolDesc'),
+      confirmLabel: t('storage.destroyZPool'),
+      variant: 'destructive',
+      onConfirm: async () => {
+        try {
+          await api.destroyHostZpool(poolName);
+          toast.success(t('storage.zpoolDestroyed'));
+          onRefresh();
+        } catch (e) {
+          toast.error(e.message || 'Error al destruir ZPool');
+        }
+      },
+    });
   }
 
   function openCreateZVolDialog(defaultPool = '') {
@@ -249,6 +282,15 @@
                           <Icon name="plus" size={11} />
                           {t('storage.createZVolBtn')}
                         </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          class="!h-7 !text-[11px] gap-1"
+                          onclick={() => doDestroyZPool(pool.name)}
+                        >
+                          <Icon name="trash" size={11} />
+                          {t('storage.destroyZPool')}
+                        </Button>
                       </div>
                     </td>
                   {/if}
@@ -366,7 +408,44 @@
           <option value="mirror">{t('storage.topologyMirror')}</option>
           <option value="raidz1">{t('storage.topologyRaidz1')}</option>
           <option value="raidz2">{t('storage.topologyRaidz2')}</option>
+          <option value="raidz3">{t('storage.zfsRaidz3')}</option>
         </select>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label for="zpool-ashift" class="block font-semibold mb-1"
+            >{t('storage.zfsAshift')}</label
+          >
+          <select id="zpool-ashift" bind:value={createZPoolAshift} class="input w-full font-mono text-xs">
+            <option value={12}>12 (4 KB — Estándar SSD/HDD)</option>
+            <option value={9}>9 (512 B — Discos legados)</option>
+            <option value={13}>13 (8 KB — NVMe avanzado)</option>
+          </select>
+        </div>
+        <div>
+          <label for="zpool-compression" class="block font-semibold mb-1"
+            >{t('storage.zfsCompression')}</label
+          >
+          <select id="zpool-compression" bind:value={createZPoolCompression} class="input w-full font-mono text-xs">
+            <option value="lz4">lz4 (Recomendado, rápido)</option>
+            <option value="zstd">zstd (Alta compresión)</option>
+            <option value="gzip">gzip</option>
+            <option value="off">off (Desactivada)</option>
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <label for="zpool-mount" class="block font-semibold mb-1"
+          >{t('storage.zfsMountPoint')}</label
+        >
+        <Input
+          id="zpool-mount"
+          bind:value={createZPoolMountPoint}
+          placeholder="/mnt/{createZPoolName.trim() || 'zpool'}"
+          class="w-full font-mono text-xs"
+        />
       </div>
 
       <div>
@@ -408,6 +487,15 @@
             })}
           </p>
         {/if}
+
+        <label class="flex items-center gap-2 mt-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            bind:checked={createZPoolAutoUnmount}
+            class="w-4 h-4 rounded border-border text-accent focus:ring-accent"
+          />
+          <span class="text-xs text-foreground font-medium">{t('storage.raidAutoUnmount')}</span>
+        </label>
       </div>
     </div>
 

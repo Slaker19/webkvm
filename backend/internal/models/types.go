@@ -301,9 +301,13 @@ type HostZPool struct {
 }
 
 type CreateZPoolRequest struct {
-	Name     string   `json:"name"`
-	Topology string   `json:"topology"` // stripe, mirror, raidz1, raidz2
-	Devices  []string `json:"devices"`
+	Name        string   `json:"name"`
+	Topology    string   `json:"topology"` // stripe, mirror, raidz1, raidz2, raidz3
+	Devices     []string `json:"devices"`
+	Ashift      int      `json:"ashift,omitempty"`
+	Compression string   `json:"compression,omitempty"`
+	MountPoint  string   `json:"mount_point,omitempty"`
+	AutoUnmount bool     `json:"auto_unmount,omitempty"`
 }
 
 type CreateZVolRequest struct {
@@ -324,6 +328,12 @@ type CreateRAIDRequest struct {
 	CreatePool  bool     `json:"create_pool,omitempty"`
 	Subfolders  []string `json:"subfolders,omitempty"`
 	PoolPurpose string   `json:"pool_purpose,omitempty"`
+	AutoUnmount bool     `json:"auto_unmount,omitempty"`
+}
+
+type UnmountHostDiskRequest struct {
+	Path       string `json:"path,omitempty"`
+	MountPoint string `json:"mount_point,omitempty"`
 }
 
 type AttachDiskRequest struct {

@@ -181,3 +181,31 @@ func TestScrubPool_MockRunner(t *testing.T) {
 		t.Errorf("unexpected scrub command: %q", cmdStr)
 	}
 }
+
+func TestDestroyPool_MockRunner(t *testing.T) {
+	var executed []string
+	mock := &sysutil.MockCommandRunner{
+		Handler: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			executed = append(executed, name+" "+strings.Join(args, " "))
+			return []byte(""), nil
+		},
+	}
+
+	SetRunner(mock)
+	defer SetRunner(nil)
+
+	err := DestroyPool(context.Background(), "tank", true)
+	if err != nil {
+		t.Fatalf("DestroyPool() unexpected error: %v", err)
+	}
+	foundDestroy := false
+	for _, cmd := range executed {
+		if strings.Contains(cmd, "zpool destroy -f tank") {
+			foundDestroy = true
+			break
+		}
+	}
+	if !foundDestroy {
+		t.Errorf("expected zpool destroy command in %v", executed)
+	}
+}

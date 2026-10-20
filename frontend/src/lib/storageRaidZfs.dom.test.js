@@ -194,6 +194,7 @@ describe('Storage: Physical Disks, RAID creation and ZFS management UI', () => {
       level: '1',
       devices: ['/dev/sdb', '/dev/sdc'],
       name: undefined,
+      auto_unmount: true,
     });
   });
 
@@ -250,6 +251,10 @@ describe('Storage: Physical Disks, RAID creation and ZFS management UI', () => {
       name: 'tank2',
       topology: 'stripe',
       devices: ['/dev/sdb'],
+      ashift: 12,
+      compression: 'lz4',
+      mount_point: undefined,
+      auto_unmount: true,
     });
 
     // --- Create ZVol Test ---

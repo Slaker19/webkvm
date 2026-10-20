@@ -104,6 +104,42 @@
     });
   }
 
+  function doDestroyRaid(device) {
+    askConfirm({
+      title: t('storage.destroyRaidTitle', { device }),
+      description: t('storage.destroyRaidDesc'),
+      confirmLabel: t('storage.raidDestroyAction'),
+      variant: 'destructive',
+      onConfirm: async () => {
+        try {
+          await api.destroyHostRaid(device);
+          onRefresh();
+          toast.success(t('storage.raidDestroyed'));
+        } catch (e) {
+          toast.error(e.message || 'Error al destruir array RAID');
+        }
+      },
+    });
+  }
+
+  function unmountDiskConfirm(disk) {
+    askConfirm({
+      title: t('storage.unmountDiskTitle', { path: disk.path }),
+      description: t('storage.unmountDiskDesc'),
+      confirmLabel: t('storage.unmountDisk'),
+      variant: 'destructive',
+      onConfirm: async () => {
+        try {
+          await api.unmountHostDisk({ path: disk.path });
+          toast.success(t('storage.diskUnmounted'));
+          onRefresh();
+        } catch (e) {
+          toast.error(e.message || 'Error al desmontar disco');
+        }
+      },
+    });
+  }
+
   function wipeDiskConfirm(disk) {
     askConfirm({
       title: `${t('storage.wipeDiskTitle')}: ${disk.path}`,
@@ -287,12 +323,21 @@
                 </Button>
                 <Button
                   size="xs"
-                  variant="destructive"
+                  variant="outline"
                   class="!h-7 !text-xs gap-1"
                   onclick={() => doStopRaid(arr.device)}
                 >
                   <Icon name="power" size={11} />
                   {t('storage.raidStopAction')}
+                </Button>
+                <Button
+                  size="xs"
+                  variant="destructive"
+                  class="!h-7 !text-xs gap-1"
+                  onclick={() => doDestroyRaid(arr.device)}
+                >
+                  <Icon name="trash" size={11} />
+                  {t('storage.raidDestroyAction')}
                 </Button>
               </div>
             {/if}
@@ -483,6 +528,17 @@
                           onclick={() => onOpenSmart(disk)}
                         >
                           SMART
+                        </Button>
+                      {/if}
+                      {#if auth.isAdmin() && !disk.is_system && (disk.mountpoints?.length || disk.children?.some((c) => c.mountpoints?.length))}
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          class="!h-7 !text-xs gap-1 text-destructive hover:bg-destructive/10"
+                          onclick={() => unmountDiskConfirm(disk)}
+                        >
+                          <Icon name="eject" size={11} />
+                          {t('storage.unmountDisk')}
                         </Button>
                       {/if}
                       <span class="text-[11px] text-muted-foreground/80 italic">

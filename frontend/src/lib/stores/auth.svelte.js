@@ -740,6 +740,8 @@ export const api = {
   listHostZpools: () => request('/host/zpools'),
   createHostZpool: (data) =>
     request('/host/zpools', { method: 'POST', body: JSON.stringify(data) }),
+  destroyHostZpool: (name) =>
+    request(`/host/zpools/${encodeURIComponent(name)}?wipe=true`, { method: 'DELETE' }),
   createHostZvol: (data) => request('/host/zvols', { method: 'POST', body: JSON.stringify(data) }),
   listHostRaid: () => request('/host/raid'),
   createHostRaid: (data) => request('/host/raid', { method: 'POST', body: JSON.stringify(data) }),
@@ -754,6 +756,12 @@ export const api = {
     const dev = String(device || '').replace(/^\/dev\//, '');
     return request(`/host/raid/${encodeURIComponent(dev)}`, { method: 'DELETE' });
   },
+  destroyHostRaid: (device) => {
+    const dev = String(device || '').replace(/^\/dev\//, '');
+    return request(`/host/raid/${encodeURIComponent(dev)}?destroy=true`, { method: 'DELETE' });
+  },
+  unmountHostDisk: (data) =>
+    request('/host/disks/unmount', { method: 'POST', body: JSON.stringify(data) }),
   getStorageBreakdown: () => request('/storage/pools/breakdown'),
   listFilesystems: () => request('/host/disks/filesystems'),
   listOrphanMounts: () => request('/host/disks/orphan-mounts'),

@@ -937,12 +937,13 @@
       toast.success(
         t('vmDetail.vmActionToast', { label: labels[action] || t('vmDetail.actionUpdated') })
       );
-      confirmState.open = false;
       await load();
     } catch (e) {
       toast.error(e.message, { duration: 0 });
     } finally {
       actionLoading = '';
+      confirmState.open = false;
+      confirmState.loading = false;
     }
   }
 
@@ -1874,6 +1875,17 @@
                           size="sm"
                           color="text-white"
                         />{:else}<PlayCircle class="w-4 h-4 mr-1.5" />{t('vmDetail.resume')}{/if}
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      onclick={() => doAction('forceOffVM')}
+                      disabled={busy}
+                      class="w-full {actionLoading === 'forceOffVM' ? 'opacity-100!' : ''}"
+                    >
+                      {#if actionLoading === 'forceOffVM'}<Spinner
+                          size="sm"
+                          color="text-white"
+                        />{:else}<PowerIcon class="w-4 h-4 mr-1.5" />{t('vmDetail.forceOff')}{/if}
                     </Button>
                   {/if}
                 </div>

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -323,6 +324,53 @@ func Stop(ctx context.Context, mdDevice string) error {
 
 	persistConfig(ctx)
 	return nil
+}
+
+// GetArrayDevices returns the underlying member devices for an active MD RAID array.
+func GetArrayDevices(mdDevice string) []string {
+	clean := filepath.Clean(strings.TrimSpace(mdDevice))
+	name := filepath.Base(clean)
+	slavesDir := filepath.Join("/sys/block", name, "slaves")
+	entries, err := os.ReadDir(slavesDir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		devName := e.Name()
+		if devName != "" && !strings.HasPrefix(devName, ".") {
+			out = append(out, "/dev/"+devName)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Destroy halts an MD RAID array and wipes superblocks from member devices.
+func Destroy(ctx context.Context, mdDevice string, wipeMembers bool) ([]string, error) {
+	clean := filepath.Clean(strings.TrimSpace(mdDevice))
+	if !strings.HasPrefix(clean, "/dev/") {
+		clean = "/dev/" + clean
+	}
+	if !safeMDDeviceRE.MatchString(clean) {
+		return nil, fmt.Errorf("invalid MD device %q", mdDevice)
+	}
+
+	members := GetArrayDevices(clean)
+
+	if err := Stop(ctx, clean); err != nil {
+		return nil, err
+	}
+
+	if wipeMembers && len(members) > 0 {
+		for _, dev := range members {
+			_, _ = runner.Run(ctx, "mdadm", "--zero-superblock", "--force", dev)
+			_, _ = runner.Run(ctx, "wipefs", "-a", "-f", dev)
+		}
+	}
+
+	persistConfig(ctx)
+	return members, nil
 }
 
 func persistConfig(ctx context.Context) {

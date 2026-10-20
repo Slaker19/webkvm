@@ -1109,6 +1109,106 @@ func (h *Handler) assertNotSystemDisk(ctx context.Context, diskPath string) erro
 	return nil
 }
 
+func (h *Handler) unmountDeviceAndChildren(ctx context.Context, devPath string) ([]string, error) {
+	if err := h.assertNotSystemDisk(ctx, devPath); err != nil {
+		return nil, err
+	}
+	mounts, err := h.mountedPaths(ctx, devPath)
+	if err != nil {
+		return nil, err
+	}
+	var unmounted []string
+	for _, m := range mounts {
+		if m == "" || m == "/" || m == "/boot" || strings.HasPrefix(m, "/boot/") || m == "/etc" || m == "/sys" || m == "/proc" || m == "/dev" {
+			return nil, fmt.Errorf("refusing to unmount system mount point %s", m)
+		}
+		unitNameOut, _ := exec.CommandContext(ctx, "systemd-escape", "--path", "--suffix=mount", m).Output()
+		unitName := strings.TrimSpace(string(unitNameOut))
+		if unitName != "" {
+			automountName := strings.TrimSuffix(unitName, ".mount") + ".automount"
+			_ = exec.CommandContext(ctx, "systemctl", "stop", automountName).Run()
+			_ = exec.CommandContext(ctx, "systemctl", "disable", automountName).Run()
+			_ = exec.CommandContext(ctx, "systemctl", "stop", unitName).Run()
+			_ = exec.CommandContext(ctx, "systemctl", "disable", unitName).Run()
+			_ = os.Remove(filepath.Join("/etc/systemd/system", automountName))
+			_ = os.Remove(filepath.Join("/etc/systemd/system", unitName))
+			_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
+		}
+		if out, uerr := exec.CommandContext(ctx, "umount", "-f", m).CombinedOutput(); uerr != nil {
+			if _, lerr := exec.CommandContext(ctx, "umount", "-l", m).CombinedOutput(); lerr != nil {
+				return unmounted, fmt.Errorf("failed to unmount %s: %s (%v)", m, strings.TrimSpace(string(out)), uerr)
+			}
+		}
+		unmounted = append(unmounted, m)
+	}
+	return unmounted, nil
+}
+
+// UnmountHostDisk unmounts a host disk, partition, or mount point.
+// Restricted to administrators.
+func (h *Handler) UnmountHostDisk(w http.ResponseWriter, r *http.Request) {
+	var req models.UnmountHostDiskRequest
+	if err := decodeBody(r, &req); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	targetPath := strings.TrimSpace(req.Path)
+	mountPoint := strings.TrimSpace(req.MountPoint)
+	if targetPath == "" && mountPoint == "" {
+		jsonErr(w, http.StatusBadRequest, "path or mount_point is required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	var unmounted []string
+	if targetPath != "" {
+		res, err := h.unmountDeviceAndChildren(ctx, targetPath)
+		if err != nil {
+			jsonErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		unmounted = append(unmounted, res...)
+	}
+	if mountPoint != "" {
+		if mountPoint == "/" || mountPoint == "/boot" || strings.HasPrefix(mountPoint, "/boot/") || mountPoint == "/etc" {
+			jsonErr(w, http.StatusForbidden, "refusing to unmount system mount point "+mountPoint)
+			return
+		}
+		unitNameOut, _ := exec.CommandContext(ctx, "systemd-escape", "--path", "--suffix=mount", mountPoint).Output()
+		unitName := strings.TrimSpace(string(unitNameOut))
+		if unitName != "" {
+			automountName := strings.TrimSuffix(unitName, ".mount") + ".automount"
+			_ = exec.CommandContext(ctx, "systemctl", "stop", automountName).Run()
+			_ = exec.CommandContext(ctx, "systemctl", "disable", automountName).Run()
+			_ = exec.CommandContext(ctx, "systemctl", "stop", unitName).Run()
+			_ = exec.CommandContext(ctx, "systemctl", "disable", unitName).Run()
+			_ = os.Remove(filepath.Join("/etc/systemd/system", automountName))
+			_ = os.Remove(filepath.Join("/etc/systemd/system", unitName))
+			_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
+		}
+		if out, uerr := exec.CommandContext(ctx, "umount", "-f", mountPoint).CombinedOutput(); uerr != nil {
+			if _, lerr := exec.CommandContext(ctx, "umount", "-l", mountPoint).CombinedOutput(); lerr != nil {
+				jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("failed to unmount %s: %s (%v)", mountPoint, strings.TrimSpace(string(out)), uerr))
+				return
+			}
+		}
+		unmounted = append(unmounted, mountPoint)
+	}
+
+	h.audit.Log(auditFor(r, "host.disk_unmount", targetPath, map[string]any{
+		"path":        targetPath,
+		"mount_point": mountPoint,
+		"unmounted":   unmounted,
+	}))
+
+	jsonResp(w, http.StatusOK, map[string]any{
+		"status":    "unmounted",
+		"unmounted": unmounted,
+	})
+}
+
 func parseSize(v any) int64 {
 	switch n := v.(type) {
 	case float64:
@@ -1246,9 +1346,13 @@ func (h *Handler) CreateHostZPool(w http.ResponseWriter, r *http.Request) {
 			diskGuardErr(w, err)
 			return
 		}
-		if err := h.assertDiskNotMounted(r.Context(), dev); err != nil {
-			diskGuardErr(w, err)
-			return
+		if req.AutoUnmount {
+			_, _ = h.unmountDeviceAndChildren(r.Context(), dev)
+		} else {
+			if err := h.assertDiskNotMounted(r.Context(), dev); err != nil {
+				diskGuardErr(w, err)
+				return
+			}
 		}
 	}
 
@@ -1260,7 +1364,7 @@ func (h *Handler) CreateHostZPool(w http.ResponseWriter, r *http.Request) {
 		_ = exec.CommandContext(ctx, "wipefs", "-a", "-f", dev).Run()
 	}
 
-	if err := zvol.CreatePool(ctx, req.Name, req.Topology, req.Devices); err != nil {
+	if err := zvol.CreatePoolOpts(ctx, req.Name, req.Topology, req.Devices, req.Ashift, req.Compression, req.MountPoint); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1354,9 +1458,13 @@ func (h *Handler) CreateHostRAID(w http.ResponseWriter, r *http.Request) {
 			diskGuardErr(w, err)
 			return
 		}
-		if err := h.assertDiskNotMounted(r.Context(), dev); err != nil {
-			diskGuardErr(w, err)
-			return
+		if req.AutoUnmount {
+			_, _ = h.unmountDeviceAndChildren(r.Context(), dev)
+		} else {
+			if err := h.assertDiskNotMounted(r.Context(), dev); err != nil {
+				diskGuardErr(w, err)
+				return
+			}
 		}
 	}
 
@@ -1537,20 +1645,39 @@ func (h *Handler) ListHostRAID(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusOK, arrays)
 }
 
-// StopHostRAID stops and unregisters an MD RAID array.
+// StopHostRAID stops and unregisters an MD RAID array, or permanently destroys it when destroy=true.
 // Restricted to administrators.
 func (h *Handler) StopHostRAID(w http.ResponseWriter, r *http.Request) {
 	device := chi.URLParam(r, "device")
 	device = strings.TrimPrefix(device, "/")
 	device = strings.TrimPrefix(device, "dev/")
 	device = "/dev/" + device
-	if err := h.assertDiskNotMounted(r.Context(), device); err != nil {
-		diskGuardErr(w, err)
+
+	destroy := r.URL.Query().Get("destroy") == "true" || r.URL.Query().Get("force") == "true"
+
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+
+	if destroy {
+		_, _ = h.unmountDeviceAndChildren(ctx, device)
+		members, err := mdraid.Destroy(ctx, device, true)
+		if err != nil {
+			jsonErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		h.audit.Log(auditFor(r, "host.raid_destroy", device, map[string]any{"members": members}))
+		jsonResp(w, http.StatusOK, map[string]any{
+			"status":  "destroyed",
+			"device":  device,
+			"members": members,
+		})
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
+	if err := h.assertDiskNotMounted(ctx, device); err != nil {
+		diskGuardErr(w, err)
+		return
+	}
 
 	if err := mdraid.Stop(ctx, device); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -1561,6 +1688,33 @@ func (h *Handler) StopHostRAID(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusOK, map[string]string{
 		"status": "stopped",
 		"device": device,
+	})
+}
+
+// DestroyHostZPool permanently destroys a ZFS pool and cleans disk labels.
+// Restricted to administrators.
+func (h *Handler) DestroyHostZPool(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	name = strings.TrimSpace(name)
+	if err := zvol.ValidPoolName(name); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	wipe := r.URL.Query().Get("wipe") != "false"
+
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+
+	if err := zvol.DestroyPool(ctx, name, wipe); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.audit.Log(auditFor(r, "host.zpool_destroy", name, map[string]any{"wipe": wipe}))
+	jsonResp(w, http.StatusOK, map[string]string{
+		"status": "destroyed",
+		"name":   name,
 	})
 }
 

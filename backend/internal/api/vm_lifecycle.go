@@ -116,6 +116,11 @@ func (h *Handler) ForceOffVM(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chi.URLParam(r, "id")
 	if err := h.compute.ForceOffDomain(id); err != nil {
+		if errors.Is(err, compute.ErrDomainNotRunning) {
+			h.audit.Log(auditFor(r, "vm.forceoff", id, map[string]interface{}{"note": "already stopped"}))
+			jsonResp(w, http.StatusOK, map[string]string{"status": "force off"})
+			return
+		}
 		h.vmActionErr(w, err, nil)
 		return
 	}

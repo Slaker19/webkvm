@@ -449,8 +449,24 @@ func (b *IncusBackend) ShutdownDomain(id string) error {
 	return b.setState(id, "stop", 60, false)
 }
 func (b *IncusBackend) ForceOffDomain(id string) error {
-	// Kill: immediate forced stop (no graceful shutdown grace period).
-	return b.setState(id, "stop", 0, true)
+	inst, _, err := b.client.GetInstance(id)
+	if err == nil {
+		if inst.StatusCode == api.Stopped {
+			return nil
+		}
+		if inst.StatusCode == api.Frozen {
+			_ = b.setState(id, "unfreeze", 10, true)
+		}
+	}
+	err = b.setState(id, "stop", 0, true)
+	if err != nil {
+		errLower := strings.ToLower(err.Error())
+		if strings.Contains(errLower, "already stopped") || strings.Contains(errLower, "not running") {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 func (b *IncusBackend) RebootDomain(id string) error {
 	return b.setState(id, "restart", 60, false)

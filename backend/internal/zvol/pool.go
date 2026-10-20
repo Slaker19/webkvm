@@ -235,11 +235,42 @@ func CreatePool(ctx context.Context, name, topology string, devices []string) er
 		if len(devices) < 4 {
 			return errors.New("raidz2 pool requires at least 4 disks")
 		}
+	case "raidz3":
+		if len(devices) < 5 {
+			return errors.New("raidz3 pool requires at least 5 disks")
+		}
 	default:
-		return fmt.Errorf("unsupported topology %q (must be stripe, mirror, raidz1, raidz2)", topology)
+		return fmt.Errorf("unsupported topology %q (must be stripe, mirror, raidz1, raidz2, raidz3)", topology)
 	}
 
-	args := []string{"create", "-f", name}
+	return CreatePoolOpts(ctx, name, topo, devices, 0, "", "")
+}
+
+// CreatePoolOpts creates a new ZFS storage pool with explicit ashift, compression and mountpoint.
+func CreatePoolOpts(ctx context.Context, name, topology string, devices []string, ashift int, compression, mountPoint string) error {
+	if err := ValidPoolName(name); err != nil {
+		return err
+	}
+	if !IsPoolAvailable() {
+		return errors.New("zpool command not found on host")
+	}
+
+	topo := strings.ToLower(strings.TrimSpace(topology))
+	if topo == "" {
+		topo = "stripe"
+	}
+
+	args := []string{"create", "-f"}
+	if ashift > 0 {
+		args = append(args, "-o", fmt.Sprintf("ashift=%d", ashift))
+	}
+	if compression != "" {
+		args = append(args, "-O", fmt.Sprintf("compression=%s", compression))
+	}
+	if mountPoint != "" {
+		args = append(args, "-m", mountPoint)
+	}
+	args = append(args, name)
 	if topo != "stripe" {
 		args = append(args, topo)
 	}
@@ -252,7 +283,36 @@ func CreatePool(ctx context.Context, name, topology string, devices []string) er
 	if err != nil {
 		return fmt.Errorf("zpool create: %s (%w)", strings.TrimSpace(string(out)), err)
 	}
+	return nil
+}
 
+// DestroyPool destroys a ZFS storage pool and optionally wipes member disks.
+func DestroyPool(ctx context.Context, name string, wipeDevices bool) error {
+	if err := ValidPoolName(name); err != nil {
+		return err
+	}
+	if !IsPoolAvailable() {
+		return errors.New("zpool command not found on host")
+	}
+
+	devs := getPoolDevices(ctx, name)
+
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	out, err := runner.Run(cctx, "zpool", "destroy", "-f", name)
+	if err != nil {
+		return fmt.Errorf("zpool destroy %s failed: %w (%s)", name, err, strings.TrimSpace(string(out)))
+	}
+
+	if wipeDevices && len(devs) > 0 {
+		for _, d := range devs {
+			if strings.HasPrefix(d, "/dev/") {
+				_, _ = runner.Run(ctx, "wipefs", "-a", "-f", d)
+				_, _ = runner.Run(ctx, "zpool", "labelclear", "-f", d)
+			}
+		}
+	}
 	return nil
 }
 

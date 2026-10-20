@@ -462,6 +462,7 @@
         {hostDisks}
         onRefresh={loadZfsData}
         {showStorageErr}
+        {askConfirm}
       />
     {/if}
 
