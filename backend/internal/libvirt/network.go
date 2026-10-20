@@ -158,16 +158,29 @@ func networkView(name string) models.Network {
 	}
 }
 
-// gatewayFromCIDR returns the bare network address of cidr (e.g.
-// "192.168.100.0/24" -> "192.168.100.0") — the same expression already
-// used for the dnsmasq "option:router" value in configureBridgeDHCP, so
-// this reports exactly what's actually advertised over DHCP rather than
-// re-deriving a different convention.
+// gatewayFromCIDR derives a usable host gateway address from a CIDR.
+// If the CIDR has a zero host part (e.g. "192.168.100.0/24"), it returns
+// the first usable host IP ("192.168.100.1"). If the CIDR already specifies
+// a host IP (e.g. "192.168.100.254/24"), it preserves that host IP.
 func gatewayFromCIDR(cidr string) string {
 	if cidr == "" {
 		return ""
 	}
-	return strings.SplitN(cidr, "/", 2)[0]
+	ip, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil || ipnet == nil {
+		return strings.SplitN(cidr, "/", 2)[0]
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return strings.SplitN(cidr, "/", 2)[0]
+	}
+	if ip4.Equal(ipnet.IP.To4()) {
+		gw := make(net.IP, len(ip4))
+		copy(gw, ip4)
+		gw[len(gw)-1]++
+		return gw.String()
+	}
+	return ip4.String()
 }
 
 // inferKind best-effort classifies a bridge WebKVM has no netStore
@@ -412,9 +425,19 @@ func (c *Connector) createIsolatedOrNATNetwork(name, kind string, req models.Cre
 		exec.Command("ip", "link", "del", name).Run()
 	}
 
-	if out, err := exec.Command("ip", "addr", "add", req.CIDR, "dev", name).CombinedOutput(); err != nil {
+	gwIP := req.Gateway
+	if gwIP == "" {
+		gwIP = gatewayFromCIDR(req.CIDR)
+	}
+	cidrMask := "/24"
+	if parts := strings.SplitN(req.CIDR, "/", 2); len(parts) == 2 {
+		cidrMask = "/" + parts[1]
+	}
+	bridgeIPWithMask := gwIP + cidrMask
+
+	if out, err := exec.Command("ip", "addr", "add", bridgeIPWithMask, "dev", name).CombinedOutput(); err != nil {
 		teardown()
-		return models.Network{}, fmt.Errorf("assign %s to %q: %v (%s)", req.CIDR, name, err, strings.TrimSpace(string(out)))
+		return models.Network{}, fmt.Errorf("assign %s to %q: %v (%s)", bridgeIPWithMask, name, err, strings.TrimSpace(string(out)))
 	}
 
 	// MTU first (validation is independent of DHCP), so a bad value
@@ -717,6 +740,7 @@ func configureBridgeDHCP(br, cidr, start, end string, dns []string, reservations
 	if _, ipnet, err := net.ParseCIDR(cidr); err == nil && len(ipnet.Mask) == net.IPv4len {
 		netmask = net.IP(ipnet.Mask).String()
 	}
+	gw := gatewayFromCIDR(cidr)
 	conf := fmt.Sprintf(`# webkvm %s DHCP (shared KVM+Incus bridge)
 port=0
 interface=%s
@@ -728,7 +752,7 @@ dhcp-option=option:router,%s
 dhcp-option=option:dns-server,%s
 dhcp-leasefile=%s
 user=root
-%s`, br, br, strings.SplitN(cidr, "/", 2)[0], start, end, netmask, strings.SplitN(cidr, "/", 2)[0], strings.Join(dnsList, ","), leaseFilePath(br), hostLines)
+%s`, br, br, gw, start, end, netmask, gw, strings.Join(dnsList, ","), leaseFilePath(br), hostLines)
 	if err := os.WriteFile(confPath, []byte(conf), 0644); err != nil {
 		return fmt.Errorf("write dnsmasq config for %q: %w", br, err)
 	}

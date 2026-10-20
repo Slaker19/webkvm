@@ -241,3 +241,22 @@ func TestDHCPRangeFor(t *testing.T) {
 		}
 	}
 }
+
+func TestGatewayFromCIDR(t *testing.T) {
+	cases := []struct {
+		cidr string
+		want string
+	}{
+		{"192.168.100.0/24", "192.168.100.1"},
+		{"10.0.0.0/8", "10.0.0.1"},
+		{"172.16.0.0/16", "172.16.0.1"},
+		{"192.168.1.50/24", "192.168.1.50"}, // explicitly preserved if not network address
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := gatewayFromCIDR(tc.cidr)
+		if got != tc.want {
+			t.Errorf("gatewayFromCIDR(%q) = %q, want %q", tc.cidr, got, tc.want)
+		}
+	}
+}
