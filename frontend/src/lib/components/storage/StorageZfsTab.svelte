@@ -414,10 +414,13 @@
 
       <div class="grid grid-cols-2 gap-3">
         <div>
-          <label for="zpool-ashift" class="block font-semibold mb-1"
-            >{t('storage.zfsAshift')}</label
+          <label for="zpool-ashift" class="block font-semibold mb-1">{t('storage.zfsAshift')}</label
           >
-          <select id="zpool-ashift" bind:value={createZPoolAshift} class="input w-full font-mono text-xs">
+          <select
+            id="zpool-ashift"
+            bind:value={createZPoolAshift}
+            class="input w-full font-mono text-xs"
+          >
             <option value={12}>12 (4 KB — Estándar SSD/HDD)</option>
             <option value={9}>9 (512 B — Discos legados)</option>
             <option value={13}>13 (8 KB — NVMe avanzado)</option>
@@ -427,7 +430,11 @@
           <label for="zpool-compression" class="block font-semibold mb-1"
             >{t('storage.zfsCompression')}</label
           >
-          <select id="zpool-compression" bind:value={createZPoolCompression} class="input w-full font-mono text-xs">
+          <select
+            id="zpool-compression"
+            bind:value={createZPoolCompression}
+            class="input w-full font-mono text-xs"
+          >
             <option value="lz4">lz4 (Recomendado, rápido)</option>
             <option value="zstd">zstd (Alta compresión)</option>
             <option value="gzip">gzip</option>

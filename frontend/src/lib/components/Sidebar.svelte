@@ -411,8 +411,7 @@
             {:else if item.id === 'vms' && runningCount > 0}
               <span class="absolute top-1 right-1 w-2 h-2 rounded-full bg-success"></span>
             {:else if item.id === 'storage' && storageWarning}
-              <span
-                class="absolute top-1 right-1 w-2 h-2 rounded-full bg-destructive animate-pulse"
+              <span class="absolute top-1 right-1 w-2 h-2 rounded-full bg-destructive animate-pulse"
               ></span>
             {/if}
           </button>

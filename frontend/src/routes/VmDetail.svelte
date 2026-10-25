@@ -2548,7 +2548,8 @@
       <div>
         <label for="anet-vlan" class="block text-sm font-medium mb-1.5"
           >{t('vmDetail.vlanTag')}
-          <span class="text-xs text-muted-foreground font-normal">({t('common.optional')})</span></label
+          <span class="text-xs text-muted-foreground font-normal">({t('common.optional')})</span
+          ></label
         >
         <Input
           id="anet-vlan"

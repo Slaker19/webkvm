@@ -144,6 +144,7 @@
   let askDeleteRun = $state(null); // { targetId, suffix }
   let askDeleteConfigState = $state(null); // { targetId }
   let runningBackups = $state({});
+  let pruningTargets = $state({});
   let filesLoading = $state({}); // targetId -> bool
   let configVerifying = $state({}); // targetId -> bool
 
@@ -658,14 +659,14 @@
   async function pruneTarget(target) {
     if (!target?.id) return;
     try {
-      actionLoading = `prune-${target.id}`;
+      pruningTargets = { ...pruningTargets, [target.id]: true };
       const res = await api.post(`/backup/targets/${target.id}/prune`, {});
       toast.success(t('backup.pruneSuccess', { n: res?.removed || 0 }));
-      await loadBackupsForTarget(target.id);
+      await loadFiles(target.id);
     } catch (e) {
       toast.error(e.message);
     } finally {
-      actionLoading = null;
+      pruningTargets = { ...pruningTargets, [target.id]: false };
     }
   }
 
@@ -1358,10 +1359,10 @@
                   size="xs"
                   variant="outline"
                   onclick={() => pruneTarget(target)}
-                  disabled={actionLoading === `prune-${target.id}`}
+                  disabled={pruningTargets[target.id]}
                   title={t('backup.pruneTooltip')}
                 >
-                  {#if actionLoading === `prune-${target.id}`}
+                  {#if pruningTargets[target.id]}
                     <Spinner size="xs" />
                   {:else}
                     <Icon name="trash-2" size={12} class="mr-1" />

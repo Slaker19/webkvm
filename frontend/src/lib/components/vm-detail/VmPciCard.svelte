@@ -8,7 +8,7 @@
   import PciPreflightPanel from '$lib/components/PciPreflightPanel.svelte';
   import PciGroupCard from '$lib/components/PciGroupCard.svelte';
 
-  let { vm = {}, vmId = '', isContainerVm = false, load } = $props();
+  let { vm = {}, vmId = '', _isContainerVm = false, load } = $props();
 
   let hostPCIGroups = $state([]);
   let hostPCIError = $state('');

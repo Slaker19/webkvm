@@ -154,9 +154,7 @@
   const palette = CATEGORICAL_COLORS;
 
   const totalVcpus = $derived(vms.reduce((acc, v) => acc + (v.vcpus || 0), 0));
-  const totalRamGB = $derived(
-    (vms.reduce((acc, v) => acc + (v.ram_mb || 0), 0) / 1024).toFixed(1)
-  );
+  const totalRamGB = $derived((vms.reduce((acc, v) => acc + (v.ram_mb || 0), 0) / 1024).toFixed(1));
 
   // Confirm dialog state
   let confirmDeleteOpen = $state(false);
