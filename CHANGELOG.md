@@ -6,7 +6,7 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
-## [0.1.9-dev] — 2026-10-19
+## [0.1.9] — 2026-10-25
 
 ### Added
 - **1-Click Incus GPU Hardware Acceleration**:

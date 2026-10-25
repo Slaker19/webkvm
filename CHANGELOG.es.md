@@ -6,7 +6,7 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
-## [0.1.9-dev] — 2026-10-19
+## [0.1.9] — 2026-10-25
 
 ### Añadido
 - **Aceleración GPU 1-clic para Incus**:

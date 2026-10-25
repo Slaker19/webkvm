@@ -42,7 +42,7 @@ import (
 
 // Set by -ldflags at build time. Defaults are used for `go run`.
 var (
-	Version   = "0.1.9-dev"
+	Version   = "0.1.9"
 	BuildTime = "unknown"
 )
 

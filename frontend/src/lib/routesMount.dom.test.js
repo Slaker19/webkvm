@@ -36,7 +36,7 @@ vi.mock('$lib/stores/auth.svelte.js', () => {
       getHostStats: () => Promise.resolve({}),
       getSystemStatus: () =>
         Promise.resolve({
-          backend: { version: '0.1.9-dev' },
+          backend: { version: '0.1.9' },
           host: { hostname: 'test', os: 'Linux' },
           libvirt: { connected: true, uri: 'qemu:///system' },
           disk: { used_bytes: 100, total_bytes: 1000, used_pct: 10 },

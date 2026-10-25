@@ -165,6 +165,9 @@ func TestEvaluatePCIGroup(t *testing.T) {
 }
 
 func TestHostRestrictionsLive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live hardware test in short mode")
+	}
 	if _, err := os.Stat("/sys/bus/pci/devices/0000:05:00.1"); os.IsNotExist(err) {
 		t.Skip("host-specific PCI devices not present on this machine; skipping live test")
 	}
