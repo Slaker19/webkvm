@@ -1,0 +1,3 @@
+# Trivy ignore list for WebKVM container scanning
+# CVE-2026-111943: Go crypto/x509 advisory
+CVE-2026-111943
