@@ -12,6 +12,7 @@
     Copy,
     Clipboard,
     SlidersHorizontal,
+    Download,
   } from '@lucide/svelte';
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
@@ -143,6 +144,35 @@
       } catch (_e) {
         // clipboard read error ignored
       }
+    }
+  }
+
+  function downloadTerminalLog() {
+    if (!term) return;
+    try {
+      const activeBuf = term.buffer.active;
+      const lines = [];
+      for (let i = 0; i < activeBuf.length; i++) {
+        const line = activeBuf.getLine(i);
+        if (line) lines.push(line.translateToString(true));
+      }
+      // Trim empty lines from the end
+      while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+        lines.pop();
+      }
+      const text = lines.join('\n');
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const prefix = mode === 'host' ? 'host-terminal' : `vm-${vmId || 'serial'}`;
+      a.href = url;
+      a.download = `${prefix}-${ts}.log`;
+      a.click();
+      URL.revokeObjectURL(url);
+      if (term) term.focus();
+    } catch (_e) {
+      // export error ignored
     }
   }
 
@@ -626,6 +656,17 @@
         aria-label={t('terminal.pasteClipboard')}
       >
         <Clipboard class="w-3.5 h-3.5" />
+      </button>
+
+      <!-- Download Terminal Log -->
+      <button
+        type="button"
+        onclick={downloadTerminalLog}
+        class="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-muted/80 border border-transparent hover:border-border/60 transition-colors"
+        title={t('terminal.downloadLog')}
+        aria-label={t('terminal.downloadLog')}
+      >
+        <Download class="w-3.5 h-3.5" />
       </button>
 
       <!-- Restart / Reconnect -->
