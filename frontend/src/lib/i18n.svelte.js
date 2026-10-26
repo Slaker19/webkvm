@@ -1997,6 +1997,8 @@ export const messages = {
       bondBridgeHelp:
         'Attaching the bond to vmbr0 provides seamless failover and load balancing for the host and all virtual machines.',
       bondCreatedSuccess: 'Bond {name} created successfully',
+      topologyMapTitle: 'Network Map & Port Topology',
+      topologyMapDesc: 'Visual mapping of physical interfaces, Linux bridges, and attached guests',
       deleteBond: 'Delete Bond',
       deleteBondConfirm:
         'Are you sure you want to delete bond {name}? Member interfaces will be released back to their original state.',
@@ -5706,6 +5708,8 @@ export const messages = {
       bondBridgeHelp:
         'Al asociar el bond a vmbr0, el host y todas las máquinas virtuales disfrutarán de tolerancia a fallos y balanceo transparente.',
       bondCreatedSuccess: 'Enlace {name} creado con éxito',
+      topologyMapTitle: 'Mapa de Topología de Redes',
+      topologyMapDesc: 'Mapeo visual de tarjetas físicas, puentes Linux del host y máquinas asociadas',
       deleteBond: 'Eliminar Bond',
       deleteBondConfirm:
         '¿Seguro que deseas eliminar el enlace agregado {name}? Las tarjetas miembros volverán a su estado anterior.',
@@ -9444,6 +9448,8 @@ export const messages = {
       bondBridgeHelp:
         "En associar el bond a vmbr0, l'host i totes les màquines virtuals gaudiran de tolerància a fallades i balanceig transparent.",
       bondCreatedSuccess: 'Enllaç {name} creat amb èxit',
+      topologyMapTitle: 'Mapa de Topologia de Xarxes',
+      topologyMapDesc: "Mapeig visual de targetes físiques, ponts Linux de l'host i màquines associades",
       deleteBond: 'Eliminar Bond',
       deleteBondConfirm:
         "Segur que vols eliminar l'enllaç agregat {name}? Les targetes membres tornaran al seu estat anterior.",
