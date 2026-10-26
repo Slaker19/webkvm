@@ -1877,8 +1877,18 @@ export const messages = {
       editNetwork: 'Edit Network: {name}',
       newNetwork: 'New Network',
       cannotChange: "Name, kind and CIDR/interface can't be changed",
-      forwardMode: 'Kind',
-      isolated: 'Isolated (L2 / Host-Only)',
+      forwardMode: 'Mode',
+      modeL2: 'Layer 2 — Pure Virtual Switch (No Host IP, No Routing)',
+      modeL2Help:
+        'Pure Ethernet bridge. Unmanaged L2 switch: no host IP, no host routing, no dnsmasq. Perfect for virtual routers/firewalls (pfSense, OPNsense), VLAN trunks, and zero-trust isolated pods.',
+      modeL3Isolated: 'Layer 3 — Private Subnet (Host-Only with DHCP)',
+      modeL3IsolatedHelp:
+        'Private routed subnet with host IP and internal DHCP/DNS, isolated from the outside internet.',
+      modeL3Nat: 'Layer 3 — NAT (Private Subnet with Internet Access)',
+      modeL3NatHelp:
+        'Private subnet with DHCP and outbound internet routing via host masquerading.',
+      modeDirect: 'Bridge to Physical NIC (LAN Trunk / Uplink)',
+      isolated: 'Layer 2 Switch',
       isolatedHelp:
         'A private virtual switch (Layer 2) with no internet. Leave CIDR empty for pure L2 bridge (pfSense, VLAN trunks, internal labs).',
       nat: 'NAT',
@@ -5588,8 +5598,18 @@ export const messages = {
       editNetwork: 'Editar red: {name}',
       newNetwork: 'Nueva red',
       cannotChange: 'El nombre, tipo y CIDR/interfaz no se pueden cambiar',
-      forwardMode: 'Tipo',
-      isolated: 'Aislada (L2 / Host-Only)',
+      forwardMode: 'Modo',
+      modeL2: 'Capa 2 — Switch Virtual Puro (Sin IP en Host, Sin Enrutamiento)',
+      modeL2Help:
+        'Bridge Ethernet puro. Switch L2 no gestionado: sin IP en el host, sin enrutamiento ni dnsmasq. Perfecto para routers/firewalls (pfSense, OPNsense), troncales VLAN y pods aislados zero-trust.',
+      modeL3Isolated: 'Capa 3 — Subred Privada (Host-Only con DHCP)',
+      modeL3IsolatedHelp:
+        'Subred privada con IP del host y servidor DHCP/DNS interno, aislada de Internet exterior.',
+      modeL3Nat: 'Capa 3 — NAT (Subred Privada con Salida a Internet)',
+      modeL3NatHelp:
+        'Subred privada con DHCP y salida a Internet mediante enmascaramiento en el host.',
+      modeDirect: 'Bridge a NIC Física (Troncal LAN / Uplink)',
+      isolated: 'Switch Capa 2',
       isolatedHelp:
         'Un switch virtual privado (Capa 2) sin Internet. Deja el CIDR vacío para un bridge L2 puro (pfSense, VLAN trunks, laboratorios internos).',
       nat: 'NAT',
@@ -9330,8 +9350,18 @@ export const messages = {
       editNetwork: 'Edita la xarxa: {name}',
       newNetwork: 'Nova xarxa',
       cannotChange: 'El nom, el tipus i el CIDR/interfície no es poden canviar',
-      forwardMode: 'Tipus',
-      isolated: 'Aïllada (L2 / Host-Only)',
+      forwardMode: 'Mode',
+      modeL2: 'Capa 2 — Switch Virtual Pur (Sense IP a l’Host, Sense Enrutament)',
+      modeL2Help:
+        'Bridge Ethernet pur. Switch L2 no gestionat: sense IP a l’host, sense enrutament ni dnsmasq. Perfecte per a routers/firewalls (pfSense, OPNsense), troncalls VLAN i pods aïllats zero-trust.',
+      modeL3Isolated: 'Capa 3 — Subxarxa Privada (Host-Only amb DHCP)',
+      modeL3IsolatedHelp:
+        'Subxarxa privada amb IP de l’host i servidor DHCP/DNS intern, aïllada d’Internet exterior.',
+      modeL3Nat: 'Capa 3 — NAT (Subxarxa Privada amb Sortida a Internet)',
+      modeL3NatHelp:
+        'Subxarxa privada amb DHCP i sortida a Internet mitjançant emmascarament a l’host.',
+      modeDirect: 'Bridge a NIC Física (Troncal LAN / Uplink)',
+      isolated: 'Switch Capa 2',
       isolatedHelp:
         'Un switch virtual privat (Capa 2) sense Internet. Deixa el CIDR buit per a un bridge L2 pur (pfSense, trunks VLAN, laboratoris interns).',
       nat: 'NAT',

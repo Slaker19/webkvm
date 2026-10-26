@@ -29,8 +29,9 @@
   let showCreate = $state(false);
   let editingNet = $state(null);
   let name = $state('');
-  let cidr = $state('192.168.100.0/24');
-  // Exactly 3 kinds: isolated (no internet) is the safest default.
+  let cidr = $state('');
+  // mode: 'l2' (Layer 2 Pure Switch), 'isolated' (L3 Host-Only), 'nat' (L3 NAT), 'direct' (Physical bridge)
+  let mode = $state('l2');
   let kind = $state('isolated');
   let directInterface = $state('');
   let vlanAware = $state(false);
@@ -176,11 +177,12 @@
 
   function resetForm() {
     name = '';
-    cidr = '192.168.100.0/24';
+    mode = 'l2';
     kind = 'isolated';
+    cidr = '';
     directInterface = '';
     vlanAware = vlanAwareDefault;
-    dhcp = true;
+    dhcp = false;
     dhcpStart = '';
     dhcpEnd = '';
     dnsText = '';
@@ -194,10 +196,39 @@
     showCreate = false;
   }
 
+  function onModeChange(newMode) {
+    mode = newMode;
+    if (mode === 'l2') {
+      kind = 'isolated';
+      cidr = '';
+      dhcp = false;
+    } else if (mode === 'isolated') {
+      kind = 'isolated';
+      if (!cidr) cidr = '192.168.100.0/24';
+      dhcp = true;
+    } else if (mode === 'nat') {
+      kind = 'nat';
+      if (!cidr) cidr = '10.20.0.0/24';
+      dhcp = true;
+    } else if (mode === 'direct') {
+      kind = 'direct';
+      dhcp = false;
+    }
+  }
+
   function startEdit(net) {
     editingNet = net.name;
     kind = net.kind || 'isolated';
     cidr = net.cidr || '';
+    if (kind === 'direct') {
+      mode = 'direct';
+    } else if (kind === 'nat') {
+      mode = 'nat';
+    } else if (!net.cidr) {
+      mode = 'l2';
+    } else {
+      mode = 'isolated';
+    }
     directInterface = net.interface || '';
     vlanAware = !!net.vlan_aware;
     dhcp = !!net.dhcp;
@@ -454,6 +485,12 @@
       toast.error(msg, { duration: 0 });
       return;
     }
+    if (mode === 'isolated' && (!cidr || !cidr.trim())) {
+      const msg = t('networks.cidrPrefixError');
+      error = msg;
+      toast.error(msg, { duration: 0 });
+      return;
+    }
     if (kind === 'nat' && (!cidr || !cidr.trim())) {
       const msg = t('networks.cidrPrefixError');
       error = msg;
@@ -694,18 +731,24 @@
             <Input id="net-name" bind:value={name} placeholder="my-network" />
           </div>
           <div>
-            <label for="net-kind" class="block text-sm font-medium mb-1.5"
+            <label for="net-mode" class="block text-sm font-medium mb-1.5"
               >{t('networks.forwardMode')}</label
             >
-            <select id="net-kind" bind:value={kind} class="input">
-              <option value="isolated">{t('networks.isolated')}</option>
-              <option value="nat">{t('networks.nat')}</option>
-              <option value="direct">{t('networks.direct')}</option>
+            <select
+              id="net-mode"
+              value={mode}
+              onchange={(e) => onModeChange(e.currentTarget.value)}
+              class="input"
+            >
+              <option value="l2">{t('networks.modeL2')}</option>
+              <option value="isolated">{t('networks.modeL3Isolated')}</option>
+              <option value="nat">{t('networks.modeL3Nat')}</option>
+              <option value="direct">{t('networks.modeDirect')}</option>
             </select>
           </div>
         </div>
 
-        {#if kind === 'direct'}
+        {#if mode === 'direct'}
           <div>
             <label for="net-direct-iface" class="block text-sm font-medium mb-1.5"
               >{t('networks.directInterfaceLabel')}</label
@@ -776,19 +819,31 @@
               </div>
             </div>
           </div>
+        {:else if mode === 'l2'}
+          <div class="space-y-3">
+            <p class="text-xs text-muted-foreground bg-muted/40 p-3 rounded-lg border border-border">
+              {t('networks.modeL2Help')}
+            </p>
+            <label class="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                bind:checked={vlanAware}
+                class="w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
+              />
+              {t('networks.vlanAwareLabel')}
+            </label>
+          </div>
         {:else}
           <div class="space-y-3">
             <div>
-              <label for="net-cidr" class="block text-sm font-medium mb-1.5"
-                >CIDR {kind === 'isolated' ? `(${t('common.optional')})` : ''}</label
-              >
+              <label for="net-cidr" class="block text-sm font-medium mb-1.5">CIDR</label>
               <Input
                 id="net-cidr"
                 bind:value={cidr}
-                placeholder={kind === 'isolated' ? '192.168.100.0/24 (leave empty for L2 bridge)' : '192.168.100.0/24'}
+                placeholder={mode === 'nat' ? '10.20.0.0/24' : '192.168.100.0/24'}
               />
               <p class="text-xs text-muted-foreground mt-1">
-                {kind === 'nat' ? t('networks.natHelp') : t('networks.isolatedHelp')}
+                {mode === 'nat' ? t('networks.modeL3NatHelp') : t('networks.modeL3IsolatedHelp')}
               </p>
             </div>
             <label class="flex items-center gap-2 text-sm cursor-pointer">
@@ -899,7 +954,7 @@
         {/if}
       {/if}
 
-      {#if kind !== 'direct'}
+      {#if mode !== 'l2' && kind !== 'direct'}
         <div class="flex items-center gap-2 pt-2 border-t border-border">
           <input
             id="net-dhcp"
