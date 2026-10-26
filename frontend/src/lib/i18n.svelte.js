@@ -5709,7 +5709,8 @@ export const messages = {
         'Al asociar el bond a vmbr0, el host y todas las máquinas virtuales disfrutarán de tolerancia a fallos y balanceo transparente.',
       bondCreatedSuccess: 'Enlace {name} creado con éxito',
       topologyMapTitle: 'Mapa de Topología de Redes',
-      topologyMapDesc: 'Mapeo visual de tarjetas físicas, puentes Linux del host y máquinas asociadas',
+      topologyMapDesc:
+        'Mapeo visual de tarjetas físicas, puentes Linux del host y máquinas asociadas',
       deleteBond: 'Eliminar Bond',
       deleteBondConfirm:
         '¿Seguro que deseas eliminar el enlace agregado {name}? Las tarjetas miembros volverán a su estado anterior.',
@@ -9449,7 +9450,8 @@ export const messages = {
         "En associar el bond a vmbr0, l'host i totes les màquines virtuals gaudiran de tolerància a fallades i balanceig transparent.",
       bondCreatedSuccess: 'Enllaç {name} creat amb èxit',
       topologyMapTitle: 'Mapa de Topologia de Xarxes',
-      topologyMapDesc: "Mapeig visual de targetes físiques, ponts Linux de l'host i màquines associades",
+      topologyMapDesc:
+        "Mapeig visual de targetes físiques, ponts Linux de l'host i màquines associades",
       deleteBond: 'Eliminar Bond',
       deleteBondConfirm:
         "Segur que vols eliminar l'enllaç agregat {name}? Les targetes membres tornaran al seu estat anterior.",

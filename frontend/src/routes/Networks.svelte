@@ -1095,13 +1095,19 @@
 
       <div class="space-y-3 pt-1">
         {#each networks as net (net.name)}
-          {@const boundPhysical = hostInterfaces.filter((i) => i.master === net.name || (net.interface && i.name === net.interface))}
+          {@const boundPhysical = hostInterfaces.filter(
+            (i) => i.master === net.name || (net.interface && i.name === net.interface)
+          )}
           <div class="p-3.5 rounded-xl border border-border/80 bg-background/50 space-y-2">
-            <div class="flex items-center justify-between flex-wrap gap-2 border-b border-border/50 pb-2">
+            <div
+              class="flex items-center justify-between flex-wrap gap-2 border-b border-border/50 pb-2"
+            >
               <div class="flex items-center gap-2">
                 <span class="w-2.5 h-2.5 rounded-full bg-success"></span>
                 <span class="font-mono font-bold text-sm text-foreground">{net.name}</span>
-                <span class="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded border border-border bg-muted text-muted-foreground">
+                <span
+                  class="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded border border-border bg-muted text-muted-foreground"
+                >
                   {net.kind || 'bridge'}
                 </span>
                 {#if net.cidr}
@@ -1109,7 +1115,9 @@
                 {/if}
               </div>
               {#if net.vlan_aware}
-                <span class="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-accent/15 text-accent border border-accent/30">
+                <span
+                  class="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-accent/15 text-accent border border-accent/30"
+                >
                   VLAN AWARE
                 </span>
               {/if}
@@ -1117,29 +1125,44 @@
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs pt-1">
               <div>
-                <span class="text-muted-foreground font-medium block mb-1">Interfaces Físicas / Enlaces:</span>
+                <span class="text-muted-foreground font-medium block mb-1"
+                  >Interfaces Físicas / Enlaces:</span
+                >
                 {#if boundPhysical.length > 0}
                   <div class="space-y-1">
                     {#each boundPhysical as ph (ph.name)}
-                      <div class="flex items-center gap-2 font-mono text-[11px] bg-muted/30 px-2 py-1 rounded border border-border/60">
+                      <div
+                        class="flex items-center gap-2 font-mono text-[11px] bg-muted/30 px-2 py-1 rounded border border-border/60"
+                      >
                         <Icon name="link" size={12} class="text-accent" />
                         <span class="font-semibold text-foreground">{ph.name}</span>
-                        <span class="text-muted-foreground">({ph.type || 'eth'} · {ph.speed ? `${ph.speed}M` : ph.state})</span>
+                        <span class="text-muted-foreground"
+                          >({ph.type || 'eth'} · {ph.speed ? `${ph.speed}M` : ph.state})</span
+                        >
                       </div>
                     {/each}
                   </div>
                 {:else}
-                  <span class="text-muted-foreground/70 italic text-[11px]">Puente virtual interno (sin tarjeta física asignada)</span>
+                  <span class="text-muted-foreground/70 italic text-[11px]"
+                    >Puente virtual interno (sin tarjeta física asignada)</span
+                  >
                 {/if}
               </div>
 
               <div>
-                <span class="text-muted-foreground font-medium block mb-1">Propiedades de Red:</span>
+                <span class="text-muted-foreground font-medium block mb-1">Propiedades de Red:</span
+                >
                 <div class="space-y-1 font-mono text-[11px] text-muted-foreground">
                   {#if net.gateway}
                     <div>Gateway: <span class="text-foreground">{net.gateway}</span></div>
                   {/if}
-                  <div>DHCP: <span class="text-foreground">{net.dhcp ? `${net.dhcp_start || ''} — ${net.dhcp_end || ''}` : 'Desactivado'}</span></div>
+                  <div>
+                    DHCP: <span class="text-foreground"
+                      >{net.dhcp
+                        ? `${net.dhcp_start || ''} — ${net.dhcp_end || ''}`
+                        : 'Desactivado'}</span
+                    >
+                  </div>
                 </div>
               </div>
             </div>

@@ -14,7 +14,7 @@
   import { auth } from '$lib/stores/auth.svelte.js';
   import { toast } from '$lib/components/ui/toast';
   import { t } from '../lib/i18n.svelte.js';
-  import { purposeLabel, vmDiskPools, containerPools, deployablePools } from '$lib/purpose.js';
+  import { vmDiskPools, containerPools, deployablePools } from '$lib/purpose.js';
   import { stateDotClass } from '$lib/utils/vmState.js';
   import {
     computeTypeBadgeClass,
@@ -52,6 +52,10 @@
   import CredentialsModal from '$lib/components/CredentialsModal.svelte';
   import ManageGroupsDialog from '$lib/components/ManageGroupsDialog.svelte';
   import * as Dialog from '$lib/components/ui/dialog';
+  import VmImportModal from '$lib/components/vm-list/VmImportModal.svelte';
+  import VmImportLxcModal from '$lib/components/vm-list/VmImportLxcModal.svelte';
+  import VmAssignGroupModal from '$lib/components/vm-list/VmAssignGroupModal.svelte';
+  import VmInstantiateModal from '$lib/components/vm-list/VmInstantiateModal.svelte';
   import Chart from '$lib/components/Chart.svelte';
   import StatCard from '$lib/components/StatCard.svelte';
   import { formatRate } from '$lib/utils/format.js';
@@ -191,7 +195,6 @@
   let showInstantiate = $state(false);
   let instTemplates = $state([]);
   let instTemplateId = $state('');
-  let showInstPass = $state(false);
   let instName = $state('');
   let instCI = $state(false);
   let instCIUser = $state('');
@@ -2225,439 +2228,72 @@ apt-get update -y
 />
 
 <!-- Group assignment dialog -->
-<Dialog.Root open={showAssignGroup} onOpenChange={(v) => (showAssignGroup = v)}>
-  <Dialog.Content>
-    <Dialog.Header>
-      <Dialog.Title>{t('vms.assignGroupTitle', { n: selectedKeys.size })}</Dialog.Title>
-      <Dialog.Description>{t('vms.addToGroupTitle')}</Dialog.Description>
-    </Dialog.Header>
-    <div class="py-2 space-y-2">
-      <span class="text-sm font-medium block">{t('vms.groupNameLabel')}</span>
-      {#if groups.length === 0}
-        <p class="text-sm text-muted-foreground">{t('vms.noGroupsCreateFirst')}</p>
-        <Button
-          size="sm"
-          variant="outline"
-          onclick={() => {
-            showAssignGroup = false;
-            openManageGroups();
-          }}
-        >
-          {t('vms.manageGroups')}
-        </Button>
-      {:else}
-        <!-- Can only pick existing groups (not free text). A VM can
-             belong to more than one group, so each chip toggles
-             independently — this adds every checked group, it doesn't
-             replace whatever groups a VM already has. -->
-        <div class="flex flex-wrap gap-1.5">
-          {#each groups as g (g.name)}
-            {@const active = assignGroupNames.has(g.name)}
-            <button
-              onclick={() => {
-                const next = new Set(assignGroupNames);
-                if (active) next.delete(g.name);
-                else next.add(g.name);
-                assignGroupNames = next;
-              }}
-              type="button"
-              class="text-xs px-2.5 py-1 rounded-full border transition-colors {active
-                ? 'border-transparent text-white'
-                : ''}"
-              style={active
-                ? `background-color: ${g.color}`
-                : `border-color: ${g.color}40; color: ${g.color}`}
-            >
-              {g.name}
-            </button>
-          {/each}
-        </div>
-      {/if}
-    </div>
-    <Dialog.Footer>
-      <Button variant="outline" onclick={() => (showAssignGroup = false)}
-        >{t('common.cancel')}</Button
-      >
-      <Button disabled={assignGroupNames.size === 0} onclick={doAssignGroup}
-        >{t('vms.assignBtn')}</Button
-      >
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
+<VmAssignGroupModal
+  bind:open={showAssignGroup}
+  selectedCount={selectedKeys.size}
+  {groups}
+  onAssign={async (names) => {
+    assignGroupNames = new Set(names);
+    await doAssignGroup();
+  }}
+  onManageGroups={openManageGroups}
+/>
 
 <!-- Import dialog -->
-<Dialog.Root bind:open={showImport}>
-  <Dialog.Content class="sm:max-w-md">
-    <Dialog.Header>
-      <Dialog.Title>{t('vms.importTitle')}</Dialog.Title>
-      <Dialog.Description>{t('vms.importDesc')}</Dialog.Description>
-    </Dialog.Header>
-    <div class="space-y-3">
-      <div>
-        <label for="import-file" class="block text-sm font-medium mb-1.5"
-          >{t('vms.backupOrOva')}</label
-        >
-        <Input
-          id="import-file"
-          type="file"
-          accept=".tar.gz,.tgz,.tar.zst,.zst,.ova"
-          onchange={(e) => (importFile = e.target.files?.[0] || null)}
-        />
-        {#if importFile}
-          <p class="text-xs text-muted-foreground mt-1.5">
-            {importFile.name} ({(importFile.size / 1024 / 1024).toFixed(1)} MB)
-          </p>
-        {/if}
-      </div>
-      <div>
-        <label for="import-name" class="block text-sm font-medium mb-1.5"
-          >{t('vms.newVmName')}</label
-        >
-        <Input id="import-name" bind:value={importName} placeholder={t('vms.leaveEmpty')} />
-      </div>
-      <div>
-        <label for="import-pool" class="block text-sm font-medium mb-1.5"
-          >{t('vms.storagePoolLabel')}</label
-        >
-        <select
-          id="import-pool"
-          bind:value={importPool}
-          class="input"
-          disabled={importPools.length === 0}
-        >
-          {#if importPools.length === 0}<option value="webkvm-disks">webkvm-disks</option>{/if}
-          {#each importPools as p (p.name)}<option value={p.name}>{p.name}</option>{/each}
-        </select>
-      </div>
-      {#if importError}
-        <p class="text-sm text-destructive">{importError}</p>
-      {/if}
-      {#if importing}
-        <div class="bg-muted/30 rounded-md p-3 border border-border">
-          <ProgressBar
-            value={importProgress}
-            label={importPhase || t('vms.uploading')}
-            showValue
-            size="sm"
-          />
-        </div>
-      {/if}
-    </div>
-    <Dialog.Footer class="gap-2">
-      <Button variant="outline" onclick={() => (showImport = false)} disabled={importing}
-        >{t('common.cancel')}</Button
-      >
-      <Button onclick={doImport} disabled={importing || !importFile}>
-        {#if importing}<Spinner size="sm" color="text-white" />{:else}{t('vms.importVm')}{/if}
-      </Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
+<VmImportModal
+  bind:open={showImport}
+  pools={importPools}
+  {importing}
+  progress={importProgress}
+  phase={importPhase}
+  error={importError}
+  onImport={async (payload) => {
+    importFile = payload.file;
+    importName = payload.name;
+    importPool = payload.pool;
+    await doImport();
+  }}
+/>
 
 <!-- Import LXC dialog -->
-<Dialog.Root bind:open={showImportLxc}>
-  <Dialog.Content class="sm:max-w-md">
-    <Dialog.Header>
-      <Dialog.Title>{t('vms.importLxcTitle')}</Dialog.Title>
-      <Dialog.Description>{t('vms.importLxcDesc')}</Dialog.Description>
-    </Dialog.Header>
-    <div class="space-y-3">
-      <div>
-        <label for="import-lxc-file" class="block text-sm font-medium mb-1.5"
-          >{t('vms.backupOrCtar')}</label
-        >
-        <Input
-          id="import-lxc-file"
-          type="file"
-          accept=".tar.gz,.tgz,.tar.zst,.zst"
-          onchange={(e) => (importLxcFile = e.target.files?.[0] || null)}
-        />
-        {#if importLxcFile}
-          <p class="text-xs text-muted-foreground mt-1.5">
-            {importLxcFile.name} ({(importLxcFile.size / 1024 / 1024).toFixed(1)} MB)
-          </p>
-        {/if}
-      </div>
-      <div>
-        <label for="import-lxc-name" class="block text-sm font-medium mb-1.5"
-          >{t('vms.containerName')} <span class="text-destructive">*</span></label
-        >
-        <Input
-          id="import-lxc-name"
-          bind:value={importLxcName}
-          placeholder={t('vms.containerNamePlaceholder')}
-          required
-        />
-      </div>
-      <div>
-        <label for="import-lxc-pool" class="block text-sm font-medium mb-1.5"
-          >{t('vms.storagePoolLabel')} <span class="text-destructive">*</span></label
-        >
-        <select
-          id="import-lxc-pool"
-          bind:value={importLxcPool}
-          class="input"
-          disabled={importLxcPools.length === 0}
-          required
-        >
-          {#if importLxcPools.length === 0}
-            <option value="webkvm-incus">webkvm-incus</option>
-          {:else}
-            {#each importLxcPools as p (p.name)}<option value={p.name}
-                >{p.name} ({purposeLabel(p)})</option
-              >{/each}
-          {/if}
-        </select>
-      </div>
-      <div>
-        <label for="import-lxc-network" class="block text-sm font-medium mb-1.5"
-          >{t('vms.networkLabel')} <span class="text-destructive">*</span></label
-        >
-        <select
-          id="import-lxc-network"
-          bind:value={importLxcNetwork}
-          class="input"
-          disabled={networks.length === 0}
-          required
-        >
-          {#if networks.length === 0}
-            <option value="">No networks available</option>
-          {:else}
-            {#each networks as n (n.name)}<option value={n.name}
-                >{n.name} ({n.bridge || n.type})</option
-              >{/each}
-          {/if}
-        </select>
-      </div>
-      {#if importErrorLxc}
-        <p class="text-sm text-destructive">{importErrorLxc}</p>
-      {/if}
-      {#if importingLxc}
-        <div class="bg-muted/30 rounded-md p-3 border border-border">
-          <ProgressBar
-            value={importProgressLxc}
-            label={importPhaseLxc || t('vms.uploading')}
-            showValue
-            size="sm"
-          />
-        </div>
-      {/if}
-    </div>
-    <Dialog.Footer class="gap-2">
-      <Button variant="outline" onclick={() => (showImportLxc = false)} disabled={importingLxc}
-        >{t('common.cancel')}</Button
-      >
-      <Button
-        onclick={doImportLxc}
-        disabled={importingLxc ||
-          !importLxcFile ||
-          !importLxcName.trim() ||
-          !importLxcPool ||
-          !importLxcNetwork}
-      >
-        {#if importingLxc}<Spinner size="sm" color="text-white" />{:else}{t('vms.importLxc')}{/if}
-      </Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
+<VmImportLxcModal
+  bind:open={showImportLxc}
+  pools={importLxcPools}
+  {networks}
+  importing={importingLxc}
+  progress={importProgressLxc}
+  phase={importPhaseLxc}
+  error={importErrorLxc}
+  onImport={async (payload) => {
+    importLxcFile = payload.file;
+    importLxcName = payload.name;
+    importLxcPool = payload.pool;
+    importLxcNetwork = payload.network;
+    await doImportLxc();
+  }}
+/>
 
 <!-- Instantiate template dialog -->
-<Dialog.Root bind:open={showInstantiate}>
-  <Dialog.Content class="sm:max-w-md">
-    <Dialog.Header>
-      <Dialog.Title>{t('vms.instantiateTitle')}</Dialog.Title>
-      <Dialog.Description>{t('vms.instantiateDesc')}</Dialog.Description>
-    </Dialog.Header>
-    <div class="space-y-3">
-      {#if instTemplates.length === 0}
-        <div class="text-center py-6">
-          <p class="text-sm text-muted-foreground mb-3">{t('vms.noTemplates')}</p>
-          <ol
-            class="text-sm text-muted-foreground text-left space-y-1.5 list-decimal list-inside mx-auto w-fit"
-          >
-            <li>{t('vms.templateStep1')}</li>
-            <li>{t('vms.templateStep2')}</li>
-            <li>{t('vms.templateStep3')}</li>
-          </ol>
-        </div>
-      {:else}
-        <div class="space-y-1.5">
-          <Label for="inst-template">{t('vms.templateLabel')}</Label>
-          <select id="inst-template" bind:value={instTemplateId} class="input w-full">
-            {#each instTemplates as tmpl (tmpl.id)}
-              <option value={tmpl.id}
-                >{tmpl.alias || tmpl.name} ({tmpl.vcpus} vCPU · {tmpl.ram_mb} MB)</option
-              >
-            {/each}
-          </select>
-        </div>
-        <div class="space-y-1.5">
-          <Label for="inst-name">{t('vms.newVmName')}</Label>
-          <Input id="inst-name" bind:value={instName} placeholder="my-vm" />
-        </div>
-        <div class="space-y-1.5">
-          <Label for="inst-net">{t('vmDetail.networkLabel')}</Label>
-          <select id="inst-net" bind:value={instNet} class="input w-full">
-            {#each instNetOptions as n (n.name)}
-              <option value={n.name}>{netDisplay(n)}</option>
-            {/each}
-          </select>
-        </div>
-
-        {#if instPoolOptions.length > 1}
-          <!-- Only worth a control when there is an actual choice: with
-               a single eligible pool the selector is a decision the
-               operator cannot get wrong or right. -->
-          <div class="space-y-1.5">
-            <Label for="inst-pool">{t('vms.poolLabel')}</Label>
-            <select id="inst-pool" bind:value={instPool} class="input w-full">
-              <option value="">{t('vms.poolDefault')}</option>
-              {#each instPoolOptions as p (p.name)}
-                <option value={p.name}>{p.name}</option>
-              {/each}
-            </select>
-            {#if instLinked && instPool}
-              <!-- A linked clone keeps its backing file in the
-                   template's pool. Landing the overlay in a different
-                   pool makes the new VM depend on two pools at once:
-                   losing or unmounting the template's pool kills it. -->
-              <p class="text-[11px] text-warning flex items-start gap-1">
-                <Icon name="alertTriangle" size={12} class="mt-0.5 shrink-0" />
-                <span>{t('vms.linkedCrossPoolWarn')}</span>
-              </p>
-            {/if}
-          </div>
-        {/if}
-
-        <!-- Clone strategy. Full is the safe default; linked trades
-             independence for speed and space. -->
-        <div class="space-y-1.5">
-          <Label>{t('vms.cloneModeLabel')}</Label>
-          <div class="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onclick={() => (instLinked = false)}
-              class="flex flex-col items-start gap-0.5 p-2.5 rounded-lg border text-left transition-colors {!instLinked
-                ? 'border-accent bg-accent/10'
-                : 'border-border hover:bg-muted/30'}"
-            >
-              <span class="flex items-center gap-1.5 font-semibold text-xs">
-                <Icon
-                  name="copy"
-                  size={13}
-                  class={!instLinked ? 'text-accent' : 'text-muted-foreground'}
-                />
-                {t('vms.cloneFull')}
-              </span>
-              <span class="text-[10px] text-muted-foreground">{t('vms.cloneFullDesc')}</span>
-            </button>
-            <button
-              type="button"
-              onclick={() => (instLinked = true)}
-              class="flex flex-col items-start gap-0.5 p-2.5 rounded-lg border text-left transition-colors {instLinked
-                ? 'border-accent bg-accent/10'
-                : 'border-border hover:bg-muted/30'}"
-            >
-              <span class="flex items-center gap-1.5 font-semibold text-xs">
-                <Icon
-                  name="zap"
-                  size={13}
-                  class={instLinked ? 'text-accent' : 'text-muted-foreground'}
-                />
-                {t('vms.cloneLinked')}
-              </span>
-              <span class="text-[10px] text-muted-foreground">{t('vms.cloneLinkedDesc')}</span>
-            </button>
-          </div>
-          {#if instLinked}
-            <p
-              class="text-[11px] text-warning flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning-subtle p-2"
-            >
-              <Icon name="shield" size={12} class="mt-0.5 shrink-0" />
-              <span>{t('vms.cloneLinkedWarning')}</span>
-            </p>
-          {/if}
-        </div>
-
-        <label class="flex items-center gap-2 text-sm cursor-pointer select-none">
-          <input type="checkbox" bind:checked={instCI} class="w-4 h-4 rounded border-border" />
-          {t('vmCreate.cloudInitEnable')}
-        </label>
-        {#if instCI}
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label for="inst-ci-user" class="text-xs text-muted-foreground"
-                >{t('vmCreate.cloudInitUser')}</label
-              >
-              <Input
-                id="inst-ci-user"
-                bind:value={instCIUser}
-                placeholder="webkvm"
-                class="w-full"
-              />
-            </div>
-            <div>
-              <label for="inst-ci-password" class="text-xs text-muted-foreground"
-                >{t('common.password')} *</label
-              >
-              <div class="relative">
-                <Input
-                  id="inst-ci-password"
-                  bind:value={instCIPassword}
-                  type={showInstPass ? 'text' : 'password'}
-                  placeholder={t('vmCreate.cloudInitPasswordPlaceholder')}
-                  minlength="6"
-                  maxlength="12"
-                  class="w-full pr-10"
-                />
-                <button
-                  type="button"
-                  onclick={() => (showInstPass = !showInstPass)}
-                  class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 rounded"
-                  aria-label={showInstPass ? t('login.hidePassword') : t('login.showPassword')}
-                  aria-pressed={showInstPass}
-                >
-                  {#if showInstPass}<EyeOff class="w-4 h-4" />{:else}<Eye class="w-4 h-4" />{/if}
-                </button>
-              </div>
-            </div>
-            <div>
-              <label for="inst-ci-hostname" class="text-xs text-muted-foreground"
-                >{t('vmCreate.cloudInitHostname')}</label
-              >
-              <Input
-                id="inst-ci-hostname"
-                bind:value={instCIHostname}
-                placeholder="my-vm"
-                class="w-full"
-              />
-            </div>
-            <div class="col-span-2">
-              <label for="inst-ci-sshkey" class="text-xs text-muted-foreground"
-                >{t('vmCreate.cloudInitSSHKey')}</label
-              >
-              <textarea
-                id="inst-ci-sshkey"
-                bind:value={instCIKey}
-                class="input w-full font-mono text-xs"
-                rows="3"
-                placeholder="ssh-ed25519 AAAA..."
-              ></textarea>
-            </div>
-          </div>
-        {/if}
-      {/if}
-    </div>
-    <Dialog.Footer class="gap-2">
-      <Button variant="outline" onclick={() => (showInstantiate = false)}
-        >{t('common.cancel')}</Button
-      >
-      <Button onclick={doInstantiate} disabled={instSaving || !instTemplateId || !instName.trim()}>
-        {#if instSaving}<Spinner size="sm" color="text-white" />{:else}{t('vms.instantiate')}{/if}
-      </Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
+<VmInstantiateModal
+  bind:open={showInstantiate}
+  templates={instTemplates}
+  netOptions={instNetOptions}
+  poolOptions={instPoolOptions}
+  saving={instSaving}
+  onInstantiate={async (payload) => {
+    instTemplateId = payload.templateId;
+    instName = payload.name;
+    instNet = payload.net;
+    instPool = payload.pool;
+    instLinked = payload.linked;
+    instCI = payload.ci;
+    instCIUser = payload.ciUser;
+    instCIPassword = payload.ciPassword;
+    instCIKey = payload.ciKey;
+    instCIHostname = payload.ciHostname;
+    await doInstantiate();
+  }}
+/>
 
 <!-- Community appliances dialog -->
 <Dialog.Root bind:open={showAppliances}>
