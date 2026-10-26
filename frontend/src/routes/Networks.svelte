@@ -454,7 +454,13 @@
       toast.error(msg, { duration: 0 });
       return;
     }
-    if (kind !== 'direct' && cidr && !cidr.includes('/')) {
+    if (kind === 'nat' && (!cidr || !cidr.trim())) {
+      const msg = t('networks.cidrPrefixError');
+      error = msg;
+      toast.error(msg, { duration: 0 });
+      return;
+    }
+    if (kind !== 'direct' && cidr && cidr.trim() && !cidr.includes('/')) {
       const msg = t('networks.cidrPrefixError');
       error = msg;
       toast.error(msg, { duration: 0 });
@@ -484,15 +490,22 @@
       if (Number(mtu)) payload.mtu = Number(mtu);
     } else {
       const dnsList = dnsText ? parseDNSList(dnsText) : [dns1.trim(), dns2.trim()].filter(Boolean);
-      payload = { name: name.trim(), kind, autostart, cidr: cidr || '', dhcp };
+      payload = {
+        name: name.trim(),
+        kind,
+        autostart,
+        cidr: cidr ? cidr.trim() : '',
+        dhcp: !!(dhcp && cidr && cidr.trim()),
+        vlan_aware: vlanAware,
+      };
       if (gateway && gateway.trim()) payload.gateway = gateway.trim();
-      if (dhcp) {
+      if (payload.dhcp) {
         payload.dhcp_start = dhcpStart || preview?.dhcpStart || '';
         payload.dhcp_end = dhcpEnd || preview?.dhcpEnd || '';
       }
       if (dnsList.length > 0) payload.dns = dnsList;
       if (Number(mtu)) payload.mtu = Number(mtu);
-      if (dhcp) payload.reservations = cleanReservations();
+      if (payload.dhcp) payload.reservations = cleanReservations();
     }
     const taskId = 'net-create:' + name.trim();
     upsertTask({
@@ -764,12 +777,28 @@
             </div>
           </div>
         {:else}
-          <div>
-            <label for="net-cidr" class="block text-sm font-medium mb-1.5">CIDR</label>
-            <Input id="net-cidr" bind:value={cidr} placeholder="192.168.100.0/24" />
-            <p class="text-xs text-muted-foreground mt-1">
-              {kind === 'nat' ? t('networks.natHelp') : t('networks.isolatedHelp')}
-            </p>
+          <div class="space-y-3">
+            <div>
+              <label for="net-cidr" class="block text-sm font-medium mb-1.5"
+                >CIDR {kind === 'isolated' ? `(${t('common.optional')})` : ''}</label
+              >
+              <Input
+                id="net-cidr"
+                bind:value={cidr}
+                placeholder={kind === 'isolated' ? '192.168.100.0/24 (leave empty for L2 bridge)' : '192.168.100.0/24'}
+              />
+              <p class="text-xs text-muted-foreground mt-1">
+                {kind === 'nat' ? t('networks.natHelp') : t('networks.isolatedHelp')}
+              </p>
+            </div>
+            <label class="flex items-center gap-2 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                bind:checked={vlanAware}
+                class="w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
+              />
+              {t('networks.vlanAwareLabel')}
+            </label>
           </div>
         {/if}
       {:else}
@@ -808,16 +837,15 @@
             </div>
           {/if}
         </div>
+        <label class="flex items-center gap-2 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            bind:checked={vlanAware}
+            class="w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
+          />
+          {t('networks.vlanAwareLabel')}
+        </label>
         {#if kind === 'direct'}
-          <label class="flex items-center gap-2 text-sm cursor-pointer">
-            <input
-              type="checkbox"
-              bind:checked={vlanAware}
-              class="w-4 h-4 rounded border-border bg-background text-accent focus:ring-accent"
-            />
-            {t('networks.vlanAwareLabel')}
-          </label>
-
           <div class="pt-3 border-t border-border space-y-3">
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
@@ -1778,6 +1806,8 @@
   </span>
   {#if row.kind === 'direct' && row.interface}
     <div class="text-[11px] text-muted-foreground font-mono tnum mt-0.5">{row.interface}</div>
+  {:else if !row.cidr && row.kind !== 'direct'}
+    <div class="text-[11px] text-muted-foreground font-mono uppercase mt-0.5">L2 Only</div>
   {/if}
 {/snippet}
 

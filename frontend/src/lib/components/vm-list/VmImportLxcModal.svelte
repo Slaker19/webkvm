@@ -46,7 +46,7 @@
     <div class="space-y-3">
       <div>
         <label for="import-lxc-file-comp" class="block text-sm font-medium mb-1.5"
-          >{t('vms.vzdumpFile')}</label
+          >{t('vms.backupOrCtar')}</label
         >
         <Input
           id="import-lxc-file-comp"
@@ -67,13 +67,13 @@
         <Input
           id="import-lxc-name-comp"
           bind:value={name}
-          placeholder={t('vms.containerNameAuto')}
+          placeholder={t('vms.containerNamePlaceholder')}
         />
       </div>
       {#if pools.length > 1}
         <div>
           <label for="import-lxc-pool-comp" class="block text-sm font-medium mb-1.5"
-            >{t('vms.containerStoragePool')}</label
+            >{t('vms.storagePoolLabel')}</label
           >
           <select id="import-lxc-pool-comp" bind:value={pool} class="input">
             {#each pools as p (p.name)}<option value={p.name}>{p.name}</option>{/each}
@@ -83,10 +83,10 @@
       {#if networks.length > 1}
         <div>
           <label for="import-lxc-net-comp" class="block text-sm font-medium mb-1.5"
-            >{t('vms.networkBridgeOverride')}</label
+            >{t('vms.networkLabel')}</label
           >
           <select id="import-lxc-net-comp" bind:value={network} class="input">
-            <option value="">{t('vms.networkBridgeDefault')}</option>
+            <option value="">{t('vms.poolDefault')}</option>
             {#each networks as n (n.name)}<option value={n.name}>{n.name}</option>{/each}
           </select>
         </div>
@@ -106,7 +106,7 @@
       >
       <Button onclick={handleSubmit} disabled={importing || !file}>
         {#if importing}<Spinner size="sm" color="text-white" />{:else}{t(
-            'vms.importContainer'
+            'vms.importLxc'
           )}{/if}
       </Button>
     </Dialog.Footer>

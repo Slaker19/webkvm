@@ -164,18 +164,18 @@
         <div class="pt-2 border-t border-border">
           <label class="flex items-center gap-2 cursor-pointer select-none">
             <input type="checkbox" bind:checked={ci} class="w-4 h-4 rounded border-border" />
-            <span class="text-sm font-medium">{t('vms.customizeCloudInit')}</span>
+            <span class="text-sm font-medium">{t('vmCreate.cloudInitEnable')}</span>
           </label>
         </div>
 
         {#if ci}
           <div class="space-y-2.5 pl-2 border-l-2 border-accent/40">
             <div>
-              <Label for="inst-ci-user-comp">{t('vms.ciUser')}</Label>
+              <Label for="inst-ci-user-comp">{t('vmCreate.cloudInitUser')}</Label>
               <Input id="inst-ci-user-comp" bind:value={ciUser} placeholder="webkvm" />
             </div>
             <div>
-              <Label for="inst-ci-pass-comp">{t('vms.ciPassword')}</Label>
+              <Label for="inst-ci-pass-comp">{t('passwordModal.password')}</Label>
               <div class="relative">
                 <Input
                   id="inst-ci-pass-comp"
@@ -194,7 +194,7 @@
               </div>
             </div>
             <div>
-              <Label for="inst-ci-key-comp">{t('vms.ciSshKey')}</Label>
+              <Label for="inst-ci-key-comp">{t('vmCreate.cloudInitSSHKey')}</Label>
               <Input id="inst-ci-key-comp" bind:value={ciKey} placeholder="ssh-ed25519 AAAA..." />
             </div>
           </div>
@@ -207,7 +207,7 @@
       >
       {#if templates.length > 0}
         <Button onclick={handleSubmit} disabled={saving || !templateId}>
-          {#if saving}<Spinner size="sm" color="text-white" />{:else}{t('vms.instantiateBtn')}{/if}
+          {#if saving}<Spinner size="sm" color="text-white" />{:else}{t('vms.instantiate')}{/if}
         </Button>
       {/if}
     </Dialog.Footer>

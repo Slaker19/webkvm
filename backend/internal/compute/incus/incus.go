@@ -1045,12 +1045,16 @@ func (b *IncusBackend) AttachNetworkIface(id string, req models.AttachNetRequest
 		return err
 	}
 	nicName := nextNicName(inst.Devices)
-	inst.Devices[nicName] = map[string]string{
+	devMap := map[string]string{
 		"type":    "nic",
 		"nictype": "bridged",
 		"parent":  bridge,
 		"name":    nicName,
 	}
+	if req.VLANTag != nil && *req.VLANTag > 0 {
+		devMap["vlan"] = strconv.Itoa(*req.VLANTag)
+	}
+	inst.Devices[nicName] = devMap
 	// The guest only configures the NICs declared in its netplan
 	// (user.network-config). Regenerate it unconditionally — including
 	// when the container never had cloud-init network config to begin
@@ -1201,9 +1205,6 @@ func (b *IncusBackend) DetachNetworkIface(id, mac string) error {
 }
 
 func (b *IncusBackend) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIfaceRequest) error {
-	if req.VLANTag != nil && *req.VLANTag != 0 {
-		return fmt.Errorf("VLAN tags are not applicable to a container NIC: %w", compute.ErrNotImplemented)
-	}
 	if req.MAC != nil && *req.MAC != oldMAC {
 		return fmt.Errorf("changing a container NIC MAC is not supported: %w", compute.ErrNotImplemented)
 	}
@@ -1218,6 +1219,14 @@ func (b *IncusBackend) UpdateNetworkIface(id, oldMAC string, req models.UpdateNe
 	}
 
 	needsUpdate := false
+	if req.VLANTag != nil {
+		if *req.VLANTag > 0 {
+			inst.Devices[devName]["vlan"] = strconv.Itoa(*req.VLANTag)
+		} else {
+			delete(inst.Devices[devName], "vlan")
+		}
+		needsUpdate = true
+	}
 	if req.Network != nil && *req.Network != "" {
 		bridge, err := b.bridgeForNetwork(*req.Network)
 		if err != nil {
@@ -4044,13 +4053,19 @@ func instanceToVM(i *api.Instance) models.VM {
 			})
 		case "nic":
 			parent := dev["parent"]
-			vm.Networks = append(vm.Networks, models.NetIface{
+			netIface := models.NetIface{
 				MAC:     i.Config["volatile."+name+".hwaddr"],
 				Network: parent,
 				Model:   "incus",
 				Type:    "incus",
 				Source:  parent,
-			})
+			}
+			if vlanStr := dev["vlan"]; vlanStr != "" {
+				if tag, err := strconv.Atoi(vlanStr); err == nil && tag > 0 {
+					netIface.VLANTag = &tag
+				}
+			}
+			vm.Networks = append(vm.Networks, netIface)
 		case "gpu":
 			vm.GPU = true
 		case "pci":

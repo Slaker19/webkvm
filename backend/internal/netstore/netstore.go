@@ -36,7 +36,8 @@ type Record struct {
 	DHCPStart string   `json:"dhcp_start,omitempty"` // nat/isolated only, when DHCP is on
 	DHCPEnd   string   `json:"dhcp_end,omitempty"`   // nat/isolated only, when DHCP is on
 	DNS       []string `json:"dns,omitempty"`        // nat/isolated/direct DNS servers
-	MTU       int      `json:"mtu,omitempty"`        // bridge link MTU (0 = default)
+	MTU          int                      `json:"mtu,omitempty"`        // bridge link MTU (0 = default)
+	VLanAware    bool                     `json:"vlan_aware,omitempty"` // 802.1Q vlan filtering enabled
 	// Reservations are fixed MAC→IP DHCP leases served by the bridge's
 	// dnsmasq (nat/isolated only, requires DHCP on).
 	Reservations []models.DHCPReservation `json:"reservations,omitempty"`

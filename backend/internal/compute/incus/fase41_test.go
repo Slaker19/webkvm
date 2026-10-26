@@ -271,13 +271,19 @@ func TestIncusBackendUpdateNetworkIface(t *testing.T) {
 	}
 }
 
-func TestIncusBackendUpdateNetworkIfaceRejectsVLAN(t *testing.T) {
-	sock, _ := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
+func TestIncusBackendUpdateNetworkIfaceSupportsVLAN(t *testing.T) {
+	sock, fake := newFakeLXD3(t, map[string]*api.Instance{"ct1": initialContainer()}, nil)
 	b, _ := NewIncusBackend(sock)
 	vlan := 10
 	err := b.UpdateNetworkIface("ct1", "00:16:3e:aa:bb:cc", models.UpdateNetIfaceRequest{VLANTag: &vlan})
-	if !isErrNotImplemented(err) {
-		t.Errorf("expected ErrNotImplemented for VLAN, got %v", err)
+	if err != nil {
+		t.Fatalf("expected VLAN update to succeed, got %v", err)
+	}
+	fake.mu.Lock()
+	vlanVal := fake.instances["ct1"].Devices["eth0"]["vlan"]
+	fake.mu.Unlock()
+	if vlanVal != "10" {
+		t.Errorf("expected eth0 vlan to be '10', got %q", vlanVal)
 	}
 }
 

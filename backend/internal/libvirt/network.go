@@ -401,43 +401,60 @@ func (c *Connector) createDirectNetwork(name string, req models.CreateNetworkReq
 // fails (the check-then-apply in firewall.applyRuleset is atomic, so a
 // failure here never leaves a half-applied ruleset — only the just-
 // created bridge needs undoing).
+// createIsolatedOrNATNetwork creates a bare bridge (no physical NIC),
+// optionally assigns an IP, and configures DHCP (dnsmasq) if requested.
+// For kind="isolated" with no CIDR, it provisions an L2-only Linux bridge.
+// For kind="nat", it additionally sets up firewall masquerading.
 func (c *Connector) createIsolatedOrNATNetwork(name, kind string, req models.CreateNetworkRequest) (models.Network, error) {
-	if req.CIDR == "" {
-		return models.Network{}, fmt.Errorf("kind=%s requires cidr (e.g. 10.20.0.0/24)", kind)
+	if kind == "nat" && req.CIDR == "" {
+		return models.Network{}, fmt.Errorf("kind=nat requires cidr (e.g. 10.20.0.0/24)")
 	}
-	if ip, _, perr := net.ParseCIDR(req.CIDR); perr != nil || ip == nil {
-		return models.Network{}, fmt.Errorf("invalid CIDR %q", req.CIDR)
+	if req.CIDR != "" {
+		if ip, _, perr := net.ParseCIDR(req.CIDR); perr != nil || ip == nil {
+			return models.Network{}, fmt.Errorf("invalid CIDR %q", req.CIDR)
+		}
 	}
 
 	if out, err := exec.Command("ip", "link", "add", name, "type", "bridge").CombinedOutput(); err != nil {
 		return models.Network{}, fmt.Errorf("create Linux bridge %q: %v (%s)", name, err, strings.TrimSpace(string(out)))
 	}
-	// Proxmox-style: give the bridge a dummy port for carrier so it's
-	// UP and dnsmasq can bind (an empty bridge stays NO-CARRIER/DOWN).
-	dummy := dummyNameFor(name)
-	_ = exec.Command("ip", "link", "add", dummy, "type", "dummy").Run()
-	_ = exec.Command("ip", "link", "set", dummy, "master", name).Run()
-	_ = exec.Command("ip", "link", "set", dummy, "up").Run()
-	_ = exec.Command("ip", "link", "set", name, "up").Run()
 
 	teardown := func() {
 		exec.Command("ip", "link", "set", name, "down").Run()
 		exec.Command("ip", "link", "del", name).Run()
 	}
 
-	gwIP := req.Gateway
-	if gwIP == "" {
-		gwIP = gatewayFromCIDR(req.CIDR)
+	vlanAware := req.VLanAware != nil && *req.VLanAware
+	if vlanAware {
+		if out, err := exec.Command("ip", "link", "set", name, "type", "bridge", "vlan_filtering", "1").CombinedOutput(); err != nil {
+			teardown()
+			return models.Network{}, fmt.Errorf("enable vlan_filtering on %q: %v (%s)", name, err, strings.TrimSpace(string(out)))
+		}
 	}
-	cidrMask := "/24"
-	if parts := strings.SplitN(req.CIDR, "/", 2); len(parts) == 2 {
-		cidrMask = "/" + parts[1]
-	}
-	bridgeIPWithMask := gwIP + cidrMask
 
-	if out, err := exec.Command("ip", "addr", "add", bridgeIPWithMask, "dev", name).CombinedOutput(); err != nil {
-		teardown()
-		return models.Network{}, fmt.Errorf("assign %s to %q: %v (%s)", bridgeIPWithMask, name, err, strings.TrimSpace(string(out)))
+	// Proxmox-style: give the bridge a dummy port for carrier so it's
+	// UP (an empty bridge stays NO-CARRIER/DOWN).
+	dummy := dummyNameFor(name)
+	_ = exec.Command("ip", "link", "add", dummy, "type", "dummy").Run()
+	_ = exec.Command("ip", "link", "set", dummy, "master", name).Run()
+	_ = exec.Command("ip", "link", "set", dummy, "up").Run()
+	_ = exec.Command("ip", "link", "set", name, "up").Run()
+
+	if req.CIDR != "" {
+		gwIP := req.Gateway
+		if gwIP == "" {
+			gwIP = gatewayFromCIDR(req.CIDR)
+		}
+		cidrMask := "/24"
+		if parts := strings.SplitN(req.CIDR, "/", 2); len(parts) == 2 {
+			cidrMask = "/" + parts[1]
+		}
+		bridgeIPWithMask := gwIP + cidrMask
+
+		if out, err := exec.Command("ip", "addr", "add", bridgeIPWithMask, "dev", name).CombinedOutput(); err != nil {
+			teardown()
+			return models.Network{}, fmt.Errorf("assign %s to %q: %v (%s)", bridgeIPWithMask, name, err, strings.TrimSpace(string(out)))
+		}
 	}
 
 	// MTU first (validation is independent of DHCP), so a bad value
@@ -454,6 +471,10 @@ func (c *Connector) createIsolatedOrNATNetwork(name, kind string, req models.Cre
 	if len(req.Reservations) > 0 && !dhcp {
 		teardown()
 		return models.Network{}, fmt.Errorf("DHCP reservations require DHCP to be enabled")
+	}
+	if dhcp && req.CIDR == "" {
+		teardown()
+		return models.Network{}, fmt.Errorf("DHCP requires a CIDR to be configured")
 	}
 	if dhcp {
 		if err := validDNSList(req.DNS); err != nil {
@@ -478,7 +499,7 @@ func (c *Connector) createIsolatedOrNATNetwork(name, kind string, req models.Cre
 	}
 
 	if netStoreVar != nil {
-		rec := netstore.Record{Name: name, Kind: kind, CIDR: req.CIDR, MTU: req.MTU}
+		rec := netstore.Record{Name: name, Kind: kind, CIDR: req.CIDR, MTU: req.MTU, VLanAware: vlanAware}
 		if dhcp {
 			rec.DHCPStart, rec.DHCPEnd, rec.DNS = dhcpStart, dhcpEnd, dns
 			rec.Reservations = reservations
