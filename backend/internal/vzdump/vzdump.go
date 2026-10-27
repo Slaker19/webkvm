@@ -219,6 +219,12 @@ func ImportFromProxmox(srcPath, destPath, newName, poolName string) error {
 		clean := filepath.ToSlash(hdr.Name)
 		clean = strings.TrimPrefix(clean, "./")
 
+		// Security: prevent path traversal attacks escaping rootfs or overwriting backup metadata.
+		cleanedPath := filepath.Clean(clean)
+		if strings.HasPrefix(cleanedPath, "../") || cleanedPath == ".." || filepath.IsAbs(cleanedPath) {
+			return fmt.Errorf("vzdump: path traversal detected in archive entry %q", hdr.Name)
+		}
+
 		// Extract pct.conf
 		if clean == "etc/vzdump/pct.conf" {
 			raw, rerr := readLimited(srcTar, maxPctConfBytes)

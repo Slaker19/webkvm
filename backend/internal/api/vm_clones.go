@@ -138,8 +138,37 @@ func (h *Handler) BatchCloneVM(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusServiceUnavailable, "cannot verify quota: "+err.Error())
 			return
 		}
+		u, uerr := h.userStore.Get(owner)
+		if uerr != nil {
+			jsonErr(w, http.StatusUnauthorized, "user not found")
+			return
+		}
+		clonePool := req.Pool
+		if clonePool == "" {
+			clonePool = h.defaultPool()
+		}
+		if err := assertPoolAllowed(u, clonePool); err != nil {
+			jsonErr(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if req.Network != "" {
+			if err := assertNetworkAllowed(u, req.Network); err != nil {
+				jsonErr(w, http.StatusForbidden, err.Error())
+				return
+			}
+		}
+		if err := h.assertPoolPurpose(clonePool, compute.PoolPurposeDisk); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
 		diskGB := vmTotalDiskGB(src)
-		if err := h.checkQuota(owner, int64(req.Count), int64(src.VCPUs)*int64(req.Count), src.RAMMB*int64(req.Count), diskGB*int64(req.Count)); err != nil {
+		totalDisk := diskGB * int64(req.Count)
+		if err := h.checkQuota(owner, int64(req.Count), int64(src.VCPUs)*int64(req.Count), src.RAMMB*int64(req.Count), totalDisk); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err := h.checkDiskQuota(owner, map[string]int64{clonePool: totalDisk}); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}

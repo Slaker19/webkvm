@@ -73,6 +73,44 @@ func TestImportFromProxmox_NameIsNeutralisedAndYAMLStructureFixed(t *testing.T) 
 	}
 }
 
+func TestImportFromProxmox_RejectsPathTraversalMembers(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	hdr := &tar.Header{
+		Name: "etc/vzdump/pct.conf",
+		Mode: 0644,
+		Size: int64(len("hostname: ct\ncores: 1\nmemory: 512\narch: amd64\nostype: debian\n")),
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("hostname: ct\ncores: 1\nmemory: 512\narch: amd64\nostype: debian\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add malicious traversal member
+	maliciousHdr := &tar.Header{
+		Name: "rootfs/../../backup.yaml",
+		Mode: 0644,
+		Size: 5,
+	}
+	if err := tw.WriteHeader(maliciousHdr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("evil!")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	src := writeTmpFile(t, buf.Bytes())
+	dest := filepath.Join(t.TempDir(), "out.tar")
+	if err := vzdump.ImportFromProxmox(src, dest, "", ""); err == nil {
+		t.Fatal("expected error on path traversal member, got nil")
+	}
+}
+
 func TestReadLimitedViaOversizedPctConf(t *testing.T) {
 	conf := "hostname: ct\n" + strings.Repeat("# padding\n", 200000) // > 1 MiB
 	src := vzdumpWithConf(t, conf)

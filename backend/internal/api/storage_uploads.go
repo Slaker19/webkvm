@@ -391,7 +391,9 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 				name = cName
 				written = cSize
 			} else {
-				slog.Warn("ova extraction/conversion failed", "err", err)
+				os.Remove(destPath)
+				jsonErr(w, http.StatusBadRequest, "invalid OVA archive: "+err.Error())
+				return
 			}
 		}
 	}

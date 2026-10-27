@@ -220,6 +220,7 @@ func (h *Handler) Enable2FA(w http.ResponseWriter, r *http.Request) {
 		Secret      string   `json:"secret"`
 		Code        string   `json:"code"`
 		BackupCodes []string `json:"backup_codes"`
+		Password    string   `json:"password"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
@@ -228,6 +229,23 @@ func (h *Handler) Enable2FA(w http.ResponseWriter, r *http.Request) {
 	if req.Secret == "" || req.Code == "" {
 		jsonErr(w, http.StatusBadRequest, "secret and code required")
 		return
+	}
+
+	// Security fix: If 2FA is already enabled, caller must provide current password to reconfigure/overwrite it.
+	u, uerr := h.userStore.Get(username)
+	if uerr != nil {
+		jsonErr(w, http.StatusUnauthorized, "user not found")
+		return
+	}
+	if u.TOTPEnabled {
+		if req.Password == "" {
+			jsonErr(w, http.StatusBadRequest, "password is required to reconfigure 2FA")
+			return
+		}
+		if _, ok := h.userStore.Validate(username, req.Password); !ok {
+			jsonErr(w, http.StatusUnauthorized, "contraseña incorrecta")
+			return
+		}
 	}
 	if !auth.ValidateTOTP(req.Secret, req.Code) {
 		jsonErr(w, http.StatusBadRequest, "código de verificación incorrecto, asegúrate de que la hora de tu dispositivo esté sincronizada")
