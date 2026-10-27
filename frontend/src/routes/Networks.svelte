@@ -1835,6 +1835,13 @@
             {t('networks.autostartBadge')}
           </span>
         {/if}
+        {#if row.vlan_aware}
+          <span
+            class="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-warning/15 text-warning font-semibold whitespace-nowrap"
+          >
+            VLAN TRUNK
+          </span>
+        {/if}
       </div>
     </div>
   </div>
