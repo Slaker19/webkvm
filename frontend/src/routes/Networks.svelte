@@ -14,9 +14,11 @@
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import StatCard from '$lib/components/StatCard.svelte';
+  import SearchInput from '$lib/components/SearchInput.svelte';
   import { t } from '../lib/i18n.svelte.js';
 
   let networks = $state([]);
+  let searchQuery = $state('');
   let hostInterfaces = $state([]);
   // Tracks whether the host-interface fetch has been attempted at least
   // once. The effect below keys off this flag, not off the array being
@@ -1140,7 +1142,14 @@
       {/snippet}
     </EmptyState>
   {:else}
-    <div id="networks-table-anchor"></div>
+    <div id="networks-table-anchor" class="flex items-center justify-between gap-3 mb-3">
+      <div class="w-full sm:w-72">
+        <SearchInput
+          bind:value={searchQuery}
+          placeholder={t('common.search')}
+        />
+      </div>
+    </div>
     <DataTable
       columns={[
         { key: 'name', label: t('networks.name'), width: 'minmax(180px, 1fr)', render: nameCell },
@@ -1150,7 +1159,15 @@
         { key: 'dhcp', label: 'DHCP', width: '130px', render: dhcpCell },
         { key: 'actions', label: '', align: 'right', width: '160px', render: actionsCell },
       ]}
-      rows={networks}
+      rows={searchQuery.trim()
+        ? networks.filter(
+            (n) =>
+              n.name.toLowerCase().includes(searchQuery.trim().toLowerCase()) ||
+              (n.cidr && n.cidr.toLowerCase().includes(searchQuery.trim().toLowerCase())) ||
+              (n.kind && n.kind.toLowerCase().includes(searchQuery.trim().toLowerCase())) ||
+              (n.interface && n.interface.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+          )
+        : networks}
       rowKey="name"
       emptyMessage={t('networks.noNetworks')}
       emptyIcon="network"

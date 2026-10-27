@@ -6,6 +6,32 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.10] — 2026-10-27
+
+### Añadido
+- **Gestión Flexible de Redes Capa 2 y Capa 3**:
+  - Creación de switches virtuales puros de Capa 2 sin IP requerida en el anfitrión ni dnsmasq (`sin CIDR`), ideal para routers y firewalls virtualizados (pfSense, OPNsense, VyOS) y entornos zero-trust.
+  - Soporte universal para troncales VLAN 802.1Q (`vlan_filtering 1`) en cualquier bridge de Linux, compatible de forma unificada para invitados QEMU/KVM y contenedores Incus/LXC.
+  - Selector de modo de primer nivel en `Networks`: Switch Puro L2, Subred Privada L3 (Host-Only), NAT L3 y Bridge Físico Directo con auto-rellenado inteligente.
+  - Mapa visual interactivo de topología de red y puertos en `Networks.svelte`, mostrando enlaces físicos del host, estructura de bridges y máquinas virtuales / contenedores conectados.
+  - Búsqueda y filtrado rápido en la tabla de redes por nombre, CIDR, modo e interfaz.
+- **Vigilante Periódico de Salud SMART en Segundo Plano**:
+  - Demonio `smart.Watcher` integrado que realiza barridos periódicos (cada 24 horas) y notifica automáticamente ante fallos inminentes, temperatura crítica (≥60°C) o sectores reasignados (>50) vía el subsistema `notify`.
+- **Descarga de Sesión de Terminal**:
+  - Exportación directa en 1-clic a archivo `.log` desde la barra de herramientas de `TerminalPanel` tanto en terminales serie de VMs como en consolas del host.
+
+### Seguridad y Blindaje
+- **Control de Acceso en Clonación en Lote**: Aplicación de `assertPoolAllowed`, `assertNetworkAllowed` y `assertPoolPurpose` en `POST /api/vms/{id}/batch-clone` para evitar que operadores con acceso restringido clonen máquinas en pools de almacenamiento o bridges de red no autorizados.
+- **Protección de Subida de Discos OVA**: Eliminación garantizada de archivos temporales y aborto inmediato con HTTP 400 ante fallos de extracción en `UploadDisk`, impidiendo que discos QCOW2 fraudulentos eludan las inspecciones de seguridad de imágenes.
+- **Protección ante Sobrescritura de 2FA**: Verificación obligatoria de la contraseña actual del usuario al reconfigurar o habilitar 2FA si el segundo factor ya se encuentra activo.
+- **Mitigación de Tar-Slip en Vzdump de Proxmox**: Sanitización con `filepath.Clean` y bloqueo de tokens `..` en `ImportFromProxmox`, protegiendo la metadata del contenedor de sobrescrituras maliciosas.
+- **Protección Recursiva de Discos del Sistema**: Inspección en árbol recursiva (`checkTree`) en `assertNotSystemDisk` para blindar configuraciones complejas de particionado LVM y LUKS frente a borrados accidentales de disco.
+- **Protección de Cuentas Privilegiadas en Metadatos**: Bloqueo a operadores no administradores para asignar cuentas privilegiadas del sistema (`root`, `admin`, `system`) en `ci_user`, previniendo tomas de control de cuentas de invitado.
+
+### Cambiado y Refactorizado
+- **Refactorización Modular de Diálogos de `VmList`**:
+  - Modularización de los diálogos de importación, asignación de grupo e instanciación de plantillas en componentes dedicados bajo `lib/components/vm-list/`.
+
 ## [0.1.9] — 2026-10-25
 
 ### Añadido

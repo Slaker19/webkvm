@@ -955,12 +955,16 @@ func (h *Handler) mountedPaths(ctx context.Context, diskPath string) ([]string, 
 		return nil, fmt.Errorf("%w: could not parse lsblk output, cannot verify disk is unmounted: %v", errDiskProbeUnavailable, err)
 	}
 	var mounts []string
-	for _, dev := range raw.Blockdevices {
-		mounts = append(mounts, nonEmpty(dev.MountPoints)...)
-		for _, c := range dev.Children {
-			mounts = append(mounts, nonEmpty(c.MountPoints)...)
+	var collectMounts func(devs []lsblkDevice)
+	collectMounts = func(devs []lsblkDevice) {
+		for _, dev := range devs {
+			mounts = append(mounts, nonEmpty(dev.MountPoints)...)
+			if len(dev.Children) > 0 {
+				collectMounts(dev.Children)
+			}
 		}
 	}
+	collectMounts(raw.Blockdevices)
 	return mounts, nil
 }
 
@@ -1063,13 +1067,18 @@ func (h *Handler) partitionPaths(ctx context.Context, diskPath string) []string 
 		return nil
 	}
 	var paths []string
-	for _, dev := range raw.Blockdevices {
-		for _, c := range dev.Children {
-			if c.Path != "" {
-				paths = append(paths, c.Path)
+	var collectPaths func(devs []lsblkDevice)
+	collectPaths = func(devs []lsblkDevice) {
+		for _, dev := range devs {
+			if dev.Path != "" && dev.Path != diskPath {
+				paths = append(paths, dev.Path)
+			}
+			if len(dev.Children) > 0 {
+				collectPaths(dev.Children)
 			}
 		}
 	}
+	collectPaths(raw.Blockdevices)
 	return paths
 }
 
@@ -1092,21 +1101,29 @@ func (h *Handler) assertNotSystemDisk(ctx context.Context, diskPath string) erro
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return fmt.Errorf("%w: could not parse lsblk output, cannot verify disk is not the system disk: %v", errDiskProbeUnavailable, err)
 	}
-	for _, dev := range raw.Blockdevices {
-		for _, m := range dev.MountPoints {
-			if m == "/" || m == "/boot" || strings.HasPrefix(m, "/boot/") || m == "/etc" {
-				return fmt.Errorf("refusing operation: %s is a system root/boot disk mounted at %s", diskPath, m)
+
+	isSystemMount := func(m string) bool {
+		return m == "/" || m == "/boot" || strings.HasPrefix(m, "/boot/") || m == "/etc"
+	}
+
+	var checkTree func(devs []lsblkDevice) error
+	checkTree = func(devs []lsblkDevice) error {
+		for _, dev := range devs {
+			for _, m := range dev.MountPoints {
+				if isSystemMount(m) {
+					return fmt.Errorf("refusing operation: %s contains system device %s mounted at %s", diskPath, dev.Path, m)
+				}
 			}
-		}
-		for _, c := range dev.Children {
-			for _, m := range c.MountPoints {
-				if m == "/" || m == "/boot" || strings.HasPrefix(m, "/boot/") || m == "/etc" {
-					return fmt.Errorf("refusing operation: %s contains system partition %s mounted at %s", diskPath, c.Path, m)
+			if len(dev.Children) > 0 {
+				if err := checkTree(dev.Children); err != nil {
+					return err
 				}
 			}
 		}
+		return nil
 	}
-	return nil
+
+	return checkTree(raw.Blockdevices)
 }
 
 func (h *Handler) unmountDeviceAndChildren(ctx context.Context, devPath string) ([]string, error) {

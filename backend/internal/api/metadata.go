@@ -47,6 +47,17 @@ func (h *Handler) UpdateVMMeta(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Changing cloud-init user to privileged accounts (root, admin, system) is forbidden for non-admins
+	// to prevent guest account takeover via password reset.
+	if upd.CiUser != nil {
+		ciUser := strings.ToLower(strings.TrimSpace(*upd.CiUser))
+		if _, role, _ := audit.FromRequest(r); role != models.RoleAdmin {
+			if ciUser == "root" || ciUser == "admin" || ciUser == "system" || ciUser == "administrator" {
+				jsonErr(w, http.StatusForbidden, "non-admins cannot set privileged accounts as ci_user")
+				return
+			}
+		}
+	}
 	// Sharing a template with all users bypasses the owner/group/tag
 	// ACLs for listing and instantiating it, so it is admin-only, and it
 	// only applies to templates (unsharing is always accepted, so stale

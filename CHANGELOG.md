@@ -6,6 +6,32 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
+## [0.1.10] — 2026-10-27
+
+### Added
+- **Flexible Layer 2 & Layer 3 Network Management**:
+  - Pure Layer 2 virtual switch creation without required host IP or dnsmasq (`no CIDR`), ideal for virtual routers/firewalls (pfSense, OPNsense, VyOS) and isolated zero-trust workloads.
+  - Universal 802.1Q VLAN-aware trunking (`vlan_filtering 1`) supported across all Linux bridges and compatible with both QEMU/KVM guests and Incus/LXC containers.
+  - First-class creation mode selector in `Networks`: Layer 2 Pure Switch, Layer 3 Host-Only, Layer 3 NAT, and Physical Direct Bridge with smart pre-population.
+  - Interactive Visual Network & Port Topology Map in `Networks.svelte` displaying host uplinks, bridge structures, and connected virtual machines / containers.
+  - Quick search and filtering input in `Networks.svelte` by name, CIDR, mode, and interface.
+- **Background Periodic SMART Health Watcher**:
+  - Native daemon `smart.Watcher` performing periodic (24h) drives sweeps, alerting on disk failure, high temperature (≥60°C), or reallocated sectors (>50) via the `notify` subsystem.
+- **Terminal Session Log Downloader**:
+  - 1-click `.log` export in `TerminalPanel` to download session buffers directly from serial and host consoles.
+
+### Security & Hardening
+- **Multi-Tenant Batch Clone ACL Enforcement**: Enforced `assertPoolAllowed`, `assertNetworkAllowed`, and `assertPoolPurpose` in `POST /api/vms/{id}/batch-clone` to prevent restricted operators from allocating VMs into unauthorized storage pools or network bridges.
+- **Storage Upload OVA Safety**: Strictly clean up temporary files and abort with HTTP 400 on `.ova` archive extraction failures in `UploadDisk`, preventing unvalidated QCOW2 files from bypassing backing-file inspections.
+- **TOTP 2FA Overwrite Protection**: Mandated current password verification when re-enabling or modifying TOTP settings on accounts where 2FA is already active.
+- **Proxmox Vzdump Tar-Slip Mitigation**: Enforced `filepath.Clean` and traversal component rejection in `ImportFromProxmox`, preventing malicious backup archives from overwriting container configuration metadata.
+- **Recursive System Disk Protection**: Implemented recursive block device tree inspection (`checkTree`) in `assertNotSystemDisk` to safeguard complex LVM and LUKS partitioned layouts from accidental disk wiping.
+- **Privileged Account Metadata Protection**: Blocked non-admin operators from setting `ci_user` to privileged system accounts (`root`, `admin`, `system`) to prevent unauthorized guest password resets.
+
+### Changed & Refactored
+- **Modular Refactoring of `VmList` Dialogs**:
+  - Extracted modals into dedicated components under `lib/components/vm-list/`: `VmImportModal`, `VmImportLxcModal`, `VmAssignGroupModal`, and `VmInstantiateModal`.
+
 ## [0.1.9] — 2026-10-25
 
 ### Added
