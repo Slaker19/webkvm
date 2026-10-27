@@ -71,6 +71,10 @@ else
   log "libvirt socket detected at /var/run/libvirt/libvirt-sock"
 fi
 
+if [ -S "/var/lib/incus/unix.socket" ] || [ -S "/run/incus/unix.socket" ]; then
+  log "Incus socket detected"
+fi
+
 if [ -e "/dev/kvm" ]; then
   log "KVM acceleration device (/dev/kvm) detected"
 else

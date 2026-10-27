@@ -415,7 +415,7 @@ setup_package_map() {
       # installed on this host" — e2fsprogs is "required" priority on
       # Debian/Ubuntu and normally already present, but is listed
       # explicitly so a minimal/container base image doesn't skip it.
-      RUNTIME_PACKAGES=(ca-certificates curl openssl xorriso xz-utils dnsmasq-base dnsmasq-utils libvirt-daemon-system libvirt-clients libvirt-daemon-driver-qemu qemu-system-x86 qemu-utils ovmf swtpm swtpm-tools virtinst bridge-utils python3 iproute2 procps util-linux tar zstd nftables iptables nfs-common cifs-utils smbclient gdisk parted e2fsprogs xfsprogs btrfs-progs f2fs-tools)
+      RUNTIME_PACKAGES=(ca-certificates curl openssl xorriso xz-utils dnsmasq-base dnsmasq-utils libvirt-daemon-system libvirt-clients libvirt-daemon-driver-qemu qemu-system-x86 qemu-utils ovmf swtpm swtpm-tools virtinst bridge-utils python3 iproute2 procps util-linux tar zstd nftables iptables nfs-common cifs-utils smbclient gdisk parted e2fsprogs xfsprogs btrfs-progs f2fs-tools smartmontools)
       ;;
     dnf)
       # dnsmasq-utils: same rationale as the apt branch above — provides
@@ -451,6 +451,7 @@ setup_package_map() {
         RUNTIME_PACKAGES+=(iptables-nft)
       fi
       # Optional filesystem and legacy network utilities that exist on Fedora but were dropped on RHEL/Rocky
+      RUNTIME_PACKAGES+=(smartmontools)
       for opt in bridge-utils btrfs-progs f2fs-tools; do
         if pkg_available "$opt"; then
           RUNTIME_PACKAGES+=("$opt")
@@ -482,7 +483,7 @@ setup_package_map() {
       # Arch's base group already, but is listed explicitly so a
       # minimal/container base that skipped base-devel extras still
       # gets it.
-      RUNTIME_PACKAGES=(ca-certificates curl openssl libisoburn xz libvirt qemu-full qemu-img swtpm edk2-ovmf python iproute2 procps-ng util-linux tar zstd virt-install dnsmasq nftables iptables nfs-utils cifs-utils smbclient gptfdisk parted e2fsprogs xfsprogs btrfs-progs f2fs-tools)
+      RUNTIME_PACKAGES=(ca-certificates curl openssl libisoburn xz libvirt qemu-full qemu-img swtpm edk2-ovmf python iproute2 procps-ng util-linux tar zstd virt-install dnsmasq nftables iptables nfs-utils cifs-utils smbclient gptfdisk parted e2fsprogs xfsprogs btrfs-progs f2fs-tools smartmontools)
       ;;
   esac
 }

@@ -56,3 +56,5 @@ services:
       - /etc/shadow:/etc/shadow:ro
       - /etc/group:/etc/group:ro
       - /etc/pam.d:/etc/pam.d:ro
+      # Incus UNIX socket — allows container management in Docker mode
+      - /var/lib/incus:/var/lib/incus

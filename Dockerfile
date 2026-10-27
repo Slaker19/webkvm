@@ -90,6 +90,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       f2fs-tools \
       mdadm \
       zfsutils-linux \
+      smartmontools \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=backend-builder /out/webkvm /usr/local/bin/webkvm
