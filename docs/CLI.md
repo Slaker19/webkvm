@@ -260,18 +260,31 @@ webkvm-cli snippets delete <snippet-id>
 ## Network Management (`networks`)
 
 ```bash
-# List networks and bridges
+# List networks and bridges (includes VLAN-aware status)
 webkvm-cli networks list
 
 # Show detailed network configuration
 webkvm-cli networks show vmbr0
 
+# Create a pure Layer 2 bridge (virtual switch, no host IP)
+webkvm-cli networks create br-lan --kind isolated
+
+# Create a VLAN-aware Layer 2 trunk
+webkvm-cli networks create br-trunk --kind isolated --vlan-aware
+
+# Create a Layer 3 NAT network with DHCP
+webkvm-cli networks create br-nat --kind nat --cidr 10.50.0.0/24 --dhcp
+
+# Create a direct bridge bound to a physical NIC
+webkvm-cli networks create br-ext --kind direct --iface eth1 --vlan-aware
+
 # Inspect active DHCP leases
 webkvm-cli networks leases vmbr1
 
-# Start or stop network bridge
+# Start, stop, or delete network bridge
 webkvm-cli networks start <name>
 webkvm-cli networks stop <name>
+webkvm-cli networks delete <name>
 ```
 
 ---

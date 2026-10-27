@@ -225,6 +225,7 @@ Cloud-Init Snippets:
 Network Commands:
   networks list        List virtual networks and bridges
   networks show <id>   Show network details
+  networks create <name> [--kind isolated|nat|direct] [--cidr <cidr>] [--vlan-aware] [--iface <nic>] [--dhcp]
   networks start <id> | stop <id> | delete <id>
   networks leases <id> List active DHCP leases on network
 
@@ -1229,7 +1230,7 @@ func runStorage(c *client, cmd []string) error {
 
 func runNetworks(c *client, cmd []string) error {
 	if len(cmd) < 2 {
-		return fmt.Errorf("networks requires a subcommand (list|show|start|stop|delete|leases)")
+		return fmt.Errorf("networks requires a subcommand (list|show|create|start|stop|delete|leases)")
 	}
 	switch cmd[1] {
 	case "list":
@@ -1243,9 +1244,13 @@ func runNetworks(c *client, cmd []string) error {
 		var arr []map[string]any
 		_ = json.Unmarshal(out, &arr)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tFORWARD\tCIDR\tACTIVE\tAUTOSTART")
+		fmt.Fprintln(w, "NAME\tFORWARD\tCIDR\tVLAN\tACTIVE\tAUTOSTART")
 		for _, n := range arr {
-			fmt.Fprintf(w, "%v\t%v\t%v\t%v\t%v\n", n["name"], n["forward"], n["cidr"], n["active"], n["autostart"])
+			vlan := "no"
+			if va, ok := n["vlan_aware"].(bool); ok && va {
+				vlan = "yes"
+			}
+			fmt.Fprintf(w, "%v\t%v\t%v\t%v\t%v\t%v\n", n["name"], n["forward"], n["cidr"], vlan, n["active"], n["autostart"])
 		}
 		return w.Flush()
 
@@ -1266,17 +1271,76 @@ func runNetworks(c *client, cmd []string) error {
 					b, _ := json.Marshal(n)
 					return printRawJSON(b)
 				}
-				fmt.Printf("Name:      %v\n", n["name"])
-				fmt.Printf("Forward:   %v\n", n["forward"])
-				fmt.Printf("CIDR:      %v\n", n["cidr"])
-				fmt.Printf("Gateway:   %v\n", n["gateway"])
-				fmt.Printf("DHCP:      %v\n", n["dhcp"])
-				fmt.Printf("Active:    %v\n", n["active"])
-				fmt.Printf("Autostart: %v\n", n["autostart"])
+				fmt.Printf("Name:       %v\n", n["name"])
+				fmt.Printf("Forward:    %v\n", n["forward"])
+				fmt.Printf("CIDR:       %v\n", n["cidr"])
+				fmt.Printf("Gateway:    %v\n", n["gateway"])
+				fmt.Printf("DHCP:       %v\n", n["dhcp"])
+				fmt.Printf("VLAN-Aware: %v\n", n["vlan_aware"])
+				fmt.Printf("Active:     %v\n", n["active"])
+				fmt.Printf("Autostart:  %v\n", n["autostart"])
 				return nil
 			}
 		}
 		return fmt.Errorf("network %q not found", want)
+
+	case "create":
+		if len(cmd) < 3 {
+			return fmt.Errorf("networks create requires a network name (e.g. webkvm-cli networks create br-lan --kind isolated)")
+		}
+		name := cmd[2]
+		kind := "isolated"
+		cidr := ""
+		iface := ""
+		vlanAware := false
+		dhcp := false
+		autostart := true
+
+		for i := 3; i < len(cmd); i++ {
+			switch cmd[i] {
+			case "--kind":
+				if i+1 < len(cmd) {
+					kind = cmd[i+1]
+					i++
+				}
+			case "--cidr":
+				if i+1 < len(cmd) {
+					cidr = cmd[i+1]
+					i++
+				}
+			case "--iface", "--interface":
+				if i+1 < len(cmd) {
+					iface = cmd[i+1]
+					i++
+				}
+			case "--vlan-aware":
+				vlanAware = true
+			case "--dhcp":
+				dhcp = true
+			case "--no-autostart":
+				autostart = false
+			}
+		}
+
+		payload := map[string]any{
+			"name":       name,
+			"kind":       kind,
+			"cidr":       cidr,
+			"interface":  iface,
+			"vlan_aware": vlanAware,
+			"dhcp":       dhcp,
+			"autostart":  autostart,
+		}
+		bodyBytes, _ := json.Marshal(payload)
+		res, err := c.post("/api/networks", bodyBytes)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printRawJSON(res)
+		}
+		fmt.Printf("created network %s (kind=%s, vlan_aware=%v)\n", name, kind, vlanAware)
+		return nil
 
 	case "start", "stop":
 		if len(cmd) < 3 {

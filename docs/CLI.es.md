@@ -260,18 +260,31 @@ webkvm-cli snippets delete <snippet-id>
 ## Gestión de Redes (`networks`)
 
 ```bash
-# Listar redes y bridges
+# Listar redes y bridges (incluye estado VLAN-aware)
 webkvm-cli networks list
 
 # Ver detalle de configuración de una red
 webkvm-cli networks show vmbr0
 
+# Crear un bridge puro de Capa 2 (switch virtual, sin IP en host)
+webkvm-cli networks create br-lan --kind isolated
+
+# Crear un switch virtual con troncal VLAN-aware 802.1Q
+webkvm-cli networks create br-trunk --kind isolated --vlan-aware
+
+# Crear una red NAT de Capa 3 con DHCP
+webkvm-cli networks create br-nat --kind nat --cidr 10.50.0.0/24 --dhcp
+
+# Crear un bridge directo enlazado a una interfaz física
+webkvm-cli networks create br-ext --kind direct --iface eth1 --vlan-aware
+
 # Consultar concesiones DHCP activas
 webkvm-cli networks leases vmbr1
 
-# Iniciar o detener un bridge de red
+# Iniciar, detener o eliminar un bridge de red
 webkvm-cli networks start <nombre>
 webkvm-cli networks stop <nombre>
+webkvm-cli networks delete <nombre>
 ```
 
 ---
