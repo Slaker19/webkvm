@@ -688,6 +688,9 @@ apt-get update -y
         try {
           if (confirmBulkAction === 'start') await api.startVM(id);
           else if (confirmBulkAction === 'shutdown') await api.shutdownVM(id);
+          else if (confirmBulkAction === 'reboot') await api.rebootVM(id);
+          else if (confirmBulkAction === 'suspend') await api.suspendVM(id);
+          else if (confirmBulkAction === 'resume') await api.resumeVM(id);
           else if (confirmBulkAction === 'forceoff') await api.forceOffVM(id);
           else if (confirmBulkAction === 'delete') await api.deleteVM(id);
           else if (confirmBulkAction === 'autostart-on') await api.setVMAutostart(id, true);
@@ -705,6 +708,9 @@ apt-get update -y
         {
           start: 'iniciadas',
           shutdown: 'apagadas',
+          reboot: 'reiniciadas',
+          suspend: 'pausadas',
+          resume: 'reanudadas',
           forceoff: 'apagadas forzosamente',
           delete: 'eliminadas',
           'autostart-on': 'autostart activado',
@@ -1673,6 +1679,9 @@ apt-get update -y
         ? [
             { key: 'start', label: t('vms.start'), onClick: () => askBulk('start') },
             { key: 'shutdown', label: t('vms.shutdown'), onClick: () => askBulk('shutdown') },
+            { key: 'reboot', label: t('vms.reboot'), onClick: () => askBulk('reboot') },
+            { key: 'suspend', label: t('vms.suspend'), onClick: () => askBulk('suspend') },
+            { key: 'resume', label: t('vms.resume'), onClick: () => askBulk('resume') },
             { key: 'forceoff', label: t('vms.forceOff'), onClick: () => askBulk('forceoff') },
             {
               key: 'snapshot',
@@ -2219,6 +2228,9 @@ apt-get update -y
     : {
         start: t('vms.bulkStartDesc'),
         shutdown: t('vms.bulkShutdownDesc'),
+        reboot: t('vms.bulkRebootDesc'),
+        suspend: t('vms.bulkSuspendDesc'),
+        resume: t('vms.bulkResumeDesc'),
         forceoff: t('vms.bulkForceoffDesc'),
       }[confirmBulkAction] || ''}
   confirmLabel={confirmBulkAction === 'delete' ? t('vms.deleteAll') : t('vms.apply')}
