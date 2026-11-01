@@ -202,8 +202,8 @@
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <div
           class={cn(
-            'grid items-center border-b border-border last:border-0 transition-colors group',
-            onRowClick ? 'cursor-pointer hover:bg-muted/40' : '',
+            'grid items-center border-b border-border/80 last:border-0 transition-colors duration-150 group',
+            onRowClick ? 'cursor-pointer hover:bg-muted/50 active:bg-muted/70' : '',
             rowClass
           )}
           style="grid-template-columns: {gridTemplate};"

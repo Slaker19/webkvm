@@ -23,8 +23,8 @@
   data-slot="card"
   data-size={size}
   class={cn(
-    'bg-card text-card-foreground gap-4 overflow-hidden rounded-lg border border-border py-4 text-sm transition-[border-color,box-shadow] duration-200 ease-out has-data-[slot=card-footer]:pb-0 has-[>img:first-child]:pt-0 data-[size=sm]:gap-3 data-[size=sm]:py-3 data-[size=sm]:has-data-[slot=card-footer]:pb-0 *:[img:first-child]:rounded-t-lg *:[img:last-child]:rounded-b-lg group/card flex flex-col',
-    interactive && 'hover:border-border-hover hover:shadow-md',
+    'bg-card text-card-foreground gap-4 overflow-hidden rounded-lg border border-border py-4 text-sm transition-[border-color,box-shadow,transform] duration-200 ease-out has-data-[slot=card-footer]:pb-0 has-[>img:first-child]:pt-0 data-[size=sm]:gap-3 data-[size=sm]:py-3 data-[size=sm]:has-data-[slot=card-footer]:pb-0 *:[img:first-child]:rounded-t-lg *:[img:last-child]:rounded-b-lg group/card flex flex-col',
+    interactive && 'cursor-pointer hover:border-border-hover hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.995]',
     className
   )}
   {...restProps}

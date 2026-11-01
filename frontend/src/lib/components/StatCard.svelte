@@ -29,12 +29,12 @@
   const dotClass = $derived(status === 'info' ? 'bg-muted-foreground' : stateDotClass(status));
 </script>
 
-<Card interactive class="p-4">
+<Card interactive class="p-4 transition-all duration-200">
   <div class="flex items-center gap-2 mb-2">
     <span class="status-dot {dotClass}"></span>
-    <span class="text-xs text-muted-foreground font-medium">{label}</span>
+    <span class="text-xs text-muted-foreground font-medium tracking-wide">{label}</span>
   </div>
-  <div class="text-base font-semibold tnum">
+  <div class="text-lg font-semibold tnum tracking-tight text-foreground">
     {#if typeof value === 'string'}
       {value}
     {:else}
@@ -42,9 +42,9 @@
     {/if}
   </div>
   {#if hint}
-    <div class="text-xs text-muted-foreground mt-1">{hint}</div>
+    <div class="text-xs text-muted-foreground/80 mt-1 font-normal">{hint}</div>
   {/if}
   {#if chart}
-    <div class="mt-2">{@render chart()}</div>
+    <div class="mt-2.5">{@render chart()}</div>
   {/if}
 </Card>

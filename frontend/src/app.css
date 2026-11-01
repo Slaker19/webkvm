@@ -253,11 +253,10 @@
 
   body {
     margin: 0;
-    /* Soft indigo glow near the top for depth; stays subtle against the
-       flat dark surfaces. Uses the accent-subtle token so it can't be
-       mistaken for a button. */
+    /* Soft subtle depth near the top; stays clean against flat dark surfaces.
+       Uses the accent-subtle token so it never competes with primary actions. */
     background:
-      radial-gradient(60rem 36rem at 50% -10%, var(--accent-subtle) 0%, transparent 55%),
+      radial-gradient(50rem 30rem at 50% -5%, var(--accent-subtle) 0%, transparent 60%),
       var(--background);
     color: var(--foreground);
     font-family:
@@ -268,6 +267,28 @@
       sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Interaction affordance: real buttons and interactive elements always show pointer */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  select,
+  a[href] {
+    cursor: pointer;
+  }
+  button:disabled,
+  [role="button"][aria-disabled="true"],
+  select:disabled {
+    cursor: not-allowed;
+  }
+
+  /* Micro-interaction feedback (Emil Kowalski design-eng):
+     Subtle scale-on-press feedback confirming the interface registered the click */
+  button:not(:disabled):active:not([aria-haspopup="true"]),
+  [role="button"]:not([aria-disabled="true"]):active {
+    transform: scale(0.98);
+    transition: transform 75ms ease-out;
   }
 
   * {
