@@ -522,9 +522,15 @@
         autostart,
         interface: directInterface,
         vlan_aware: vlanAware,
+        dhcp: !!(dhcp && cidr && cidr.trim()),
       };
       if (cidr && cidr.trim()) payload.cidr = cidr.trim();
       if (gateway && gateway.trim()) payload.gateway = gateway.trim();
+      if (payload.dhcp) {
+        payload.dhcp_start = dhcpStart || preview?.dhcpStart || '';
+        payload.dhcp_end = dhcpEnd || preview?.dhcpEnd || '';
+        payload.reservations = cleanReservations();
+      }
       if (dnsList.length > 0) payload.dns = dnsList;
       if (Number(mtu)) payload.mtu = Number(mtu);
     } else {
@@ -760,7 +766,7 @@
               {#each hostInterfaces as iface (iface.name || iface)}
                 <option value={iface.name}
                   >{iface.name}
-                  {iface.type !== 'other' ? `(${iface.type})` : ''} — {iface.state}</option
+                  {iface.type !== 'other' ? `(${iface.type})` : ''} {iface.master ? `[en ${iface.master}]` : ''} — {iface.state}</option
                 >
               {/each}
             </select>
@@ -956,7 +962,7 @@
         {/if}
       {/if}
 
-      {#if mode !== 'l2' && kind !== 'direct'}
+      {#if mode !== 'l2' && (kind !== 'direct' || (cidr && cidr.trim()))}
         <div class="flex items-center gap-2 pt-2 border-t border-border">
           <input
             id="net-dhcp"

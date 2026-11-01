@@ -375,21 +375,44 @@ func (c *Connector) createDirectNetwork(name string, req models.CreateNetworkReq
 		}
 	}
 
+	// Support optional DHCP on direct bridges (e.g. host acts as DHCP server on the bridge)
+	dhcp := req.DHCP != nil && *req.DHCP
+	var dhcpStart, dhcpEnd string
+	var reservations []models.DHCPReservation
+	effectiveCIDR := cidr
+	if effectiveCIDR == "" {
+		effectiveCIDR = moved
+	}
+	if dhcp && effectiveCIDR != "" {
+		start, end, err := resolveDHCPRange(effectiveCIDR, req.DHCPStart, req.DHCPEnd)
+		if err == nil {
+			reservations, _ = normalizeReservations(effectiveCIDR, req.Reservations)
+			if err := configureBridgeDHCP(name, effectiveCIDR, start, end, cleanDNS, reservations); err == nil {
+				dhcpStart, dhcpEnd = start, end
+			}
+		}
+	}
+
 	if netStoreVar != nil {
 		storedCIDR := cidr
 		if storedCIDR == "" {
 			storedCIDR = moved
 		}
-		_ = netStoreVar.Save(netstore.Record{
-			Name:      name,
-			Kind:      "direct",
-			Interface: iface,
-			MovedIPv4: moved,
-			CIDR:      storedCIDR,
-			Gateway:   gateway,
-			DNS:       cleanDNS,
-			MTU:       req.MTU,
-		})
+		rec := netstore.Record{
+			Name:         name,
+			Kind:         "direct",
+			Interface:    iface,
+			MovedIPv4:    moved,
+			CIDR:         storedCIDR,
+			Gateway:      gateway,
+			DNS:          cleanDNS,
+			MTU:          req.MTU,
+			VLanAware:    vlanAware,
+			DHCPStart:    dhcpStart,
+			DHCPEnd:      dhcpEnd,
+			Reservations: reservations,
+		}
+		_ = netStoreVar.Save(rec)
 	}
 	return networkView(name), nil
 }
