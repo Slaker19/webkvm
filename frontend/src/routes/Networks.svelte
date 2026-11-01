@@ -865,6 +865,69 @@
           </div>
         {/if}
       {:else}
+        {@const curNet = networks.find((n) => n.name === editingNet)}
+        {@const curSlaves = curNet?.slaves || []}
+        {@const curLeases = (editingNet && leasesByNetwork[editingNet]) || []}
+
+        <!-- Operational Status & Real Hardware Card -->
+        <div class="p-3.5 rounded-xl border border-border/80 bg-background/60 space-y-3">
+          <div class="flex items-center justify-between border-b border-border/50 pb-2">
+            <span class="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <Icon name="network" size={14} class="text-accent" />
+              {t('networks.operationalStatusTitle')}
+            </span>
+            <div class="flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full {curNet?.active ? 'bg-success' : 'bg-muted-foreground'}"></span>
+              <span class="text-xs font-medium {curNet?.active ? 'text-success' : 'text-muted-foreground'}">
+                {curNet?.active ? t('networks.activeBadge') : t('networks.inactiveBadge')}
+              </span>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            <div class="p-2.5 rounded-lg bg-muted/30 border border-border/50">
+              <span class="text-muted-foreground block mb-0.5">{t('networks.vlanFilteringStatus')}</span>
+              <span class="font-semibold {vlanAware ? 'text-accent' : 'text-foreground'}">
+                {vlanAware ? t('networks.vlanFilteringEnabled') : t('networks.vlanFilteringDisabled')}
+              </span>
+            </div>
+            <div class="p-2.5 rounded-lg bg-muted/30 border border-border/50">
+              <span class="text-muted-foreground block mb-0.5">{t('networks.activeDhcpClientsCount')}</span>
+              <span class="font-mono font-bold text-foreground tnum">{curLeases.length}</span>
+            </div>
+            <div class="p-2.5 rounded-lg bg-muted/30 border border-border/50">
+              <span class="text-muted-foreground block mb-0.5">MTU</span>
+              <span class="font-mono font-semibold text-foreground tnum">{curNet?.mtu || 1500}</span>
+            </div>
+          </div>
+
+          <div>
+            <span class="text-[11px] text-muted-foreground font-medium block mb-1">
+              {t('networks.slavesAttachedLabel')}:
+            </span>
+            {#if curSlaves.length > 0 || (kind === 'direct' && directInterface)}
+              <div class="flex flex-wrap gap-1.5">
+                {#if kind === 'direct' && directInterface}
+                  <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono text-[11px] bg-accent/10 text-accent border border-accent/20">
+                    <Icon name="link" size={11} />
+                    {directInterface} (primary)
+                  </span>
+                {/if}
+                {#each curSlaves as sl (sl)}
+                  {#if sl !== directInterface}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono text-[11px] bg-muted text-foreground border border-border">
+                      <Icon name="link" size={11} class="text-muted-foreground" />
+                      {sl}
+                    </span>
+                  {/if}
+                {/each}
+              </div>
+            {:else}
+              <span class="text-[11px] text-muted-foreground/80 italic">{t('networks.noSlavesAttached')}</span>
+            {/if}
+          </div>
+        </div>
+
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label for="net-edit-kind" class="block text-sm font-medium mb-1.5"
@@ -896,7 +959,7 @@
           {:else}
             <div>
               <label for="net-edit-cidr" class="block text-sm font-medium mb-1.5">CIDR</label>
-              <Input id="net-edit-cidr" value={cidr} readonly class="opacity-50" />
+              <Input id="net-edit-cidr" value={cidr || '— (L2 Switch)'} readonly class="opacity-50" />
             </div>
           {/if}
         </div>
