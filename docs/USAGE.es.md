@@ -223,11 +223,13 @@ desaparecido.
 - **L2 compartido `vmbr0`/`br0`** (por defecto, recomendado): las VMs y los
   contenedores salen a la LAN real y obtienen su IP del router (DHCP o
   estática).
+- **Switches Virtuales Puros de Capa 2 (sin IP en el host)**: Bridges Linux no gestionados sin CIDR ni dnsmasq, ideales para routers/firewalls virtualizados (pfSense, OPNsense, VyOS), laboratorios aislados y segmentación zero-trust.
+- **Trunking Universal VLAN 802.1Q**: Activación de `vlan_filtering 1` en cualquier bridge para transportar múltiples VLANs etiquetadas entre invitados KVM y contenedores Incus sin crear bridges adicionales en el host.
 - **NAT aislada `vmbr1`** (opcional): un bridge Linux sobre una interfaz `dummy`
   del kernel con `100.0.0.1/24`, DHCP de `dnsmasq` y `MASQUERADE`.
 - Desde la página de **Redes** se pueden crear **bridges del host** adicionales
   con IP opcional y rango DHCP personalizado (inicio/fin, puerta de enlace,
-  DNS), y activar el autoarranque por bridge.
+  DNS), y activar el autoarranque por bridge. El mapa de topología interactivo muestra los enlaces físicos y los puertos de los invitados.
 
 ### Firewall por VM
 

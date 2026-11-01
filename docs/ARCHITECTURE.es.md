@@ -51,7 +51,12 @@ WebKVM prescinde de dependencias complejas en el despliegue:
 ### 2. Capa de Cómputo Híbrida (`internal/compute`)
 WebKVM define una interfaz unificada en `internal/compute/backend.go`:
 - **`KVMBackend` (`internal/compute/kvm.go`)**: Se comunica con KVM a través de `libvirt.org/go/libvirt` (CGO). Gestiona la virtualización por hardware, generación de XML de dominios QEMU, conexión de dispositivos PCI y controladores VirtIO.
-- **`IncusBackend` (`internal/compute/incus/incus.go`)**: Se conecta directamente al socket de Incus/LXD (`/var/lib/incus/unix.socket`) mediante el SDK oficial en Go de Incus.
+- **`IncusBackend` (`internal/compute/incus/`)**: Controlador modularizado que se conecta directamente al socket de Incus/LXD (`/var/lib/incus/unix.socket`) mediante el SDK oficial en Go de Incus. Descompuesto en submódulos de dominio:
+  - `incus_lifecycle.go`: Ciclo de vida de instancias (start/stop/reboot/freeze), autoarranque y actualización de dominios.
+  - `incus_devices.go`: Discos, interfaces de red con soporte VLAN 802.1Q, dispositivos USB, passthrough PCI y carpetas compartidas 9p.
+  - `incus_storage.go`: Ciclo de vida de pools de almacenamiento, volúmenes custom y migración de almacenamiento en caliente (`MoveDomainStorage`).
+  - `incus_images.go`: Catálogo curado de contenedores, consultas dinámicas a simplestreams y caché local de imágenes.
+  - `incus_subsystems.go`: Consola interactiva PTY serie, metadatos WebKVM y exportación/importación streaming de copias de seguridad.
 - **`CombinedBackend` (`internal/compute/combined.go`)**: Enruta dinámicamente las llamadas hacia KVM o Incus en función del identificador de la instancia, presentando una API homogénea.
 
 ### 3. Concurrencia y Resiliencia (`internal/safego`)

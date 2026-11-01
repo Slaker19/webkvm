@@ -205,11 +205,13 @@ networks (`default`, `virbr0`, …) are gone.
 
 - **Shared L2 `vmbr0`/`br0`** (default, recommended): VMs and containers land
   on the real LAN and get their IP from the router (DHCP or static).
+- **Pure Layer 2 Switches (no host IP)**: Unmanaged Linux bridges without CIDR or dnsmasq, ideal for virtual routers/firewalls (pfSense, OPNsense, VyOS), isolated test pods, and zero-trust internal fabrics.
+- **Universal 802.1Q VLAN-Aware Trunking**: Enable `vlan_filtering 1` on any bridge to transport multiple tagged VLANs across KVM guests and Incus containers without creating additional host bridges.
 - **Isolated NAT `vmbr1`** (opt-in): a Linux bridge on a kernel `dummy`
   interface with `100.0.0.1/24`, `dnsmasq` DHCP and `MASQUERADE`.
 - Extra **host bridges** with an optional IP + custom DHCP range
   (start/end, gateway, DNS) can be created from the **Networking** page, and
-  autostart toggled per bridge.
+  autostart toggled per bridge. Interactive topology maps show attached physical uplinks and guest ports.
 
 ### Per-VM firewall
 

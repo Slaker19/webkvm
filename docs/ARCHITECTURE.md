@@ -51,7 +51,12 @@ WebKVM eliminates the operational complexity of multi-tiered web apps:
 ### 2. Hybrid Compute Layer (`internal/compute`)
 WebKVM defines a clean, abstracted `Instance` interface in `internal/compute/backend.go`:
 - **`KVMBackend` (`internal/compute/kvm.go`)**: Interfaces with the Linux Kernel-based Virtual Machine via `libvirt.org/go/libvirt`. Handles hardware virtualization, QEMU domain XML generation, PCI device attachment, and VirtIO drivers.
-- **`IncusBackend` (`internal/compute/incus/incus.go`)**: Directly communicates with the Incus/LXD daemon socket (`/var/lib/incus/unix.socket` or `/var/snap/lxd/common/lxd/unix.socket`) using the official Incus Go client SDK.
+- **`IncusBackend` (`internal/compute/incus/`)**: Modularized driver communicating with the Incus/LXD daemon socket (`/var/lib/incus/unix.socket` or `/var/snap/lxd/common/lxd/unix.socket`) using the official Incus Go client SDK. Split into domain modules:
+  - `incus_lifecycle.go`: Instance lifecycle (start/stop/reboot/freeze), autostart, and domain mutation.
+  - `incus_devices.go`: Storage disks, network interfaces with 802.1Q VLAN support, USB devices, PCI passthrough, and 9p shared folders.
+  - `incus_storage.go`: Storage pool lifecycle, custom volumes, and live cross-pool storage migration (`MoveDomainStorage`).
+  - `incus_images.go`: Curated container catalog, dynamic simplestreams querying, and image cache management.
+  - `incus_subsystems.go`: Interactive PTY serial console, WebKVM metadata, and streaming backup exports/imports.
 - **`CombinedBackend` (`internal/compute/combined.go`)**: Seamlessly routes incoming API calls to either KVM or Incus based on the instance identifier, presenting a single, unified compute interface to the user.
 
 ### 3. Concurrency & Goroutine Safety (`internal/safego`)
