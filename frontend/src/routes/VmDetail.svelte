@@ -29,6 +29,8 @@
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import DeleteVmDialog from '$lib/components/DeleteVmDialog.svelte';
   import BatchCloneModal from '$lib/components/BatchCloneModal.svelte';
+  import BlockCard from '$lib/components/BlockCard.svelte';
+  import TerminalPanel from '$lib/components/TerminalPanel.svelte';
   import VmAlertsTab from '$lib/components/vm-detail/VmAlertsTab.svelte';
   import VmScheduleTab from '$lib/components/vm-detail/VmScheduleTab.svelte';
   import VmHistoryTab from '$lib/components/vm-detail/VmHistoryTab.svelte';
@@ -305,6 +307,7 @@
   const sectionTabs = $derived(
     [
       { id: 'overview', label: t('vmDetail.overview') },
+      !isContainerVm ? { id: 'console', label: t('vms.openConsole') } : null,
       { id: 'terminal', label: isContainerVm ? 'Terminal Shell' : 'Consola Serie' },
       { id: 'hardware', label: t('vmDetail.hardware') },
       !isContainerVm ? { id: 'cloudinit', label: 'Cloud-Init' } : null,
@@ -1686,8 +1689,20 @@
             {saveSchedule}
           />
         </div>
+        {#if !isContainerVm}
+          <div class="space-y-4 {activeSection === 'console' ? '' : 'hidden'}">
+            <VmConsoleTab {vmId} {vm} {isContainerVm} onStart={() => doActionRun('startVM')} />
+          </div>
+        {/if}
         <div class="space-y-5 {activeSection === 'terminal' ? '' : 'hidden'}">
-          <VmConsoleTab {vmId} {isContainerVm} />
+          <div id="vm-serial-block">
+            <BlockCard
+              bid="serial"
+              title={isContainerVm ? 'Terminal Shell (xterm)' : t('vmDetail.serialConsoleTitle')}
+            >
+              <TerminalPanel mode="vm" {vmId} />
+            </BlockCard>
+          </div>
         </div>
         <div class={activeSection === 'hardware' ? '' : 'hidden'}>
           <VmHardwareTab
@@ -1907,7 +1922,7 @@
             {:else}
               {#if (vm.graphics_type || 'both') === 'both'}
                 <div class="grid grid-cols-2 gap-2">
-                  <Button onclick={() => openConsole('vnc')} class="w-full text-xs">
+                  <Button onclick={() => (activeSection = 'console')} class="w-full text-xs">
                     <Terminal class="w-3.5 h-3.5 mr-1" />
                     noVNC
                   </Button>
@@ -1930,7 +1945,7 @@
                   Consola SPICE
                 </Button>
               {:else if vm.graphics_type === 'vnc'}
-                <Button onclick={() => openConsole('vnc')} class="w-full text-xs">
+                <Button onclick={() => (activeSection = 'console')} class="w-full text-xs">
                   <Terminal class="w-3.5 h-3.5 mr-1" />
                   Consola noVNC
                 </Button>
