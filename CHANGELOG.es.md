@@ -6,6 +6,21 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.11] — 2026-11-01
+
+### Añadido
+- **Modo Dual de Vista en VmList**: Alternador entre Vista de Tarjetas y Vista de Tabla compacta empresarial, persistido en preferencias del navegador (`localStorage`).
+- **Copiado Rápido de IP en 1 Clic**: Copia instantánea al portapapeles con confirmación visual de `check` y notificación toast, tanto en tarjetas como en tabla sin salir de la lista.
+- **Preparación para Clustering (Multi-Nodo)**: Badge de nodo (`vm.node`) en tarjetas y filas de tabla, junto con chips de filtrado dinámico por anfitrión de clúster.
+- **Barra Unificada de Filtros Rápidos**: Filtros siempre visibles con contadores en tiempo real por tipo de instancia (Todas, VMs, Contenedores) y estado (En ejecución, Apagadas, Pausadas).
+
+### Corregido
+- **Aprovisionamiento Fino en Almacenamiento (Sparse)**: Sustitución de `STORAGE_VOL_CREATE_PREALLOC_METADATA` por asignación dispersa estándar (`0`), evitando que `qemu-img` fuerce `preallocation=falloc` y falle con `No space left on device` (ENOSPC).
+- **Corrección en Botón de Modo Selección**: Corregido un fallo por el cual un `$effect` cerraba inmediatamente el modo selección al estar vacía la lista de seleccionados.
+- **Seguridad y Vulnerabilidades**:
+  - Actualización de dependencia Go `golang.org/x/net` a `v0.62.0`, resolviendo GO-2026-6866 y GO-2026-6860.
+  - Sobreescritura de `minimatch` a `^11.0.3` en npm, eliminando 13 vulnerabilidades de severidad moderada en la cadena de compilación frontend.
+
 ## [0.1.10] — 2026-10-27
 
 ### Añadido

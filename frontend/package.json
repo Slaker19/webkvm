@@ -1,7 +1,7 @@
 {
   "name": "webkvm-frontend",
   "private": true,
-  "version": "0.1.10",
+  "version": "0.1.11",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -56,13 +56,6 @@
     "vitest": "^4.1.12"
   },
   "overrides": {
-    "minimatch": {
-      "brace-expansion": "^1.1.21"
-    },
-    "@typescript-eslint/typescript-estree": {
-      "minimatch": {
-        "brace-expansion": "^5.0.12"
-      }
-    }
+    "minimatch": "^11.0.3"
   }
 }
