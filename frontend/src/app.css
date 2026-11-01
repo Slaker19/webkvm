@@ -271,22 +271,22 @@
 
   /* Interaction affordance: real buttons and interactive elements always show pointer */
   button:not(:disabled),
-  [role="button"]:not([aria-disabled="true"]),
+  [role='button']:not([aria-disabled='true']),
   summary,
   select,
   a[href] {
     cursor: pointer;
   }
   button:disabled,
-  [role="button"][aria-disabled="true"],
+  [role='button'][aria-disabled='true'],
   select:disabled {
     cursor: not-allowed;
   }
 
   /* Micro-interaction feedback (Emil Kowalski design-eng):
      Subtle scale-on-press feedback confirming the interface registered the click */
-  button:not(:disabled):active:not([aria-haspopup="true"]),
-  [role="button"]:not([aria-disabled="true"]):active {
+  button:not(:disabled):active:not([aria-haspopup='true']),
+  [role='button']:not([aria-disabled='true']):active {
     transform: scale(0.98);
     transition: transform 75ms ease-out;
   }

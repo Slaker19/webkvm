@@ -105,9 +105,7 @@
         >{t('common.cancel')}</Button
       >
       <Button onclick={handleSubmit} disabled={importing || !file}>
-        {#if importing}<Spinner size="sm" color="text-white" />{:else}{t(
-            'vms.importLxc'
-          )}{/if}
+        {#if importing}<Spinner size="sm" color="text-white" />{:else}{t('vms.importLxc')}{/if}
       </Button>
     </Dialog.Footer>
   </Dialog.Content>

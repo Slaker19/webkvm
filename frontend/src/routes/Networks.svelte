@@ -766,7 +766,8 @@
               {#each hostInterfaces as iface (iface.name || iface)}
                 <option value={iface.name}
                   >{iface.name}
-                  {iface.type !== 'other' ? `(${iface.type})` : ''} {iface.master ? `[en ${iface.master}]` : ''} — {iface.state}</option
+                  {iface.type !== 'other' ? `(${iface.type})` : ''}
+                  {iface.master ? `[en ${iface.master}]` : ''} — {iface.state}</option
                 >
               {/each}
             </select>
@@ -829,7 +830,9 @@
           </div>
         {:else if mode === 'l2'}
           <div class="space-y-3">
-            <p class="text-xs text-muted-foreground bg-muted/40 p-3 rounded-lg border border-border">
+            <p
+              class="text-xs text-muted-foreground bg-muted/40 p-3 rounded-lg border border-border"
+            >
               {t('networks.modeL2Help')}
             </p>
             <label class="flex items-center gap-2 text-sm cursor-pointer">
@@ -872,13 +875,21 @@
         <!-- Operational Status & Real Hardware Card -->
         <div class="p-3.5 rounded-xl border border-border/80 bg-background/60 space-y-3">
           <div class="flex items-center justify-between border-b border-border/50 pb-2">
-            <span class="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+            <span
+              class="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5"
+            >
               <Icon name="network" size={14} class="text-accent" />
               {t('networks.operationalStatusTitle')}
             </span>
             <div class="flex items-center gap-1.5">
-              <span class="w-2 h-2 rounded-full {curNet?.active ? 'bg-success' : 'bg-muted-foreground'}"></span>
-              <span class="text-xs font-medium {curNet?.active ? 'text-success' : 'text-muted-foreground'}">
+              <span
+                class="w-2 h-2 rounded-full {curNet?.active ? 'bg-success' : 'bg-muted-foreground'}"
+              ></span>
+              <span
+                class="text-xs font-medium {curNet?.active
+                  ? 'text-success'
+                  : 'text-muted-foreground'}"
+              >
                 {curNet?.active ? t('networks.activeBadge') : t('networks.inactiveBadge')}
               </span>
             </div>
@@ -886,18 +897,25 @@
 
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
             <div class="p-2.5 rounded-lg bg-muted/30 border border-border/50">
-              <span class="text-muted-foreground block mb-0.5">{t('networks.vlanFilteringStatus')}</span>
+              <span class="text-muted-foreground block mb-0.5"
+                >{t('networks.vlanFilteringStatus')}</span
+              >
               <span class="font-semibold {vlanAware ? 'text-accent' : 'text-foreground'}">
-                {vlanAware ? t('networks.vlanFilteringEnabled') : t('networks.vlanFilteringDisabled')}
+                {vlanAware
+                  ? t('networks.vlanFilteringEnabled')
+                  : t('networks.vlanFilteringDisabled')}
               </span>
             </div>
             <div class="p-2.5 rounded-lg bg-muted/30 border border-border/50">
-              <span class="text-muted-foreground block mb-0.5">{t('networks.activeDhcpClientsCount')}</span>
+              <span class="text-muted-foreground block mb-0.5"
+                >{t('networks.activeDhcpClientsCount')}</span
+              >
               <span class="font-mono font-bold text-foreground tnum">{curLeases.length}</span>
             </div>
             <div class="p-2.5 rounded-lg bg-muted/30 border border-border/50">
               <span class="text-muted-foreground block mb-0.5">MTU</span>
-              <span class="font-mono font-semibold text-foreground tnum">{curNet?.mtu || 1500}</span>
+              <span class="font-mono font-semibold text-foreground tnum">{curNet?.mtu || 1500}</span
+              >
             </div>
           </div>
 
@@ -908,14 +926,18 @@
             {#if curSlaves.length > 0 || (kind === 'direct' && directInterface)}
               <div class="flex flex-wrap gap-1.5">
                 {#if kind === 'direct' && directInterface}
-                  <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono text-[11px] bg-accent/10 text-accent border border-accent/20">
+                  <span
+                    class="inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono text-[11px] bg-accent/10 text-accent border border-accent/20"
+                  >
                     <Icon name="link" size={11} />
                     {directInterface} (primary)
                   </span>
                 {/if}
                 {#each curSlaves as sl (sl)}
                   {#if sl !== directInterface}
-                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono text-[11px] bg-muted text-foreground border border-border">
+                    <span
+                      class="inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono text-[11px] bg-muted text-foreground border border-border"
+                    >
                       <Icon name="link" size={11} class="text-muted-foreground" />
                       {sl}
                     </span>
@@ -923,7 +945,9 @@
                 {/each}
               </div>
             {:else}
-              <span class="text-[11px] text-muted-foreground/80 italic">{t('networks.noSlavesAttached')}</span>
+              <span class="text-[11px] text-muted-foreground/80 italic"
+                >{t('networks.noSlavesAttached')}</span
+              >
             {/if}
           </div>
         </div>
@@ -959,7 +983,12 @@
           {:else}
             <div>
               <label for="net-edit-cidr" class="block text-sm font-medium mb-1.5">CIDR</label>
-              <Input id="net-edit-cidr" value={cidr || '— (L2 Switch)'} readonly class="opacity-50" />
+              <Input
+                id="net-edit-cidr"
+                value={cidr || '— (L2 Switch)'}
+                readonly
+                class="opacity-50"
+              />
             </div>
           {/if}
         </div>
@@ -1213,10 +1242,7 @@
   {:else}
     <div id="networks-table-anchor" class="flex items-center justify-between gap-3 mb-3">
       <div class="w-full sm:w-72">
-        <SearchInput
-          bind:value={searchQuery}
-          placeholder={t('common.search')}
-        />
+        <SearchInput bind:value={searchQuery} placeholder={t('common.search')} />
       </div>
     </div>
     <DataTable

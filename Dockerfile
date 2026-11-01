@@ -63,7 +63,7 @@ FROM ubuntu:24.04
 
 # Runtime dependencies: client-side tools required for libvirt, storage,
 # networking and system operations.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
       openssl \
