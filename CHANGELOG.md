@@ -6,24 +6,13 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
-## [0.1.11] — 2026-11-01
+## [0.1.10] — 2026-11-01
 
 ### Added
 - **Dual View Mode in VmList**: Added toggle between Cards Grid and Dense Enterprise Table view, stored in user preferences (`localStorage`).
 - **1-Click IP Copy**: Instant clipboard copy with visual feedback and toast on both cards and table without navigating to instance details.
 - **Clustering Readiness**: First-class Node badge (`vm.node`) on cards and table, plus cluster node filtering chips.
 - **Unified Filter Chips**: Always-visible quick filter bar with live counts for instance types (All, VMs, Containers) and states (Running, Shutoff, Paused).
-
-### Fixed
-- **Storage Volume Thin Provisioning**: Switched from `STORAGE_VOL_CREATE_PREALLOC_METADATA` to standard sparse creation (`0`), preventing `qemu-img` from running `preallocation=falloc` and failing with `No space left on device` (ENOSPC).
-- **Select Mode Toggle Bug**: Fixed issue where the Select Mode button in `VmList` auto-exited immediately due to an eager effect when `selectedKeys` was empty.
-- **Security & Vulnerabilities**:
-  - Upgraded Go dependency `golang.org/x/net` to `v0.62.0`, resolving GO-2026-6866 and GO-2026-6860.
-  - Pinned `minimatch` to `^11.0.3` via npm overrides, eliminating 13 moderate vulnerabilities in frontend toolchain.
-
-## [0.1.10] — 2026-10-27
-
-### Added
 - **Flexible Layer 2 & Layer 3 Network Management**:
   - Pure Layer 2 virtual switch creation without required host IP or dnsmasq (`no CIDR`), ideal for virtual routers/firewalls (pfSense, OPNsense, VyOS) and isolated zero-trust workloads.
   - Universal 802.1Q VLAN-aware trunking (`vlan_filtering 1`) supported across all Linux bridges and compatible with both QEMU/KVM guests and Incus/LXC containers.
@@ -34,6 +23,13 @@ Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
   - Native daemon `smart.Watcher` performing periodic (24h) drives sweeps, alerting on disk failure, high temperature (≥60°C), or reallocated sectors (>50) via the `notify` subsystem.
 - **Terminal Session Log Downloader**:
   - 1-click `.log` export in `TerminalPanel` to download session buffers directly from serial and host consoles.
+
+### Fixed & Hardened
+- **Storage Volume Thin Provisioning**: Switched from `STORAGE_VOL_CREATE_PREALLOC_METADATA` to standard sparse creation (`0`), preventing `qemu-img` from running `preallocation=falloc` and failing with `No space left on device` (ENOSPC).
+- **Select Mode Toggle Bug**: Fixed issue where the Select Mode button in `VmList` auto-exited immediately due to an eager effect when `selectedKeys` was empty.
+- **Security & Vulnerabilities**:
+  - Upgraded Go dependency `golang.org/x/net` to `v0.62.0`, resolving GO-2026-6866 and GO-2026-6860.
+  - Pinned `minimatch` to `^11.0.3` via npm overrides, eliminating 13 moderate vulnerabilities in frontend toolchain.
 
 ### Security & Hardening
 - **Multi-Tenant Batch Clone ACL Enforcement**: Enforced `assertPoolAllowed`, `assertNetworkAllowed`, and `assertPoolPurpose` in `POST /api/vms/{id}/batch-clone` to prevent restricted operators from allocating VMs into unauthorized storage pools or network bridges.

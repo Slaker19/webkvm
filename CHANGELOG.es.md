@@ -6,24 +6,13 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
-## [0.1.11] — 2026-11-01
+## [0.1.10] — 2026-11-01
 
 ### Añadido
 - **Modo Dual de Vista en VmList**: Alternador entre Vista de Tarjetas y Vista de Tabla compacta empresarial, persistido en preferencias del navegador (`localStorage`).
 - **Copiado Rápido de IP en 1 Clic**: Copia instantánea al portapapeles con confirmación visual de `check` y notificación toast, tanto en tarjetas como en tabla sin salir de la lista.
 - **Preparación para Clustering (Multi-Nodo)**: Badge de nodo (`vm.node`) en tarjetas y filas de tabla, junto con chips de filtrado dinámico por anfitrión de clúster.
 - **Barra Unificada de Filtros Rápidos**: Filtros siempre visibles con contadores en tiempo real por tipo de instancia (Todas, VMs, Contenedores) y estado (En ejecución, Apagadas, Pausadas).
-
-### Corregido
-- **Aprovisionamiento Fino en Almacenamiento (Sparse)**: Sustitución de `STORAGE_VOL_CREATE_PREALLOC_METADATA` por asignación dispersa estándar (`0`), evitando que `qemu-img` fuerce `preallocation=falloc` y falle con `No space left on device` (ENOSPC).
-- **Corrección en Botón de Modo Selección**: Corregido un fallo por el cual un `$effect` cerraba inmediatamente el modo selección al estar vacía la lista de seleccionados.
-- **Seguridad y Vulnerabilidades**:
-  - Actualización de dependencia Go `golang.org/x/net` a `v0.62.0`, resolviendo GO-2026-6866 y GO-2026-6860.
-  - Sobreescritura de `minimatch` a `^11.0.3` en npm, eliminando 13 vulnerabilidades de severidad moderada en la cadena de compilación frontend.
-
-## [0.1.10] — 2026-10-27
-
-### Añadido
 - **Gestión Flexible de Redes Capa 2 y Capa 3**:
   - Creación de switches virtuales puros de Capa 2 sin IP requerida en el anfitrión ni dnsmasq (`sin CIDR`), ideal para routers y firewalls virtualizados (pfSense, OPNsense, VyOS) y entornos zero-trust.
   - Soporte universal para troncales VLAN 802.1Q (`vlan_filtering 1`) en cualquier bridge de Linux, compatible de forma unificada para invitados QEMU/KVM y contenedores Incus/LXC.
@@ -34,6 +23,13 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
   - Demonio `smart.Watcher` integrado que realiza barridos periódicos (cada 24 horas) y notifica automáticamente ante fallos inminentes, temperatura crítica (≥60°C) o sectores reasignados (>50) vía el subsistema `notify`.
 - **Descarga de Sesión de Terminal**:
   - Exportación directa en 1-clic a archivo `.log` desde la barra de herramientas de `TerminalPanel` tanto en terminales serie de VMs como en consolas del host.
+
+### Corregido y Blindado
+- **Aprovisionamiento Fino en Almacenamiento (Sparse)**: Sustitución de `STORAGE_VOL_CREATE_PREALLOC_METADATA` por asignación dispersa estándar (`0`), evitando que `qemu-img` fuerce `preallocation=falloc` y falle con `No space left on device` (ENOSPC).
+- **Corrección en Botón de Modo Selección**: Corregido un fallo por el cual un `$effect` cerraba inmediatamente el modo selección al estar vacía la lista de seleccionados.
+- **Seguridad y Vulnerabilidades**:
+  - Actualización de dependencia Go `golang.org/x/net` a `v0.62.0`, resolviendo GO-2026-6866 y GO-2026-6860.
+  - Sobreescritura de `minimatch` a `^11.0.3` en npm, eliminando 13 vulnerabilidades de severidad moderada en la cadena de compilación frontend.
 
 ### Seguridad y Blindaje
 - **Control de Acceso en Clonación en Lote**: Aplicación de `assertPoolAllowed`, `assertNetworkAllowed` y `assertPoolPurpose` en `POST /api/vms/{id}/batch-clone` para evitar que operadores con acceso restringido clonen máquinas en pools de almacenamiento o bridges de red no autorizados.
