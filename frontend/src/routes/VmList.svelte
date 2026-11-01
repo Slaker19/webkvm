@@ -81,11 +81,64 @@
     CloudCog,
     Box,
     SquareTerminal,
+    LayoutGrid,
+    List,
+    Copy,
+    Check,
+    Server,
   } from '@lucide/svelte';
 
   let vms = $state([]);
   let loading = $state(true);
   let error = $state('');
+
+  // View mode: 'grid' (cards) vs 'table' (dense tabular)
+  let viewMode = $state(
+    typeof localStorage !== 'undefined'
+      ? localStorage.getItem('webkvm.vmlist.view_mode') || 'grid'
+      : 'grid'
+  );
+
+  function setViewMode(mode) {
+    viewMode = mode;
+    try {
+      localStorage.setItem('webkvm.vmlist.view_mode', mode);
+    } catch {
+      /* ignore if storage is restricted */
+    }
+  }
+
+  // 1-click IP copy with instant feedback
+  let copiedIp = $state('');
+  let copyTimeout = null;
+
+  function copyIp(ip, e) {
+    if (e) e.stopPropagation();
+    if (!ip) return;
+    navigator.clipboard.writeText(ip).then(() => {
+      copiedIp = ip;
+      toast.success(`${t('vms.ipCopied')}: ${ip}`);
+      if (copyTimeout) clearTimeout(copyTimeout);
+      copyTimeout = setTimeout(() => {
+        copiedIp = '';
+      }, 1800);
+    }).catch(() => {
+      /* ignore clipboard rejection */
+    });
+  }
+
+  // Cluster nodes (telemetry & filtering for multi-node clusters)
+  let clusterNodes = $state([]);
+  const availableNodes = $derived.by(() => {
+    const set = new SvelteSet(['local']);
+    for (const n of clusterNodes) {
+      if (n.name) set.add(n.name);
+    }
+    for (const v of vms) {
+      if (v.node) set.add(v.node);
+    }
+    return Array.from(set);
+  });
 
   // Read initial filter state from URL query.
   const route = $derived(getRoute());
@@ -95,6 +148,7 @@
   let search = $state(readQuery('q'));
   let groupFilter = $state(readQuery('group') || 'all');
   let stateFilter = $state(readQuery('state') || 'all');
+  let nodeFilter = $state(readQuery('node') || 'all');
   // v1.4 Fase 4: type filter (All · VMs · Containers), PLAN-LXD 5.1.
   let typeFilter = $state(readQuery('type') || 'all');
 
@@ -104,6 +158,7 @@
     if (search) q.set('q', search);
     if (groupFilter && groupFilter !== 'all') q.set('group', groupFilter);
     if (stateFilter && stateFilter !== 'all') q.set('state', stateFilter);
+    if (nodeFilter && nodeFilter !== 'all') q.set('node', nodeFilter);
     if (typeFilter && typeFilter !== 'all') q.set('type', typeFilter);
     if (selectMode) q.set('select', '1');
     const target = '/vms' + (q.toString() ? '?' + q.toString() : '');
@@ -402,12 +457,16 @@ apt-get update -y
     if (typeFilter !== 'all') {
       out = out.filter((v) => (typeFilter === 'container' ? isContainer(v) : v.type === 'vm'));
     }
+    if (nodeFilter !== 'all') {
+      out = out.filter((v) => (v.node || 'local') === nodeFilter);
+    }
     if (q) {
       out = out.filter(
         (v) =>
           (v.name || '').toLowerCase().includes(q) ||
           (v.alias && v.alias.toLowerCase().includes(q)) ||
           (v.ip && v.ip.includes(q)) ||
+          (v.node && v.node.toLowerCase().includes(q)) ||
           vmIps(v).some((ip) => ip.includes(q))
       );
     }
@@ -518,6 +577,7 @@ apt-get update -y
   onMount(() => {
     loadVMs();
     loadGroups();
+    loadNodes();
     // Subscribe to VM state events for realtime updates
     const off = events.onVmState((e) => {
       const idx = vms.findIndex((v) => v.id === e.vm_id);
@@ -568,6 +628,15 @@ apt-get update -y
       groups = res.groups || [];
     } catch {
       groups = [];
+    }
+  }
+
+  async function loadNodes() {
+    try {
+      const res = await api.listNodes();
+      clusterNodes = res.nodes || res || [];
+    } catch {
+      clusterNodes = [];
     }
   }
 
@@ -1609,6 +1678,34 @@ apt-get update -y
 
   <!-- Toolbar: kept on its own row so it never overlaps the title/subtitle -->
   <div class="flex flex-wrap items-center gap-2 mb-4">
+    <!-- View mode switcher: Cards Grid vs Compact Table -->
+    <div class="inline-flex items-center rounded-lg border border-border p-0.5 bg-muted/40">
+      <button
+        type="button"
+        onclick={() => setViewMode('grid')}
+        class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors {viewMode === 'grid'
+          ? 'bg-card text-foreground shadow-xs border border-border'
+          : 'text-muted-foreground hover:text-foreground'}"
+        title={t('vms.viewGrid')}
+        aria-pressed={viewMode === 'grid'}
+      >
+        <LayoutGrid class="w-3.5 h-3.5" />
+        <span class="hidden sm:inline">{t('vms.viewGrid')}</span>
+      </button>
+      <button
+        type="button"
+        onclick={() => setViewMode('table')}
+        class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors {viewMode === 'table'
+          ? 'bg-card text-foreground shadow-xs border border-border'
+          : 'text-muted-foreground hover:text-foreground'}"
+        title={t('vms.viewTable')}
+        aria-pressed={viewMode === 'table'}
+      >
+        <List class="w-3.5 h-3.5" />
+        <span class="hidden sm:inline">{t('vms.viewTable')}</span>
+      </button>
+    </div>
+
     {#if auth.canMutate()}
       <button
         type="button"
@@ -1722,13 +1819,13 @@ apt-get update -y
     onClear={() => (selectedKeys = new Set())}
   />
 
-  <!-- v1.4 Fase 4: instance-type filter (PLAN-LXD 5.1), always visible -->
+  <!-- Filter bar: Instance Type, State, Clustering Nodes & Groups -->
   <div class="flex items-center gap-1.5 flex-wrap mb-4">
     {#each [{ v: 'all', l: t('vms.allTypes'), c: '' }, { v: 'vm', l: t('vms.typeVms'), c: '' }, { v: 'container', l: t('vms.typeContainers'), c: 'text-warning' }] as f (f.v)}
       <button
         onclick={() => (typeFilter = typeFilter === f.v ? 'all' : f.v)}
         class="text-xs px-2.5 py-1 rounded-full border transition-colors {typeFilter === f.v
-          ? 'border-foreground text-foreground bg-muted'
+          ? 'border-accent bg-accent/15 text-accent font-medium'
           : 'border-border text-muted-foreground hover:text-foreground'}"
       >
         <span class="inline-flex items-center gap-1">
@@ -1748,53 +1845,79 @@ apt-get update -y
         </span>
       </button>
     {/each}
-  </div>
 
-  {#if groups.length > 0 || stateFilter !== 'all'}
-    <div class="flex items-center gap-1.5 flex-wrap mb-4">
-      <button
-        onclick={() => ((groupFilter = 'all'), (stateFilter = 'all'))}
-        class="text-xs px-2.5 py-1 rounded-full border transition-colors {groupFilter === 'all' &&
-        stateFilter === 'all'
-          ? 'border-accent bg-accent/15 text-accent'
-          : 'border-border text-muted-foreground hover:text-foreground hover:border-border-hover'}"
-      >
-        All <span class="text-[10px] opacity-60">({vms.length})</span>
-      </button>
-      {#each [{ v: 'running', c: 'bg-status-running', l: 'running' }, { v: 'shutoff', c: 'bg-status-shutoff', l: 'shutoff' }, { v: 'paused', c: 'bg-status-paused', l: 'paused' }, { v: 'crashed', c: 'bg-status-crashed', l: 'crashed' }] as s (s.v)}
+    <span class="text-xs text-muted-foreground/50 mx-0.5">|</span>
+
+    <button
+      onclick={() => (stateFilter = 'all')}
+      class="text-xs px-2.5 py-1 rounded-full border transition-colors {stateFilter === 'all'
+        ? 'border-foreground text-foreground bg-muted font-medium'
+        : 'border-border text-muted-foreground hover:text-foreground hover:border-border-hover'}"
+    >
+      {t('vms.allStates')} <span class="text-[10px] opacity-60">({vms.length})</span>
+    </button>
+    {#each [{ v: 'running', c: 'bg-status-running', l: 'running' }, { v: 'shutoff', c: 'bg-status-shutoff', l: 'shutoff' }, { v: 'paused', c: 'bg-status-paused', l: 'paused' }, { v: 'crashed', c: 'bg-status-crashed', l: 'crashed' }] as s (s.v)}
+      {@const count = vms.filter((v) => v.state === s.v).length}
+      {#if count > 0 || stateFilter === s.v}
         <button
           onclick={() => (stateFilter = stateFilter === s.v ? 'all' : s.v)}
           class="text-xs px-2.5 py-1 rounded-full border transition-colors {stateFilter === s.v
-            ? 'border-foreground text-foreground bg-muted'
+            ? 'border-foreground text-foreground bg-muted font-medium'
             : 'border-border text-muted-foreground hover:text-foreground'}"
         >
           <span class="inline-block w-1.5 h-1.5 rounded-full mr-1.5 {s.c}"></span>
           {s.l}
-          <span class="text-[10px] opacity-60">({vms.filter((v) => v.state === s.v).length})</span>
+          <span class="text-[10px] opacity-60">({count})</span>
+        </button>
+      {/if}
+    {/each}
+
+    {#if availableNodes.length > 1}
+      <span class="text-xs text-muted-foreground/50 mx-0.5">|</span>
+      <button
+        onclick={() => (nodeFilter = 'all')}
+        class="text-xs px-2.5 py-1 rounded-full border transition-colors {nodeFilter === 'all'
+          ? 'border-accent bg-accent/15 text-accent font-medium'
+          : 'border-border text-muted-foreground hover:text-foreground hover:border-border-hover'}"
+      >
+        <Server class="w-3 h-3 inline mr-1" />
+        {t('vms.allNodes')}
+      </button>
+      {#each availableNodes as nodeName (nodeName)}
+        {@const count = vms.filter((v) => (v.node || 'local') === nodeName).length}
+        <button
+          onclick={() => (nodeFilter = nodeFilter === nodeName ? 'all' : nodeName)}
+          class="text-xs px-2.5 py-1 rounded-full border transition-colors {nodeFilter === nodeName
+            ? 'border-accent bg-accent/15 text-accent font-medium'
+            : 'border-border text-muted-foreground hover:text-foreground hover:border-border-hover'}"
+        >
+          <Server class="w-3 h-3 inline mr-1 text-muted-foreground" />
+          {nodeName} <span class="text-[10px] opacity-60">({count})</span>
         </button>
       {/each}
-      {#if visibleGroups.length > 0}
-        <span class="text-xs text-muted-foreground mx-1">|</span>
-        {#each visibleGroups as g (g)}
-          <button
-            onclick={() => (groupFilter = groupFilter === g.name ? 'all' : g.name)}
-            class="text-xs px-2.5 py-1 rounded-full border transition-colors {groupFilter === g.name
-              ? 'border-foreground text-foreground'
-              : 'border-border text-muted-foreground hover:text-foreground'}"
-            style={groupFilter === g.name
-              ? `background-color: ${g.color}25; border-color: ${g.color};`
-              : ''}
-          >
-            <span
-              class="inline-block w-1.5 h-1.5 rounded-full mr-1.5"
-              style="background-color: {g.color}"
-            ></span>
-            {g.name} <span class="text-[10px] opacity-60">({g.member_count})</span>
-          </button>
-        {/each}
-      {/if}
-    </div>
-  {/if}
+    {/if}
+
+    {#if visibleGroups.length > 0}
+      <span class="text-xs text-muted-foreground/50 mx-0.5">|</span>
+      {#each visibleGroups as g (g)}
+        <button
+          onclick={() => (groupFilter = groupFilter === g.name ? 'all' : g.name)}
+          class="text-xs px-2.5 py-1 rounded-full border transition-colors {groupFilter === g.name
+            ? 'border-foreground text-foreground font-medium'
+            : 'border-border text-muted-foreground hover:text-foreground'}"
+          style={groupFilter === g.name
+            ? `background-color: ${g.color}25; border-color: ${g.color};`
+            : ''}
+        >
+          <span
+            class="inline-block w-1.5 h-1.5 rounded-full mr-1.5"
+            style="background-color: {g.color}"
+          ></span>
+          {g.name} <span class="text-[10px] opacity-60">({g.member_count})</span>
+        </button>
+      {/each}
+    {/if}
+  </div>
 
   {#if error}
     <Alert variant="error">{error}</Alert>
@@ -1840,9 +1963,315 @@ apt-get update -y
         aria-label={t('common.close')}
       ></button>
     {/if}
-    <div
-      class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 3xl:grid-cols-6 gap-3.5"
-    >
+    {#if viewMode === 'table'}
+      <!-- Dense Enterprise Table View -->
+      <div class="border border-border/80 rounded-xl bg-card overflow-hidden shadow-xs">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr class="border-b border-border bg-muted/40 text-muted-foreground font-medium select-none">
+                {#if selectMode}
+                  <th class="w-10 px-3 py-2.5 text-center">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onchange={() => (allVisibleSelected ? (selectedKeys = new Set()) : selectAllVisible())}
+                      class="w-3.5 h-3.5 rounded border-border text-accent focus:ring-accent"
+                    />
+                  </th>
+                {/if}
+                <th class="px-3 py-2.5">{t('common.name')}</th>
+                <th class="px-3 py-2.5">{t('vms.nodeCol')}</th>
+                <th class="px-3 py-2.5">{t('common.status')}</th>
+                <th class="px-3 py-2.5">{t('networks.forwardMode')}</th>
+                <th class="px-3 py-2.5">IP</th>
+                <th class="px-3 py-2.5">vCPU / RAM</th>
+                <th class="px-3 py-2.5 min-w-[110px]">CPU / RAM %</th>
+                <th class="px-3 py-2.5 text-right">{t('common.actions')}</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-border/60">
+              {#each sortedVms as vm (vm.id)}
+                {@const isSelected = selectedKeys.has(vm.id)}
+                {@const metrics = metricsByVm[vm.id]}
+                {@const cpuPts = last30(metrics?.cpu?.points)}
+                {@const ramPts = last30(metrics?.ram?.points)}
+                {@const cpuNow = cpuPts.length ? Math.round(cpuPts[cpuPts.length - 1].v) : 0}
+                {@const ramNow = ramPts.length ? Math.round(ramPts[ramPts.length - 1].v) : 0}
+                {@const primaryIp = vmIps(vm)[0]}
+                {@const pinned = isPinned(vm.id)}
+                <tr
+                  class="group hover:bg-muted/30 transition-colors {isSelected ? 'bg-accent/5' : ''} cursor-pointer"
+                  onclick={() => {
+                    if (selectMode) {
+                      const next = new Set(selectedKeys);
+                      if (next.has(vm.id)) next.delete(vm.id);
+                      else next.add(vm.id);
+                      selectedKeys = next;
+                    } else {
+                      navigate(`/vms/${vm.id}`);
+                    }
+                  }}
+                >
+                  {#if selectMode}
+                    <td class="w-10 px-3 py-2.5 text-center" onclick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onchange={() => {
+                          const next = new Set(selectedKeys);
+                          if (next.has(vm.id)) next.delete(vm.id);
+                          else next.add(vm.id);
+                          selectedKeys = next;
+                        }}
+                        class="w-3.5 h-3.5 rounded border-border text-accent focus:ring-accent"
+                      />
+                    </td>
+                  {/if}
+                  <td class="px-3 py-2.5">
+                    <div class="flex items-center gap-2">
+                      <div class="w-6 h-6 rounded bg-muted/80 flex items-center justify-center font-bold text-xs text-muted-foreground shrink-0 select-none">
+                        {(vm.alias || vm.name).charAt(0).toUpperCase()}
+                      </div>
+                      <div class="min-w-0">
+                        <div class="flex items-center gap-1.5 flex-wrap">
+                          <span class="font-semibold text-foreground truncate max-w-[180px] sm:max-w-[220px]">
+                            {vm.alias || vm.name}
+                          </span>
+                          {#if vm.alias}
+                            <span class="text-[11px] text-muted-foreground font-mono truncate max-w-[100px]">
+                              ({vm.name})
+                            </span>
+                          {/if}
+                          {#if pinned}
+                            <Icon name="pin" size={11} class="text-accent shrink-0" />
+                          {/if}
+                          {#if vm.template}
+                            <span class="px-1 py-0.2 rounded text-[9px] font-semibold uppercase tracking-wider bg-warning-subtle text-warning border border-warning/30">
+                              {t('vms.templateBadge')}
+                            </span>
+                          {/if}
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="px-3 py-2.5 whitespace-nowrap">
+                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-muted text-muted-foreground border border-border/70">
+                      <Server class="w-2.5 h-2.5" />
+                      {vm.node || 'local'}
+                    </span>
+                  </td>
+                  <td class="px-3 py-2.5 whitespace-nowrap">
+                    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-muted/50 border border-border/50">
+                      <span class="w-1.5 h-1.5 rounded-full {stateDotClass(vm.state)}"></span>
+                      {vm.state}
+                    </span>
+                  </td>
+                  <td class="px-3 py-2.5 whitespace-nowrap">
+                    <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wider font-medium {computeTypeBadgeClass(vm.type)}">
+                      {#if isContainer(vm)}
+                        <Container class="w-2.5 h-2.5" />
+                      {:else}
+                        <Cpu class="w-2.5 h-2.5" />
+                      {/if}
+                      {computeTypeLabel(vm.type)}
+                    </span>
+                  </td>
+                  <td class="px-3 py-2.5 whitespace-nowrap" onclick={(e) => e.stopPropagation()}>
+                    {#if vm.state === 'running' && primaryIp}
+                      <button
+                        type="button"
+                        onclick={(e) => copyIp(primaryIp, e)}
+                        class="inline-flex items-center gap-1 font-mono text-[11px] text-accent hover:text-accent-hover bg-accent/10 hover:bg-accent/20 px-1.5 py-0.5 rounded transition-colors"
+                        title="{t('vms.copyIp')}: {vmIps(vm).join(', ')}"
+                      >
+                        {#if copiedIp === primaryIp}
+                          <Check class="w-2.5 h-2.5 text-success" />
+                          <span class="text-success text-[10px]">{t('vms.ipCopied')}</span>
+                        {:else}
+                          <span class="tnum">{primaryIp}</span>
+                          <Copy class="w-2.5 h-2.5 opacity-60" />
+                        {/if}
+                      </button>
+                    {:else}
+                      <span class="text-xs text-muted-foreground/60">—</span>
+                    {/if}
+                  </td>
+                  <td class="px-3 py-2.5 whitespace-nowrap text-muted-foreground text-[11px] tnum">
+                    {vm.vcpus} vCPU · {formatRAM(vm.ram_mb)}
+                  </td>
+                  <td class="px-3 py-2.5 whitespace-nowrap">
+                    {#if vm.state === 'running'}
+                      <div class="space-y-1 w-24">
+                        <div class="flex items-center justify-between text-[10px] text-muted-foreground font-mono tnum">
+                          <span>CPU {cpuNow}%</span>
+                          <span>RAM {ramNow}%</span>
+                        </div>
+                        <div class="h-1.5 w-full bg-muted rounded-full overflow-hidden flex gap-0.5">
+                          <div class="h-full bg-accent rounded-full transition-all duration-300" style="width: {Math.min(100, Math.max(0, cpuNow))}%"></div>
+                        </div>
+                      </div>
+                    {:else}
+                      <span class="text-[11px] text-muted-foreground/50">—</span>
+                    {/if}
+                  </td>
+                  <td class="px-3 py-2.5 text-right whitespace-nowrap" onclick={(e) => e.stopPropagation()}>
+                    <div class="inline-flex items-center gap-1 justify-end">
+                      {#if vm.state === 'running'}
+                        <button
+                          type="button"
+                          onclick={() => navigate(`/vms/${vm.id}`)}
+                          class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                          title="Console"
+                        >
+                          <SquareTerminal class="w-3.5 h-3.5" />
+                        </button>
+                      {/if}
+                      <div class="relative shrink-0">
+                        <button
+                          type="button"
+                          aria-label={t('vms.quickActions')}
+                          class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors {menuFor ===
+                          vm.id
+                            ? 'bg-muted text-foreground'
+                            : ''}"
+                          onclick={(e) => {
+                            e.stopPropagation();
+                            toggleMenu(vm.id);
+                          }}
+                        >
+                          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                            <circle cx="5" cy="12" r="1.6" />
+                            <circle cx="12" cy="12" r="1.6" />
+                            <circle cx="19" cy="12" r="1.6" />
+                          </svg>
+                        </button>
+                        {#if menuFor === vm.id}
+                          <div
+                            role="menu"
+                            tabindex="-1"
+                            class="absolute right-0 top-full z-50 mt-1 w-48 rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl p-1 backdrop-blur-md"
+                            onclick={(e) => e.stopPropagation()}
+                            onkeydown={(e) => e.stopPropagation()}
+                          >
+                            {#if auth.canMutate()}
+                              {#if vm.state === 'shutoff' && !vm.template}
+                                <button
+                                  type="button"
+                                  class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                                  disabled={quickBusy === `${vm.id}:start`}
+                                  onclick={() => quickAction(vm, 'start')}
+                                >
+                                  {#if quickBusy === `${vm.id}:start`}<Spinner class="w-3.5 h-3.5" />{/if}
+                                  <span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+                                  {quickBusy === `${vm.id}:start` ? t('vms.starting') : t('vms.start')}
+                                </button>
+                              {:else if vm.state !== 'shutoff'}
+                                <button
+                                  type="button"
+                                  class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                                  disabled={quickBusy === `${vm.id}:shutdown`}
+                                  onclick={() => quickAction(vm, 'shutdown')}
+                                >
+                                  {#if quickBusy === `${vm.id}:shutdown`}<Spinner
+                                      class="w-3.5 h-3.5"
+                                    />{/if}
+                                  <span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
+                                  {t('vms.shutdown')}
+                                </button>
+                                <button
+                                  type="button"
+                                  class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted text-destructive flex items-center gap-2"
+                                  disabled={quickBusy === `${vm.id}:forceoff`}
+                                  onclick={() => quickAction(vm, 'forceoff')}
+                                >
+                                  {#if quickBusy === `${vm.id}:forceoff`}<Spinner
+                                      class="w-3.5 h-3.5"
+                                    />{/if}
+                                  <span class="w-1.5 h-1.5 rounded-full bg-destructive"></span>
+                                  {t('vms.forceOff')}
+                                </button>
+                              {/if}
+                            {/if}
+                            {#if !isContainer(vm)}
+                              <button
+                                type="button"
+                                class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                                onclick={() => quickAction(vm, 'console')}
+                              >
+                                <Icon name="monitor" size={14} />
+                                {t('vms.openConsole')}
+                              </button>
+                            {/if}
+                            <button
+                              type="button"
+                              class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                              onclick={() => quickAction(vm, 'serial')}
+                            >
+                              <Icon name="terminal" size={14} />
+                              {isContainer(vm) ? 'Terminal Web (xterm)' : 'Serial Console'}
+                            </button>
+                            <button
+                              type="button"
+                              class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                              onclick={() => navigate(`/vms/${vm.id}?tab=hardware`)}
+                            >
+                              <Icon name="settings" size={14} />
+                              {t('vmDetail.hardware')}
+                            </button>
+                            {#if !isContainer(vm)}
+                              <button
+                                type="button"
+                                class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                                onclick={() => navigate(`/vms/${vm.id}?tab=snapshots`)}
+                              >
+                                <Icon name="camera" size={14} />
+                                {t('vmDetail.snapshots')}
+                              </button>
+                            {/if}
+                            <button
+                              type="button"
+                              class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                              onclick={() => togglePin(vm.id)}
+                            >
+                              <Icon name="pin" size={14} />
+                              {isPinned(vm.id) ? t('vms.unpin') : t('vms.pin')}
+                            </button>
+                            {#if auth.canMutate()}
+                              <button
+                                type="button"
+                                class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                                disabled={quickBusy === `${vm.id}:clone`}
+                                onclick={() => quickAction(vm, 'clone')}
+                              >
+                                {#if quickBusy === `${vm.id}:clone`}<Spinner class="w-3.5 h-3.5" />{/if}
+                                <Icon name="copy" size={14} />
+                                {t('vms.clone')}
+                              </button>
+                            {/if}
+                            <button
+                              type="button"
+                              class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                              onclick={() => navigate(`/vms/${vm.id}`)}
+                            >
+                              <Icon name="external-link" size={14} />
+                              {t('vms.details')}
+                            </button>
+                          </div>
+                        {/if}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {:else}
+      <div
+        class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 3xl:grid-cols-6 gap-3.5"
+      >
       {#each sortedVms as vm (vm.id)}
         {@const isSelected = selectedKeys.has(vm.id)}
         {@const metrics = metricsByVm[vm.id]}
@@ -1980,10 +2409,21 @@ apt-get update -y
               </div>
               <div class="flex items-center gap-1.5 shrink-0">
                 {#if vm.state === 'running' && vmIps(vm).length}
-                  <span
-                    class="font-mono text-[10px] text-accent truncate max-w-[100px]"
-                    title={vmIps(vm).join(', ')}>{vmIps(vm)[0]}</span
+                  {@const primaryIp = vmIps(vm)[0]}
+                  <button
+                    type="button"
+                    onclick={(e) => copyIp(primaryIp, e)}
+                    class="group/ip inline-flex items-center gap-1 font-mono text-[10px] text-accent hover:text-accent-hover bg-accent/10 hover:bg-accent/20 px-1.5 py-0.5 rounded transition-colors"
+                    title="{t('vms.copyIp')}: {vmIps(vm).join(', ')}"
                   >
+                    {#if copiedIp === primaryIp}
+                      <Check class="w-2.5 h-2.5 text-success" />
+                      <span class="text-success">{t('vms.ipCopied')}</span>
+                    {:else}
+                      <span class="truncate max-w-[85px]">{primaryIp}</span>
+                      <Copy class="w-2.5 h-2.5 opacity-60 group-hover/ip:opacity-100 transition-opacity" />
+                    {/if}
+                  </button>
                 {/if}
                 <div class="relative shrink-0">
                   <button
@@ -2156,6 +2596,13 @@ apt-get update -y
                     {/if}
                   </span>
                 {/if}
+                <span
+                  class="inline-flex items-center gap-1 shrink-0 text-muted-foreground/70"
+                  title="{t('vms.nodeCol')}: {vm.node || 'local'}"
+                >
+                  <Server class="w-2.5 h-2.5 text-muted-foreground/60" />
+                  <span class="text-[10px] font-mono">{vm.node || 'local'}</span>
+                </span>
               </span>
             </div>
             {#if vm.state === 'running' && (cpuPts.length > 0 || ramPts.length > 0)}
@@ -2203,6 +2650,7 @@ apt-get update -y
         </div>
       {/each}
     </div>
+    {/if}
   {/if}
 </div>
 

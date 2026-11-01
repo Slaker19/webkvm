@@ -20,8 +20,10 @@ type VM struct {
 	// containers alongside VMs (unified model).
 	Type string `json:"type"`
 	// Hypervisor is the backend that owns this instance: "kvm" or "incus".
-	Hypervisor string  `json:"hypervisor"`
-	State      VMState `json:"state"`
+	Hypervisor string `json:"hypervisor"`
+	// Node is the cluster host or node ID where this instance runs (empty = local node).
+	Node  string  `json:"node,omitempty"`
+	State VMState `json:"state"`
 	VCPUs      int     `json:"vcpus"`
 	RAMMB      int64   `json:"ram_mb"`
 	DiskGB     int64   `json:"disk_gb"`
