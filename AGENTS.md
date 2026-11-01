@@ -166,3 +166,15 @@ Only an explicit choice of antislop during or after selects a session mode. A re
 If the mode is unresolved, ask during/after and end the response; wait for the answer before any UI review, planning, or concept. For read-only tasks, put the active-mode notice only at the start of the final answer, never in progress messages. For editing tasks, announce before the first edit and omit it from the final answer.
 To update antislop later: download `antislop.md` again, or run `npx antislop-ai --update` if it was installed as skill folders.
 <!-- antislop:end -->
+
+## UI/UX & Design Engineering Intelligence
+
+When working on UI/UX components, visual design, transitions, or animations in WebKVM:
+- **`ui-ux-pro-max`**: Design intelligence for visual styles, color contrast (4.5:1), responsive layout, accessibility semantics, and stack guidelines for Svelte 5 + Tailwind v4. Searchable datasets are available via `search.py` in `~/.config/opencode/skills/ui-ux-pro-max/scripts/`.
+- **`emil-design-eng` / `animate`**: High-craft design engineering and micro-interactions based on Emil Kowalski's philosophy:
+  - Never animate keyboard-driven high-frequency actions (e.g. quick search, Command Palette).
+  - Use custom ease-out curves (`cubic-bezier(0.23, 1, 0.32, 1)`) for UI entries; avoid sluggish `ease-in`.
+  - Buttons must provide subtle press feedback (`:active { transform: scale(0.97) }`).
+  - Animate only `transform` and `opacity` to avoid layout thrashing and stay on the GPU compositor.
+  - Duration budget: 150–250ms max for dropdowns and popovers; modals and drawers up to 300ms.
+  - Popovers scale from their trigger origin (`transform-origin: var(--transform-origin)`).
