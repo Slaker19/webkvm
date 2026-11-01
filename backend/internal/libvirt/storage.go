@@ -812,7 +812,9 @@ func (c *Connector) CreateStorageVolume(req models.CreateVolumeRequest) (models.
   </target>
 </volume>`, req.Name, req.Capacity, format)
 
-	vol, err := pool.StorageVolCreateXML(xmlStr, libvirt.STORAGE_VOL_CREATE_PREALLOC_METADATA)
+	// Use standard thin provisioning (flag 0) so the volume is created as a sparse
+	// image without forcing preallocation=falloc.
+	vol, err := pool.StorageVolCreateXML(xmlStr, 0)
 	if err != nil {
 		return models.StorageVolume{}, fmt.Errorf("create volume: %w", err)
 	}

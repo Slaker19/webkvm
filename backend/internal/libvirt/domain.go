@@ -1273,7 +1273,11 @@ func (c *Connector) createDiskInPool(poolName, volName string, sizeMB int64, for
         </target>
     </volume>`, volName, sizeMB, format)
 
-	_, err = pool.StorageVolCreateXML(volXML, libvirt.STORAGE_VOL_CREATE_PREALLOC_METADATA)
+	// Use standard thin provisioning (flag 0). STORAGE_VOL_CREATE_PREALLOC_METADATA
+	// causes modern libvirt/qemu-img to run `preallocation=falloc`, which immediately
+	// tries to allocate the entire virtual size with fallocate and fails with
+	// ENOSPC ("No space left on device") on drives without contiguous free space.
+	_, err = pool.StorageVolCreateXML(volXML, 0)
 	return err
 }
 
