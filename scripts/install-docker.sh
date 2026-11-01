@@ -20,7 +20,11 @@ set -Eeuo pipefail
 REPO_URL="${WEBKVM_INSTALL_REPO:-https://github.com/Slaker19/webkvm}"
 # WEBKVM_INSTALL_BRANCH is kept as a legacy alias for WEBKVM_INSTALL_REF.
 BRANCH="${WEBKVM_INSTALL_REF:-${WEBKVM_INSTALL_BRANCH:-}}"
-REPO_DIR="/opt/webkvm-repo"
+if [[ -d "/opt/webkvm-repo/.git" && ! -d "/opt/webkvm/source" ]]; then
+  REPO_DIR="/opt/webkvm-repo"
+else
+  REPO_DIR="${WEBKVM_INSTALL_DIR:-/opt/webkvm/source}"
+fi
 
 LOG_FILE="${WEBKVM_INSTALL_LOG:-/var/log/webkvm-docker-install.log}"
 

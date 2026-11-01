@@ -10,7 +10,13 @@ set -Eeuo pipefail
 
 REPO_URL="${WEBKVM_INSTALL_REPO:-https://github.com/Slaker19/webkvm}"
 BRANCH="${WEBKVM_INSTALL_BRANCH:-main}"
-REPO_DIR="/opt/webkvm-repo"
+# Canonical persistent repo location: /opt/webkvm/source (mirrored by update.sh and webkvm.service)
+# Fallback support: if /opt/webkvm-repo already exists from older installs, honor it.
+if [[ -d "/opt/webkvm-repo/.git" && ! -d "/opt/webkvm/source" ]]; then
+  REPO_DIR="/opt/webkvm-repo"
+else
+  REPO_DIR="${WEBKVM_INSTALL_DIR:-/opt/webkvm/source}"
+fi
 
 # Piped invocation (curl ... | sudo bash) ⇒ stdin is not a TTY ⇒ run the
 # installer strictly unattended (defaults everywhere, no /dev/tty prompts).

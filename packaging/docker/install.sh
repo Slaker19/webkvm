@@ -256,6 +256,27 @@ enable_libvirtd() {
   die "libvirt qemu:///system did not become available after starting the daemon"
 }
 
+check_or_install_incus() {
+  if [[ "${WEBKVM_INSTALL_INCUS:-1}" != "1" ]]; then
+    return 0
+  fi
+  if command -v incus >/dev/null 2>&1; then
+    systemctl is-active --quiet incus.service 2>/dev/null || systemctl enable --now incus.service 2>/dev/null || true
+    log "host Incus daemon detected and active"
+    return 0
+  fi
+  if command -v lxd >/dev/null 2>&1; then
+    systemctl is-active --quiet lxd.service 2>/dev/null || systemctl enable --now lxd.service 2>/dev/null || true
+    log "host LXD daemon detected and active"
+    return 0
+  fi
+  if [[ "${PKG}" == "apt" ]] && apt-cache show incus >/dev/null 2>&1; then
+    log "optional: installing host Incus daemon (containers support)..."
+    apt-get install -y --no-install-recommends incus >/dev/null 2>&1 || true
+    systemctl enable --now incus.service 2>/dev/null || true
+  fi
+}
+
 # ── Main ────────────────────────────────────────────────────────────────
 bold "webkvm Docker installer"
 echo ""
@@ -284,6 +305,7 @@ pkg_update || log "warning: could not refresh the package index; continuing anyw
 log "installing libvirt/QEMU (host hypervisor stack: ${LIBVIRT_PKGS[*]})..."
 pkg_install "${LIBVIRT_PKGS[@]}" || die "one or more libvirt/QEMU packages failed to install"
 enable_libvirtd
+check_or_install_incus
 
 install_docker
 detect_compose

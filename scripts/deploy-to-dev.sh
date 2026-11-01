@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Deploy compiled webkvm binary to webkvm-dev VM (192.168.1.40)
+# Deploy compiled webkvm binary to dev target
 set -Eeuo pipefail
 
 DEV_IP="${WEBKVM_DEV_IP:-192.168.1.40}"
 DEV_USER="${WEBKVM_DEV_USER:-alvin}"
+DEV_PORT="${WEBKVM_DEV_PORT:-8080}"
+DEV_PROTO="${WEBKVM_DEV_PROTO:-https}"
 LOCAL_BIN="$(dirname "$0")/../backend/webkvm"
 
 if [[ ! -f "${LOCAL_BIN}" ]]; then
@@ -21,9 +23,9 @@ ssh -o StrictHostKeyChecking=no "${DEV_USER}@${DEV_IP}" '
   sudo systemctl restart webkvm
 '
 
-echo "==> Verifying health on https://${DEV_IP}:8080/api/health..."
+echo "==> Verifying health on ${DEV_PROTO}://${DEV_IP}:${DEV_PORT}/api/health..."
 for i in $(seq 1 15); do
-  if RES=$(curl -kfsS -m 2 "https://${DEV_IP}:8080/api/health" 2>/dev/null); then
+  if RES=$(curl -kfsS -m 2 "${DEV_PROTO}://${DEV_IP}:${DEV_PORT}/api/health" 2>/dev/null); then
     echo "==> Deploy successful! Health: ${RES}"
     exit 0
   fi
