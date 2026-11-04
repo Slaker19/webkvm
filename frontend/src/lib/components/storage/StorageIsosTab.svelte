@@ -286,6 +286,18 @@
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
+      <Button
+        size="sm"
+        variant="outline"
+        class="!h-8 !text-xs"
+        onclick={() => loadIsos(selectedISOPool)}
+        disabled={loadingIsos}
+        title={t('storage.refreshIsos')}
+      >
+        <Icon name="refreshCw" size={13} class={cn('mr-1', loadingIsos && 'animate-spin')} />
+        {t('storage.refreshIsos')}
+      </Button>
+
       <select
         bind:value={isoTargetPool}
         class="input !py-1 !text-xs !w-auto"

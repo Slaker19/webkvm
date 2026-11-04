@@ -1027,6 +1027,8 @@ func (c *Connector) GetISOs(poolName string) ([]models.ISOScanResult, error) {
 	}
 	defer pool.Free()
 
+	pool.Refresh(0)
+
 	poolPath := extractPoolPathFromPool(pool)
 	vols, err := pool.ListAllStorageVolumes(0)
 	if err != nil {

@@ -21,7 +21,7 @@ import (
 )
 
 func (h *Handler) UploadISO(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 10<<30)
+	r.Body = http.MaxBytesReader(w, r.Body, 50<<30)
 
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		jsonErr(w, http.StatusBadRequest, "failed to parse multipart form: "+err.Error())
@@ -412,7 +412,7 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UploadISOByCURL(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 10<<30)
+	r.Body = http.MaxBytesReader(w, r.Body, 50<<30)
 
 	name := r.URL.Query().Get("name")
 	if name == "" {
