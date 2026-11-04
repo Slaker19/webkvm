@@ -1789,6 +1789,7 @@
           <VmSnapshotsTab
             {vmId}
             {snapshots}
+            vmState={vm?.state || ''}
             bind:snapName
             bind:snapDesc
             bind:snapMemory

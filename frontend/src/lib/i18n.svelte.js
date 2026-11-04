@@ -1319,6 +1319,7 @@ export const messages = {
       revertSnapshotDesc:
         'Current VM state will be lost. The VM will be reverted to this snapshot.',
       reverted: 'Reverted to snapshot',
+      revertDisabledShutoff: 'VM must be shut off to revert snapshots',
       deleteSnapshotTitle: 'Delete snapshot?',
       deleteSnapshotDesc: 'This will permanently delete the snapshot. Cannot be undone.',
       snapshotDeleted: 'Snapshot deleted',
@@ -5061,6 +5062,7 @@ export const messages = {
       revertSnapshotDesc:
         'Se perderá el estado actual de la VM. La VM se revertirá a esta instantánea.',
       reverted: 'Revertida a la instantánea',
+      revertDisabledShutoff: 'La VM debe estar apagada para revertir instantáneas',
       deleteSnapshotTitle: '¿Borrar la instantánea?',
       deleteSnapshotDesc: 'Esto borrará permanentemente la instantánea. No se puede deshacer.',
       snapshotDeleted: 'Instantánea borrada',
@@ -8839,6 +8841,7 @@ export const messages = {
       revertSnapshotDesc:
         "Es perdrà l'estat actual de la VM. La VM es revertirà a aquesta instantània.",
       reverted: 'Revertida a la instantània',
+      revertDisabledShutoff: "La VM ha d'estar apagada per revertir instantànies",
       deleteSnapshotTitle: '¿Esborrar la instantània?',
       deleteSnapshotDesc: 'Això esborrarà permanentment la instantània. No es pot desfer.',
       snapshotDeleted: 'Instantània esborrada',
