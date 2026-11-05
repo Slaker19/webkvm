@@ -183,6 +183,15 @@ func (c *Connector) CreateStoragePool(ctx context.Context, req models.CreatePool
 		return models.StoragePool{}, fmt.Errorf("create pool: %w", err)
 	}
 
+	// Match defineAndStartAppPool: custom pools must autostart so they
+	// survive a libvirtd restart. Without this, an uploaded ISO would
+	// fail with "pool not found" after the first reboot.
+	if poolType == "dir" || poolType == "netfs" {
+		if err := pool.SetAutostart(true); err != nil {
+			slog.Warn("pool_autostart_failed", "pool", req.Name, "err", err)
+		}
+	}
+
 	purpose := req.Purpose
 	if purpose == "" {
 		purpose = InferPoolPurpose(req.Name)

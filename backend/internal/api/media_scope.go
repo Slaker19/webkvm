@@ -112,6 +112,33 @@ func uploadCreateStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
+// createUploadFileOverwriteExisting tries createUploadFile first. If the file
+// already exists (os.ErrExist), it checks whether the existing volume is
+// attached to any VM. If attached, the overwrite is refused (409). If not
+// attached (or the volume is unknown to libvirt — e.g. a stale file from a
+// previous upload whose RefreshPool failed), the stale file is removed and
+// the creation is retried. This prevents the confusing "file exists" error
+// when a user re-uploads an ISO that landed in the pool on a prior attempt.
+func (h *Handler) createUploadFileOverwriteExisting(destPath, poolName string) (*os.File, error) {
+	dst, err := createUploadFile(destPath)
+	if err == nil {
+		return dst, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+
+	volName := filepath.Base(destPath)
+	if atts, aerr := h.compute.FindVolumeAttachments(poolName, volName); aerr == nil && len(atts) > 0 {
+		return nil, err
+	}
+
+	if rerr := os.Remove(destPath); rerr != nil && !os.IsNotExist(rerr) {
+		return nil, fmt.Errorf("remove stale upload %q: %w", volName, rerr)
+	}
+	return createUploadFile(destPath)
+}
+
 // errSourceAttached is returned by checkSourceNotAttachedElsewhere.
 type errSourceAttached struct{ msg string }
 

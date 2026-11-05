@@ -18,8 +18,9 @@ import (
 // on anything else, which keeps the tests honest about what they touch.
 type fakePoolBackend struct {
 	compute.Backend
-	pools    []models.StoragePool
-	poolPath string
+	pools       []models.StoragePool
+	poolPath    string
+	attachments map[string][]models.VolumeAttachment // "pool/vol" -> attachments
 }
 
 func (f *fakePoolBackend) ListStoragePools() ([]models.StoragePool, error) {
@@ -34,6 +35,13 @@ func (f *fakePoolBackend) GetPoolPath(name string) (string, error) {
 }
 
 func (f *fakePoolBackend) RefreshPool(name string) error { return nil }
+
+func (f *fakePoolBackend) FindVolumeAttachments(pool, vol string) ([]models.VolumeAttachment, error) {
+	if f.attachments != nil {
+		return f.attachments[pool+"/"+vol], nil
+	}
+	return nil, nil
+}
 
 func newPoolTestHandler(pools ...models.StoragePool) *Handler {
 	return &Handler{compute: &fakePoolBackend{pools: pools}}

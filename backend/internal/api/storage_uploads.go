@@ -78,7 +78,7 @@ func (h *Handler) UploadISO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dst, err := createUploadFile(destPath)
+	dst, err := h.createUploadFileOverwriteExisting(destPath, poolName)
 	if err != nil {
 		jsonErr(w, uploadCreateStatus(err), "failed to create file: "+err.Error())
 		return
@@ -324,7 +324,7 @@ func (h *Handler) UploadDisk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		dst, derr := createUploadFile(destPath)
+		dst, derr := h.createUploadFileOverwriteExisting(destPath, poolName)
 		if derr != nil {
 			jsonErr(w, uploadCreateStatus(derr), "failed to create file: "+derr.Error())
 			return
@@ -462,7 +462,7 @@ func (h *Handler) UploadISOByCURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dst, err := createUploadFile(destPath)
+	dst, err := h.createUploadFileOverwriteExisting(destPath, poolName)
 	if err != nil {
 		jsonErr(w, uploadCreateStatus(err), "failed to create file: "+err.Error())
 		return

@@ -765,6 +765,7 @@ func main() {
 	// libvirt types. Bind the managed-bridge/network predicates too.
 	computeBackend = compute.NewKVMBackend(lv)
 	compute.BindHelpers(libvirt.IsManagedBridge, libvirt.IsManagedNetwork)
+	compute.BindInferPoolPurpose(libvirt.InferPoolPurpose)
 
 	// V1.4-Fase 1: optional LXD container backend. Fail-safe: when
 	// disabled or when the daemon socket is unreachable, the backend

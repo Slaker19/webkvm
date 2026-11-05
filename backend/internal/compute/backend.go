@@ -526,6 +526,7 @@ func IsManagedNetwork(id string) bool {
 var (
 	isManagedBridge  func(string) bool
 	isManagedNetwork func(string) bool
+	inferPoolPurpose func(string) string
 )
 
 // BindHelpers wires the managed-name predicates (called at startup by
@@ -533,4 +534,20 @@ var (
 func BindHelpers(isBridge, isNetwork func(string) bool) {
 	isManagedBridge = isBridge
 	isManagedNetwork = isNetwork
+}
+
+// BindInferPoolPurpose wires the pool-purpose inference function (called
+// at startup by the KVM adapter). This keeps the api package from
+// importing libvirt directly.
+func BindInferPoolPurpose(fn func(string) string) {
+	inferPoolPurpose = fn
+}
+
+// InferPoolPurpose guesses a pool's purpose from its name. Returns
+// "disk" as the fallback when no binding is installed (tests).
+func InferPoolPurpose(name string) string {
+	if inferPoolPurpose != nil {
+		return inferPoolPurpose(name)
+	}
+	return PoolPurposeDisk
 }
