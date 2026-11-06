@@ -22,8 +22,8 @@ type VM struct {
 	// Hypervisor is the backend that owns this instance: "kvm" or "incus".
 	Hypervisor string `json:"hypervisor"`
 	// Node is the cluster host or node ID where this instance runs (empty = local node).
-	Node  string  `json:"node,omitempty"`
-	State VMState `json:"state"`
+	Node       string  `json:"node,omitempty"`
+	State      VMState `json:"state"`
 	VCPUs      int     `json:"vcpus"`
 	RAMMB      int64   `json:"ram_mb"`
 	DiskGB     int64   `json:"disk_gb"`
@@ -58,6 +58,7 @@ type VM struct {
 	CPUUnits     int      `json:"cpu_units,omitempty"`
 	KVMHidden    bool     `json:"kvm_hidden,omitempty"`
 	VideoModel   string   `json:"video_model,omitempty"`
+	Accel3D      bool     `json:"accel_3d,omitempty"`
 	AudioModel   string   `json:"audio_model,omitempty"`
 	SerialPort   bool     `json:"serial_port"`
 	GraphicsType string   `json:"graphics_type,omitempty"` // "vnc", "spice", "both"
@@ -123,17 +124,20 @@ type CreateVMRequest struct {
 	// "ubuntu:24.04" or "images:alpine/3.20" (<remote>:<alias>, where
 	// remote is one of the official LXD remotes). When set, the request
 	// is routed to the LXD backend — zero ISOs involved.
-	Image        string `json:"image,omitempty"`
-	VCPUs        int    `json:"vcpus"`
-	RAMMB        int64  `json:"ram_mb"`
-	DiskGB       int64  `json:"disk_gb"`
-	ISO          string `json:"iso,omitempty"`
-	Network      string `json:"network,omitempty"`
-	StoragePool  string `json:"storage_pool,omitempty"`
-	OSVariant    string `json:"os_variant,omitempty"`
-	CPUMode      string `json:"cpu_mode,omitempty"`
-	CPUModel     string `json:"cpu_model,omitempty"`
-	VideoModel   string `json:"video_model,omitempty"`
+	Image       string `json:"image,omitempty"`
+	VCPUs       int    `json:"vcpus"`
+	RAMMB       int64  `json:"ram_mb"`
+	DiskGB      int64  `json:"disk_gb"`
+	ISO         string `json:"iso,omitempty"`
+	Network     string `json:"network,omitempty"`
+	StoragePool string `json:"storage_pool,omitempty"`
+	OSVariant   string `json:"os_variant,omitempty"`
+	CPUMode     string `json:"cpu_mode,omitempty"`
+	CPUModel    string `json:"cpu_model,omitempty"`
+	VideoModel  string `json:"video_model,omitempty"`
+	// Accel3D mirrors <acceleration accel3d='yes'/> on the virtio video
+	// model. Requires a host DRM render node.
+	Accel3D      bool   `json:"accel_3d,omitempty"`
 	AudioModel   string `json:"audio_model,omitempty"`
 	NetworkModel string `json:"network_model,omitempty"`
 	DiskBus      string `json:"disk_bus,omitempty"`
@@ -224,6 +228,7 @@ type UpdateVMRequest struct {
 	CPUUnits     *int       `json:"cpu_units,omitempty"`
 	KVMHidden    *bool      `json:"kvm_hidden,omitempty"`
 	VideoModel   *string    `json:"video_model,omitempty"`
+	Accel3D      *bool      `json:"accel_3d,omitempty"`
 	AudioModel   *string    `json:"audio_model,omitempty"`
 	Network      *string    `json:"network,omitempty"`
 	NetworkModel *string    `json:"network_model,omitempty"`
@@ -619,14 +624,17 @@ type CloneVMRequest struct {
 }
 
 type Snapshot struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Description     string `json:"description,omitempty"`
-	CreatedAt       string `json:"created_at"`    // legacy RFC3339; kept for compat
-	CreationTime    int64  `json:"creation_time"` // epoch seconds, used by the tree UI
-	ParentName      string `json:"parent_name"`   // empty = root snapshot
-	Current         bool   `json:"current"`
-	SizeAtSnapBytes int64  `json:"size_at_snap_bytes,omitempty"` // libvirt "Allocated" at creation
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	CreatedAt    string `json:"created_at"`    // legacy RFC3339; kept for compat
+	CreationTime int64  `json:"creation_time"` // epoch seconds, used by the tree UI
+	ParentName   string `json:"parent_name"`   // empty = root snapshot
+	Current      bool   `json:"current"`
+	// HasMemory is true when the snapshot captured RAM. A memory snapshot
+	// can be reverted while the VM runs; a disk-only one needs it shut off.
+	HasMemory       bool  `json:"has_memory,omitempty"`
+	SizeAtSnapBytes int64 `json:"size_at_snap_bytes,omitempty"` // libvirt "Allocated" at creation
 }
 
 type CreateSnapshotRequest struct {

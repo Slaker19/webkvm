@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"webkvm/internal/audit"
+	"webkvm/internal/compute"
 	"webkvm/internal/fsutil"
 	"webkvm/internal/models"
 )
@@ -110,6 +111,47 @@ func uploadCreateStatus(err error) int {
 		return http.StatusConflict
 	}
 	return http.StatusInternalServerError
+}
+
+// createUploadFileOverwriteExisting tries createUploadFile first. When the
+// name is taken, it replaces the file only when it is a *ghost*: present on
+// disk but unknown to libvirt (a previous upload that landed before
+// RefreshPool failed). Anything libvirt knows about is refused with the
+// original 409 — a registered volume may be a VM disk, an ISO, or a base
+// image every linked clone depends on, and the storage UI already exposes
+// an explicit, attachment-aware delete for those.
+func (h *Handler) createUploadFileOverwriteExisting(destPath, poolName string) (*os.File, error) {
+	dst, err := createUploadFile(destPath)
+	if err == nil {
+		return dst, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+
+	volName := filepath.Base(destPath)
+
+	// Registered volume: never clobber in place.
+	if _, gerr := h.compute.GetStorageVolume(poolName, volName); gerr == nil {
+		return nil, err
+	} else if !errors.Is(gerr, compute.ErrVolumeNotFound) {
+		return nil, err // unknown registry state: fail closed
+	}
+
+	// Unregistered, but a domain could still point at the file directly
+	// (e.g. its volume entry vanished). Refuse if anything references it.
+	atts, aerr := h.compute.FindVolumeAttachments(poolName, volName)
+	if aerr != nil {
+		return nil, err // cannot prove it is unused: fail closed
+	}
+	if len(atts) > 0 {
+		return nil, err
+	}
+
+	if rerr := os.Remove(destPath); rerr != nil && !os.IsNotExist(rerr) {
+		return nil, fmt.Errorf("remove stale upload %q: %w", volName, rerr)
+	}
+	return createUploadFile(destPath)
 }
 
 // errSourceAttached is returned by checkSourceNotAttachedElsewhere.

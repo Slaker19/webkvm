@@ -183,6 +183,15 @@ func (c *Connector) CreateStoragePool(ctx context.Context, req models.CreatePool
 		return models.StoragePool{}, fmt.Errorf("create pool: %w", err)
 	}
 
+	// Custom pools must survive a libvirtd restart, or every ISO/disk in
+	// them becomes unreachable after the first reboot. Stored pools only;
+	// netfs mounts handled by libvirt follow the same rule.
+	if poolType == "dir" || poolType == "netfs" {
+		if err := pool.SetAutostart(true); err != nil {
+			slog.Warn("pool_autostart_failed", "pool", req.Name, "err", err)
+		}
+	}
+
 	purpose := req.Purpose
 	if purpose == "" {
 		purpose = InferPoolPurpose(req.Name)
@@ -1026,6 +1035,11 @@ func (c *Connector) GetISOs(poolName string) ([]models.ISOScanResult, error) {
 		return nil, fmt.Errorf("lookup pool %s: %w", poolName, err)
 	}
 	defer pool.Free()
+
+	// Refresh before listing: files written straight into the pool
+	// directory (curl uploads, external copies) are invisible to
+	// libvirt's cached volume registry until it rescans.
+	_ = pool.Refresh(0)
 
 	poolPath := extractPoolPathFromPool(pool)
 	vols, err := pool.ListAllStorageVolumes(0)

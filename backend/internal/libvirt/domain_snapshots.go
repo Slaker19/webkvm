@@ -173,6 +173,7 @@ func (c *Connector) ListSnapshots(domainID string) ([]models.Snapshot, error) {
 			CreationTime:    epoch,
 			ParentName:      parentName,
 			Current:         isCurrent,
+			HasMemory:       snapshotHasMemory(xmlDesc),
 			SizeAtSnapBytes: sizeAtSnap,
 		})
 	}
@@ -321,6 +322,24 @@ func (c *Connector) RevertSnapshot(domainID, snapID string) error {
 	return snap.RevertToSnapshot(0)
 }
 
+// snapshotHasMemory reports whether the snapshot captured the domain's RAM
+// (<memory snapshot='internal|external'/>). A memory snapshot can be
+// reverted while the VM runs — RAM and device state are restored with it.
+// Disk-only snapshots can only be reverted with the domain shut off.
+func snapshotHasMemory(xmlDesc string) bool {
+	s := strings.Index(xmlDesc, "<memory")
+	if s < 0 {
+		return false
+	}
+	block := xmlDesc[s:]
+	if e := strings.Index(block, ">"); e >= 0 {
+		block = block[:e]
+	}
+	return strings.Contains(block, "snapshot='") || strings.Contains(block, `snapshot="`)
+}
+
+// extractSnapshotCreation returns the <creationTime> as a formatted
+// RFC3339 timestamp, or the raw value when it is not an integer.
 func extractSnapshotCreation(xmlDesc string) string {
 	for _, line := range strings.Split(xmlDesc, "\n") {
 		line = strings.TrimSpace(line)

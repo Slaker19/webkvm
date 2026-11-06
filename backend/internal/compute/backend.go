@@ -526,6 +526,7 @@ func IsManagedNetwork(id string) bool {
 var (
 	isManagedBridge  func(string) bool
 	isManagedNetwork func(string) bool
+	inferPoolPurpose func(string) string
 )
 
 // BindHelpers wires the managed-name predicates (called at startup by
@@ -533,4 +534,19 @@ var (
 func BindHelpers(isBridge, isNetwork func(string) bool) {
 	isManagedBridge = isBridge
 	isManagedNetwork = isNetwork
+}
+
+// BindInferPoolPurpose wires the purpose inference so the api package
+// can guess a pool's purpose without importing libvirt directly.
+func BindInferPoolPurpose(fn func(string) string) {
+	inferPoolPurpose = fn
+}
+
+// InferPoolPurpose guesses a pool's purpose from its name. Falls back to
+// "disk" when nothing is bound (tests, or libvirt not yet connected).
+func InferPoolPurpose(name string) string {
+	if inferPoolPurpose != nil {
+		return inferPoolPurpose(name)
+	}
+	return PoolPurposeDisk
 }

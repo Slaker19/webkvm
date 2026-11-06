@@ -147,6 +147,7 @@
   let cpuMode = $state('host-passthrough');
   let cpuModel = $state('');
   let videoModel = $state('virtio');
+  let accel3d = $state(false);
   let graphicsType = $state('both');
   let network = $state('');
   let iso = $state('');
@@ -1141,6 +1142,7 @@
             cpu_units: cpuUnits !== 1024 ? cpuUnits : undefined,
             kvm_hidden: kvmHidden ? true : undefined,
             video_model: videoModel,
+            accel_3d: videoModel === 'virtio' ? accel3d : undefined,
             graphics_type: graphicsType,
             audio_model: audioModel !== 'none' ? audioModel : undefined,
             network,
@@ -2066,6 +2068,26 @@
                       </option>
                     {/each}
                   </select>
+                </SettingRow>
+
+                <SettingRow
+                  label={t('vmDetail.accel3dLabel')}
+                  helper={capabilities.supports3D
+                    ? t('vmDetail.accel3dHelper')
+                    : t('vmDetail.accel3dUnavailable')}
+                >
+                  <div class="flex items-center gap-3">
+                    <Switch
+                      bind:checked={accel3d}
+                      disabled={!capabilities.supports3D || videoModel !== 'virtio'}
+                      ariaLabel={t('vmDetail.accel3dLabel')}
+                    />
+                    {#if capabilities.supports3D}
+                      <span class="text-[11px] text-muted-foreground font-mono">
+                        {capabilities.gpuRenderNodes[0]}
+                      </span>
+                    {/if}
+                  </div>
                 </SettingRow>
 
                 <SettingRow

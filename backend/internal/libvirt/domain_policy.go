@@ -443,6 +443,7 @@ var allowedDeviceTypes = map[string]bool{
 func validateDevices(dev *xnode, pol DomainPolicy) error {
 	var out []*xnode
 	var wantVNC, wantSPICE bool
+	var wantEGL string
 	for _, d := range dev.Kids {
 		if !allowedDeviceTypes[d.Name] {
 			return fmt.Errorf("device <%s> is not allowed in an imported domain", d.Name)
@@ -456,7 +457,15 @@ func validateDevices(dev *xnode, pol DomainPolicy) error {
 				wantVNC = true
 			case "spice":
 				wantSPICE = true
-			case "", "rdp", "sdl", "desktop", "egl-headless", "dbus":
+			case "egl-headless":
+				// 3D accel renderer. Re-emitted below from a validated
+				// render node so the archive never dictates a host path.
+				node, ok := eglRenderNode(d)
+				if !ok {
+					return errors.New("<graphics type='egl-headless'> without a valid /dev/dri/renderD* node")
+				}
+				wantEGL = node
+			case "", "rdp", "sdl", "desktop", "dbus":
 				// dropped, never carried over
 			}
 			continue
@@ -507,8 +516,34 @@ func validateDevices(dev *xnode, pol DomainPolicy) error {
 		out = append(out, &xnode{Name: "graphics", Attrs: []xattr{{"type", "vnc"}, {"port", "-1"}, {"autoport", "yes"}, {"listen", "127.0.0.1"}},
 			Kids: []*xnode{{Name: "listen", Attrs: []xattr{{"type", "address"}, {"address", "127.0.0.1"}}}}})
 	}
+	if wantEGL != "" {
+		out = append(out, &xnode{Name: "graphics", Attrs: []xattr{{"type", "egl-headless"}},
+			Kids: []*xnode{{Name: "gl", Attrs: []xattr{{"rendernode", wantEGL}}}}})
+	}
 	dev.Kids = out
 	return nil
+}
+
+// eglRenderNode extracts and validates the render node of an egl-headless
+// graphics element. Only /dev/dri/renderD<digits> is accepted: it is the
+// offscreen device virgl needs, and a narrow allow-list removes any chance
+// of an archive pointing libvirt at an arbitrary host path.
+func eglRenderNode(d *xnode) (string, bool) {
+	gl := d.child("gl")
+	if gl == nil {
+		return "", false
+	}
+	node, _ := gl.attr("rendernode")
+	rest, ok := strings.CutPrefix(node, "/dev/dri/renderD")
+	if !ok || rest == "" {
+		return "", false
+	}
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	return node, true
 }
 
 func dropKids(kids []*xnode, name string) []*xnode {

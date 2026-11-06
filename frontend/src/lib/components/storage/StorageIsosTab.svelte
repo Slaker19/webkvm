@@ -13,7 +13,7 @@
   import { upsertTask, updateTask, finishTask } from '$lib/stores/tasks.svelte.js';
   import { api } from '$lib/stores/auth.svelte.js';
   import { t, htmlVar } from '$lib/i18n.svelte.js';
-  import { hasPurpose, purposeLabel, movablePools } from '$lib/purpose.js';
+  import { hasPurpose, movablePools } from '$lib/purpose.js';
 
   let {
     pools = [],
@@ -25,7 +25,6 @@
   let isos = $state([]);
   let loadingIsos = $state(false);
   let isoSearch = $state('');
-  let isoTargetPool = $state('');
 
   // ISO Download Dialog & State
   let showDownloadISO = $state(false);
@@ -55,11 +54,16 @@
 
   const isoPools = $derived(pools.filter((p) => hasPurpose(p, 'iso')));
 
-  $effect(() => {
-    if (!isoTargetPool || !isoPools.find((p) => p.name === isoTargetPool)) {
-      isoTargetPool = isoPools[0]?.name || pools[0]?.name || '';
-    }
-  });
+  // Single source of truth: the selected listing pool is also the upload
+  // target. "All pools" falls back to the first ISO pool so uploads always
+  // have a valid destination.
+  const isoTargetPool = $derived(
+    selectedISOPool &&
+      selectedISOPool !== '__all__' &&
+      isoPools.some((p) => p.name === selectedISOPool)
+      ? selectedISOPool
+      : isoPools[0]?.name || ''
+  );
 
   $effect(() => {
     loadIsos(selectedISOPool);
@@ -265,10 +269,21 @@
     <div class="flex flex-wrap items-center gap-3">
       <select bind:value={selectedISOPool} class="input !py-1 !text-xs !w-auto">
         <option value="__all__">{t('storage.allPoolsOption')}</option>
-        {#each pools as p (p.name)}
-          <option value={p.name}>{p.name} ({purposeLabel(p)})</option>
+        {#each isoPools as p (p.name)}
+          <option value={p.name}>{p.name}</option>
         {/each}
       </select>
+
+      <Button
+        size="sm"
+        variant="outline"
+        class="!h-7 !px-2 !text-xs"
+        onclick={() => loadIsos(selectedISOPool)}
+        disabled={loadingIsos}
+        title={t('storage.refreshIsos')}
+      >
+        <Icon name="refresh" size={13} class={cn(loadingIsos && 'animate-spin')} />
+      </Button>
 
       <div class="relative w-48 sm:w-60">
         <Icon
@@ -286,18 +301,11 @@
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
-      <select
-        bind:value={isoTargetPool}
-        class="input !py-1 !text-xs !w-auto"
-        title={t('storage.isoTargetPool')}
-      >
-        {#if isoPools.length === 0}
-          <option value="">{t('storage.noIsoPool')}</option>
-        {/if}
-        {#each isoPools as p (p.name)}
-          <option value={p.name}>{t('storage.isoTargetPool')}: {p.name}</option>
-        {/each}
-      </select>
+      {#if selectedISOPool === '__all__' && isoTargetPool}
+        <span class="text-[11px] text-muted-foreground">
+          {t('storage.willUploadTo')} <span class="font-mono text-foreground">{isoTargetPool}</span>
+        </span>
+      {/if}
 
       <Button
         size="sm"

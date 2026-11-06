@@ -15,6 +15,7 @@
     snapDesc = $bindable(''),
     snapMemory = $bindable(false),
     actionLoading = '',
+    vmState = '',
     createSnapshot,
     revertSnapshot,
     deleteSnapshot,
@@ -106,11 +107,18 @@
     </div>
     <div class="flex gap-1 shrink-0">
       {#if !node.current}
+        {@const revertBlocked = vmState !== 'shutoff' && !node.has_memory}
         <button
           onclick={() => revertSnapshot(node.id)}
-          class="text-xs text-warning hover:text-warning px-2 py-1 rounded hover:bg-warning/10"
-          >{t('vmDetail.revert')}</button
+          disabled={revertBlocked}
+          class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-md border transition-colors {revertBlocked
+            ? 'text-muted-foreground/50 border-border/50 cursor-not-allowed'
+            : 'text-warning border-warning/30 hover:bg-warning/10 hover:border-warning/50'}"
+          title={revertBlocked ? t('vmDetail.revertNeedsShutoff') : t('vmDetail.revert')}
         >
+          <Icon name="rotateCcw" size={12} />
+          {t('vmDetail.revert')}
+        </button>
       {/if}
       <button
         onclick={() => deleteSnapshot(node.id)}

@@ -38,6 +38,7 @@ let state = $state({
   cpuFlags: [],
   spiceSupported: false,
   guestfs: false,
+  gpuRenderNodes: [],
 });
 
 export const capabilities = {
@@ -83,6 +84,18 @@ export const capabilities = {
   get guestfs() {
     return state.guestfs;
   },
+  get gpuRenderNodes() {
+    return state.gpuRenderNodes;
+  },
+  /** True when this host can actually back virgl for a virtio GPU. */
+  get supports3D() {
+    // No render node means no offscreen acceleration, full stop.
+    if (!state.gpuRenderNodes.length) return false;
+    // An empty graphics list means the QEMU probe failed; the render node
+    // is then the only trustworthy signal, so don't hide a usable feature.
+    if (!state.graphicsTypes.length) return true;
+    return state.graphicsTypes.includes('egl-headless') && state.videoModels.includes('virtio');
+  },
 };
 
 function apply(data) {
@@ -97,6 +110,7 @@ function apply(data) {
   state.cpuFlags = data.cpu_flags || [];
   state.spiceSupported = !!data.spice_supported;
   state.guestfs = !!data.guestfs;
+  state.gpuRenderNodes = data.gpu_render_nodes || [];
   state.qemuVersion = data.qemu_version || '';
   state.parsed = !!data.parsed;
   state.loaded = true;

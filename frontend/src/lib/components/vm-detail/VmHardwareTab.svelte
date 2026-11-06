@@ -79,6 +79,7 @@
   ];
 
   let eVideoModel = $state('virtio');
+  let eAccel3D = $state(false);
   let eAudioModel = $state('none');
   let eSerialPort = $state(true);
   let eGraphicsType = $state('both');
@@ -138,6 +139,7 @@
     eKVMHidden = !!vm.kvm_hidden;
     eCPUFlags = Array.isArray(vm.cpu_flags) ? [...vm.cpu_flags] : [];
     eVideoModel = vm.video_model || 'virtio';
+    eAccel3D = !!vm.accel_3d;
     eAudioModel = vm.audio_model || 'none';
     eSerialPort = vm.serial_port !== false;
     eGraphicsType = vm.graphics_type || 'both';
@@ -195,6 +197,8 @@
       if (JSON.stringify(eCPUFlags) !== JSON.stringify(vm.cpu_flags || []))
         data.cpu_flags = eCPUFlags;
       if (eVideoModel !== (vm.video_model || 'virtio')) data.video_model = eVideoModel;
+      const effAccel3D = eVideoModel === 'virtio' ? eAccel3D : false;
+      if (effAccel3D !== !!vm.accel_3d) data.accel_3d = effAccel3D;
       if (eAudioModel !== (vm.audio_model || 'none')) data.audio_model = eAudioModel;
       if (eSerialPort !== (vm.serial_port !== false)) data.serial_port = eSerialPort;
       if (eGraphicsType !== (vm.graphics_type || 'both')) data.graphics_type = eGraphicsType;
@@ -638,6 +642,26 @@
                 <option value="bochs" disabled={!supports('video', 'bochs')}>Bochs Display</option>
                 <option value="none">{t('vmCreate.serialOnly')}</option>
               </select>
+            </SettingRow>
+
+            <SettingRow
+              label={t('vmDetail.accel3dLabel')}
+              helper={capabilities.supports3D
+                ? t('vmDetail.accel3dHelper')
+                : t('vmDetail.accel3dUnavailable')}
+            >
+              <div class="flex flex-col gap-1 items-end">
+                <Switch
+                  bind:checked={eAccel3D}
+                  disabled={!capabilities.supports3D || eVideoModel !== 'virtio'}
+                  ariaLabel={t('vmDetail.accel3dLabel')}
+                />
+                {#if capabilities.supports3D}
+                  <span class="text-[11px] text-muted-foreground font-mono">
+                    {capabilities.gpuRenderNodes[0]}
+                  </span>
+                {/if}
+              </div>
             </SettingRow>
 
             <SettingRow label={t('vmCreate.audioDevice')} helper={t('vmCreate.audioDeviceHelper')}>

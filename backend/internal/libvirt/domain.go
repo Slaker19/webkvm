@@ -160,11 +160,16 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 		return models.VM{}, err
 	}
 	var videoXML string
-	if videoModel == "none" {
-		videoXML = ""
-	} else {
-		videoXML = fmt.Sprintf("<video><model type='%s' heads='1' vram='16384'/></video>", xmlEscape(videoModel))
+	accel3d := req.Accel3D
+	if accel3d {
+		if videoModel != "virtio" {
+			return models.VM{}, fmt.Errorf("3D acceleration requires the virtio video model (got %q)", videoModel)
+		}
+		if renderNodePath() == "" {
+			return models.VM{}, fmt.Errorf("3D acceleration requires a DRM render node (none under /dev/dri)")
+		}
 	}
+	videoXML = buildVideoXML(videoModel, accel3d)
 
 	networkModel := req.NetworkModel
 	if networkModel == "" {
@@ -351,6 +356,9 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 	case "none":
 		// no graphics device
 		graphicsXML = ""
+	}
+	if accel3d {
+		graphicsXML += eglHeadlessXML(renderNodePath())
 	}
 
 	diskDriverAttrs := diskDriverXMLAttrs(diskFormat, req.DiskCacheIO, req.DiskDiscard)
@@ -596,6 +604,21 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 		}
 		re := regexp.MustCompile(`<video>[^<]*<model type='[^']+'`)
 		xmlDesc = re.ReplaceAllString(xmlDesc, "<video>\n      <model type='"+xmlEscape(*req.VideoModel)+"'")
+		// Switching away from virtio invalidates virgl: drop the
+		// acceleration tag and the egl-headless renderer with it.
+		if *req.VideoModel != "virtio" && hasAccel3D(xmlDesc) {
+			var aerr error
+			if xmlDesc, aerr = applyAccel3D(xmlDesc, false, *req.VideoModel); aerr != nil {
+				return models.VM{}, aerr
+			}
+		}
+	}
+	if req.Accel3D != nil {
+		model := extractVideoModel(xmlDesc)
+		var aerr error
+		if xmlDesc, aerr = applyAccel3D(xmlDesc, *req.Accel3D, model); aerr != nil {
+			return models.VM{}, aerr
+		}
 	}
 	if req.BootOrder != nil {
 		switch *req.BootOrder {
@@ -741,8 +764,10 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 	}
 	if req.GraphicsType != nil {
 		gType := resolveGraphicsType(*req.GraphicsType)
-		// Remove existing graphics & spicevmc channels
-		xmlDesc = regexp.MustCompile(`<graphics\b[^>]*>[\s\S]*?</graphics>\s*`).ReplaceAllString(xmlDesc, "")
+		// Remove existing VNC/SPICE graphics & spicevmc channels. Only the
+		// console devices: an egl-headless renderer belongs to 3D accel and
+		// must survive a console-type change.
+		xmlDesc = stripVNCSpiceGraphics(xmlDesc)
 		xmlDesc = regexp.MustCompile(`<channel type='spicevmc'>[\s\S]*?</channel>\s*`).ReplaceAllString(xmlDesc, "")
 
 		var newGraphics string
@@ -1018,6 +1043,7 @@ func (c *Connector) domainToVM(dom *libvirt.Domain) (models.VM, error) {
 		CPUUnits:     cpuUnits,
 		KVMHidden:    kvmHidden,
 		VideoModel:   videoModel,
+		Accel3D:      hasAccel3D(xmlDesc),
 		AudioModel:   audioModel,
 		SerialPort:   serialPort,
 		GraphicsType: graphicsType,

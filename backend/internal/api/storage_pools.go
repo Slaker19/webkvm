@@ -462,7 +462,13 @@ func (h *Handler) requireISOPoolForCaller(w http.ResponseWriter, r *http.Request
 
 func (h *Handler) requireISOPool(w http.ResponseWriter, name string) bool {
 	purpose, ok := h.lookupPoolPurpose(name)
-	if !ok || !compute.HasPurpose(purpose, compute.PoolPurposeISO) {
+	if !ok {
+		// Pools created before the purpose system (or with a custom path)
+		// have no explicit tag; infer from the name so they still accept
+		// ISO uploads instead of failing with "not designated for ISOs".
+		purpose = compute.InferPoolPurpose(name)
+	}
+	if !compute.HasPurpose(purpose, compute.PoolPurposeISO) {
 		jsonErr(w, http.StatusBadRequest,
 			fmt.Sprintf("pool %q is not designated for ISO images", name))
 		return false
