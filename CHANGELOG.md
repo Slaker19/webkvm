@@ -23,6 +23,8 @@ Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
   - Native daemon `smart.Watcher` performing periodic (24h) drives sweeps, alerting on disk failure, high temperature (≥60°C), or reallocated sectors (>50) via the `notify` subsystem.
 - **Terminal Session Log Downloader**:
   - 1-click `.log` export in `TerminalPanel` to download session buffers directly from serial and host consoles.
+- **3D acceleration (virgl) for virtio video**, reported by [@sfs-pra](https://github.com/sfs-pra) in [#9](https://github.com/Slaker19/webkvm/issues/9): new `accel_3d` option emits `<acceleration accel3d='yes'/>` plus a validated `<graphics type='egl-headless'>` renderer, so Wayland compositors (niri, sway) start inside a guest. Fixes the underlying bug where saving the console type wiped every `<graphics>` block, silently disabling 3D.
+- **Storage/ISO fixes contributed by [@kuanghl](https://github.com/kuanghl) in [#10](https://github.com/Slaker19/webkvm/pull/10)**: ISO upload limit raised from 10 GiB to 50 GiB; pools created from the UI now autostart (they went inactive after a libvirtd restart, breaking every upload against them); `GetISOs` refreshes the pool before listing; re-uploading a ghost file no longer fails with a permanent 409 (registered volumes and referenced files still refuse); pools without a purpose tag infer it from the name; the ISO tab uses a single pool dropdown.
 
 ### Fixed & Hardened
 - **Storage Volume Thin Provisioning**: Switched from `STORAGE_VOL_CREATE_PREALLOC_METADATA` to standard sparse creation (`0`), preventing `qemu-img` from running `preallocation=falloc` and failing with `No space left on device` (ENOSPC).
