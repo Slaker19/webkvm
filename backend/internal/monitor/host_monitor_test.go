@@ -13,50 +13,50 @@ import (
 	"webkvm/internal/models"
 	"webkvm/internal/sysutil"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/image"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/api/types/volume"
+	mobyclient "github.com/moby/moby/client"
 )
 
 // mockDockerClient implements dockerAPIClient for testing.
 type mockDockerClient struct {
 	pingErr    error
-	version    types.Version
+	version    mobyclient.ServerVersionResult
 	versionErr error
 	containers []container.Summary
 	images     []image.Summary
-	volumes    []*volume.Volume
-	networks   []network.Inspect
+	volumes    []volume.Volume
+	networks   []network.Summary
 }
 
-func (m *mockDockerClient) Ping(ctx context.Context) (types.Ping, error) {
-	return types.Ping{}, m.pingErr
+func (m *mockDockerClient) Ping(ctx context.Context, options mobyclient.PingOptions) (mobyclient.PingResult, error) {
+	return mobyclient.PingResult{}, m.pingErr
 }
 
-func (m *mockDockerClient) ServerVersion(ctx context.Context) (types.Version, error) {
+func (m *mockDockerClient) ServerVersion(ctx context.Context, options mobyclient.ServerVersionOptions) (mobyclient.ServerVersionResult, error) {
 	return m.version, m.versionErr
 }
 
-func (m *mockDockerClient) ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-	return m.containers, nil
+func (m *mockDockerClient) ContainerList(ctx context.Context, options mobyclient.ContainerListOptions) (mobyclient.ContainerListResult, error) {
+	return mobyclient.ContainerListResult{Items: m.containers}, nil
 }
 
-func (m *mockDockerClient) ContainerStatsOneShot(ctx context.Context, containerID string) (container.StatsResponseReader, error) {
-	return container.StatsResponseReader{Body: io.NopCloser(strings.NewReader("{}"))}, nil
+func (m *mockDockerClient) ContainerStats(ctx context.Context, containerID string, options mobyclient.ContainerStatsOptions) (mobyclient.ContainerStatsResult, error) {
+	return mobyclient.ContainerStatsResult{Body: io.NopCloser(strings.NewReader("{}"))}, nil
 }
 
-func (m *mockDockerClient) ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error) {
-	return m.images, nil
+func (m *mockDockerClient) ImageList(ctx context.Context, options mobyclient.ImageListOptions) (mobyclient.ImageListResult, error) {
+	return mobyclient.ImageListResult{Items: m.images}, nil
 }
 
-func (m *mockDockerClient) VolumeList(ctx context.Context, options volume.ListOptions) (volume.ListResponse, error) {
-	return volume.ListResponse{Volumes: m.volumes}, nil
+func (m *mockDockerClient) VolumeList(ctx context.Context, options mobyclient.VolumeListOptions) (mobyclient.VolumeListResult, error) {
+	return mobyclient.VolumeListResult{Items: m.volumes}, nil
 }
 
-func (m *mockDockerClient) NetworkList(ctx context.Context, options network.ListOptions) ([]network.Inspect, error) {
-	return m.networks, nil
+func (m *mockDockerClient) NetworkList(ctx context.Context, options mobyclient.NetworkListOptions) (mobyclient.NetworkListResult, error) {
+	return mobyclient.NetworkListResult{Items: m.networks}, nil
 }
 
 func (m *mockDockerClient) Close() error {
@@ -377,7 +377,7 @@ func TestCollectDockerInfoNotAvailable(t *testing.T) {
 	defer func() { dockerClientFactory = origFactory }()
 
 	// Factory returns error — simulates Docker not available
-	dockerClientFactory = func() (dockerAPIClient, error) {
+	dockerClientFactory = func(ctx context.Context) (dockerAPIClient, error) {
 		return nil, os.ErrNotExist
 	}
 
@@ -397,7 +397,7 @@ func TestCollectDockerInfoDaemonNotRunning(t *testing.T) {
 
 	// Factory returns a client, but Ping fails — simulates daemon not running
 	mock := &mockDockerClient{pingErr: context.DeadlineExceeded}
-	dockerClientFactory = func() (dockerAPIClient, error) {
+	dockerClientFactory = func(ctx context.Context) (dockerAPIClient, error) {
 		return mock, nil
 	}
 
@@ -417,7 +417,7 @@ func TestCollectDockerInfoSuccess(t *testing.T) {
 
 	mock := &mockDockerClient{
 		pingErr: nil,
-		version: types.Version{Version: "24.0.5"},
+		version: mobyclient.ServerVersionResult{Version: "24.0.5"},
 		containers: []container.Summary{
 			{ID: "abc123def456", Names: []string{"/mycontainer"}, Image: "nginx", State: "running", Status: "Up 5 minutes"},
 		},
@@ -426,10 +426,10 @@ func TestCollectDockerInfoSuccess(t *testing.T) {
 			{ID: "sha256:img2bbbb", RepoTags: []string{"ubuntu:22.04"}, Size: 77000000, Created: 1703462400},
 			{ID: "sha256:img3cccc", RepoTags: []string{"redis:7"}, Size: 138000000, Created: 1702857600},
 		},
-		volumes:  []*volume.Volume{{Name: "vol1"}, {Name: "vol2"}},
-		networks: []network.Inspect{{Name: "net1"}, {Name: "net2"}, {Name: "net3"}, {Name: "net4"}},
+		volumes:  []volume.Volume{{Name: "vol1"}, {Name: "vol2"}},
+		networks: []network.Summary{{Name: "net1"}, {Name: "net2"}, {Name: "net3"}, {Name: "net4"}},
 	}
-	dockerClientFactory = func() (dockerAPIClient, error) {
+	dockerClientFactory = func(ctx context.Context) (dockerAPIClient, error) {
 		return mock, nil
 	}
 

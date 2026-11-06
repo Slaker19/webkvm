@@ -13,24 +13,20 @@ import (
 
 	"webkvm/internal/models"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
+	"github.com/docker/go-sdk/client"
+	mobyclient "github.com/moby/moby/client"
 )
 
 // dockerAPIClient defines the subset of Docker client operations we use.
 // This allows mocking in tests.
 type dockerAPIClient interface {
-	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
-	ContainerStatsOneShot(ctx context.Context, containerID string) (container.StatsResponseReader, error)
-	ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error)
-	VolumeList(ctx context.Context, options volume.ListOptions) (volume.ListResponse, error)
-	NetworkList(ctx context.Context, options network.ListOptions) ([]network.Inspect, error)
-	Ping(ctx context.Context) (types.Ping, error)
-	ServerVersion(ctx context.Context) (types.Version, error)
+	ContainerList(ctx context.Context, options mobyclient.ContainerListOptions) (mobyclient.ContainerListResult, error)
+	ContainerStats(ctx context.Context, containerID string, options mobyclient.ContainerStatsOptions) (mobyclient.ContainerStatsResult, error)
+	ImageList(ctx context.Context, options mobyclient.ImageListOptions) (mobyclient.ImageListResult, error)
+	VolumeList(ctx context.Context, options mobyclient.VolumeListOptions) (mobyclient.VolumeListResult, error)
+	NetworkList(ctx context.Context, options mobyclient.NetworkListOptions) (mobyclient.NetworkListResult, error)
+	Ping(ctx context.Context, options mobyclient.PingOptions) (mobyclient.PingResult, error)
+	ServerVersion(ctx context.Context, options mobyclient.ServerVersionOptions) (mobyclient.ServerVersionResult, error)
 	Close() error
 }
 
@@ -44,7 +40,7 @@ type dockerClientWrapper struct {
 
 // dockerClientFactory creates a dockerAPIClient. Can be overridden in tests.
 // The default factory checks for socket existence before creating the client.
-var dockerClientFactory = func() (dockerAPIClient, error) {
+var dockerClientFactory = func(ctx context.Context) (dockerAPIClient, error) {
 	// Check if docker socket exists
 	socketPath := "/var/run/docker.sock"
 	if runtime.GOOS != "windows" {
@@ -52,7 +48,8 @@ var dockerClientFactory = func() (dockerAPIClient, error) {
 			return nil, err
 		}
 	}
-	return client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	// Use the new docker go-sdk
+	return client.New(ctx)
 }
 
 var (
@@ -65,7 +62,7 @@ var (
 func initDockerClient(ctx context.Context) *dockerClientWrapper {
 	dockerClientOnce.Do(func() {
 		// Create Docker client using factory (allows test override)
-		cli, err := dockerClientFactory()
+		cli, err := dockerClientFactory(ctx)
 		if err != nil {
 			return
 		}
@@ -74,7 +71,7 @@ func initDockerClient(ctx context.Context) *dockerClientWrapper {
 		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 
-		ping, err := cli.Ping(pingCtx)
+		_, err = cli.Ping(pingCtx, mobyclient.PingOptions{})
 		if err != nil {
 			cli.Close()
 			return
@@ -84,7 +81,7 @@ func initDockerClient(ctx context.Context) *dockerClientWrapper {
 		versionCtx, versionCancel := context.WithTimeout(ctx, 2*time.Second)
 		defer versionCancel()
 
-		serverVersion, err := cli.ServerVersion(versionCtx)
+		serverVersion, err := cli.ServerVersion(versionCtx, mobyclient.ServerVersionOptions{})
 		if err != nil {
 			cli.Close()
 			return
@@ -109,7 +106,6 @@ func initDockerClient(ctx context.Context) *dockerClientWrapper {
 			}
 		}
 
-		_ = ping // Ping was successful, we have connection
 		dockerClient = wrapper
 	})
 
@@ -142,28 +138,28 @@ func (m *HostMonitor) collectDockerInfoSDK(ctx context.Context) *models.DockerIn
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		containers, err := wrapper.client.ContainerList(opCtx, container.ListOptions{All: true})
+		result, err := wrapper.client.ContainerList(opCtx, mobyclient.ContainerListOptions{All: true})
 		if err != nil {
 			return
 		}
 
-		result := make([]models.DockerContainer, 0, len(containers))
-		for _, c := range containers {
+		cont := make([]models.DockerContainer, 0, len(result.Items))
+		for _, c := range result.Items {
 			name := ""
 			if len(c.Names) > 0 {
 				name = strings.TrimPrefix(c.Names[0], "/")
 			}
-			result = append(result, models.DockerContainer{
+			cont = append(cont, models.DockerContainer{
 				ID:     c.ID[:12],
 				Name:   name,
 				Image:  c.Image,
-				State:  c.State,
+				State:  string(c.State),
 				Status: c.Status,
 			})
 		}
 
 		mu.Lock()
-		docker.Containers = result
+		docker.Containers = cont
 		mu.Unlock()
 	}()
 
@@ -171,13 +167,13 @@ func (m *HostMonitor) collectDockerInfoSDK(ctx context.Context) *models.DockerIn
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		images, err := wrapper.client.ImageList(opCtx, image.ListOptions{All: false})
+		result, err := wrapper.client.ImageList(opCtx, mobyclient.ImageListOptions{All: false})
 		if err != nil {
 			return
 		}
 
-		result := make([]models.DockerImage, 0, len(images))
-		for i, img := range images {
+		imgs := make([]models.DockerImage, 0, len(result.Items))
+		for i, img := range result.Items {
 			if i >= maxDockerImages {
 				break
 			}
@@ -198,7 +194,7 @@ func (m *HostMonitor) collectDockerInfoSDK(ctx context.Context) *models.DockerIn
 				imgID = imgID[:12]
 			}
 
-			result = append(result, models.DockerImage{
+			imgs = append(imgs, models.DockerImage{
 				ID:           imgID,
 				Repository:   repo,
 				Tag:          tag,
@@ -209,8 +205,8 @@ func (m *HostMonitor) collectDockerInfoSDK(ctx context.Context) *models.DockerIn
 		}
 
 		mu.Lock()
-		docker.Images = result
-		docker.ImagesCount = len(images)
+		docker.Images = imgs
+		docker.ImagesCount = len(result.Items)
 		mu.Unlock()
 	}()
 
@@ -218,12 +214,12 @@ func (m *HostMonitor) collectDockerInfoSDK(ctx context.Context) *models.DockerIn
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		volList, err := wrapper.client.VolumeList(opCtx, volume.ListOptions{})
+		result, err := wrapper.client.VolumeList(opCtx, mobyclient.VolumeListOptions{})
 		if err != nil {
 			return
 		}
 		mu.Lock()
-		docker.VolumesCount = len(volList.Volumes)
+		docker.VolumesCount = len(result.Items)
 		mu.Unlock()
 	}()
 
@@ -231,12 +227,12 @@ func (m *HostMonitor) collectDockerInfoSDK(ctx context.Context) *models.DockerIn
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		networks, err := wrapper.client.NetworkList(opCtx, network.ListOptions{})
+		result, err := wrapper.client.NetworkList(opCtx, mobyclient.NetworkListOptions{})
 		if err != nil {
 			return
 		}
 		mu.Lock()
-		docker.NetworksCount = len(networks)
+		docker.NetworksCount = len(result.Items)
 		mu.Unlock()
 	}()
 
@@ -303,7 +299,11 @@ func (m *HostMonitor) enrichContainerStats(ctx context.Context, wrapper *dockerC
 			statsCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
 
-			resp, err := wrapper.client.ContainerStatsOneShot(statsCtx, id)
+			// Use ContainerStats with streaming disabled for one-shot stats
+			resp, err := wrapper.client.ContainerStats(statsCtx, id, mobyclient.ContainerStatsOptions{
+				Stream:                false,
+				IncludePreviousSample: true,
+			})
 			if err != nil {
 				return
 			}
