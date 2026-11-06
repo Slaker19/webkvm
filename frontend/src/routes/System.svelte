@@ -290,16 +290,18 @@
   const load15 = $derived(metrics?.load?.load15 || 0);
   const cores = $derived(metrics?.cpu?.cores || 1);
   const threads = $derived(metrics?.cpu?.threads || cores);
+  
+  // Use disk_groups for accurate aggregation (avoids counting bind mounts multiple times)
   const diskPct = $derived(
-    metrics?.disks?.length > 0
-      ? metrics.disks.reduce((sum, d) => sum + (d.usage_percent || 0), 0) / metrics.disks.length
+    metrics?.disk_groups?.length > 0
+      ? metrics.disk_groups.reduce((sum, g) => sum + (g.usage_percent || 0), 0) / metrics.disk_groups.length
       : 0
   );
   const diskUsed = $derived(
-    metrics?.disks?.reduce((sum, d) => sum + (d.used_bytes || 0), 0) || 0
+    metrics?.disk_groups?.reduce((sum, g) => sum + (g.used_bytes || 0), 0) || 0
   );
   const diskTotal = $derived(
-    metrics?.disks?.reduce((sum, d) => sum + (d.total_bytes || 0), 0) || 0
+    metrics?.disk_groups?.reduce((sum, g) => sum + (g.total_bytes || 0), 0) || 0
   );
 
   function cpuStatus(pct) {
