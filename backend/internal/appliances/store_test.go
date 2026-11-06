@@ -117,7 +117,9 @@ func TestHelperScriptsMetadataAndNormalization(t *testing.T) {
 	if !ok {
 		t.Fatal("expected pihole helper app to be in store")
 	}
-	if !pihole.IsHelperScript || pihole.DefaultType != "container" || pihole.Port != 80 {
+	// Docker-based helper apps deploy as VMs (their provisioning scripts
+	// run docker/systemd, which don't work in an unprivileged container).
+	if !pihole.IsHelperScript || pihole.DefaultType != "vm" || pihole.Port != 80 {
 		t.Errorf("unexpected pihole metadata: %+v", pihole)
 	}
 

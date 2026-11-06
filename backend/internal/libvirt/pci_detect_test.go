@@ -168,7 +168,11 @@ func TestHostRestrictionsLive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live hardware test in short mode")
 	}
-	if _, err := os.Stat("/sys/bus/pci/devices/0000:05:00.1"); os.IsNotExist(err) {
+	// Reference hardware: the WebKVM dev machine (TianBei WTR PRO / AMD
+	// Ryzen 7 5825U). Its SATA controller is 0000:06:00.0; the management
+	// uplink is the Intel I226-V at 0000:02:00.0; the NVMe root disk is
+	// 0000:01:00.0. Skip on any other machine.
+	if _, err := os.Stat("/sys/bus/pci/devices/0000:06:00.0"); os.IsNotExist(err) {
 		t.Skip("host-specific PCI devices not present on this machine; skipping live test")
 	}
 
@@ -178,19 +182,19 @@ func TestHostRestrictionsLive(t *testing.T) {
 		t.Logf("  %s -> reason: %s, critical: %v", addr, r.reason, r.hostCritical)
 	}
 
-	// Verify that the root SATA controller (0000:05:00.1 or parent 0000:00:08.2) is detected as host_root_disk
-	if r, found := restr["0000:05:00.1"]; !found || r.reason != "host_root_disk" || !r.hostCritical {
-		t.Errorf("expected 0000:05:00.1 to be critical host_root_disk, got %+v", r)
+	// The root SATA controller is detected as host_root_disk (critical).
+	if r, found := restr["0000:06:00.0"]; !found || r.reason != "host_root_disk" || !r.hostCritical {
+		t.Errorf("expected 0000:06:00.0 to be critical host_root_disk, got %+v", r)
 	}
 
-	// Verify that management uplink 0000:01:00.0 is detected as host_uplink
-	if r, found := restr["0000:01:00.0"]; !found || r.reason != "host_uplink" || !r.hostCritical {
-		t.Errorf("expected 0000:01:00.0 to be critical host_uplink, got %+v", r)
+	// The management uplink (Intel I226-V) is detected as host_uplink.
+	if r, found := restr["0000:02:00.0"]; !found || r.reason != "host_uplink" || !r.hostCritical {
+		t.Errorf("expected 0000:02:00.0 to be critical host_uplink, got %+v", r)
 	}
 
-	// Verify that WiFi 0000:02:00.0 is NOT in restrictions (clean)
-	if r, found := restr["0000:02:00.0"]; found {
-		t.Errorf("expected 0000:02:00.0 to have no restrictions, got %+v", r)
+	// The NVMe root disk is mounted_storage, not a critical uplink/root.
+	if r, found := restr["0000:01:00.0"]; !found || r.reason != "mounted_storage" || r.hostCritical {
+		t.Errorf("expected 0000:01:00.0 to be non-critical mounted_storage, got %+v", r)
 	}
 }
 

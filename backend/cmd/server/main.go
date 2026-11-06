@@ -42,8 +42,9 @@ import (
 
 // Set by -ldflags at build time. Defaults are used for `go run`.
 var (
-	Version   = "0.1.10"
+	Version   = "0.1.11"
 	BuildTime = "unknown"
+	Commit    = ""
 )
 
 // mustContainerVersion returns the container daemon version ("" on error)
@@ -132,6 +133,9 @@ func main() {
 	}
 	if BuildTime != "unknown" {
 		cfg.BuildTime = BuildTime
+	}
+	if Commit != "" {
+		cfg.Commit = Commit
 	}
 	// If WEBKVM_LOG_FILE is set (typically via a systemd drop-in),
 	// re-init logging so the same records are also written to that
@@ -879,6 +883,13 @@ func main() {
 	}
 	smartWatcher := smart.NewWatcher(24*time.Hour, smartAlertFn, logger)
 	smartWatcher.Start(eventCtx)
+
+	// Backup completion → notification channels (success/failure).
+	if notifier != nil {
+		backupRunner.SetAlertFunc(func(level, subject, msg string) {
+			notifier.Record(level, subject, msg)
+		})
+	}
 
 	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, jail, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter, incusMetrics)
 

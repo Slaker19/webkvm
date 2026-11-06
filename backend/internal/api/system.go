@@ -27,15 +27,22 @@ import (
 
 // SystemInfo returned by /api/system/status.
 type SystemInfo struct {
-	Backend     BackendInfo    `json:"backend"`
-	Libvirt     LibvirtInfo    `json:"libvirt"`
-	Host        HostInfo       `json:"host"`
-	BuildTime   string         `json:"build_time"`
-	UptimeSec   int64          `json:"uptime_sec"` // backend process uptime (unchanged meaning)
-	StartTime   string         `json:"start_time"`
-	Pools       []PoolDiskInfo `json:"pools"`
-	Latest      string         `json:"latest_version"`
-	UpdateAvail bool           `json:"update_available"`
+	Backend   BackendInfo    `json:"backend"`
+	Libvirt   LibvirtInfo    `json:"libvirt"`
+	Host      HostInfo       `json:"host"`
+	BuildTime string         `json:"build_time"`
+	UptimeSec int64          `json:"uptime_sec"` // backend process uptime (unchanged meaning)
+	StartTime string         `json:"start_time"`
+	Pools     []PoolDiskInfo `json:"pools"`
+	Latest    string         `json:"latest_version"`
+	// LatestCommit is the short SHA of the newest commit on the default
+	// branch (main). Distinct from latest_version, which is the newest
+	// published release tag — main can sit ahead of the latest tag.
+	LatestCommit string `json:"latest_commit,omitempty"`
+	// BuildCommit is the short SHA baked into this binary at build time,
+	// empty for `go run` or builds without the -X main.Commit ldflag.
+	BuildCommit string `json:"build_commit,omitempty"`
+	UpdateAvail bool   `json:"update_available"`
 	// UpdateMode is which path POST /api/system/update would take:
 	// "release" (verified GitHub asset) or "source" (rebuild the checkout).
 	UpdateMode string `json:"update_mode"`
@@ -174,17 +181,21 @@ func (h *Handler) SystemStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update check (best-effort, short timeout).
-	latest, ok := checkLatestVersion(r.Context(), h.cfg.Version)
+	latest, latestCommit, ok := checkLatestVersion(r.Context(), h.cfg.Version)
 	if ok {
 		si.Latest = latest
+		si.LatestCommit = latestCommit
+		si.BuildCommit = h.cfg.Commit
 		si.UpdateAvail = isNewer(latest, h.cfg.Version)
 	}
 	// In a checkout the button rebuilds from source, where "newer" is a
-	// commit, not a published release: gating it on a GitHub tag would grey
-	// it out exactly where rebuilding is the point.
+	// commit, not a published release. Compare the build commit against the
+	// latest commit on main so an up-to-date checkout stops nagging, while a
+	// checkout behind main (or without commit info) keeps the update path.
 	if h.cfg.RepoDir != "" && pathExists(filepath.Join(h.cfg.RepoDir, ".git")) {
 		si.UpdateMode = "source"
-		si.UpdateAvail = true
+		si.BuildCommit = h.cfg.Commit
+		si.UpdateAvail = latestCommit == "" || h.cfg.Commit == "" || h.cfg.Commit != latestCommit
 	} else {
 		si.UpdateMode = "release"
 	}
@@ -992,32 +1003,67 @@ func tailFile(path string, n int) ([]byte, error) {
 // install.sh and update.sh.
 const latestReleaseAPI = "https://api.github.com/repos/Slaker19/webkvm/releases/latest"
 
-// checkLatestVersion asks the GitHub API for the latest release. It is
-// best-effort and never blocks the response for more than ~2s.
-func checkLatestVersion(ctx context.Context, _ string) (string, bool) {
+// latestCommitAPI is the GitHub endpoint for the newest commit on the
+// default branch. It is what a source-mode update would actually pull,
+// distinct from the newest release tag.
+const latestCommitAPI = "https://api.github.com/repos/Slaker19/webkvm/commits/main"
+
+// checkLatestVersion asks the GitHub API for (a) the newest release tag and
+// (b) the newest commit on main, in parallel. Best-effort: it never blocks
+// the response for more than ~2s and returns ok=false when either query
+// fails. The returned commit is the short (7-char) SHA.
+func checkLatestVersion(ctx context.Context, _ string) (latest, latestCommit string, ok bool) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", latestReleaseAPI, nil)
-	if err != nil {
-		return "", false
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
 	cl := &http.Client{Timeout: 3 * time.Second}
-	resp, err := cl.Do(req)
-	if err != nil {
-		return "", false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return "", false
-	}
-	var body struct {
+
+	type tagResp struct {
 		TagName string `json:"tag_name"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", false
+	type commitResp struct {
+		SHA string `json:"sha"`
 	}
-	return strings.TrimPrefix(body.TagName, "v"), true
+
+	fetch := func(url string, dst any) error {
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		resp, err := cl.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return fmt.Errorf("http %d", resp.StatusCode)
+		}
+		return json.NewDecoder(resp.Body).Decode(dst)
+	}
+
+	var tag tagResp
+	var head commitResp
+	tagErr := fetch(latestReleaseAPI, &tag)
+	headErr := fetch(latestCommitAPI, &head)
+
+	// The tag is the authoritative "latest version"; the commit is best-effort
+	// display/compare data. Only the tag failing makes the whole check fail.
+	if tagErr != nil || tag.TagName == "" {
+		return "", "", false
+	}
+	short := shortSHA(head.SHA)
+	if headErr != nil {
+		short = ""
+	}
+	return strings.TrimPrefix(tag.TagName, "v"), short, true
+}
+
+// shortSHA truncates a full 40-char SHA to the 7-char git abbreviation.
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 // isNewer returns true when `latest` is a higher semver than `current`.

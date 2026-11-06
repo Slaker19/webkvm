@@ -43,6 +43,7 @@ type Config struct {
 	DataDir    string
 	Version    string
 	BuildTime  string
+	Commit     string
 	RepoDir    string
 	LogFile    string
 
@@ -147,6 +148,7 @@ func Load() (*Config, error) {
 		DataDir:    dataDir,
 		Version:    envStrFrom("WEBKVM_VERSION", "dev", dotenv),
 		BuildTime:  envStrFrom("WEBKVM_BUILD_TIME", "unknown", dotenv),
+		Commit:     envStrFrom("WEBKVM_COMMIT", "", dotenv),
 		// RepoDir is where the backend looks for helper scripts
 		// (setup-bridge.sh, etc.) and the live source tree. The
 		// systemd units set REPO_DIR; WEBKVM_REPO_DIR is the

@@ -23,9 +23,11 @@ SHELL := /usr/bin/env bash
 VERSION_RAW ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
 override VERSION := $(patsubst v%,%,$(or $(VERSION),$(VERSION_RAW)))
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "")
 LDFLAGS = -s -w \
   -X 'main.Version=$(VERSION)' \
-  -X 'main.BuildTime=$(BUILD_TIME)'
+  -X 'main.BuildTime=$(BUILD_TIME)' \
+  -X 'main.Commit=$(COMMIT)'
 
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin

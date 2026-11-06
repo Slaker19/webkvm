@@ -44,6 +44,16 @@ WebKVM implements multi-layered defensive security controls:
 
 ---
 
+## Known / Risk-Accepted Advisories
+
+These Dependabot/GitHub Security advisories are tracked and dismissed with a documented justification. They are not fixed because there is no upstream patch, and they do not reach the shipped binary or any attacker-controlled input path.
+
+| Advisory | Package | Severity | Why it is risk-accepted |
+|---|---|---|---|
+| [GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4) | `deepmerge` (npm) | Low | Dev-only transitive dependency of `@sveltejs/vite-plugin-svelte` (Vite dev inspector). Runs at build/config time against developer-controlled input, never attacker data; not bundled into the production binary. No patched release exists (affects all `>=4.2.0`). |
+
+---
+
 ## Reporting a Vulnerability
 
 If you discover a security vulnerability, please **do not report it in public issues**.

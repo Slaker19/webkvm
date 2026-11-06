@@ -3,6 +3,7 @@ package api
 import (
 	"compress/bzip2"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"webkvm/internal/compute"
 	"webkvm/internal/config"
 	"webkvm/internal/models"
+	"webkvm/internal/sysutil"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -969,7 +971,7 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 	// into the new space automatically.
 	if effective.DiskGB > 0 {
 		target := effective.DiskGB * 1024 * 1024 * 1024
-		if info, err := exec.Command("qemu-img", "info", "--output=json", poolDest).Output(); err == nil {
+		if info, err := sysutil.DefaultRunner.Run(context.Background(), "qemu-img", "info", "--output=json", poolDest); err == nil {
 			var qi struct {
 				VirtualSize int64 `json:"virtual-size"`
 			}
@@ -979,7 +981,7 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 					args = append(args, "-f", "qcow2")
 				}
 				args = append(args, poolDest, fmt.Sprintf("%dG", effective.DiskGB))
-				if out, err := exec.Command("qemu-img", args...).CombinedOutput(); err != nil {
+				if out, err := sysutil.DefaultRunner.Run(context.Background(), "qemu-img", args...); err != nil {
 					updateJob(jobID, 99, "error", fmt.Sprintf("resize disk to %dG: %v: %s", effective.DiskGB, err, strings.TrimSpace(string(out))))
 					removePoolImage("qemu-img resize failed")
 					return

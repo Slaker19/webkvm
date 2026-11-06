@@ -68,11 +68,12 @@ jobs:
           # (0.0.1), like local `make build` runs — never the v tag.
           BARE="${VERSION#v}"
           BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          COMMIT=$(git rev-parse --short HEAD)
           CGO_ENABLED=1 go build -buildvcs=false \
-            -ldflags "-s -w -X 'main.Version=$BARE' -X 'main.BuildTime=$BUILD_TIME'" \
+            -ldflags "-s -w -X 'main.Version=$BARE' -X 'main.BuildTime=$BUILD_TIME' -X 'main.Commit=$COMMIT'" \
             -o webkvm ./cmd/server/
           CGO_ENABLED=0 go build -buildvcs=false \
-            -ldflags "-s -w -X 'main.Version=$BARE' -X 'main.BuildTime=$BUILD_TIME'" \
+            -ldflags "-s -w -X 'main.Version=$BARE' -X 'main.BuildTime=$BUILD_TIME' -X 'main.Commit=$COMMIT'" \
             -o webkvm-cli ./cmd/cli/
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 

@@ -486,6 +486,37 @@ func TestRunOnceReturnsSentinelErrors(t *testing.T) {
 	}
 }
 
+// TestRunOnceEmitsCompletionAlert verifies that a successful manual
+// backup fires the completion callback wired via SetAlertFunc (the
+// notify.Notifier integration in production).
+func TestRunOnceEmitsCompletionAlert(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "users.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	tgt := Target{ID: "t1", Name: "t1", Path: target, VMFilter: "all", Enabled: true}
+	s.targets["t1"] = &tgt
+
+	r := NewRunnerWithConfig(s, dir, func() BackupConfig { return BackupConfig{MaxFileSizeMB: 100} }, stubVMSource(nil), nil, nil, nil, discardLogger())
+
+	var alerts []string
+	r.SetAlertFunc(func(level, subject, message string) {
+		alerts = append(alerts, level+":"+subject)
+	})
+
+	if _, err := r.RunOnce(context.Background(), "t1", ""); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(alerts) != 1 || alerts[0] != "info:Backup completed" {
+		t.Fatalf("expected one info completion alert, got %v", alerts)
+	}
+}
+
 // TestValidateTargetPathDenyList covers the A2 fix for bug #6.
 // Targets pointing at system roots are rejected with
 // ErrTargetPathUnwritable before any I/O. The app's dataDir

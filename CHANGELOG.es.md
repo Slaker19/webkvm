@@ -6,6 +6,20 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [0.1.11] — 2026-11-06
+
+### Añadido
+- **Aceleración 3D (virgl) para vídeo virtio**, reportada por [@sfs-pra](https://github.com/sfs-pra) en [#9](https://github.com/Slaker19/webkvm/issues/9): la nueva opción `accel_3d` emite `<acceleration accel3d='yes'/>` junto a un renderer `<graphics type='egl-headless'>` validado, permitiendo arrancar compositores Wayland (niri, sway) dentro del invitado. Corrige además el bug de fondo: guardar el tipo de consola borraba **todos** los bloques `<graphics>` y desactivaba la 3D en silencio. Condicionada a las capacidades del host (nodo de render + `egl-headless`), mostrada desactivada con el motivo en caso contrario.
+- **Actualizador muestra tag + commit**: `#/status` ahora expone el tag de la última release junto al commit más reciente de `main` (`latest_commit`/`build_commit`), y la actualización en modo `source` compara el commit compilado contra `main` en lugar de asumir siempre que hay actualización.
+- **Backup → notificaciones**: el éxito/fallo de los backups ahora fluye por los canales de notificación (Telegram, Discord, Slack, webhook, etc.) vía `Runner.SetAlertFunc`.
+- **Apps 1-clic con Docker despliegan como VM**: Pi-hole, AdGuard Home, Vaultwarden, Uptime Kuma, Portainer, Beszel, Home Assistant, Jellyfin y otras pasan a desplegarse como VM KVM (sus scripts requieren docker/systemd, no disponibles en LXC sin privilegios).
+- **Suite smoke E2E con Playwright** en `e2e/`: login + 5 rutas verificadas libres de errores de consola, más comprobaciones de estado/versión.
+
+### Corregido
+- **Arreglos de almacenamiento/ISO aportados por [@kuanghl](https://github.com/kuanghl) en [#10](https://github.com/Slaker19/webkvm/pull/10)**: límite de subida de ISO de 10 GiB a 50 GiB; los pools creados desde la UI ahora arrancan automáticamente (quedaban inactivos tras reiniciar libvirtd e impedían toda subida); `GetISOs` refresca el pool antes de listar; re-subir un fichero fantasma ya no falla con un 409 permanente (los volúmenes registrados y los referenciados siguen protegidos); los pools sin etiqueta de propósito lo infieren por nombre; la pestaña ISO usa un único desplegable de pools.
+- **URL de la imagen openSUSE Leap 16.1** apuntada al build "latest" sin versión (el `Build2.16` fijado había sido retirado y devolvía 404).
+- **`exec` → `CommandRunner`** en el despliegue de appliances (`qemu-img` resize/info), completando la migración de testeabilidad ya aplicada a `mdraid`/`zvol`.
+
 ## [0.1.10] — 2026-11-01
 
 ### Añadido
@@ -23,8 +37,6 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
   - Demonio `smart.Watcher` integrado que realiza barridos periódicos (cada 24 horas) y notifica automáticamente ante fallos inminentes, temperatura crítica (≥60°C) o sectores reasignados (>50) vía el subsistema `notify`.
 - **Descarga de Sesión de Terminal**:
   - Exportación directa en 1-clic a archivo `.log` desde la barra de herramientas de `TerminalPanel` tanto en terminales serie de VMs como en consolas del host.
-- **Aceleración 3D (virgl) para vídeo virtio**, reportada por [@sfs-pra](https://github.com/sfs-pra) en [#9](https://github.com/Slaker19/webkvm/issues/9): la nueva opción `accel_3d` emite `<acceleration accel3d='yes'/>` junto a un renderer `<graphics type='egl-headless'>` validado, permitiendo arrancar compositores Wayland (niri, sway) dentro del invitado. Corrige además el bug de fondo: guardar el tipo de consola borraba **todos** los bloques `<graphics>` y desactivaba la 3D en silencio.
-- **Arreglos de almacenamiento/ISO aportados por [@kuanghl](https://github.com/kuanghl) en [#10](https://github.com/Slaker19/webkvm/pull/10)**: límite de subida de ISO de 10 GiB a 50 GiB; los pools creados desde la UI ahora arrancan automáticamente (quedaban inactivos tras reiniciar libvirtd e impedían toda subida); `GetISOs` refresca el pool antes de listar; re-subir un fichero fantasma ya no falla con un 409 permanente (los volúmenes registrados y los referenciados siguen protegidos); los pools sin etiqueta de propósito lo infieren por nombre; la pestaña ISO usa un único desplegable de pools.
 
 ### Corregido y Blindado
 - **Aprovisionamiento Fino en Almacenamiento (Sparse)**: Sustitución de `STORAGE_VOL_CREATE_PREALLOC_METADATA` por asignación dispersa estándar (`0`), evitando que `qemu-img` fuerce `preallocation=falloc` y falle con `No space left on device` (ENOSPC).
@@ -391,6 +403,8 @@ virtualización Linux.
 
 ---
 
+[0.1.11]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.11
+[0.1.10]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.10
 [0.1.4]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.4
 [0.1.3]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.3
 [0.1.2-fix2]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.2-fix2

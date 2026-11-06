@@ -130,6 +130,21 @@ type Runner struct {
 	listCheckpoints VMListCheckpoints
 	// deleteCheckpoint removes a checkpoint and its bitmap.
 	deleteCheckpoint VMDeleteCheckpoint
+	// alertFunc is invoked when a backup job completes (success or
+	// failure). Optional; nil means no notification is emitted. Wired
+	// to the notify.Notifier so backup outcomes reach the configured
+	// channels (Telegram, Discord, etc.).
+	alertFunc AlertFunc
+}
+
+// AlertFunc is called when a backup completes or fails. It receives the
+// severity ("info" | "error"), a short subject and a human-readable
+// message.
+type AlertFunc func(level, subject, message string)
+
+// SetAlertFunc wires the completion callback. Optional; nil disables it.
+func (r *Runner) SetAlertFunc(fn AlertFunc) {
+	r.alertFunc = fn
 }
 
 // NewRunnerWithConfig wires the runner with a live config provider.
@@ -519,6 +534,10 @@ func (r *Runner) runJob(ctx context.Context, tgt Target, job Job, scheduleID str
 				r.logger.Error("backup_schedule_update_failed", "schedule_id", scheduleID, "err", serr)
 			}
 		}
+		if r.alertFunc != nil {
+			r.alertFunc("error", "Backup failed",
+				fmt.Sprintf("Backup job %s to %s failed: %s", job.ID, tgt.Name, err.Error()))
+		}
 		return job, err
 	}
 	job.Status = "success"
@@ -528,6 +547,10 @@ func (r *Runner) runJob(ctx context.Context, tgt Target, job Job, scheduleID str
 	job.Message = ""
 	if uerr := r.store.UpdateJob(job); uerr != nil {
 		r.logger.Error("backup_job_update_failed", "job_id", job.ID, "err", uerr)
+	}
+	if r.alertFunc != nil {
+		r.alertFunc("info", "Backup completed",
+			fmt.Sprintf("Backup job %s to %s completed successfully (%d files).", job.ID, tgt.Name, len(job.Filenames)))
 	}
 
 	// Automatic retention: prune old runs if the target has a retention

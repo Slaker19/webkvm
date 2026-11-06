@@ -33,6 +33,15 @@
   let backupJobs = $state([]);
   let dashboardLoading = $state(true);
 
+  // Latest release tag with its commit SHA beside it (e.g. "v0.1.10 · 7d2203e"),
+  // so the operator sees the tag and how far the default branch has moved.
+  const latestDisplay = $derived(
+    status?.latest_version
+      ? `v${status.latest_version.replace(/^v/, '')}` +
+          (status.latest_commit ? ` · ${status.latest_commit}` : '')
+      : ''
+  );
+
   async function clearResolved() {
     clearingResolved = true;
     try {
@@ -576,9 +585,11 @@
         value={status.update_available
           ? t('status.updateAvailable', { version: status.latest_version })
           : t('status.upToDate')}
-        hint={t('status.currentVersion', {
-          version: status.backend?.version ? status.backend.version.replace(/^v/, '') : '',
-        })}
+        hint={status.update_available
+          ? latestDisplay
+          : t('status.currentVersion', {
+              version: status.backend?.version ? status.backend.version.replace(/^v/, '') : '',
+            })}
       />
     </div>
 
@@ -769,6 +780,11 @@
                   {t('status.updateTo', {
                     version: status.latest_version || status.backend.version,
                   })}
+                  {#if status.latest_commit}
+                    <span class="ml-1.5 font-mono text-xs text-muted-foreground">
+                      · {status.latest_commit}
+                    </span>
+                  {/if}
                 {/if}
               </div>
               <div class="text-xs text-muted-foreground mt-0.5">
