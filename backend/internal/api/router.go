@@ -20,6 +20,7 @@ import (
 	"webkvm/internal/libvirt"
 	"webkvm/internal/metrics"
 	"webkvm/internal/models"
+	"webkvm/internal/monitor"
 	"webkvm/internal/netguard"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
@@ -145,6 +146,7 @@ func NewRouter(
 		incusMetrics:  incusMetrics,
 		webauthn:      auth.NewWebAuthnManager(cfg),
 		StartedAt:     time.Now(),
+		hostMonitor:   monitor.NewHostMonitor(),
 	}
 
 	h.EnsureMediaDirs()
@@ -568,6 +570,16 @@ func NewRouter(
 		// modes) read-only for authenticated users: the VM create/edit
 		// pickers need it and it exposes no host secrets.
 		r.Get("/capabilities", h.GetCapabilities)
+		// Host monitoring and process list expose detailed system metrics
+		// (CPU, memory, network, disk, GPU, Docker, logged-in users) that
+		// go beyond basic host info. Restricted to operator+ to match the
+		// frontend RBAC for the Host Monitoring page.
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAtLeast("operator"))
+			r.Get("/monitor", h.GetHostMonitor)
+			r.Get("/monitor/extended", h.GetHostMonitorExtended)
+			r.Get("/processes", h.GetHostProcesses)
+		})
 		// Read-only device enumeration for the VM-create passthrough
 		// pickers (operator+): lsusb/lspci-equivalent data, no mutation.
 		// Anything host-mutating stays admin-only.
@@ -602,6 +614,11 @@ func NewRouter(
 			r.Get("/updates", h.GetHostUpdates)
 			r.Post("/updates/refresh", h.RefreshHostUpdates)
 			r.Post("/updates/upgrade", h.UpgradeHostUpdates)
+			// Docker container/image management (admin-only, mutating operations)
+			r.Post("/docker/containers/{id}/{action}", h.DockerContainerAction)
+			r.Delete("/docker/containers/{id}", h.DeleteDockerContainer)
+			r.Delete("/docker/images/{id}", h.DeleteDockerImage)
+			r.Post("/docker/images/prune", h.PruneDockerImages)
 		})
 	})
 

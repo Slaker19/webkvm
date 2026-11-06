@@ -62,7 +62,7 @@ const ROUTES = [
   { pattern: 'users', name: 'users', roles: ['admin'] },
   { pattern: 'nodes', name: 'nodes', roles: ['admin'] },
   { pattern: 'snapshots', name: 'snapshots' },
-  { pattern: 'status', name: 'status' },
+  { pattern: 'system', name: 'system', roles: ['admin', 'operator'] },
   { pattern: 'host-console', name: 'host-console', roles: ['admin'] },
   { pattern: 'settings', name: 'settings', roles: ['admin'] },
   { pattern: 'account', name: 'account' },

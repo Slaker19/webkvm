@@ -173,11 +173,11 @@
       labelKey: 'nav.system',
       items: [
         {
-          id: 'status',
-          path: '/status',
-          labelKey: 'nav.systemStatus',
-          icon: 'activity',
-          roles: ['admin', 'operator', 'viewer'],
+          id: 'system',
+          path: '/system',
+          labelKey: 'nav.system',
+          icon: 'monitor',
+          roles: ['admin', 'operator'],
         },
         { id: 'users', path: '/users', labelKey: 'nav.users', icon: 'users', roles: ['admin'] },
         { id: 'nodes', path: '/nodes', labelKey: 'nav.nodes', icon: 'server', roles: ['admin'] },

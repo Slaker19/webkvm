@@ -142,12 +142,12 @@
       keywords: 'config options live apply tls',
     },
     {
-      id: 'nav-status',
+      id: 'nav-system',
       category: 'nav',
-      label: () => t('status.title'),
-      path: '/status',
-      icon: 'activity',
-      keywords: 'status log update health metrics',
+      label: () => t('system.title'),
+      path: '/system',
+      icon: 'monitor',
+      keywords: 'system status host monitoring cpu memory disk network gpu log update health metrics',
     },
   ];
 

@@ -42,7 +42,7 @@
     backup: () => import('./routes/Backup.svelte'),
     firewall: () => import('./routes/Firewall.svelte'),
     audit: () => import('./routes/AuditLog.svelte'),
-    status: () => import('./routes/Status.svelte'),
+    system: () => import('./routes/System.svelte'),
     // NOTE: 'host-console' is deliberately absent — it's rendered
     // separately below so its shell session survives navigation.
     settings: () => import('./routes/Settings.svelte'),

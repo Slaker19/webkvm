@@ -22,6 +22,7 @@ import (
 	"webkvm/internal/helperscripts"
 	"webkvm/internal/libvirt"
 	"webkvm/internal/metrics"
+	"webkvm/internal/monitor"
 	"webkvm/internal/netguard"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
@@ -69,6 +70,9 @@ type Handler struct {
 	incusMetrics *incus.MetricsCollector
 	webauthn     *auth.WebAuthnManager
 	StartedAt    time.Time
+
+	// hostMonitor collects comprehensive host metrics for the monitoring panel.
+	hostMonitor *monitor.HostMonitor
 
 	// Per-name serialization of appliance deployments. Two
 	// concurrent deploys must never race: the second one waits, then

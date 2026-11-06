@@ -538,6 +538,15 @@ export const api = {
   deleteBaseCloudImage: (id) =>
     request(`/images/cloud-base/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
+  // --- Docker container/image management (admin-only) ---
+  dockerContainerAction: (id, action) =>
+    request(`/host/docker/containers/${encodeURIComponent(id)}/${action}`, { method: 'POST' }),
+  deleteDockerContainer: (id) =>
+    request(`/host/docker/containers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  deleteDockerImage: (id) =>
+    request(`/host/docker/images/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  pruneDockerImages: () => request('/host/docker/images/prune', { method: 'POST' }),
+
   uploadISO: (file, onProgress, pool) => {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();

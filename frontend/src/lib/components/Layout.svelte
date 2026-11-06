@@ -54,7 +54,7 @@
     backup: () => t('backup.title'),
     firewall: () => t('firewall.title'),
     settings: () => t('settings.title'),
-    status: () => t('status.title'),
+    system: () => t('system.title'),
     account: () => t('account.title'),
     // Same labels as the sidebar entries, so the top bar never falls
     // back to the bare brand name on these pages.
