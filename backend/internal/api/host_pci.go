@@ -66,6 +66,10 @@ func (h *Handler) DetachPCIDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.compute.DetachPCIDevice(id, address); err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

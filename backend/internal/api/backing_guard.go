@@ -30,6 +30,11 @@ func (h *Handler) assertNoBackingDependents(w http.ResponseWriter, what, pool, v
 	}
 	deps, err := h.compute.BackingDependents(pool, volume)
 	if err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound,
+				fmt.Sprintf("%s not found: %v", what, err))
+			return true
+		}
 		jsonErr(w, http.StatusInternalServerError,
 			fmt.Sprintf("cannot determine whether %s is still in use as a backing file: %v", what, err))
 		return true

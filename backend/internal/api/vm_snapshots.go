@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
@@ -22,10 +23,20 @@ type SnapshotWithVM struct {
 
 func (h *Handler) ListSnapshots(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	snaps, err := h.compute.ListSnapshots(id)
+	op, release, err := h.operatorFor(r.URL.Query().Get("node"))
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer release()
+	snaps, err := op.ListSnapshots(id)
 	if err != nil {
 		if errors.Is(err, compute.ErrNotImplemented) {
 			jsonResp(w, http.StatusOK, []models.Snapshot{})
+			return
+		}
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
 			return
 		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -128,6 +139,11 @@ func (h *Handler) DeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 	sid := chi.URLParam(r, "sid")
 	allocated, err := h.compute.DeleteSnapshot(id, sid)
 	if err != nil {
+		low := strings.ToLower(err.Error())
+		if strings.Contains(low, "block-commit") || strings.Contains(low, "permission denied") {
+			jsonErr(w, http.StatusConflict, "cannot delete this snapshot: "+err.Error())
+			return
+		}
 		h.vmActionErr(w, err, nil)
 		return
 	}

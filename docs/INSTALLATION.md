@@ -253,14 +253,52 @@ failure the working directory under `/var/tmp` is kept and its path printed.
 
 ### 9. Upgrading
 
-Run the installer again with the new code/binary. It:
+Upgrades can be performed directly through the Web UI or via the CLI. All data under `/opt/webkvm` (configuration, disks, ISOs, users, audit logs) is preserved.
 
-1. Backs up the current binary and unit file (`*.previous`).
-2. Installs the new ones.
-3. Restarts the service and checks `/api/health`.
-4. **Rolls everything back automatically if any step fails.**
+#### Option 1: In-App Update via Web UI (Native Installs)
 
-Everything under `/opt/webkvm` (config, disks, ISOs, users) is preserved.
+Administrators can trigger updates directly from the dashboard:
+
+1. Navigate to **Status** (`/#/status`) and click **Update**.
+2. **Environment requirement**: The backend requires `WEBKVM_ALLOW_UPDATE=1` in the service environment (the standalone native installer configures this by default in `webkvm.service`).
+3. **Execution**: The updater launches detached in the background and writes progress to `/var/log/webkvm/update.log`.
+4. **Mode selection**:
+   - **`release` mode**: Selected automatically when `REPO_DIR` is not a git repository. The updater queries GitHub Releases, downloads the verified standalone binary `webkvm-<version>-linux_amd64`, and validates its checksum against `SHA256SUMS` before replacing `/usr/local/bin/webkvm`.
+   - **`source` mode**: Selected automatically when `REPO_DIR` is a git repository checkout. It executes `git pull --ff-only` and rebuilds both frontend and backend (requires Go ≥ 1.26 and Node.js ≥ 20 on the host).
+5. **Safety and automatic rollback**: The current binary is backed up to `/usr/local/bin/webkvm.previous`. After replacing the binary, the service restarts and polls `/api/health` for 30 seconds. If the health check fails, the updater immediately rolls back to `webkvm.previous`.
+6. **Validation**: Check the active version with `webkvm version` and inspect `curl -sk https://localhost:8080/api/health`.
+
+#### Option 2: Re-running the Installer or CLI
+
+You can also update by re-running the standalone installer or using the command-line updater:
+
+```bash
+# Using the installed updater script:
+sudo webkvm-update            # release mode (fetches verified release asset)
+sudo webkvm-update --source   # source mode (rebuilds local checkout)
+
+# Or re-running the standalone installer with a downloaded binary:
+sudo WEBKVM_BINARY=/path/to/webkvm-0.1.12-linux_amd64 bash packaging/standalone/install.sh --yes
+```
+
+Official release assets for **v0.1.12** are published on GitHub Releases:
+- `webkvm-0.1.12-linux_amd64` (standalone server binary)
+- `webkvm-cli-0.1.12-linux_amd64` (standalone CLI binary)
+- `webkvm-0.1.12.tar.gz` (source and prebuilt bundle)
+- Debian/Ubuntu `.deb` and RHEL/Fedora `.rpm` packages
+- `SHA256SUMS` (cryptographic checksums)
+
+#### Deployment Constraints
+
+> [!WARNING]
+> - **Docker Installations**: Do **NOT** use the in-app updater inside a Docker container. In container environments, update by pulling the latest container image (`docker compose pull && docker compose up -d`). See [DOCKER.md](DOCKER.md).
+> - **HA Clusters (Pacemaker)**: The in-app update button only updates the node serving the panel and restarts its local service; do **NOT** use it as a cluster-wide updater. Upgrades in an HA cluster must be coordinated node-by-node through Pacemaker during a scheduled maintenance window. See [HA-CLUSTER.md](runbooks/HA-CLUSTER.md).
+
+#### AppArmor post-upgrade behavior
+
+On AppArmor hosts, WebKVM assigns `<seclabel type='none' model='apparmor'/>` to bypass libvirt's read-only snapshot-backing deny rule. Existing virtual machines are migrated **lazily** on the next start, revert, or snapshot deletion—no manual XML editing is required. Set `WEBKVM_DISABLE_APPARMOR=0` to retain AppArmor confinement. SELinux hosts are unaffected. See [SECURITY.md](../SECURITY.md).
+
+For step-by-step procedures and rollback instructions, see the [Upgrade and Rollback Runbook](runbooks/UPGRADE-ROLLBACK.md).
 
 ### 10. Uninstall
 
@@ -383,6 +421,8 @@ Three planes:
 | `WEBKVM_ADMIN_PASSWORD` | — | Initial admin password (random generated otherwise). |
 | `WEBKVM_INCUS_ENABLED` | `0` | enable the Incus/LXD container module (requires the daemon on the host). |
 | `INCUS_SOCKET` | auto | Container daemon unix socket override (Incus first: `/var/lib/incus/unix.socket`, `/run/incus/*`; then LXD snap/apt paths). |
+| `WEBKVM_ALLOW_UPDATE` | `1` (native installer) | Enables `POST /api/system/update` (in-app updater). Set `0` to disable updates from the UI. |
+| `WEBKVM_DISABLE_APPARMOR` | `1` | AppArmor workaround for external snapshots; only applied when AppArmor is active. Set `0` to keep confinement. See SECURITY.md. |
 
 `.env` in the working directory is loaded as fallback (godotenv); real
 environment variables always win.

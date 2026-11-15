@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -139,7 +140,9 @@ func validCoverVMID(id string) bool {
 // can't be read, nothing is deleted: an orphaned file is harmless, a
 // broken cover on another VM is not.
 func (h *Handler) pruneVMCoverFiles(vmID, keepCoverURL string) {
-	if h.cfg == nil || !validCoverVMID(vmID) {
+	// Covers live in THIS host's data dir; a remote VM's id must never
+	// delete a local file.
+	if h.cfg == nil || h.isRemote() || !validCoverVMID(vmID) {
 		return
 	}
 	coversDir := filepath.Clean(h.cfg.CoversDir())
@@ -305,6 +308,10 @@ func (h *Handler) DeleteCover(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	empty := ""
 	if _, err := h.compute.UpdateVMMeta(id, models.VMMetaUpdate{Cover: &empty}); err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -338,7 +345,11 @@ func (h *Handler) ServeCover(w http.ResponseWriter, r *http.Request) {
 // UpdateNetIface changes MAC / network / VLAN of an existing interface.
 func (h *Handler) UpdateNetIface(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	mac := chi.URLParam(r, "mac")
+	mac, err := url.PathUnescape(chi.URLParam(r, "mac"))
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid mac encoding")
+		return
+	}
 	var req models.UpdateNetIfaceRequest
 	if err := decodeBody(r, &req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")

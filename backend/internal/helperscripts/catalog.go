@@ -60,16 +60,16 @@ type Catalog struct {
 // Store caches the catalog on disk so the UI does not hit GitHub on
 // every page load, and so a network outage does not empty the list.
 type Store struct {
-	mu         sync.Mutex
-	path       string
-	cat        *Catalog
+	mu   sync.Mutex
+	path string
+	cat  *Catalog
 	// HTTP lets tests inject a client; nil uses a bounded default.
-	HTTP       *http.Client
+	HTTP *http.Client
 	// archiveURL overrides the upstream tarball for tests.
 	archiveURL string
 	// indexURL overrides the upstream index, so legacy tests can exercise the
 	// importer against a local server instead of GitHub.
-	indexURL   string
+	indexURL string
 }
 
 // NewStore returns a store backed by path. The cache is loaded lazily:

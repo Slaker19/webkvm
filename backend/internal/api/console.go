@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"log/slog"
@@ -10,11 +11,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"webkvm/internal/compute"
+	"webkvm/internal/libvirt"
 	"webkvm/internal/safego"
 
 	"github.com/go-chi/chi/v5"
@@ -92,6 +94,16 @@ var upgrader = websocket.Upgrader{
 
 func (h *Handler) GetGraphics(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if h.isRemote() {
+		// Read from the remote domain's live XML, strictly (no guessed port).
+		info, err := remoteGraphicsInfo(h, id, "vnc")
+		if err != nil && !errors.Is(err, libvirt.ErrGraphicsNotTunnel) {
+			h.writeRemoteConsoleError(w, h.remote.node, err, true)
+			return
+		}
+		jsonResp(w, http.StatusOK, info)
+		return
+	}
 	info, err := h.compute.GetVNCInfo(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
@@ -103,17 +115,12 @@ func (h *Handler) GetGraphics(w http.ResponseWriter, r *http.Request) {
 // SPICEProxy proxies SPICE client connections over WebSocket to the local QEMU SPICE port.
 func (h *Handler) SPICEProxy(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	info, err := h.compute.GetSPICEInfo(id)
-	if err != nil {
-		jsonErr(w, http.StatusNotFound, err.Error())
+	tgt, ok := h.consoleTarget(w, r, id, "spice")
+	if !ok {
 		return
 	}
-
-	spiceHost := h.cfg.VNCProxyHost
-	if spiceHost == "" {
-		spiceHost = "127.0.0.1"
-	}
-	spiceAddr := net.JoinHostPort(spiceHost, strconv.Itoa(info.Port))
+	defer tgt.Close()
+	info, spiceAddr := tgt.Info, tgt.Addr
 	slog.Info("spice_proxy_dialing", "vm_id", id, "spice_port", info.Port, "spice_addr", spiceAddr)
 
 	responseHeader := http.Header{}
@@ -128,7 +135,7 @@ func (h *Handler) SPICEProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tcpConn, err := net.DialTimeout("tcp", spiceAddr, 10*time.Second)
+	tcpConn, err := tgt.Dial(r.Context())
 	if err != nil {
 		slog.Error("spice_proxy_dial_failed", "addr", spiceAddr, "err", err)
 		_ = ws.Close()
@@ -233,21 +240,17 @@ func (h *Handler) SPICEProxy(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) VNCProxy(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	info, err := h.compute.GetVNCInfo(id)
-	if err != nil {
-		jsonErr(w, http.StatusNotFound, err.Error())
-		return
-	}
-
 	// The VNC port is bound on the host that runs libvirtd. In a
 	// normal systemd install that's the same host as this backend,
 	// so 127.0.0.1 works. Override VNC_PROXY_HOST only for a custom
-	// libvirtd bind address.
-	vncHost := h.cfg.VNCProxyHost
-	if vncHost == "" {
-		vncHost = "127.0.0.1"
+	// libvirtd bind address. For a VM on another node the target dials
+	// 127.0.0.1:port ON that node through an SSH forward.
+	tgt, ok := h.consoleTarget(w, r, id, "vnc")
+	if !ok {
+		return
 	}
-	vncAddr := net.JoinHostPort(vncHost, strconv.Itoa(info.Port))
+	defer tgt.Close()
+	info, vncAddr := tgt.Info, tgt.Addr
 	slog.Info("vnc_proxy_dialing", "vm_id", id, "libvirt_host", info.Host, "libvirt_port", info.Port, "vnc_addr", vncAddr)
 
 	// Echo the noVNC "binary" subprotocol back to the client. The console
@@ -267,7 +270,7 @@ func (h *Handler) VNCProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tcpConn, err := net.DialTimeout("tcp", vncAddr, 10*time.Second)
+	tcpConn, err := tgt.Dial(r.Context())
 	if err != nil {
 		slog.Error("vnc_proxy_dial_failed", "addr", vncAddr, "err", err)
 		_ = ws.Close()
@@ -1466,7 +1469,18 @@ func (h *Handler) DownloadRDP(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := h.compute.GetDomainIP(id)
 	if ip == "" {
-		ip = h.serverIP()
+		if h.isRemote() {
+			// Never bake THIS host's address into a file for a VM that
+			// lives on another node.
+			nodeHost, ok := h.remoteNodeHost()
+			if !ok {
+				h.remoteUnsupported(w, "node_has_no_usable_address")
+				return
+			}
+			ip = nodeHost
+		} else {
+			ip = h.serverIP()
+		}
 	}
 
 	rdpContent := fmt.Sprintf(`full address:s:%s:3389
@@ -1481,12 +1495,45 @@ administrative session:i:1
 
 func (h *Handler) DownloadSPICE(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	info, err := h.compute.GetSPICEInfo(id)
-	if err != nil {
-		info, err = h.compute.GetVNCInfo(id)
-		if err != nil {
-			jsonErr(w, http.StatusNotFound, err.Error())
+	var info compute.GraphicsInfo
+	var err error
+	fileHost := ""
+	if h.isRemote() {
+		nodeHost, ok := h.remoteNodeHost()
+		if !ok {
+			h.remoteUnsupported(w, "node_has_no_usable_address")
 			return
+		}
+		fileHost = nodeHost
+		info, err = remoteGraphicsInfo(h, id, "spice")
+		if err != nil && !errors.Is(err, libvirt.ErrGraphicsNotTunnel) {
+			info, err = remoteGraphicsInfo(h, id, "vnc")
+		}
+		if err != nil && !errors.Is(err, libvirt.ErrGraphicsNotTunnel) {
+			h.writeRemoteConsoleError(w, h.remote.node, err, true)
+			return
+		}
+		// The file is a DIRECT connection from the operator's machine. A
+		// device bound to the node's loopback is only reachable through
+		// the SSH tunnel (noVNC / SPICE-in-browser), so the node's
+		// address would give a dead file. A specific listen address is
+		// where the viewer must connect; 0.0.0.0 means the node's host.
+		switch ip := net.ParseIP(info.Host); {
+		case info.Host == "localhost" || (ip != nil && ip.IsLoopback()):
+			h.remoteUnsupported(w, "graphics_loopback_only")
+			return
+		case ip != nil && !ip.IsUnspecified():
+			fileHost = info.Host
+		}
+	} else {
+		fileHost = h.serverIP()
+		info, err = h.compute.GetSPICEInfo(id)
+		if err != nil {
+			info, err = h.compute.GetVNCInfo(id)
+			if err != nil {
+				jsonErr(w, http.StatusNotFound, err.Error())
+				return
+			}
 		}
 	}
 	spiceContent := fmt.Sprintf(`[virt-viewer]
@@ -1495,7 +1542,7 @@ host=%s
 port=%d
 delete-this-file=1
 full-screen=0
-`, info.Type, h.serverIP(), info.Port)
+`, info.Type, fileHost, info.Port)
 
 	w.Header().Set("Content-Type", "application/x-virt-viewer")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.vv\"", id))

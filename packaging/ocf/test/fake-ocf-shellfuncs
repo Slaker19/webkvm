@@ -1,0 +1,12 @@
+# Minimal stand-in for ocf-shellfuncs (harness only).
+OCF_SUCCESS=0
+OCF_ERR_GENERIC=1
+OCF_ERR_ARGS=2
+OCF_ERR_UNIMPLEMENTED=3
+OCF_ERR_INSTALLED=5
+OCF_ERR_CONFIGURED=6
+OCF_NOT_RUNNING=7
+__OCF_ACTION=${1:-}
+ocf_log() { echo "LOG $*" >>"${FAKE_S}/log"; }
+ocf_exit_reason() { echo "REASON $*" >>"${FAKE_S}/log"; }
+ocf_is_probe() { [ "$__OCF_ACTION" = "monitor" ] && [ "${OCF_RESKEY_CRM_meta_interval:-0}" = "0" ]; }

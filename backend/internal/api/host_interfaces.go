@@ -179,20 +179,51 @@ func dhcpInterfacesByRoute() map[string]bool {
 	return out
 }
 
-// hasGlobalIPv4 reports whether the named interface has any
-// non-link-local IPv4 address. Used to distinguish "static" (has
-// IP, not on DHCP list) from "none" (no IP at all).
-func hasGlobalIPv4(name string) (string, bool) {
-	cmd := exec.Command("ip", "-4", "-o", "addr", "show", "dev", name, "scope", "global")
-	data, err := cmd.Output()
+// globalAddrs returns the global (non-link-local) IPv4 and IPv6
+// addresses of the interface, as CIDRs.
+func globalAddrs(name string) []string {
+	out, err := exec.Command("ip", "-o", "addr", "show", "dev", name, "scope", "global").Output()
 	if err != nil {
-		return "", false
+		return nil
 	}
-	fields := strings.Fields(string(data))
-	if len(fields) < 4 {
-		return "", false
+	var addrs []string
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		for i, f := range fields {
+			if (f == "inet" || f == "inet6") && i+1 < len(fields) {
+				addrs = append(addrs, fields[i+1])
+				break
+			}
+		}
 	}
-	return fields[3], true
+	return addrs
+}
+
+// hasGlobalIPv4 returns the first global IPv4 address, if any.
+func hasGlobalIPv4(name string) (string, bool) {
+	for _, addr := range globalAddrs(name) {
+		host := strings.SplitN(addr, "/", 2)[0]
+		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+			return addr, true
+		}
+	}
+	return "", false
+}
+
+// defaultRoutesFor returns the IPv4 default routes currently using the
+// interface, so a failed multi-step change can put them back.
+func defaultRoutesFor(name string) []string {
+	out, err := exec.Command("ip", "-4", "route", "show", "default", "dev", name).Output()
+	if err != nil {
+		return nil
+	}
+	var routes []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			routes = append(routes, line)
+		}
+	}
+	return routes
 }
 
 var bondNameRE = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}$`)
@@ -294,6 +325,36 @@ func isHostPrimaryUplink(name string) (bool, string) {
 	return false, ""
 }
 
+// validateHostInterfaceChange normalizes and validates the whole request
+// before the handler mutates the host. It is pure so the "reject before
+// isolate" contract can be tested without touching a real interface.
+func validateHostInterfaceChange(req *models.ConfigureHostInterfaceRequest) error {
+	if req.IPv4 != nil {
+		v := strings.TrimSpace(*req.IPv4)
+		if v != "" {
+			if _, _, err := net.ParseCIDR(v); err != nil {
+				return fmt.Errorf("invalid CIDR %q: %v", v, err)
+			}
+		}
+		req.IPv4 = &v
+	}
+	if req.Gateway != nil {
+		v := strings.TrimSpace(*req.Gateway)
+		if v != "" && net.ParseIP(v) == nil {
+			return fmt.Errorf("invalid gateway IP %q", v)
+		}
+		req.Gateway = &v
+	}
+	if req.State != nil {
+		v := strings.ToLower(strings.TrimSpace(*req.State))
+		if v != "up" && v != "down" {
+			return fmt.Errorf("state must be 'up' or 'down'")
+		}
+		req.State = &v
+	}
+	return nil
+}
+
 // ConfigureHostInterface applies state/IP/isolation changes with safe rollback.
 func (h *Handler) ConfigureHostInterface(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
@@ -308,8 +369,16 @@ func (h *Handler) ConfigureHostInterface(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Capture initial state for rollback
-	oldIP, hasOldIP := hasGlobalIPv4(name)
+	// Validate every requested change before touching the interface. A bad
+	// CIDR/gateway/state must not leave the interface isolated or re-addressed.
+	if err := validateHostInterfaceChange(&req); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Capture the original state once, before the first mutation.
+	oldAddrs := globalAddrs(name)
+	oldRoutes := defaultRoutesFor(name)
 	oldState := "down"
 	if data, err := os.ReadFile(filepath.Join("/sys/class/net", name, "operstate")); err == nil {
 		oldState = strings.TrimSpace(string(data))
@@ -319,7 +388,34 @@ func (h *Handler) ConfigureHostInterface(w http.ResponseWriter, r *http.Request)
 		oldMaster = filepath.Base(link)
 	}
 
-	// If isolating from bridge
+	isolated, ipChanged, stateChanged := false, false, false
+	addedGW := ""
+	rollback := func() {
+		if stateChanged {
+			restore := "down"
+			if oldState == "up" {
+				restore = "up"
+			}
+			_ = exec.Command("ip", "link", "set", name, restore).Run()
+		}
+		if addedGW != "" {
+			_ = exec.Command("ip", "route", "del", "default", "via", addedGW, "dev", name, "metric", "1024").Run()
+		}
+		for _, line := range oldRoutes {
+			args := append([]string{"route", "replace"}, strings.Fields(line)...)
+			_ = exec.Command("ip", args...).Run()
+		}
+		if ipChanged {
+			_ = exec.Command("ip", "addr", "flush", "dev", name).Run()
+			for _, cidr := range oldAddrs {
+				_ = exec.Command("ip", "addr", "add", cidr, "dev", name).Run()
+			}
+		}
+		if isolated && oldMaster != "" {
+			_ = exec.Command("ip", "link", "set", name, "master", oldMaster).Run()
+		}
+	}
+
 	if req.Isolate {
 		if isPrimary, defBridge := isHostPrimaryUplink(name); isPrimary {
 			jsonErr(w, http.StatusBadRequest, fmt.Sprintf("cannot isolate interface %q: it is the primary uplink for bridge %s holding the host default route; isolating it would disconnect the server", name, defBridge))
@@ -329,69 +425,48 @@ func (h *Handler) ConfigureHostInterface(w http.ResponseWriter, r *http.Request)
 			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("failed to isolate %s: %s", name, strings.TrimSpace(string(out))))
 			return
 		}
+		isolated = true
 	}
 
-	// Handle IPv4 change
 	if req.IPv4 != nil {
-		newCIDR := strings.TrimSpace(*req.IPv4)
-		if newCIDR != "" {
-			if _, _, err := net.ParseCIDR(newCIDR); err != nil {
-				jsonErr(w, http.StatusBadRequest, fmt.Sprintf("invalid CIDR %q: %v", newCIDR, err))
-				return
-			}
-		}
-
-		// Flush existing IPs on this dev
+		newCIDR := *req.IPv4
 		if out, err := exec.Command("ip", "addr", "flush", "dev", name).CombinedOutput(); err != nil {
+			rollback()
 			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("failed to flush addresses on %s: %s", name, strings.TrimSpace(string(out))))
 			return
 		}
-
+		ipChanged = true
 		if newCIDR != "" {
 			if out, err := exec.Command("ip", "addr", "add", newCIDR, "dev", name).CombinedOutput(); err != nil {
-				// Rollback: restore old IP
-				if hasOldIP {
-					_ = exec.Command("ip", "addr", "add", oldIP, "dev", name).Run()
-				}
+				rollback()
 				jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("failed to add address %s to %s: %s", newCIDR, name, strings.TrimSpace(string(out))))
 				return
 			}
 		}
 	}
 
-	// Handle Gateway route change
 	if req.Gateway != nil {
-		gw := strings.TrimSpace(*req.Gateway)
+		gw := *req.Gateway
 		if gw != "" {
-			if ip := net.ParseIP(gw); ip == nil {
-				jsonErr(w, http.StatusBadRequest, fmt.Sprintf("invalid gateway IP %q", gw))
-				return
-			}
-			// Add route with higher metric so it doesn't break primary default unless wanted
 			if out, err := exec.Command("ip", "route", "append", "default", "via", gw, "dev", name, "metric", "1024").CombinedOutput(); err != nil {
+				rollback()
 				jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("failed to set gateway %s for %s: %s", gw, name, strings.TrimSpace(string(out))))
 				return
 			}
+			addedGW = gw
 		} else {
 			_ = exec.Command("ip", "route", "del", "default", "dev", name).Run()
 		}
 	}
 
-	// Handle State change (up/down)
 	if req.State != nil {
-		st := strings.ToLower(strings.TrimSpace(*req.State))
-		if st != "up" && st != "down" {
-			jsonErr(w, http.StatusBadRequest, "state must be 'up' or 'down'")
-			return
-		}
+		st := *req.State
 		if out, err := exec.Command("ip", "link", "set", name, st).CombinedOutput(); err != nil {
-			// Rollback state
-			if oldState == "up" {
-				_ = exec.Command("ip", "link", "set", name, "up").Run()
-			}
+			rollback()
 			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("failed to set link %s %s: %s", name, st, strings.TrimSpace(string(out))))
 			return
 		}
+		stateChanged = true
 	}
 
 	jsonResp(w, http.StatusOK, map[string]any{
@@ -511,13 +586,16 @@ func (h *Handler) CreateHostBond(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track original masters for rollback
+	// Track original masters and addresses for rollback.
 	prevMasters := make(map[string]string)
+	prevAddrs := make(map[string][]string, len(req.Interfaces))
 	for _, iface := range req.Interfaces {
 		if m := getInterfaceMaster(iface); m != "" {
 			prevMasters[iface] = m
 		}
+		prevAddrs[iface] = globalAddrs(iface)
 	}
+	flushed := make(map[string]bool)
 
 	rollback := func(reason error) {
 		for _, iface := range req.Interfaces {
@@ -526,6 +604,12 @@ func (h *Handler) CreateHostBond(w http.ResponseWriter, r *http.Request) {
 				_ = exec.Command("ip", "link", "set", iface, "master", oldM).Run()
 			}
 			_ = exec.Command("ip", "link", "set", iface, "up").Run()
+			if flushed[iface] {
+				_ = exec.Command("ip", "addr", "flush", "dev", iface).Run()
+				for _, cidr := range prevAddrs[iface] {
+					_ = exec.Command("ip", "addr", "add", cidr, "dev", iface).Run()
+				}
+			}
 		}
 		_ = exec.Command("ip", "link", "set", name, "down").Run()
 		_ = exec.Command("ip", "link", "del", name).Run()
@@ -563,14 +647,23 @@ func (h *Handler) CreateHostBond(w http.ResponseWriter, r *http.Request) {
 
 	for _, iface := range sortedIfaces {
 		_ = exec.Command("ip", "link", "set", iface, "nomaster").Run()
-		_ = exec.Command("ip", "addr", "flush", "dev", iface).Run()
+		if out, err := exec.Command("ip", "addr", "flush", "dev", iface).CombinedOutput(); err != nil {
+			rollback(err)
+			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("flush addresses on %s: %v (%s)", iface, err, strings.TrimSpace(string(out))))
+			return
+		}
+		flushed[iface] = true
 		_ = exec.Command("ip", "link", "set", iface, "down").Run()
 		if out, err := exec.Command("ip", "link", "set", iface, "master", name).CombinedOutput(); err != nil {
 			rollback(err)
 			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("enslave %s to %s: %v (%s)", iface, name, err, strings.TrimSpace(string(out))))
 			return
 		}
-		_ = exec.Command("ip", "link", "set", iface, "up").Run()
+		if out, err := exec.Command("ip", "link", "set", iface, "up").CombinedOutput(); err != nil {
+			rollback(err)
+			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("bring up bond member %s: %v (%s)", iface, err, strings.TrimSpace(string(out))))
+			return
+		}
 	}
 
 	// 5. Optional CIDR / Gateway for standalone bonds only
@@ -595,7 +688,11 @@ func (h *Handler) CreateHostBond(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusBadRequest, fmt.Sprintf("invalid gateway IP %q", gw))
 			return
 		}
-		_ = exec.Command("ip", "route", "append", "default", "via", gw, "dev", name, "metric", "1024").Run()
+		if out, err := exec.Command("ip", "route", "append", "default", "via", gw, "dev", name, "metric", "1024").CombinedOutput(); err != nil {
+			rollback(err)
+			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("set gateway %s for %s: %v (%s)", gw, name, err, strings.TrimSpace(string(out))))
+			return
+		}
 	}
 
 	jsonResp(w, http.StatusOK, map[string]any{
@@ -658,11 +755,25 @@ func (h *Handler) DeleteHostBond(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Pure kernel teardown:
-	// 1. If attached to bridge, attach primarySlave back to bridge before tearing down bond
+	// 1. If attached to bridge, attach primarySlave back to bridge before tearing down bond.
+	// A failed restore must abort the delete: removing the bond would leave the
+	// uplink detached and the host unreachable.
 	if masterBridge != "" && primarySlave != "" {
-		_ = exec.Command("ip", "link", "set", primarySlave, "nomaster").Run()
-		_ = exec.Command("ip", "link", "set", primarySlave, "master", masterBridge).Run()
-		_ = exec.Command("ip", "link", "set", primarySlave, "up").Run()
+		if out, err := exec.Command("ip", "link", "set", primarySlave, "nomaster").CombinedOutput(); err != nil {
+			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("detach primary slave %s from bond %s: %v (%s)", primarySlave, name, err, strings.TrimSpace(string(out))))
+			return
+		}
+		if out, err := exec.Command("ip", "link", "set", primarySlave, "master", masterBridge).CombinedOutput(); err != nil {
+			// Put the uplink back on the bond so a failed restore does not strand it.
+			_ = exec.Command("ip", "link", "set", primarySlave, "master", name).Run()
+			_ = exec.Command("ip", "link", "set", primarySlave, "up").Run()
+			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("restore primary slave %s to bridge %s: %v (%s)", primarySlave, masterBridge, err, strings.TrimSpace(string(out))))
+			return
+		}
+		if out, err := exec.Command("ip", "link", "set", primarySlave, "up").CombinedOutput(); err != nil {
+			jsonErr(w, http.StatusInternalServerError, fmt.Sprintf("bring up restored slave %s: %v (%s)", primarySlave, err, strings.TrimSpace(string(out))))
+			return
+		}
 	}
 
 	// 2. Release other slaves

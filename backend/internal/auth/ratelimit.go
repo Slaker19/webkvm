@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -60,6 +62,30 @@ type LoginRateLimiter struct {
 	// so a flip in the Settings page takes effect immediately. nil
 	// is safe (defaults to "don't trust proxy").
 	settings TrustedCIDRProvider
+
+	// path is {dataDir}/ratelimit.json. dataDir is the shared DRBD
+	// volume, so the counters survive a control-plane failover. Empty
+	// keeps the old in-memory-only behaviour (tests, CLI).
+	path        string
+	lastPersist time.Time
+	saveTimer   *time.Timer
+	writeMu     sync.Mutex // serializes the temp-file write and rename
+}
+
+// rateLimitPersistInterval coalesces the counter writes of a brute-force
+// burst into at most one DRBD write per interval. A lockout bypasses it.
+const rateLimitPersistInterval = time.Second
+
+type rateLimitFile struct {
+	Version int              `json:"version"`
+	Buckets []rateLimitEntry `json:"buckets"`
+}
+
+type rateLimitEntry struct {
+	Key        string    `json:"key"`
+	Failures   int       `json:"failures"`
+	FirstFail  time.Time `json:"first_fail"`
+	LockedTill time.Time `json:"locked_till,omitempty"`
 }
 
 type rlBucket struct {
@@ -102,7 +128,110 @@ func NewLoginRateLimiterWithEnv(envValue string) *LoginRateLimiter {
 	}
 }
 
-// parseTrustedCIDRs parses a comma-separated list of CIDRs and
+// EnablePersistence loads the counters saved by the previous active node
+// and starts persisting new ones at path. Called once from main with
+// {DATA_DIR}/ratelimit.json (the DRBD volume in an HA install).
+func (l *LoginRateLimiter) EnablePersistence(path string) error {
+	if path == "" {
+		return nil
+	}
+	l.mu.Lock()
+	l.path = path
+	l.mu.Unlock()
+	return l.load()
+}
+
+func (l *LoginRateLimiter) load() error {
+	data, err := os.ReadFile(l.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var f rateLimitFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return err
+	}
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, e := range f.Buckets {
+		if e.Key == "" || e.Failures <= 0 {
+			continue
+		}
+		// An active lockout wins even if the counting window has
+		// already elapsed (the lockout outlives it by design).
+		if !e.LockedTill.IsZero() && now.Before(e.LockedTill) {
+			l.failures[e.Key] = &rlBucket{failures: e.Failures, firstFail: e.FirstFail, lockedTill: e.LockedTill}
+			continue
+		}
+		if now.Sub(e.FirstFail) <= l.window {
+			l.failures[e.Key] = &rlBucket{failures: e.Failures, firstFail: e.FirstFail}
+		}
+	}
+	return nil
+}
+
+// Flush persists immediately. main calls it during shutdown so the last
+// throttled window is not lost on a graceful failover.
+func (l *LoginRateLimiter) Flush() error {
+	return l.persist(true)
+}
+
+// persist writes a snapshot atomically. Without force it is throttled, and
+// a single deferred write is scheduled so the last state still lands.
+func (l *LoginRateLimiter) persist(force bool) error {
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
+
+	l.mu.Lock()
+	if l.path == "" {
+		l.mu.Unlock()
+		return nil
+	}
+	now := time.Now()
+	if !force && now.Sub(l.lastPersist) < rateLimitPersistInterval {
+		if l.saveTimer == nil {
+			l.saveTimer = time.AfterFunc(rateLimitPersistInterval, func() {
+				l.mu.Lock()
+				l.saveTimer = nil
+				l.mu.Unlock()
+				// Background failure has no caller to report to; the
+				// next mutation retries and shutdown Flush surfaces it.
+				_ = l.persist(true)
+			})
+		}
+		l.mu.Unlock()
+		return nil
+	}
+	l.lastPersist = now
+	entries := make([]rateLimitEntry, 0, len(l.failures))
+	for k, b := range l.failures {
+		if b.lockedTill.IsZero() && now.Sub(b.firstFail) > l.window {
+			delete(l.failures, k)
+			continue
+		}
+		entries = append(entries, rateLimitEntry{
+			Key:        k,
+			Failures:   b.failures,
+			FirstFail:  b.firstFail,
+			LockedTill: b.lockedTill,
+		})
+	}
+	l.mu.Unlock()
+
+	data, err := json.MarshalIndent(rateLimitFile{Version: 1, Buckets: entries}, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := l.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, l.path)
+}
+
 // returns the parsed IPNet slice. Silently skips entries that
 // don't parse (the operator can find out by hitting the endpoint
 // and seeing the request still rate-limited).
@@ -199,6 +328,12 @@ func clientIPOf(r *http.Request, trusted []*net.IPNet, settings TrustedCIDRProvi
 	return ip
 }
 
+// ResolveClientIP exposes the settings-aware resolver to the jail, audit
+// log and request logger, so all of them agree with the rate limiters.
+func ResolveClientIP(r *http.Request, settings TrustedCIDRProvider) (net.IP, bool) {
+	return resolveClient(r, nil, settings)
+}
+
 // resolveClient resolves the client IP through the shared
 // logging.ResolveClientIP (X-Forwarded-For walked right-to-left, skipping
 // trusted proxies). fromHeader reports whether the result came from XFF.
@@ -269,20 +404,33 @@ func (l *LoginRateLimiter) RecordFailure(r *http.Request, username string) {
 	now := time.Now()
 
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	b, ok := l.failures[k]
 	if !ok {
 		l.failures[k] = &rlBucket{failures: 1, firstFail: now}
+		l.mu.Unlock()
+		_ = l.persist(false)
 		return
 	}
 	if now.Sub(b.firstFail) > l.window {
 		l.failures[k] = &rlBucket{failures: 1, firstFail: now}
+		l.mu.Unlock()
+		_ = l.persist(false)
 		return
 	}
 	b.failures++
+	locked := false
 	if b.failures >= l.limit {
 		b.lockedTill = now.Add(l.lockout)
+		locked = true
+	}
+	l.mu.Unlock()
+
+	// A lockout is security state: persist it immediately rather than
+	// waiting for the coalescing window. Plain counters are throttled.
+	if locked {
+		_ = l.persist(true)
+	} else {
+		_ = l.persist(false)
 	}
 }
 
@@ -296,6 +444,7 @@ func (l *LoginRateLimiter) RecordSuccess(r *http.Request, username string) {
 	l.mu.Lock()
 	delete(l.failures, k)
 	l.mu.Unlock()
+	_ = l.persist(false)
 }
 
 // Middleware applies the limiter. `getUser` extracts the username from

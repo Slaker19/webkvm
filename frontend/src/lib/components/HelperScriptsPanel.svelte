@@ -63,7 +63,7 @@
   function launchInHostTerminal(slug, name) {
     const cmd = terminalCommand(slug);
     copyState.copy(cmd);
-    toast.info(`Comando de ${name} copiado. Pégalo en la terminal del host para iniciar la TUI.`);
+    toast.info(t('helperScripts.commandCopiedForTerminal', { name }));
     navigate('/host-console');
   }
 
@@ -366,7 +366,7 @@
                 variant="primary"
                 onclick={() => launchInHostTerminal(s.slug, s.name)}
                 class="h-8 shadow-xs text-xs font-semibold"
-                title="Abre la terminal del host con el comando interactivo"
+                title={t('helperScripts.openHostTerminal')}
               >
                 <Icon name="terminal" size={13} />
                 <span class="ml-1.5">Terminal Host (TUI)</span>
@@ -376,10 +376,10 @@
                 size="sm"
                 onclick={() => {
                   copyState.copy(terminalCommand(s.slug));
-                  toast.success(t('common.copied') || 'Copiado al portapapeles');
+                  toast.success(t('common.copied'));
                 }}
                 class="h-8 px-2"
-                title="Copiar comando interactivo para ejecutar manualmente"
+                title={t('helperScripts.copyInteractiveCommand')}
               >
                 <Icon name="copy" size={13} />
               </Button>
@@ -506,7 +506,7 @@
 
         <div class="rounded-lg bg-muted/60 p-3 border border-border space-y-1.5">
           <span class="text-[11px] font-semibold text-foreground uppercase tracking-wider block">
-            Comando para terminal interactiva:
+            {t('helperScripts.interactiveCommandLabel')}
           </span>
           <code
             class="text-xs font-mono text-accent block select-all break-all bg-background/80 p-2 rounded border border-border"

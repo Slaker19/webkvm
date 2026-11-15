@@ -366,7 +366,7 @@
     {#each visibleGroups as group, gi (group.labelKey)}
       {#if showLabels}
         <div
-          class="px-2.5 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70"
+          class="px-2.5 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
         >
           {group.label}
         </div>
@@ -513,7 +513,7 @@
       {#each customizeGroups as group (group.labelKey)}
         {@const groupIds = group.items.map((it) => it.id)}
         <div
-          class="px-1.5 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70"
+          class="px-1.5 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
         >
           {group.label}
         </div>

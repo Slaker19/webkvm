@@ -73,13 +73,13 @@ func TestAcquireDeployLockDifferentNamesIndependent(t *testing.T) {
 func TestAcquireDeployLockTrimsMap(t *testing.T) {
 	h := &Handler{}
 	release := h.acquireDeployLock("trimme")
-	if _, ok := h.deployLocks["trimme"]; !ok {
+	if _, ok := h.deployState().locks["trimme"]; !ok {
 		t.Fatalf("expected live entry while holder is active")
 	}
 	release()
-	h.deployMu.Lock()
-	_, present := h.deployLocks["trimme"]
-	h.deployMu.Unlock()
+	h.deployState().mu.Lock()
+	_, present := h.deployState().locks["trimme"]
+	h.deployState().mu.Unlock()
 	if present {
 		t.Fatalf("deployLocks entry for released name still present (leak)")
 	}
@@ -127,9 +127,9 @@ func TestAcquireDeployLockConcurrentExclusivity(t *testing.T) {
 	if critical != 0 {
 		t.Fatalf("critical count unbalanced: %d", critical)
 	}
-	h.deployMu.Lock()
-	left := len(h.deployLocks)
-	h.deployMu.Unlock()
+	h.deployState().mu.Lock()
+	left := len(h.deployState().locks)
+	h.deployState().mu.Unlock()
 	if left != 0 {
 		t.Fatalf("lock map not trimmed after all releases: %d left", left)
 	}

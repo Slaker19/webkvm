@@ -1,0 +1,5 @@
+#!/bin/sh
+# Fake `sleep`: no-op; counts calls and advances the fake clock used by fake `date`.
+S="${FAKE_S:?}"
+c=$(cat "$S/clock"); echo $((c + ${1:-0})) >"$S/clock"
+n=$(cat "$S/sleeps"); echo $((n + 1)) >"$S/sleeps"

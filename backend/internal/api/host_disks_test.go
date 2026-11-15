@@ -39,38 +39,37 @@ func TestDiskGuardErrMapping(t *testing.T) {
 	}
 }
 
-// TestInitHostDiskModeDefaults verifies that an empty/unknown mode is
-// normalized to the destructive "format" mode (which is the historical
-// behaviour) while an explicit "mount" is preserved.
+// TestInitHostDiskModeDefaults verifies that an omitted mode keeps the
+// historical "format" default, explicit modes are normalized, and an
+// unknown value is rejected instead of falling through to a destructive
+// format the caller did not ask for.
 func TestInitHostDiskModeDefaults(t *testing.T) {
 	cases := []struct {
-		in   string
-		want string
+		in      string
+		want    string
+		wantErr bool
 	}{
-		{"", "format"},
-		{"  ", "format"},
-		{"format", "format"},
-		{"FORMAT", "format"},
-		{"mount", "mount"},
-		{" MOUNT ", "mount"},
-		{"garbage", "format"},
+		{"", "format", false},
+		{"  ", "format", false},
+		{"format", "format", false},
+		{"FORMAT", "format", false},
+		{"mount", "mount", false},
+		{" MOUNT ", "mount", false},
+		{"garbage", "", true},
+		{"mont", "", true},
 	}
 	for _, c := range cases {
-		got := normalizeDiskMode(c.in)
-		if got != c.want {
-			t.Errorf("normalizeDiskMode(%q) = %q, want %q", c.in, got, c.want)
+		got, err := normalizeDiskMode(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("normalizeDiskMode(%q) = %q, want an error", c.in, got)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("normalizeDiskMode(%q) = %q, %v, want %q", c.in, got, err, c.want)
 		}
 	}
-}
-
-// TestNormalizeDiskModePure mirrors the inline normalization used in the
-// handler so a future refactor keeps the same contract.
-func normalizeDiskMode(in string) string {
-	m := strings.ToLower(strings.TrimSpace(in))
-	if m != "format" && m != "mount" {
-		return "format"
-	}
-	return m
 }
 
 // TestSafeDiskPathRE guards the disk-path validator against injection of
@@ -361,5 +360,18 @@ func TestCreateRAIDRequestFormatFields(t *testing.T) {
 	}
 	if !req.Format || req.Filesystem != "ext4" || req.MountPoint != "/mnt/raid-data" {
 		t.Errorf("CreateRAIDRequest fields not preserved: %+v", req)
+	}
+}
+
+func TestProtectedSystemMountCoversCriticalTrees(t *testing.T) {
+	for _, p := range []string{"/", "/var", "/var/lib/webkvm", "/usr", "/usr/local", "/root", "/boot", "/etc", "/sys", "/proc", "/dev"} {
+		if !isProtectedSystemMount(p) {
+			t.Errorf("%q must be protected", p)
+		}
+	}
+	for _, p := range []string{"/mnt/data", "/srv/vm", "/home/user/disks"} {
+		if isProtectedSystemMount(p) {
+			t.Errorf("%q must not be protected", p)
+		}
 	}
 }

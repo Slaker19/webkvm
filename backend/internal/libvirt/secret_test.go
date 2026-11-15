@@ -9,7 +9,25 @@ import (
 	"testing"
 )
 
+// resetSecretCaches isolates tests from each other: the secret caches are
+// process-global by design (one DATA_DIR per process), and a test's entries
+// otherwise leak into the next test's file.
+func resetSecretCaches(t *testing.T) {
+	t.Helper()
+	clear := func() {
+		cifsSecretsMu.Lock()
+		cifsSecrets = map[string]SecretRef{}
+		cifsSecretsMu.Unlock()
+		chapSecretsMu.Lock()
+		chapSecrets = map[string]SecretRef{}
+		chapSecretsMu.Unlock()
+	}
+	clear()
+	t.Cleanup(clear)
+}
+
 func TestBuildCIFSSecretXML(t *testing.T) {
+	resetSecretCaches(t)
 	got := buildCIFSSecretXML("cifs-files.example.com/share", "alice")
 	wants := []string{
 		"ephemeral='no'",
@@ -30,6 +48,7 @@ func TestBuildCIFSSecretXML(t *testing.T) {
 }
 
 func TestBuildCIFSSecretXML_EscapesUser(t *testing.T) {
+	resetSecretCaches(t)
 	got := buildCIFSSecretXML("cifs-h/share", "x'onload='alert(1)")
 	if !strings.Contains(got, "&apos;") {
 		t.Fatalf("user not escaped: %s", got)
@@ -37,6 +56,7 @@ func TestBuildCIFSSecretXML_EscapesUser(t *testing.T) {
 }
 
 func TestCIFSSecretsPath(t *testing.T) {
+	resetSecretCaches(t)
 	got := cifsSecretsPath("/opt/webkvm")
 	want := filepath.Join("/opt/webkvm", "cifs-secrets.json")
 	if got != want {
@@ -45,6 +65,7 @@ func TestCIFSSecretsPath(t *testing.T) {
 }
 
 func TestPersistAndReadCIFSSecretRef(t *testing.T) {
+	resetSecretCaches(t)
 	dir := t.TempDir()
 	ref := &SecretRef{
 		PoolName:   "pool-a",
@@ -71,6 +92,7 @@ func TestPersistAndReadCIFSSecretRef(t *testing.T) {
 }
 
 func TestPersistCIFSSecretRef_OverwritesAndPreservesOthers(t *testing.T) {
+	resetSecretCaches(t)
 	dir := t.TempDir()
 	if err := persistCIFSSecretRef(dir, &SecretRef{PoolName: "a", SecretUUID: "u-a"}); err != nil {
 		t.Fatal(err)
@@ -101,6 +123,7 @@ func TestPersistCIFSSecretRef_OverwritesAndPreservesOthers(t *testing.T) {
 }
 
 func TestRemoveCIFSSecretRef_Idempotent(t *testing.T) {
+	resetSecretCaches(t)
 	dir := t.TempDir()
 	// Remove from non-existent file: no error.
 	if err := removeCIFSSecretRef(dir, "nope"); err != nil {
@@ -125,6 +148,7 @@ func TestRemoveCIFSSecretRef_Idempotent(t *testing.T) {
 }
 
 func TestReadCIFSSecretRef_NotFoundReturnsNilNil(t *testing.T) {
+	resetSecretCaches(t)
 	dir := t.TempDir()
 	got, err := readCIFSSecretRef(dir, "missing")
 	if err != nil {
@@ -136,6 +160,7 @@ func TestReadCIFSSecretRef_NotFoundReturnsNilNil(t *testing.T) {
 }
 
 func TestLoadCIFSSecretsFromDisk(t *testing.T) {
+	resetSecretCaches(t)
 	dir := t.TempDir()
 	if err := persistCIFSSecretRef(dir, &SecretRef{PoolName: "p1", SecretUUID: "u1"}); err != nil {
 		t.Fatal(err)
@@ -163,6 +188,7 @@ func TestLoadCIFSSecretsFromDisk(t *testing.T) {
 }
 
 func TestLoadCIFSSecretsFromDisk_MissingFileIsOK(t *testing.T) {
+	resetSecretCaches(t)
 	dir := t.TempDir()
 	if err := loadCIFSSecretsFromDisk(dir); err != nil {
 		t.Fatalf("missing file should be no-op, got %v", err)
@@ -170,6 +196,7 @@ func TestLoadCIFSSecretsFromDisk_MissingFileIsOK(t *testing.T) {
 }
 
 func TestLoadCIFSSecretsFromDisk_CorruptFileIsError(t *testing.T) {
+	resetSecretCaches(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(cifsSecretsPath(dir), []byte("not json"), cifsSecretsFileMode); err != nil {
 		t.Fatal(err)
@@ -180,6 +207,7 @@ func TestLoadCIFSSecretsFromDisk_CorruptFileIsError(t *testing.T) {
 }
 
 func TestLookupCIFSSecretRef_FallbackToDisk(t *testing.T) {
+	resetSecretCaches(t)
 	dir := t.TempDir()
 	if err := persistCIFSSecretRef(dir, &SecretRef{PoolName: "cold", SecretUUID: "u-cold"}); err != nil {
 		t.Fatal(err)
@@ -198,6 +226,7 @@ func TestLookupCIFSSecretRef_FallbackToDisk(t *testing.T) {
 }
 
 func TestUnsetCIFSSecret_NoConnectorSkipsDisk(t *testing.T) {
+	resetSecretCaches(t)
 	dir := t.TempDir()
 	if err := persistCIFSSecretRef(dir, &SecretRef{PoolName: "p", SecretUUID: "u"}); err != nil {
 		t.Fatal(err)
@@ -226,6 +255,7 @@ func TestUnsetCIFSSecret_NoConnectorSkipsDisk(t *testing.T) {
 }
 
 func TestBuildCHAPSecretXML(t *testing.T) {
+	resetSecretCaches(t)
 	got := buildCHAPSecretXML("iscsi-pool1", "iqn.2003-01.org.linux-iscsi.target:sn.123", "admin")
 	wants := []string{
 		"ephemeral='no'",
@@ -244,6 +274,7 @@ func TestBuildCHAPSecretXML(t *testing.T) {
 }
 
 func TestPersistAndReadCHAPSecretRef(t *testing.T) {
+	resetSecretCaches(t)
 	dir := t.TempDir()
 	ref := &SecretRef{
 		PoolName:   "iscsi-pool1",
@@ -275,6 +306,7 @@ func TestPersistAndReadCHAPSecretRef(t *testing.T) {
 }
 
 func TestLoadCHAPSecretsFromDisk(t *testing.T) {
+	resetSecretCaches(t)
 	dir := t.TempDir()
 	seed := map[string]SecretRef{
 		"p1": {PoolName: "p1", SecretUUID: "u1"},

@@ -18,6 +18,17 @@ func TestOSCommandRunner(t *testing.T) {
 	}
 }
 
+func TestOSCommandRunnerInput(t *testing.T) {
+	runner := &OSCommandRunner{}
+	out, err := runner.RunInput(context.Background(), "cat", []byte("stdin payload"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(out) != "stdin payload" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
 func TestMockCommandRunner(t *testing.T) {
 	mock := &MockCommandRunner{
 		Handler: func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -39,5 +50,21 @@ func TestMockCommandRunner(t *testing.T) {
 	_, err = mock.Run(context.Background(), "unknown")
 	if err == nil {
 		t.Fatal("expected error for unknown command")
+	}
+}
+
+func TestMockCommandRunnerInput(t *testing.T) {
+	wantInput := []byte("script")
+	mock := &MockCommandRunner{
+		InputHandler: func(_ context.Context, name string, input []byte, args ...string) ([]byte, error) {
+			if name != "ssh" || string(input) != string(wantInput) || len(args) != 1 || args[0] != "user@host" {
+				t.Fatalf("unexpected command: %q %q %q", name, input, args)
+			}
+			return []byte("ok"), nil
+		},
+	}
+	got, err := mock.RunInput(context.Background(), "ssh", wantInput, "user@host")
+	if err != nil || string(got) != "ok" {
+		t.Fatalf("RunInput() = %q, %v", got, err)
 	}
 }

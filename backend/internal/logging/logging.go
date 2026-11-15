@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -56,7 +57,13 @@ func InitWithFile(format, level, filePath string) {
 
 	var h slog.Handler = stderrHandler
 	if filePath != "" {
-		f, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		// The installer/OCF agent point WEBKVM_LOG_FILE at <data>/logs/…
+		// but nothing guarantees the directory exists: create it.
+		var f *os.File
+		err := os.MkdirAll(filepath.Dir(filePath), 0o750)
+		if err == nil {
+			f, err = os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "logging: cannot open log file %q: %v (continuing with stderr only)\n", filePath, err)
 		} else {

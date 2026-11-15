@@ -122,7 +122,7 @@
       onCreated(res);
       alert(t('storage.raidCreatedSuccess', { device: res.device }));
     } catch (e) {
-      finishTask(taskId, 'error', e.message || 'Error al crear RAID', 30);
+      finishTask(taskId, 'error', e.message || t('storage.raidCreateError'), 30);
       onError('Create RAID Error', e);
     } finally {
       creatingRaid = false;
@@ -237,9 +237,9 @@
                 >{t('storage.filesystemTitle')}</label
               >
               <select id="raid-fs" bind:value={createRaidFs} class="input w-full text-xs font-mono">
-                <option value="ext4">ext4 (Linux estándar)</option>
+                <option value="ext4">{t('storage.fsExt4Desc')}</option>
                 <option value="xfs">xfs (Alto rendimiento)</option>
-                <option value="btrfs">btrfs (CoW con snapshots)</option>
+                <option value="btrfs">{t('storage.fsBtrfsDesc')}</option>
               </select>
             </div>
             <div>
@@ -297,8 +297,8 @@
                       bind:value={createRaidSinglePurpose}
                       class="input w-full text-xs font-mono"
                     >
-                      <option value="disk">disk (Imágenes de VM / VDI)</option>
-                      <option value="iso">iso (Biblioteca de imágenes ISO)</option>
+                      <option value="disk">disk ({t('storage.diskPoolPurpose')})</option>
+                      <option value="iso">iso ({t('storage.isoPoolPurpose')})</option>
                       <option value="backup">backup (Copias de seguridad)</option>
                       <option value="container">container (Contenedores Incus)</option>
                     </select>

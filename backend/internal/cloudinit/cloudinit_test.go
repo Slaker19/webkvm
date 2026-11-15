@@ -340,7 +340,7 @@ func TestBuildNetworkConfigStatic(t *testing.T) {
 		Networks: []NetworkConfig{
 			{
 				Interface: "eth0",
-				IPv4:      "192.168.1.50/24",
+				IPv4:      "192.168.50.50/24",
 				Gateway4:  "192.168.1.1",
 				DNS:       []string{"1.1.1.1", "8.8.8.8"},
 				Search:    []string{"lan"},
@@ -348,7 +348,7 @@ func TestBuildNetworkConfigStatic(t *testing.T) {
 		},
 	}
 	nc := buildNetworkConfig(cfg)
-	if !strings.Contains(nc, "192.168.1.50/24") {
+	if !strings.Contains(nc, "192.168.50.50/24") {
 		t.Errorf("expected static IPv4 in network-config, got:\n%s", nc)
 	}
 	if !strings.Contains(nc, "gateway4: '192.168.1.1'") {
@@ -379,14 +379,14 @@ func TestValidateNetworkConfig(t *testing.T) {
 
 	// Invalid IPv4 CIDR
 	invalidCIDR := validCfg
-	invalidCIDR.Networks = []NetworkConfig{{IPv4: "192.168.1.500/24"}}
+	invalidCIDR.Networks = []NetworkConfig{{IPv4: "192.168.50.500/24"}}
 	if err := invalidCIDR.Validate(); err == nil {
 		t.Error("expected error for invalid IPv4 CIDR, got nil")
 	}
 
 	// Invalid Gateway4
 	invalidGW := validCfg
-	invalidGW.Networks = []NetworkConfig{{Gateway4: "192.168.1.500"}}
+	invalidGW.Networks = []NetworkConfig{{Gateway4: "192.168.50.500"}}
 	if err := invalidGW.Validate(); err == nil {
 		t.Error("expected error for invalid Gateway4, got nil")
 	}

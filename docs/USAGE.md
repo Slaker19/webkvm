@@ -28,7 +28,7 @@ The UI is a single-page app with a sidebar:
 | **Networking** | NAT/bridge networks, host bridges, firewall. |
 | **Backup** | Targets, schedules, jobs, archives and restore. |
 | **Users** | Accounts, roles, groups, API tokens. |
-| **Status** | Backend, libvirt, host status and logs. |
+| **Status** | Backend, libvirt, host status, update management, and logs. |
 | **Settings** | Server configuration (port, TLS, CORS, etc.). |
 
 ## 3. Virtual machines
@@ -287,6 +287,24 @@ Pick username/password (required for cloud-init images), target network and VM
 name; deployment runs as a background job with live progress.
 
 ## 11. Logs and troubleshooting
+
+### In-app updates (admin only)
+
+Administrators can update WebKVM directly from the web interface:
+
+1. Open the **Status** tab (`/#/status`).
+2. When an update is available, click **Update**.
+3. **Requirement**: The backend requires `WEBKVM_ALLOW_UPDATE=1` in the service environment (configured by default in native systemd installs).
+4. **Execution**: The updater runs detached in the background and writes logs to `/var/log/webkvm/update.log`.
+5. **Mode**:
+   - **`release` mode**: Automatically chosen when not running from a git checkout. Downloads `webkvm-<version>-linux_amd64` from GitHub Releases and verifies `SHA256SUMS` before installing.
+   - **`source` mode**: Automatically chosen when running from a git checkout (`git pull --ff-only` + rebuild, requiring Go and Node.js on the host).
+6. **Rollback**: The current binary is backed up to `/usr/local/bin/webkvm.previous`. A 30-second health check tests `/api/health`; if the check fails, the updater automatically rolls back to `webkvm.previous`.
+7. **Verification**: Verify the active version with `webkvm version` and `curl -sk https://localhost:8080/api/health`.
+
+> [!WARNING]
+> - **Docker installs**: Do NOT use the in-app update button inside Docker. Pull the updated container image instead (see [DOCKER.md](DOCKER.md)).
+> - **HA clusters**: The button only updates the node serving the panel and restarts its local service; do NOT use it for cluster-wide updates. Coordinate node updates through Pacemaker (see [HA-CLUSTER.md](runbooks/HA-CLUSTER.md)).
 
 ```bash
 systemctl status webkvm           # service status

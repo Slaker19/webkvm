@@ -364,3 +364,34 @@ func TestCombinedDeletePoolReportsBackendError(t *testing.T) {
 		t.Fatalf("delete error must reach the caller, got %v", err)
 	}
 }
+
+type notFoundBackend struct{ Backend }
+
+func (notFoundBackend) GetDomain(string) (models.VM, error) {
+	return models.VM{}, errors.New("domain not found: no domain with matching name")
+}
+
+func TestCombinedGetDomainNotFound(t *testing.T) {
+	c := NewCombined(notFoundBackend{}, notFoundBackend{})
+	_, err := c.GetDomain("missing")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestIsNotFound(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{errors.New("Domain not found: no domain with matching name"), true},
+		{errors.New("Instance not found"), true},
+		{errors.New("connection refused"), false},
+		{nil, false},
+	}
+	for _, tc := range cases {
+		if got := isNotFound(tc.err); got != tc.want {
+			t.Errorf("isNotFound(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}

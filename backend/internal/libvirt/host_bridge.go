@@ -26,8 +26,8 @@ func isLinuxBridge(name string) bool {
 // virtualBridgePrefixes are the prefixes of bridges WebKVM treats as
 // virtual/NAT plumbing rather than PHYSICAL shared bridges: libvirt NAT
 // bridges (virbr0), container-daemon bridges (lxdbr0/lxcbr0) and Docker
-// bridges (docker0/br-*). A physical bridge (vmbr0/br0) is required so
-// KVM and Incus share the host's real LAN (Proxmox-style).
+// bridges (docker0/br-*). The automatic/default choice requires a physical
+// bridge; an explicitly selected bridge may be a NAT one.
 var virtualBridgePrefixes = []string{"virbr", "lxdbr", "lxcbr", "incusbr", "docker", "br-"}
 
 // errNoPhysicalBridge is the fatal error when the host has no physical

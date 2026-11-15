@@ -387,7 +387,6 @@ func (c *Connector) ChangeDiskBus(id, target, newBus string) error {
 // PCI host device & VFIO passthrough implementation is located in domain_pci.go.
 // 9p shared folders implementation is located in domain_shares.go.
 
-
 func (c *Connector) UpdateDiskSource(id, target, source string) error {
 	dom, err := c.lookupDomain(id)
 	if err != nil {
@@ -464,7 +463,7 @@ func (c *Connector) AttachNetworkIface(id string, req models.AttachNetRequest) e
 	if model == "" {
 		model = "virtio"
 	}
-	if req.Network == "" || !isLinuxBridge(req.Network) {
+	if req.Network == "" || !c.bridgeExists(req.Network) {
 		return fmt.Errorf("network %q is not a host Linux bridge; WebKVM only attaches to real bridges (vmbr0, vmbr1, …)", req.Network)
 	}
 
@@ -592,7 +591,7 @@ func (c *Connector) UpdateNetworkIface(id, oldMAC string, req models.UpdateNetIf
 	// Patch the <source> element (libvirt network or host Linux bridge).
 	if req.Network != nil && *req.Network != "" {
 		newSrc := fmt.Sprintf("<source network='%s'/>", xmlEscape(*req.Network))
-		if isLinuxBridge(*req.Network) {
+		if c.bridgeExists(*req.Network) {
 			newSrc = fmt.Sprintf("<source bridge='%s'/>", xmlEscape(*req.Network))
 		}
 		srcRe := regexp.MustCompile(`<source\s+(network|bridge)='[^']*'\s*/>`)
@@ -732,7 +731,6 @@ func (c *Connector) CheckVLANSupport(networkName string) (models.VlanSupport, er
 		Reason:    "this bridge does not have macTableManager='libvirt' (or an Open vSwitch); VLAN tagging would be silently dropped by the kernel bridge",
 	}, nil
 }
-
 
 // ResizeDomainDisk grows (or shrinks) the backing file of a VM disk
 // identified by its target device (e.g. "vda", "sdb").
@@ -892,4 +890,3 @@ func extractTagAttr(xml, attr string) string {
 	}
 	return xml[s : s+e]
 }
-

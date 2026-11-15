@@ -661,6 +661,15 @@ func (h *Handler) ListCheckpoints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vmID := chi.URLParam(r, "vmid")
+	// A missing VM would otherwise surface as a raw virsh failure below.
+	if _, err := h.compute.GetDomain(vmID); err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
+		jsonErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 	names, err := h.backupRunner.ListCheckpoints(vmID)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "list checkpoints: "+err.Error())

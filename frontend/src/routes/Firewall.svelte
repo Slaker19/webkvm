@@ -18,7 +18,9 @@
    *      shows a manual Rollback button too.
    */
   import { onMount } from 'svelte';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import { api } from '$lib/stores/auth.svelte.js';
+  import { clusterModule, refreshClusterModule } from '$lib/stores/clusterModule.svelte.js';
   import { toast } from '$lib/components/ui/toast';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
@@ -73,6 +75,18 @@
   let importing = $state(false);
   let fileInputEl = $state(null);
 
+  // F-A: cluster-wide default-deny firewall (same profile on every node).
+  let clusterFW = $state(null);
+  let clusterProfileText = $state('');
+  let clusterRendered = $state('');
+  let clusterPreviewOpen = $state(false);
+  let clusterBusy = $state(false);
+  let clusterDeadline = $state(0);
+  let clusterApplyOpen = $state(false);
+  let clusterApplyPreview = $state('');
+  let clusterApplyPreviewError = $state('');
+  let clusterApplyPreviewLoading = $state(false);
+
   async function load() {
     try {
       const list = await api.listVMs().catch(() => []);
@@ -97,14 +111,134 @@
     }
   }
 
+  async function loadClusterFW() {
+    try {
+      const r = await api.getClusterFirewall();
+      clusterFW = r;
+      clusterProfileText = JSON.stringify(r.profile, null, 2);
+      clusterDeadline = r.pending && r.deadline ? r.deadline * 1000 : 0;
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  function shortHash(hash) {
+    return hash ? `${hash.slice(0, 12)}…` : '—';
+  }
+
+  function clusterProfile() {
+    try {
+      return JSON.parse(clusterProfileText);
+    } catch {
+      toast.error(t('firewall.clusterBadJson'));
+      return null;
+    }
+  }
+
+  async function saveClusterFW() {
+    const profile = clusterProfile();
+    if (!profile) return;
+    clusterBusy = true;
+    try {
+      await api.saveClusterFirewall(profile);
+      await loadClusterFW();
+      toast.success(t('firewall.clusterSaved'));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      clusterBusy = false;
+    }
+  }
+
+  async function previewClusterFW() {
+    const profile = clusterProfile();
+    if (!profile) return;
+    clusterBusy = true;
+    try {
+      const r = await api.previewClusterFirewall(profile);
+      clusterRendered = r.rendered;
+      clusterPreviewOpen = true;
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      clusterBusy = false;
+    }
+  }
+
+  // Applying a cluster-wide default-deny ruleset can lock operators out of
+  // every node, so it always goes through a confirmation with a preview.
+  async function applyClusterFW() {
+    const profile = clusterProfile();
+    if (!profile) return;
+    clusterApplyOpen = true;
+    clusterApplyPreview = '';
+    clusterApplyPreviewError = '';
+    clusterApplyPreviewLoading = true;
+    try {
+      const r = await api.previewClusterFirewall(profile);
+      clusterApplyPreview = r.rendered || '';
+    } catch (err) {
+      clusterApplyPreviewError = err.message;
+    } finally {
+      clusterApplyPreviewLoading = false;
+    }
+  }
+
+  async function doApplyClusterFW() {
+    const profile = clusterProfile();
+    if (!profile) return;
+    clusterBusy = true;
+    try {
+      const r = await api.applyClusterFirewall(profile);
+      clusterApplyOpen = false;
+      if (r.deadline) clusterDeadline = r.deadline * 1000;
+      toast.info(t('firewall.clusterApplied', { secs: r.window_secs || 30 }));
+      await loadClusterFW();
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      clusterBusy = false;
+    }
+  }
+
+  async function confirmClusterFW() {
+    clusterBusy = true;
+    try {
+      await api.confirmClusterFirewall();
+      await loadClusterFW();
+      toast.success(t('firewall.clusterConfirmed'));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      clusterBusy = false;
+    }
+  }
+
+  async function rollbackClusterFW() {
+    clusterBusy = true;
+    try {
+      const r = await api.rollbackClusterFirewall();
+      await loadClusterFW();
+      if (r.status !== 'no_pending') toast.info(t('firewall.clusterRolledBack'));
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      clusterBusy = false;
+    }
+  }
+
   // Countdown + expiry refresh. When the deadline passes with no
   // confirm, the backend has already auto-rolled-back; reload to show
   // the restored (previous) rules.
   $effect(() => {
-    if (pendingDeadline === 0) return;
+    if (pendingDeadline === 0 && clusterDeadline === 0) return;
     const id = setInterval(async () => {
       now = Date.now();
-      if (now >= pendingDeadline) {
+      if (clusterDeadline && now >= clusterDeadline) {
+        clusterDeadline = 0;
+        await loadClusterFW();
+      }
+      if (pendingDeadline && now >= pendingDeadline) {
         clearInterval(id);
         pendingDeadline = 0;
         toast.info(t('firewall.applyRolledBack'));
@@ -114,12 +248,22 @@
     return () => clearInterval(id);
   });
 
-  onMount(load);
+  onMount(() => {
+    load();
+    refreshClusterModule(true).then(() => {
+      if (clusterModule.enabled) loadClusterFW();
+    });
+  });
 
   const remaining = $derived(
     pendingDeadline ? Math.max(0, Math.ceil((pendingDeadline - now) / 1000)) : 0
   );
   const hasPending = $derived(pendingDeadline > 0);
+  const clusterPending = $derived(!!clusterFW?.pending || clusterDeadline > 0);
+  const clusterRemaining = $derived(
+    clusterDeadline ? Math.max(0, Math.ceil((clusterDeadline - now) / 1000)) : 0
+  );
+  const clusterPreviewLines = $derived(clusterApplyPreview ? clusterApplyPreview.split('\n') : []);
 
   // --- Forward rules ---
   function addForward() {
@@ -633,7 +777,7 @@
                     <Input
                       class="h-8 w-36 font-mono"
                       bind:value={f.guest_ip}
-                      placeholder="192.168.1.50"
+                      placeholder="192.168.50.50"
                     />
                     {#if vmsWithIp.length > 0}
                       <select
@@ -968,6 +1112,112 @@
       {/if}
     </div>
 
+    {#if clusterModule.enabled}
+      <section class="space-y-3 rounded-xl border border-border bg-card/60 p-4">
+        <div>
+          <h2 class="text-sm font-semibold text-foreground">{t('firewall.clusterTitle')}</h2>
+          <p class="text-xs text-muted-foreground">{t('firewall.clusterDesc')}</p>
+        </div>
+        <label class="block space-y-1 text-xs">
+          <span class="text-muted-foreground">{t('firewall.clusterProfile')}</span>
+          <textarea
+            class="h-56 w-full rounded-lg border border-border bg-background p-3 font-mono text-xs"
+            bind:value={clusterProfileText}
+            spellcheck="false"
+          ></textarea>
+        </label>
+        <div class="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" disabled={clusterBusy} onclick={saveClusterFW}>
+            {t('firewall.clusterSave')}
+          </Button>
+          <Button size="sm" variant="outline" disabled={clusterBusy} onclick={previewClusterFW}>
+            {t('firewall.clusterPreview')}
+          </Button>
+          <Button size="sm" disabled={clusterBusy} onclick={applyClusterFW}>
+            {t('firewall.clusterApply')}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={clusterBusy || !clusterPending}
+            onclick={confirmClusterFW}
+          >
+            {t('firewall.clusterConfirm')}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={clusterBusy || !clusterPending}
+            onclick={rollbackClusterFW}
+          >
+            {t('firewall.clusterRollback')}
+          </Button>
+        </div>
+        <p class="text-xs text-muted-foreground" role="status">
+          {clusterPending
+            ? clusterRemaining > 0
+              ? t('firewall.clusterPendingCountdown', { secs: clusterRemaining })
+              : t('firewall.alreadyPending')
+            : t('firewall.clusterNoPending')}
+        </p>
+        <p class="text-xs text-muted-foreground">{t('firewall.clusterHint')}</p>
+        <div class="flex flex-wrap gap-4 text-xs text-muted-foreground">
+          <span>
+            {t('firewall.clusterTablePresent')}:
+            {clusterFW?.table_present ? t('common.enabled') : t('common.disabled')}
+          </span>
+          {#if clusterFW?.pending}
+            <span class="text-warning">{t('firewall.alreadyPending')}</span>
+          {/if}
+        </div>
+        <div class="space-y-1">
+          <h3 class="text-xs font-medium text-foreground">{t('firewall.clusterSyncTitle')}</h3>
+          <p class="text-xs text-muted-foreground">{t('firewall.clusterSyncHint')}</p>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="text-muted-foreground">
+                <tr>
+                  <th class="py-1 pr-3 font-medium">{t('firewall.clusterSyncNode')}</th>
+                  <th class="py-1 pr-3 font-medium">{t('firewall.clusterSyncVersion')}</th>
+                  <th class="py-1 pr-3 font-medium">{t('firewall.clusterSyncHash')}</th>
+                  <th class="py-1 pr-3 font-medium">{t('firewall.clusterSyncAppliedAt')}</th>
+                  <th class="py-1 font-medium">{t('firewall.clusterSyncLastError')}</th>
+                </tr>
+              </thead>
+              <tbody class="font-mono">
+                <tr>
+                  <td class="py-1 pr-3">{t('firewall.clusterSyncThisNode')}</td>
+                  <td class="py-1 pr-3">{clusterFW?.sync?.version ?? '—'}</td>
+                  <td class="py-1 pr-3">{shortHash(clusterFW?.sync?.sha256)}</td>
+                  <td class="py-1 pr-3">
+                    {clusterFW?.sync?.applied_at
+                      ? new Date(clusterFW.sync.applied_at).toLocaleString()
+                      : '—'}
+                  </td>
+                  <td class="py-1 text-destructive">{clusterFW?.sync?.last_error || '—'}</td>
+                </tr>
+                {#each clusterFW?.peers || [] as peer (peer.peer)}
+                  <tr>
+                    <td class="py-1 pr-3">{peer.peer}</td>
+                    <td class="py-1 pr-3">{peer.version ?? '—'}</td>
+                    <td class="py-1 pr-3">{shortHash(peer.sha256)}</td>
+                    <td class="py-1 pr-3">
+                      {peer.applied_at ? new Date(peer.applied_at).toLocaleString() : '—'}
+                    </td>
+                    <td class="py-1 text-destructive">{peer.error || '—'}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {#if clusterPreviewOpen && clusterRendered}
+          <pre
+            class="max-h-72 overflow-auto rounded-lg bg-muted/40 p-3 text-xs font-mono leading-relaxed">{clusterRendered}</pre>
+        {/if}
+      </section>
+    {/if}
+
     <p class="text-xs text-muted-foreground flex items-center gap-1.5">
       <ShieldCheck class="w-3.5 h-3.5" />
       {t('firewall.footnote')}
@@ -991,3 +1241,31 @@
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>
+
+<ConfirmDialog
+  bind:open={clusterApplyOpen}
+  title={t('firewall.clusterApplyConfirmTitle')}
+  description={t('firewall.clusterApplyConfirmBody', { peers: (clusterFW?.peers || []).length })}
+  confirmLabel={t('firewall.clusterApply')}
+  variant="destructive"
+  loading={clusterBusy}
+  onConfirm={doApplyClusterFW}
+>
+  {#if clusterApplyPreviewLoading}
+    <p class="text-xs text-muted-foreground" role="status">
+      {t('firewall.clusterApplyPreviewLoading')}
+    </p>
+  {:else if clusterApplyPreviewError}
+    <p class="text-xs text-destructive">
+      {t('firewall.clusterApplyPreviewFailed', { error: clusterApplyPreviewError })}
+    </p>
+  {:else if clusterPreviewLines.length}
+    <p class="text-xs font-medium">
+      {t('firewall.clusterApplyPreviewTitle', { lines: clusterPreviewLines.length })}
+    </p>
+    <pre
+      class="max-h-48 overflow-auto rounded-lg bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">{clusterPreviewLines
+        .slice(0, 14)
+        .join('\n')}{clusterPreviewLines.length > 14 ? '\n…' : ''}</pre>
+  {/if}
+</ConfirmDialog>

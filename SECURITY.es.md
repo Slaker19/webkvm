@@ -44,6 +44,12 @@ WebKVM incorpora controles de seguridad defensiva en múltiples capas:
 
 ---
 
+### 7. AppArmor y snapshots externos
+
+En Debian/Ubuntu, el perfil AppArmor generado por libvirt concede a QEMU solo lectura sobre el fichero base de un snapshot externo y añade una regla explícita `deny ... w`. Borrar ese snapshot con la VM apagada, o arrancarla tras revertir, falla con `EACCES` y sin registro de auditoría (libvirt #622, Debian #1061725).
+
+Para que los snapshots externos sigan siendo utilizables, WebKVM añade `<seclabel type='none' model='apparmor'/>` a los dominios que define. Solo se desactiva la etiqueta AppArmor; QEMU sigue ejecutándose como el usuario sin privilegios `libvirt-qemu` con DAC, seccomp y cgroups. En hosts con SELinux no se añade. Define `WEBKVM_DISABLE_APPARMOR=0` para mantener AppArmor; en ese caso el borrado/revert de snapshots externos con la VM apagada puede fallar hasta que libvirt publique la corrección. Los dominios existentes se migran automáticamente en el siguiente arranque, revert o borrado de snapshot, así que una actualización desde la UI no requiere editar el XML a mano. Los dominios en ejecución conservan su perfil hasta el siguiente arranque.
+
 ## Reporte de Vulnerabilidades
 
 Si encuentras una vulnerabilidad de seguridad, por favor **no la publiques en issues públicos de GitHub**.

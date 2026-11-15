@@ -19,6 +19,7 @@
    * changes it from the outside (which re-runs the parse).
    */
   import cronstrue from 'cronstrue';
+  import { t, getLocale } from '$lib/i18n.svelte.js';
 
   let { expression = $bindable('0 2 * * *') } = $props();
 
@@ -27,9 +28,9 @@
   // expression that doesn't match one of them lands in "Custom" and
   // reveals the dropdowns.
   const PRESETS = [
-    { label: 'Hourly', expression: '0 * * * *', match: '0 * * * *' },
-    { label: 'Daily 2 AM', expression: '0 2 * * *', match: '0 2 * * *' },
-    { label: 'Weekly Sun 3 AM', expression: '0 3 * * 0', match: '0 3 * * 0' },
+    { label: 'cron.hourly', expression: '0 * * * *', match: '0 * * * *' },
+    { label: 'cron.daily2am', expression: '0 2 * * *', match: '0 2 * * *' },
+    { label: 'cron.weeklySun3am', expression: '0 3 * * 0', match: '0 3 * * 0' },
   ];
 
   // --- Mode ------------------------------------------------------------
@@ -84,15 +85,15 @@
   ];
   const daysOfMonth = ['*', '1', '15'];
   const months = ['*', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
+  const weekdayNames = (() => {
+    const locale = getLocale() === 'ca' ? 'ca-ES' : getLocale() === 'es' ? 'es-ES' : 'en-US';
+    const fmt = new Intl.DateTimeFormat(locale, { weekday: 'long' });
+    // 2024-01-07 is a Sunday.
+    return Array.from({ length: 7 }, (_, i) => fmt.format(new Date(2024, 0, 7 + i)));
+  })();
   const daysOfWeek = [
-    { value: '*', label: 'Every day' },
-    { value: '0', label: 'Sunday' },
-    { value: '1', label: 'Monday' },
-    { value: '2', label: 'Tuesday' },
-    { value: '3', label: 'Wednesday' },
-    { value: '4', label: 'Thursday' },
-    { value: '5', label: 'Friday' },
-    { value: '6', label: 'Saturday' },
+    { value: '*', label: t('cron.everyDay') },
+    ...weekdayNames.map((label, i) => ({ value: String(i), label })),
   ];
 
   // Re-parse when the expression changes from outside (parent
@@ -152,7 +153,7 @@
     try {
       return cronstrue.toString(expression);
     } catch {
-      return `${expression} (invalid)`;
+      return `${expression} (${t('cron.invalid')})`;
     }
   });
 </script>
@@ -185,7 +186,9 @@
   {#if mode === 'custom'}
     <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2 min-w-0">
       <div>
-        <label class="text-xs text-muted-foreground block mb-1" for="cron-min">Minute</label>
+        <label class="text-xs text-muted-foreground block mb-1" for="cron-min"
+          >{t('cron.minute')}</label
+        >
         <select
           id="cron-min"
           class="w-full h-8 rounded-lg border border-border bg-background px-2 text-sm"
@@ -193,12 +196,14 @@
           onchange={updateExpression}
         >
           {#each minutes as m (m)}
-            <option value={m}>{m === '*' ? 'Every' : m}</option>
+            <option value={m}>{m === '*' ? t('cron.every') : m}</option>
           {/each}
         </select>
       </div>
       <div>
-        <label class="text-xs text-muted-foreground block mb-1" for="cron-hr">Hour</label>
+        <label class="text-xs text-muted-foreground block mb-1" for="cron-hr"
+          >{t('cron.hour')}</label
+        >
         <select
           id="cron-hr"
           class="w-full h-8 rounded-lg border border-border bg-background px-2 text-sm"
@@ -206,12 +211,14 @@
           onchange={updateExpression}
         >
           {#each hours as h (h)}
-            <option value={h}>{h === '*' ? 'Every' : h.padStart(2, '0')}</option>
+            <option value={h}>{h === '*' ? t('cron.every') : h.padStart(2, '0')}</option>
           {/each}
         </select>
       </div>
       <div>
-        <label class="text-xs text-muted-foreground block mb-1" for="cron-dom">Day</label>
+        <label class="text-xs text-muted-foreground block mb-1" for="cron-dom"
+          >{t('cron.day')}</label
+        >
         <select
           id="cron-dom"
           class="w-full h-8 rounded-lg border border-border bg-background px-2 text-sm"
@@ -219,12 +226,14 @@
           onchange={updateExpression}
         >
           {#each daysOfMonth as d (d)}
-            <option value={d}>{d === '*' ? 'Every' : d}</option>
+            <option value={d}>{d === '*' ? t('cron.every') : d}</option>
           {/each}
         </select>
       </div>
       <div>
-        <label class="text-xs text-muted-foreground block mb-1" for="cron-mon">Month</label>
+        <label class="text-xs text-muted-foreground block mb-1" for="cron-mon"
+          >{t('cron.month')}</label
+        >
         <select
           id="cron-mon"
           class="w-full h-8 rounded-lg border border-border bg-background px-2 text-sm"
@@ -232,12 +241,14 @@
           onchange={updateExpression}
         >
           {#each months as m (m)}
-            <option value={m}>{m === '*' ? 'Every' : m}</option>
+            <option value={m}>{m === '*' ? t('cron.every') : m}</option>
           {/each}
         </select>
       </div>
       <div>
-        <label class="text-xs text-muted-foreground block mb-1" for="cron-dow">Weekday</label>
+        <label class="text-xs text-muted-foreground block mb-1" for="cron-dow"
+          >{t('cron.weekday')}</label
+        >
         <select
           id="cron-dow"
           class="w-full h-8 rounded-lg border border-border bg-background px-2 text-sm"

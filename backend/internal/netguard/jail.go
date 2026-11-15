@@ -65,6 +65,7 @@ type Jail struct {
 
 	dataDir    string
 	configPath string
+	bansPath   string
 	cfg        JailConfig
 
 	// Compiled in-memory allowlist for quick checking
@@ -76,16 +77,27 @@ type Jail struct {
 
 	alertFn AlertFunc
 	logger  *slog.Logger
+	// applyBan installs the kernel-space ban. It is a field so tests can
+	// assert that X-Forwarded-For addresses never reach nftables.
+	applyBan func(ip string, duration time.Duration)
 }
 
-// DefaultWhitelist provides sensible initial exemptions (loopback, private LAN, Tailscale).
+// DefaultWhitelist only exempts loopback. RFC1918 ranges used to be exempt
+// too, but they cover incusbr0 (10.68.x), Docker (172.17/172.18) and the LAN,
+// so a compromised container could brute-force the login forever (SEG-1).
 var DefaultWhitelist = []WhitelistEntry{
 	{CIDR: "127.0.0.0/8", Description: "IPv4 Loopback", System: true},
 	{CIDR: "::1/128", Description: "IPv6 Loopback", System: true},
-	{CIDR: "10.0.0.0/8", Description: "Private Class A (LAN/VPN)", System: true},
-	{CIDR: "172.16.0.0/12", Description: "Private Class B (LAN/Docker)", System: true},
-	{CIDR: "192.168.0.0/16", Description: "Private Class C (Local Subnet)", System: true},
-	{CIDR: "100.64.0.0/10", Description: "Carrier-grade NAT & Tailscale", System: true},
+}
+
+// legacySystemWhitelist lists the RFC1918 defaults shipped before SEG-1 was
+// fixed. They are dropped on load when they are still System entries; an
+// operator who added the same range by hand (System=false) keeps it.
+var legacySystemWhitelist = map[string]bool{
+	"10.0.0.0/8":     true,
+	"172.16.0.0/12":  true,
+	"192.168.0.0/16": true,
+	"100.64.0.0/10":  true,
 }
 
 // DefaultConfig returns the out-of-the-box configuration.
@@ -131,11 +143,21 @@ func New(dataDir string, logger *slog.Logger) (*Jail, error) {
 		cfg:      DefaultConfig(),
 		logger:   logger,
 	}
+	j.applyBan = j.applyNftBan
 
 	if dataDir != "" {
 		j.configPath = filepath.Join(dataDir, "jail.json")
+		j.bansPath = filepath.Join(dataDir, "jail-bans.json")
 		if err := j.loadConfig(); err != nil {
 			logger.Warn("jail_config_load_failed_using_defaults", "err", err)
+		}
+		// loadBans filters against the allowlist, so compile it first.
+		j.compileAllowlist()
+		// Bans live on the shared DRBD volume so a failover does not
+		// hand an attacker a fresh set of attempts. Kernel rules are
+		// re-applied separately by ReapplyBans (main calls it at boot).
+		if err := j.loadBans(); err != nil {
+			logger.Warn("jail_bans_load_failed", "err", err)
 		}
 	}
 
@@ -185,6 +207,16 @@ func (j *Jail) loadConfig() error {
 	if len(cfg.Whitelist) == 0 {
 		cfg.Whitelist = append([]WhitelistEntry{}, DefaultWhitelist...)
 	}
+	// SEG-1 migration: remove the old RFC1918 system defaults. Entries the
+	// operator added by hand are System=false and are preserved.
+	kept := cfg.Whitelist[:0]
+	for _, entry := range cfg.Whitelist {
+		if entry.System && legacySystemWhitelist[entry.CIDR] {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	cfg.Whitelist = kept
 	if cfg.WebKVMJail.ID == "" {
 		cfg.WebKVMJail = DefaultConfig().WebKVMJail
 	}
@@ -209,6 +241,91 @@ func (j *Jail) saveConfig() error {
 		return err
 	}
 	return os.Rename(tmp, j.configPath)
+}
+
+// jailBansFile is the on-disk shape of the ban list. Versioned so a future
+// change can migrate instead of guessing.
+type jailBansFile struct {
+	Version int         `json:"version"`
+	Bans    []JailEntry `json:"bans"`
+}
+
+func (j *Jail) loadBans() error {
+	if j.bansPath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(j.bansPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var f jailBansFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, e := range f.Bans {
+		// Never restore a ban that the kernel could not enforce (expired),
+		// was later whitelisted, or names a non-IP.
+		if !now.Before(e.ExpiresAt) || e.IP == "" || net.ParseIP(e.IP) == nil {
+			continue
+		}
+		if j.isAllowed(e.IP) {
+			continue
+		}
+		j.banned[e.IP] = e
+	}
+	return nil
+}
+
+// saveBansLocked writes the active bans atomically. Must hold j.mu: it
+// prunes the map in place. Bans are rare (one write per ban), so a small
+// synchronous write is cheaper than a background writer.
+func (j *Jail) saveBansLocked() error {
+	if j.bansPath == "" {
+		return nil
+	}
+	now := time.Now()
+	bans := make([]JailEntry, 0, len(j.banned))
+	for ip, e := range j.banned {
+		if !now.Before(e.ExpiresAt) || j.isAllowed(ip) {
+			delete(j.banned, ip)
+			continue
+		}
+		bans = append(bans, e)
+	}
+	data, err := json.MarshalIndent(jailBansFile{Version: 1, Bans: bans}, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := j.bansPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, j.bansPath)
+}
+
+// ReapplyBans installs the restored bans into nftables. Call it once at
+// startup, after the process is allowed to touch the host firewall: the
+// nft set is node-local, so a new active node must rebuild it even though
+// the ban list itself came from the shared volume.
+func (j *Jail) ReapplyBans() int {
+	j.mu.RLock()
+	active := make([]JailEntry, 0, len(j.banned))
+	now := time.Now()
+	for _, e := range j.banned {
+		if now.Before(e.ExpiresAt) {
+			active = append(active, e)
+		}
+	}
+	j.mu.RUnlock()
+
+	for _, e := range active {
+		j.applyBan(e.IP, time.Until(e.ExpiresAt))
+	}
+	return len(active)
 }
 
 func (j *Jail) compileAllowlist() {
@@ -278,17 +395,29 @@ func (j *Jail) findJail(id string) *JailDefinition {
 
 // RecordFailure notes an authentication failure from WebKVM web console/API.
 func (j *Jail) RecordFailure(ipStr, reason string) bool {
-	return j.RecordFailureWithJail("webkvm", ipStr, reason)
+	return j.recordFailure("webkvm", ipStr, false, reason)
+}
+
+// RecordFailureClient records a failure for the resolved client IP.
+// fromHeader=true means the address came from X-Forwarded-For: the
+// in-memory ban still applies, but nftables is skipped because the packet
+// source is the proxy, not the attacker (SEG-2).
+func (j *Jail) RecordFailureClient(ipStr string, fromHeader bool, reason string) bool {
+	return j.recordFailure("webkvm", ipStr, fromHeader, reason)
 }
 
 // RecordSSHFailure notes an authentication failure from SSH.
 func (j *Jail) RecordSSHFailure(ipStr, reason string) bool {
-	return j.RecordFailureWithJail("ssh", ipStr, reason)
+	return j.recordFailure("ssh", ipStr, false, reason)
 }
 
 // RecordFailureWithJail logs a failed authentication attempt against a specific jail.
 // If the failure count crosses maxAttempts, the IP is jailed in nftables.
 func (j *Jail) RecordFailureWithJail(jailID, ipStr, reason string) bool {
+	return j.recordFailure(jailID, ipStr, false, reason)
+}
+
+func (j *Jail) recordFailure(jailID, ipStr string, fromHeader bool, reason string) bool {
 	cleanIP := strings.TrimSpace(ipStr)
 	if host, _, err := net.SplitHostPort(cleanIP); err == nil {
 		cleanIP = host
@@ -357,8 +486,13 @@ func (j *Jail) RecordFailureWithJail(jailID, ipStr, reason string) bool {
 		}
 		j.banned[cleanIP] = entry
 		delete(j.attempts, key)
+		if err := j.saveBansLocked(); err != nil {
+			j.logger.Warn("jail_bans_persist_failed", "err", err)
+		}
 
-		j.applyNftBan(cleanIP, banDuration)
+		if !fromHeader {
+			j.applyBan(cleanIP, banDuration)
+		}
 		j.logger.Warn("ip_banned_bruteforce", "ip", cleanIP, "jail", jailID, "attempts", len(valid), "duration", banDuration)
 
 		if j.alertFn != nil {
@@ -410,8 +544,11 @@ func (j *Jail) ManualBan(ipStr, reason, jailID string, duration time.Duration) e
 		ExpiresAt: now.Add(duration),
 	}
 	j.banned[cleanIP] = entry
+	if err := j.saveBansLocked(); err != nil {
+		j.logger.Warn("jail_bans_persist_failed", "err", err)
+	}
 
-	j.applyNftBan(cleanIP, duration)
+	j.applyBan(cleanIP, duration)
 	j.logger.Warn("ip_banned_manually", "ip", cleanIP, "jail", jailID, "duration", duration, "reason", reason)
 
 	if j.alertFn != nil {
@@ -455,6 +592,9 @@ func (j *Jail) Unban(ipStr string) error {
 		if strings.HasSuffix(k, ":"+cleanIP) {
 			delete(j.attempts, k)
 		}
+	}
+	if err := j.saveBansLocked(); err != nil {
+		j.logger.Warn("jail_bans_persist_failed", "err", err)
 	}
 	j.mu.Unlock()
 
@@ -532,6 +672,11 @@ func (j *Jail) AddWhitelist(cidrStr, desc string) error {
 	for _, ip := range toUnban {
 		delete(j.banned, ip)
 		_ = j.removeNftBan(ip)
+	}
+	if len(toUnban) > 0 {
+		if err := j.saveBansLocked(); err != nil {
+			j.logger.Warn("jail_bans_persist_failed", "err", err)
+		}
 	}
 
 	return j.saveConfig()
@@ -678,9 +823,18 @@ func (j *Jail) Janitor(ctx context.Context) {
 		case <-ticker.C:
 			j.mu.Lock()
 			now := time.Now()
+			removed := false
 			for ip, entry := range j.banned {
 				if now.After(entry.ExpiresAt) {
 					delete(j.banned, ip)
+					removed = true
+				}
+			}
+			// Persist the prune so a failover does not resurrect an
+			// already expired ban (loadBans would drop it anyway).
+			if removed {
+				if err := j.saveBansLocked(); err != nil {
+					j.logger.Warn("jail_bans_persist_failed", "err", err)
 				}
 			}
 			j.mu.Unlock()
@@ -697,6 +851,12 @@ func (j *Jail) applyNftBan(ip string, duration time.Duration) {
 	if secs <= 0 {
 		secs = 900
 	}
+	// The table and set may not exist yet (the firewall can be applied after
+	// the first failed login). Create them best-effort; both commands are
+	// no-ops/ignored when they already exist.
+	_ = exec.Command("nft", "add", "table", "ip", "webkvm").Run()
+	_ = exec.Command("nft", "add", "set", "ip", "webkvm", "jail_blacklist",
+		"{ type ipv4_addr; flags timeout; }").Run()
 	// Best-effort insertion into nftables set if nft is present
 	_ = exec.Command("nft", "add", "element", "ip", "webkvm", "jail_blacklist", fmt.Sprintf("{ %s timeout %ds }", parsed.String(), secs)).Run()
 }

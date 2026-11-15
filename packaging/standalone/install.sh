@@ -855,6 +855,21 @@ if [[ -n "${BACKUP_SRC}" && -f "${BACKUP_SRC}" ]]; then
   log "backup script installed -> ${PREFIX}/bin/webkvm-backup.sh"
 fi
 
+# Deploy the optional clustering helper. It installs/checks the HA stack on
+# demand; the base install never enables or configures clustering.
+HA_HELPER=""
+if [[ -f "${REPO_DIR}/scripts/install-ha-stack.sh" ]]; then
+  HA_HELPER="${REPO_DIR}/scripts/install-ha-stack.sh"
+elif [[ -f "${SCRIPT_DIR}/scripts/install-ha-stack.sh" ]]; then
+  HA_HELPER="${SCRIPT_DIR}/scripts/install-ha-stack.sh"
+elif [[ -n "${RELEASE_DIR}" && -f "${RELEASE_DIR}/scripts/install-ha-stack.sh" ]]; then
+  HA_HELPER="${RELEASE_DIR}/scripts/install-ha-stack.sh"
+fi
+if [[ -n "${HA_HELPER}" && -f "${HA_HELPER}" ]]; then
+  install -D -m 0755 "${HA_HELPER}" "${PREFIX}/bin/webkvm-ha-stack"
+  log "HA helper installed -> ${PREFIX}/bin/webkvm-ha-stack (optional, not enabled)"
+fi
+
 # Deploy the self-updater behind the UI's "Update" button (/#/status): the
 # backend shells out to it instead of duplicating the download/verify/install
 # logic. In a checkout the script ships in-tree; a `curl | bash` install only
@@ -952,8 +967,10 @@ SyslogIdentifier=webkvm
 # Hardening (see scripts/webkvm.service for the rationale). Conservative
 # on purpose: NoNewPrivileges/ProtectKernelModules stay off (PAM /bin/login
 # for the host terminal, modprobe md_mod for mdraid) and UMask is not set
-# (storage-pool dirs must stay traversable by the qemu user).
-ProtectSystem=full
+# (storage-pool dirs must stay traversable by the qemu user). ProtectSystem
+# is off because the optional Cluster/HA module runs apt/dnf/pacman from
+# this service and must write /usr.
+ProtectSystem=off
 PrivateTmp=true
 ProtectHostname=true
 ProtectClock=true

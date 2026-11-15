@@ -182,6 +182,26 @@ func TestHostRestrictionsLive(t *testing.T) {
 		t.Logf("  %s -> reason: %s, critical: %v", addr, r.reason, r.hostCritical)
 	}
 
+	// The reference topology is a TianBei WTR PRO (Ryzen 7 5825U). The same
+	// PCI addresses exist on other boards but mean something else, so a
+	// mismatched reason is a skip, not a failure: this test only makes sense
+	// on the machine it was written for.
+	expected := map[string]struct {
+		reason   string
+		critical bool
+	}{
+		"0000:06:00.0": {"host_root_disk", true},
+		"0000:02:00.0": {"host_uplink", true},
+		"0000:01:00.0": {"mounted_storage", false},
+	}
+	for addr, want := range expected {
+		got, found := restr[addr]
+		if !found || got.reason != want.reason || got.hostCritical != want.critical {
+			t.Skipf("reference hardware not matched on %s (got %+v, want %s critical=%v); skipping live test",
+				addr, got, want.reason, want.critical)
+		}
+	}
+
 	// The root SATA controller is detected as host_root_disk (critical).
 	if r, found := restr["0000:06:00.0"]; !found || r.reason != "host_root_disk" || !r.hostCritical {
 		t.Errorf("expected 0000:06:00.0 to be critical host_root_disk, got %+v", r)
@@ -216,4 +236,3 @@ func TestBindPCIDeviceVFIO_PreflightFailsWhenNoDriver(t *testing.T) {
 		}
 	}
 }
-

@@ -150,6 +150,22 @@ func TestHealth_RegularFileAsDataDir(t *testing.T) {
 	}
 }
 
+func TestJSONErrCodeIncludesStableCodeAndMessage(t *testing.T) {
+	rr := httptest.NewRecorder()
+	jsonErrCode(rr, http.StatusUnauthorized, "invalid_password", "contraseña incorrecta")
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["code"] != "invalid_password" || body["error"] != "contraseña incorrecta" {
+		t.Fatalf("error response = %#v, want stable code and compatible message", body)
+	}
+}
+
 // TestHealth_NoAuthRequired confirms the handler does not consult
 // r.Header for Authorization. The full router-level guarantee is
 // tested by the integration suite (and is in the must-change

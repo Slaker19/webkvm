@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	incusclient "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
 
 	"webkvm/internal/cloudinit"
@@ -23,8 +24,10 @@ func (b *IncusBackend) ListDomains() ([]models.VM, error) {
 		return nil, err
 	}
 	out := make([]models.VM, 0, len(instances))
+	online := b.memberOnlineMap()
 	for i := range instances {
 		vm := instanceToVM(&instances[i])
+		applyMemberOnline(&vm, online)
 		// N+1: surface the container's LAN IP (Incus GetInstance does not include it).
 		if st, _, err := b.client.GetInstanceState(instances[i].Name); err == nil {
 			vm.IP = instanceIP(st)
@@ -46,6 +49,7 @@ func (b *IncusBackend) GetDomain(id string) (models.VM, error) {
 		return models.VM{}, err
 	}
 	vm := instanceToVM(inst)
+	applyMemberOnline(&vm, b.memberOnlineMap())
 	// Surface the container's IP from the live instance state (eth0 IPv4).
 	if st, _, err := b.client.GetInstanceState(id); err == nil {
 		vm.IP = instanceIP(st)
@@ -57,6 +61,16 @@ func (b *IncusBackend) GetDomain(id string) (models.VM, error) {
 		}
 	}
 	return vm, nil
+}
+
+// applyMemberOnline sets vm.MemberOnline from the cluster member map.
+func applyMemberOnline(vm *models.VM, online map[string]bool) {
+	if online == nil || vm.Node == "" {
+		return
+	}
+	if v, ok := online[vm.Node]; ok {
+		vm.MemberOnline = &v
+	}
 }
 
 func (b *IncusBackend) DomainExists(name string) (bool, error) {
@@ -79,7 +93,68 @@ func (b *IncusBackend) DeleteDomain(id string) error {
 }
 
 func (b *IncusBackend) CloneDomain(id string, req models.CloneVMRequest) (models.VM, error) {
-	return models.VM{}, compute.ErrNotImplemented
+	if b == nil || b.client == nil {
+		return models.VM{}, compute.ErrNotImplemented
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" || strings.ContainsAny(name, `/\\`) || strings.Contains(name, "..") {
+		return models.VM{}, fmt.Errorf("invalid instance name %q", req.Name)
+	}
+	if req.Linked {
+		return models.VM{}, fmt.Errorf("linked clones are not supported for Incus instances")
+	}
+
+	source, _, err := b.client.GetInstance(id)
+	if err != nil {
+		return models.VM{}, mapLXErr(err)
+	}
+	if !strings.EqualFold(source.Status, "Stopped") {
+		return models.VM{}, compute.ErrDomainMustBeStoppedToClone
+	}
+
+	// CopyInstance uses the writable device map as the destination spec.
+	devices := make(map[string]map[string]string, len(source.Devices)+2)
+	for key, device := range source.Devices {
+		copy := make(map[string]string, len(device))
+		for k, v := range device {
+			copy[k] = v
+		}
+		devices[key] = copy
+	}
+	if req.Pool != "" {
+		rootName := "root"
+		root := map[string]string{"type": "disk", "path": "/"}
+		for key, device := range source.ExpandedDevices {
+			if device["type"] == "disk" && device["path"] == "/" {
+				rootName = key
+				for k, v := range device {
+					root[k] = v
+				}
+				break
+			}
+		}
+		root["pool"] = req.Pool
+		devices[rootName] = root
+	}
+	if req.Network != "" {
+		bridge, err := b.bridgeForNetwork(req.Network)
+		if err != nil {
+			return models.VM{}, err
+		}
+		devices["eth0"] = incusBridgedNIC("eth0", bridge, nil)
+	}
+	source.Devices = devices
+
+	op, err := b.client.CopyInstance(b.client, *source, &incusclient.InstanceCopyArgs{
+		Name: name, InstanceOnly: true,
+	})
+	if err != nil {
+		return models.VM{}, err
+	}
+	if err := op.Wait(); err != nil {
+		return models.VM{}, err
+	}
+	return b.GetDomain(name)
 }
 
 func (b *IncusBackend) StartDomain(id string) error { return b.setState(id, "start", -1, false) }
@@ -142,6 +217,14 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 	}
 	if b.client == nil {
 		return models.VM{}, compute.ErrNotImplemented
+	}
+	// Validate the target member first: an unknown or offline member must
+	// fail fast, before any image or network work.
+	target := strings.TrimSpace(req.TargetMember)
+	if target != "" {
+		if _, err := b.onlineMember(target); err != nil {
+			return models.VM{}, err
+		}
 	}
 	fingerprint := ""
 	var server, alias string
@@ -214,12 +297,7 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 			}
 		}
 	}
-	devices["eth0"] = map[string]string{
-		"type":    "nic",
-		"nictype": "bridged",
-		"parent":  bridge,
-		"name":    "eth0",
-	}
+	devices["eth0"] = incusBridgedNIC("eth0", bridge, req.VLANTag)
 	if req.GPU != nil && *req.GPU {
 		devices["gpu0"] = map[string]string{"type": "gpu"}
 	}
@@ -242,7 +320,11 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 			config[k] = v
 		}
 	}
-	config["user.network-config"] = lxdNetworkConfig(devices)
+	var ciNetworks []models.CloudInitNetworkConfig
+	if req.CloudInit != nil {
+		ciNetworks = req.CloudInit.Networks
+	}
+	config["user.network-config"] = lxdNetworkConfig(devices, ciNetworks)
 	source := api.InstanceSource{Type: "image"}
 	if fingerprint != "" {
 		source.Fingerprint = fingerprint
@@ -251,9 +333,13 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 		source.Server = server
 		source.Alias = alias
 	}
+	instanceType := api.InstanceTypeContainer
+	if strings.EqualFold(req.Type, "vm") {
+		instanceType = api.InstanceTypeVM
+	}
 	post := api.InstancesPost{
 		Name:   req.Name,
-		Type:   api.InstanceTypeContainer,
+		Type:   instanceType,
 		Source: source,
 		InstancePut: api.InstancePut{
 			Config:   config,
@@ -261,7 +347,11 @@ func (b *IncusBackend) CreateDomain(req models.CreateVMRequest) (models.VM, erro
 			Profiles: profiles,
 		},
 	}
-	op, err := b.client.CreateInstance(post)
+	creator := b.client
+	if target != "" {
+		creator = b.client.UseTarget(target)
+	}
+	op, err := creator.CreateInstance(post)
 	if err != nil {
 		return models.VM{}, err
 	}

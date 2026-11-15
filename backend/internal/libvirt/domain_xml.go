@@ -116,7 +116,6 @@ func resolveOVMFFiles() (code, codeSecboot, varsTpl string) {
 	return candidates[0].code, candidates[0].codeSecboot, candidates[0].varsTpl
 }
 
-
 // tpmBackendVersionRE reads the version back off an existing
 // <tpm><backend type='emulator' version='...'/></tpm> — used both when
 // reporting a domain's current TPM version and, in UpdateDomain, when only
@@ -261,7 +260,6 @@ func buildDomainXML(name, uuid, title, memoryXML string, vcpus int, iothreadsXML
 	return fmt.Sprintf(domainXMLTemplate, xmlEscape(name), uuid, title, memoryXML, vcpus, iothreadsXML, cputuneXML, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, xmlEscape(diskPath), xmlEscape(targetDev), xmlEscape(diskBus), isoXML, virtioISOXML, interfaceXML, serialXML, graphicsXML, videoXML, devicesExtra)
 }
 
-
 func buildCPUXML(cpuMode, cpuModel string, sockets, cores, threads *int, flags []string) string {
 	if cpuMode == "" {
 		cpuMode = "host-passthrough"
@@ -317,7 +315,6 @@ func updateOSTag(title, tag, value string) string {
 	return title + " [" + tag + "=" + value + "]"
 }
 
-
 // linuxBridgeCheck reports whether a network name is a traditional Linux
 // bridge on the host. Extracted so tests can exercise the bridge branch of
 // interfaceXML without requiring a real bridge device.
@@ -336,10 +333,20 @@ func interfaceXML(net, model string) string {
 	return interfaceXMLWithVLAN(net, model, nil)
 }
 
+// interfaceXMLForBridge renders a bridge NIC whose existence was already
+// validated on the host that will run the domain (a remote connector).
+func interfaceXMLForBridge(net, model string, vlanTag *int) string {
+	return interfaceXMLBlock(net, model, vlanTag)
+}
+
 func interfaceXMLWithVLAN(net, model string, vlanTag *int) string {
 	if net == "" || !linuxBridgeCheck(net) {
 		net = mainBridgeCheck()
 	}
+	return interfaceXMLBlock(net, model, vlanTag)
+}
+
+func interfaceXMLBlock(net, model string, vlanTag *int) string {
 	var vlanBlock string
 	if vlanTag != nil && *vlanTag > 0 && *vlanTag <= 4094 {
 		vlanBlock = fmt.Sprintf("\n      <vlan><tag id='%d'/></vlan>", *vlanTag)
@@ -350,7 +357,6 @@ func interfaceXMLWithVLAN(net, model string, vlanTag *int) string {
     </interface>`, xmlEscape(net), vlanBlock, xmlEscape(model))
 }
 
-
 func attrValue(xml, attr string) string {
 	re := regexp.MustCompile(attr + `='([^']+)'`)
 	m := re.FindStringSubmatch(xml)
@@ -359,7 +365,6 @@ func attrValue(xml, attr string) string {
 	}
 	return m[1]
 }
-
 
 func detectOSIcon(name, xmlDesc string) string {
 	nameLower := strings.ToLower(name)
@@ -449,7 +454,6 @@ func extractTagValue(xml, tag string) string {
 	}
 	return m[1]
 }
-
 
 func (c *Connector) parseDisks(xmlDesc string) []models.DiskInfo {
 	return c.parseDisksFiltered(xmlDesc, false)
@@ -629,5 +633,3 @@ func parseNetworks(xmlDesc string) []models.NetIface {
 	}
 	return ifaces
 }
-
-

@@ -85,6 +85,28 @@ curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/instal
 ```
 *(Consulta [docs/DOCKER.es.md](docs/DOCKER.es.md) para volúmenes y configuración detallada).*
 
+### Arch Linux (AUR)
+
+```bash
+yay -S webkvm-bin
+```
+
+El paquete AUR reempaqueta el archivo de release oficial y deja las actualizaciones en manos de pacman. Instala solo WebKVM: el clustering (Incus, LINSTOR, Pacemaker, Corosync, SBD) es modular y no viene incluido. Consulta el [runbook de HA](docs/runbooks/HA-CLUSTER.es.md) y `scripts/install-ha-stack.sh`.
+
+### Soporte de distribuciones
+
+WebKVM funciona en Debian/Ubuntu, la familia Fedora/RHEL y Arch Linux.
+
+**La HA/clustering solo está validada en Ubuntu LTS.** Arch y Fedora tienen soporte comunitario y son experimentales para clustering: paquetes, versiones y actualizaciones rolling pueden romper el stack. Los clústeres deben ser homogéneos (una distribución, una versión de Incus); mezclar distribuciones no está soportado. Usa Arch/Fedora como nodos gestionados salvo que aceptes el riesgo.
+
+### Artefactos de la release oficial
+
+Las releases oficiales (con tag `v0.1.12`) publican binarios precompilados independientes (`webkvm-0.1.12-linux_amd64`, `webkvm-cli-0.1.12-linux_amd64`), formatos de paquete nativos (`.deb`, `.rpm`), el tarball de fuentes completo y sumas de verificación `SHA256SUMS`.
+
+### Actualizar WebKVM
+
+Las instalaciones nativas systemd se actualizan desde **Estado → Actualizar** (`/#/status`). El actualizador verifica `SHA256SUMS`, conserva `/usr/local/bin/webkvm.previous`, hace health check y revierte automáticamente. Las instalaciones Docker deben descargar la imagen nueva. En un clúster HA el botón solo actualiza el nodo que sirve el panel; actualiza todos los nodos a través de Pacemaker. Ver [Actualización y rollback](docs/runbooks/UPGRADE-ROLLBACK.es.md) y la [checklist de release](docs/RELEASING.es.md).
+
 ---
 
 ## Características Principales
@@ -116,6 +138,7 @@ curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/instal
 - **Tickets de WebSocket Efímeros**: Los WebSockets se autentican con tickets de un solo uso en RAM (TTL de 30s). Cero JWTs en URLs o historiales.
 - **Dialer Seguro Anti-SSRF**: Las descargas bloquean rangos privados, loopback y CGNAT, re-validando cada salto HTTP.
 - **Firewall con Auto-Rollback**: Las modificaciones del firewall incluyen un temporizador de confirmación de 30s para evitar bloqueos accidentales.
+- **Compatibilidad de snapshots con AppArmor**: en hosts con AppArmor, los dominios de WebKVM desactivan la etiqueta AppArmor por defecto (QEMU sigue como el usuario sin privilegios `libvirt-qemu` con DAC y seccomp) para evitar la regla de solo lectura de libvirt sobre el disco base del snapshot. Las VMs existentes se migran de forma diferida (lazy) en el siguiente arranque, reversión o borrado de snapshot sin requerir edición manual de XML. Define `WEBKVM_DISABLE_APPARMOR=0` para mantener AppArmor; SELinux no se ve afectado. Ver [SECURITY.md](SECURITY.md).
 
 ### 7. Software RAID Nativo por Kernel y Pools de Almacenamiento
 - **Descubrimiento Instantáneo**: Lectura directa de sysfs del kernel (`/sys/block/md*/md`) sin sobrecarga de subprocesos.
@@ -134,6 +157,7 @@ curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/instal
 ### 10. Gestor de Actualizaciones del Sistema Operativo
 - **Soporte Multi-Distribución**: Actualizaciones integradas para APT (Debian/Ubuntu), DNF (RHEL/Fedora) y Pacman (Arch).
 - **Visibilidad de Seguridad**: Distintivos de avisos de seguridad, filtros por categoría (Seguridad, Normales, Retenidos) y detección de reinicio pendiente.
+- **Actualizador integrado de WebKVM**: Los administradores pueden ejecutar la actualización en un clic directamente desde la página de Estado (`/#/status`). El backend verifica el binario oficial `webkvm-<version>-linux_amd64` frente a `SHA256SUMS`, crea copia de seguridad en `/usr/local/bin/webkvm.previous` y realiza una comprobación de salud automática con rollback si falla (ver [UPGRADE-ROLLBACK.es.md](docs/runbooks/UPGRADE-ROLLBACK.es.md)).
 
 ---
 
@@ -179,6 +203,7 @@ webkvm-cli --json vms list | jq '.[] | select(.state=="running") | .name'
 | [**Arquitectura Interna (ARCHITECTURE.es.md)**](docs/ARCHITECTURE.es.md) | Detalles técnicos: bindings CGO, Incus driver y motor Svelte 5 embebido. |
 | [**Despliegue con Docker (DOCKER.es.md)**](docs/DOCKER.es.md) | El mismo binario en un contenedor: requisitos del host, montajes y la excepción de la autoactualización. |
 | [**Runbooks operativos**](docs/runbooks/RUNBOOKS.es.md) | Operación diaria, actualización y reversión, recuperación ante desastres y modelo de seguridad. |
+| [**Proceso de Release (RELEASING.es.md)**](docs/RELEASING.es.md) | Checklist para tags, assets, AUR y el actualizador de la UI. |
 | [**Política de Seguridad (SECURITY.es.md)**](SECURITY.es.md) | Modelo de seguridad, mitigaciones SSRF y reporte de vulnerabilidades. |
 
 ---

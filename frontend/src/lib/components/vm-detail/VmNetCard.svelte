@@ -58,13 +58,13 @@
               <span
                 class="text-xs px-1.5 py-0.5 rounded bg-destructive/10 border border-destructive/20 text-destructive font-mono"
               >
-                Cable desconectado
+                {t('vmDetail.linkDown')}
               </span>
             {:else}
               <span
                 class="text-xs px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 font-mono"
               >
-                Enlace activo
+                {t('vmDetail.linkUp')}
               </span>
             {/if}
             {#if vm?.state === 'running' && iface.ips?.length}
@@ -80,11 +80,14 @@
                 onclick={() => toggleLinkState?.(iface)}
                 disabled={actionLoading === 'netlink'}
                 class="text-xs px-2 py-1 rounded border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-                title="Conectar o desconectar cable virtual en caliente"
+                title={t('vmDetail.linkToggleTitle')}
               >
                 <span class="inline-flex items-center gap-1">
                   <Icon name={iface.link_state === 'down' ? 'link' : 'unlink'} size={12} />
-                  <span>{iface.link_state === 'down' ? 'Conectar cable' : 'Desconectar cable'}</span
+                  <span
+                    >{iface.link_state === 'down'
+                      ? t('vmDetail.connectCable')
+                      : t('vmDetail.disconnectCable')}</span
                   >
                 </span>
               </button>

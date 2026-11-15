@@ -3,6 +3,7 @@
   import BlockCard from '$lib/components/BlockCard.svelte';
   import Chart from '$lib/components/Chart.svelte';
   import { formatRate } from '$lib/utils/format.js';
+  import RemoteUnsupportedNotice from '$lib/components/RemoteUnsupportedNotice.svelte';
 
   let {
     vm = null,
@@ -13,6 +14,9 @@
     diskWPoints = [],
     netRxPoints = [],
     netTxPoints = [],
+    // Remote VMs: live metrics are sampled by the node that owns the VM.
+    unsupported = false,
+    node = null,
   } = $props();
 </script>
 
@@ -24,7 +28,9 @@
       })}</span
     >
   </div>
-  {#if vm?.state !== 'running'}
+  {#if unsupported}
+    <RemoteUnsupportedNotice {node} nodeName={vm?.node} />
+  {:else if vm?.state !== 'running'}
     <p class="text-sm text-muted-foreground">
       {t('vmDetail.metricsOff')}
     </p>

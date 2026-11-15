@@ -6,9 +6,38 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
+## [Unreleased]
+
+_Nada todavía._
+
+## [0.1.12] — 2026-11-15
+
+### Añadido
+
+- **Actualización selectiva de paquetes del host**: `POST /api/host/updates/upgrade` acepta un body opcional `{packages:[...]}`; la UI añade checkboxes por paquete y la acción "Actualizar seleccionados (N)"; el CLI añade `updates upgrade [pkg...]`. Los nombres se validan contra una forma segura para bloquear inyección de flags.
+- **Notificaciones de actualización del host**: el éxito/fallo del upgrade ahora fluye por los canales de notificación (Telegram, Discord, Slack, webhook, etc.) vía `notifyUpgrade`.
+- **Actualizaciones programadas del host**: nuevo paquete `hostsched` que persiste una programación cron (`enabled`, `upgrade_cron`, `reboot_after`) en `host-schedule.json`, expuesta vía `GET/PUT /api/host/updates/schedule` y una tarjeta "Programación de actualizaciones" en la pestaña de actualizaciones del host.
+- **Reinicio del host en 1 clic**: `POST /api/host/reboot` (admin) tras el aviso de "reinicio requerido", más `settings reboot` en el CLI.
+- **Cluster multi-nodo (F3)**: el dashboard ahora opera entre nodos, no solo los sondea. `ListVMs` federa los dominios de cada nodo remoto habilitado (cada uno etiquetado con su `node`), `POST /api/vms` acepta un `node` de destino para desplegar una VM en un hipervisor remoto (admin, solo KVM), y las operaciones de ciclo de vida se enrutan al nodo dueño. El formulario de Nodos prueba libvirt e informa del número de dominios y la disponibilidad de KVM antes de guardar. El modo fácil genera una URI `qemu+ssh`; el avanzado acepta una URI completa. El formulario ofrece un script descargable y una instalación SSH confirmada para nodos apt/dnf/pacman. Las actualizaciones completas de Arch requieren autorización explícita. `POST /api/vms/{id}/migrate` permite migración en vivo con copia opcional de discos, o migración apagada de la definición con `shared_storage=true` (los discos deben estar disponibles en las mismas rutas). La API rechaza nodos deshabilitados y devuelve 501 para operaciones remotas que aún no están enrutadas. El detalle de solo lectura (VM, discos, interfaces, snapshots, logs) también se enruta al nodo remoto, y la página de Nodos muestra CPU y RAM para decidir placement.
+
+### Corregido
+
+- **Actualización del host "Read-only file system"**: la actualización asistida ejecutaba el gestor de paquetes (`apt-get`/`dnf`/`pacman`) dentro del namespace de montaje endurecido del servicio WebKVM, donde `ProtectSystem=full` monta `/etc` en solo-lectura, por lo que `dpkg`/`rpm` fallaban al escribir ficheros de configuración. El gestor de paquetes ahora se ejecuta vía `systemd-run` (una unidad transitoria lanzada desde el namespace de PID 1), escapando del endurecimiento; los hosts Docker y sin systemd usan un proceso hijo directo, que es lo correcto allí. El refresco de repositorios recibió el mismo tratamiento.
+- **Códigos de error legibles por máquina en las actualizaciones del host**: el job de actualización ahora expone un `error_code` estable (`host_upgrade_readonly_filesystem`, `host_upgrade_timeout`, `host_upgrade_failed`) en lugar de obligar a los clientes a analizar el texto, y `waitJob` lo propaga al error lanzado.
+- **Borrado de snapshots externos con la VM apagada o tras revertir**: el perfil AppArmor de libvirt marca el fichero base del snapshot como solo lectura (`deny ... w`), por lo que el `block-commit` offline fallaba con `EACCES` y sin registro de auditoría. La cadena de discos pasa a ser propiedad del usuario de QEMU y los dominios nuevos llevan una etiqueta AppArmor configurable; `WEBKVM_DISABLE_APPARMOR=0` mantiene la confinación. El borrado reclama el overlay y la VM arranca después tanto en Debian como en Ubuntu. Los dominios existentes se migran en el siguiente arranque, revert o borrado de snapshot, así que una actualización desde la UI no requiere editar el XML a mano.
+- **Los recursos inexistentes devuelven 404 en vez de 500**: los handlers de VM, pool, volumen, ISO, snapshot, PCI/USB, carpetas compartidas y plantillas mapean los errores not-found de libvirt de forma central (74 rutas cubiertas por el barrido API en vivo).
+- **El PATCH de interfaces de red acepta MAC URL-encoded** (`52%3A54%3A...`), igual que el handler DELETE.
+- **Borrado de VMs pausadas o suspendidas**: ahora se destruye el proceso QEMU antes de undefinir el dominio, en vez de dejar un dominio transitorio residente.
+- **Internacionalización de la UI**: eliminadas las cadenas fijas en español de AppStore, ImageHub, MultiView, VmList, CronPicker y la tarjeta de discos; `en`, `es` y `ca` vuelven a ser simétricos.
+
+### Seguridad
+
+- **Workaround de AppArmor para snapshots externos**: se añade `<seclabel type='none' model='apparmor'/>` a los dominios definidos por WebKVM en hosts con AppArmor por defecto. QEMU sigue sin privilegios (`libvirt-qemu`) con DAC, seccomp y cgroups; SELinux nunca se desactiva. Ver `SECURITY.md` y `WEBKVM_DISABLE_APPARMOR=0`.
+
 ## [0.1.11] — 2026-11-06
 
 ### Añadido
+
 - **Aceleración 3D (virgl) para vídeo virtio**, reportada por [@sfs-pra](https://github.com/sfs-pra) en [#9](https://github.com/Slaker19/webkvm/issues/9): la nueva opción `accel_3d` emite `<acceleration accel3d='yes'/>` junto a un renderer `<graphics type='egl-headless'>` validado, permitiendo arrancar compositores Wayland (niri, sway) dentro del invitado. Corrige además el bug de fondo: guardar el tipo de consola borraba **todos** los bloques `<graphics>` y desactivaba la 3D en silencio. Condicionada a las capacidades del host (nodo de render + `egl-headless`), mostrada desactivada con el motivo en caso contrario.
 - **Actualizador muestra tag + commit**: `#/status` ahora expone el tag de la última release junto al commit más reciente de `main` (`latest_commit`/`build_commit`), y la actualización en modo `source` compara el commit compilado contra `main` en lugar de asumir siempre que hay actualización.
 - **Backup → notificaciones**: el éxito/fallo de los backups ahora fluye por los canales de notificación (Telegram, Discord, Slack, webhook, etc.) vía `Runner.SetAlertFunc`.
@@ -16,6 +45,7 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 - **Suite smoke E2E con Playwright** en `e2e/`: login + 5 rutas verificadas libres de errores de consola, más comprobaciones de estado/versión.
 
 ### Corregido
+
 - **Arreglos de almacenamiento/ISO aportados por [@kuanghl](https://github.com/kuanghl) en [#10](https://github.com/Slaker19/webkvm/pull/10)**: límite de subida de ISO de 10 GiB a 50 GiB; los pools creados desde la UI ahora arrancan automáticamente (quedaban inactivos tras reiniciar libvirtd e impedían toda subida); `GetISOs` refresca el pool antes de listar; re-subir un fichero fantasma ya no falla con un 409 permanente (los volúmenes registrados y los referenciados siguen protegidos); los pools sin etiqueta de propósito lo infieren por nombre; la pestaña ISO usa un único desplegable de pools.
 - **URL de la imagen openSUSE Leap 16.1** apuntada al build "latest" sin versión (el `Build2.16` fijado había sido retirado y devolvía 404).
 - **`exec` → `CommandRunner`** en el despliegue de appliances (`qemu-img` resize/info), completando la migración de testeabilidad ya aplicada a `mdraid`/`zvol`.
@@ -23,6 +53,7 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 ## [0.1.10] — 2026-11-01
 
 ### Añadido
+
 - **Modo Dual de Vista en VmList**: Alternador entre Vista de Tarjetas y Vista de Tabla compacta empresarial, persistido en preferencias del navegador (`localStorage`).
 - **Copiado Rápido de IP en 1 Clic**: Copia instantánea al portapapeles con confirmación visual de `check` y notificación toast, tanto en tarjetas como en tabla sin salir de la lista.
 - **Preparación para Clustering (Multi-Nodo)**: Badge de nodo (`vm.node`) en tarjetas y filas de tabla, junto con chips de filtrado dinámico por anfitrión de clúster.
@@ -39,6 +70,7 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
   - Exportación directa en 1-clic a archivo `.log` desde la barra de herramientas de `TerminalPanel` tanto en terminales serie de VMs como en consolas del host.
 
 ### Corregido y Blindado
+
 - **Aprovisionamiento Fino en Almacenamiento (Sparse)**: Sustitución de `STORAGE_VOL_CREATE_PREALLOC_METADATA` por asignación dispersa estándar (`0`), evitando que `qemu-img` fuerce `preallocation=falloc` y falle con `No space left on device` (ENOSPC).
 - **Corrección en Botón de Modo Selección**: Corregido un fallo por el cual un `$effect` cerraba inmediatamente el modo selección al estar vacía la lista de seleccionados.
 - **Seguridad y Vulnerabilidades**:
@@ -46,6 +78,7 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
   - Sobreescritura de `minimatch` a `^11.0.3` en npm, eliminando 13 vulnerabilidades de severidad moderada en la cadena de compilación frontend.
 
 ### Seguridad y Blindaje
+
 - **Control de Acceso en Clonación en Lote**: Aplicación de `assertPoolAllowed`, `assertNetworkAllowed` y `assertPoolPurpose` en `POST /api/vms/{id}/batch-clone` para evitar que operadores con acceso restringido clonen máquinas en pools de almacenamiento o bridges de red no autorizados.
 - **Protección de Subida de Discos OVA**: Eliminación garantizada de archivos temporales y aborto inmediato con HTTP 400 ante fallos de extracción en `UploadDisk`, impidiendo que discos QCOW2 fraudulentos eludan las inspecciones de seguridad de imágenes.
 - **Protección ante Sobrescritura de 2FA**: Verificación obligatoria de la contraseña actual del usuario al reconfigurar o habilitar 2FA si el segundo factor ya se encuentra activo.
@@ -54,12 +87,14 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 - **Protección de Cuentas Privilegiadas en Metadatos**: Bloqueo a operadores no administradores para asignar cuentas privilegiadas del sistema (`root`, `admin`, `system`) en `ci_user`, previniendo tomas de control de cuentas de invitado.
 
 ### Cambiado y Refactorizado
+
 - **Refactorización Modular de Diálogos de `VmList`**:
   - Modularización de los diálogos de importación, asignación de grupo e instanciación de plantillas en componentes dedicados bajo `lib/components/vm-list/`.
 
 ## [0.1.9] — 2026-10-25
 
 ### Añadido
+
 - **Aceleración GPU 1-clic para Incus**:
   - Soporte de aceleración gráfica compartida (`type: gpu`, exponiendo `/dev/dri/renderD128`) sin desvincular la tarjeta del kernel anfitrión, tanto en el asistente de creación (`VmCreate`) como en caliente en la pestaña Hardware (`VmHardwareTab`).
 - **Passthrough PCI en Contenedores Incus**:
@@ -73,18 +108,21 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
   - Campo de etiqueta VLAN opcional en el modal de añadir interfaz de red en `VmDetail` e insignia visual de VLAN en `VmNetCard`.
 
 ### Cambiado y Refactorizado
+
 - **Refactorización Modular de `api/vms.go`**:
   - Descomposición del monolito de 2.216 líneas en 5 submódulos de dominio (`vm_lifecycle.go`, `vm_snapshots.go`, `vm_devices.go`, `vm_clones.go`, `vm_export_import.go`), reduciendo `vms.go` a 494 líneas con 100% de compatibilidad en la API.
 
 ## [0.1.8-fix01] — 2026-10-18
 
 ### Seguridad y Blindaje
+
 - **Blindaje contra Inyección de Rutas**: Saneamiento estricto con `filepath.Clean` y validación con `safeDiskPathRE` sobre rutas de particiones y dispositivos antes de operaciones en el sistema de archivos en `InitHostDiskDirectory`, resolviendo las alertas de CodeQL #125 y #126.
 - **Seguridad en Dependencias**: Actualización de `source-map-js` a 1.2.2 y `postcss-selector-parser` a 7.1.6, resolviendo las alertas de vulnerabilidad de Dependabot.
 
 ## [0.1.8] — 2026-10-17
 
 ### Añadido
+
 - **Software RAID Nativo por Kernel sysfs:**
   - Formateo directo, montaje persistente systemd y asignación granular de storage pools multicarpetas o de raíz dedicado (`CreateHostRAID`).
   - Descubrimiento de arrays en tiempo real por sysfs (`/sys/block/md*/md`) eliminando sobrecarga de subprocesos.
@@ -97,11 +135,13 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
   - Bloqueo exclusivo para administradores y lanzador directo de TUI interactiva en consola.
 
 ### Modificado y Refactorizado
+
 - **Arquitectura Frontend:** Descomposición de `frontend/src/routes/Storage.svelte` (de 5.295 líneas a 542 líneas) en 14 componentes modulares en `src/lib/components/storage/`.
 - **Arquitectura Backend:** Descomposición del monolito `backend/internal/api/storage.go` (2.003 líneas) en 6 submódulos limpios de dominio.
 - **Seguridad y Resiliencia:** Wrapper universal `safeStorage` con fallback en memoria, corrección de fugas de memoria en `Status.svelte`, soporte de `<firmware>` para restauración de backups UEFI.
 
 ### Corregido
+
 - **Bucle de login en HTTP plano ([#5](https://github.com/Slaker19/webkvm/issues/5)):** las cookies de sesión/CSRF ya no llevan el flag `Secure` cuando no hay TLS, así el navegador deja de descartar la sesión en instalaciones LAN con `http://` (el dashboard parpadeaba y volvía al login). Un `WEBKVM_COOKIE_SECURE` explícito sigue teniendo prioridad.
 - **`webkvm-cli users update`:** el subcomando anunciado en la ayuda ahora existe — cambia contraseña, rol, email o estado activo desde la terminal (`PUT /api/users/{username}`).
 - **Autodetección del endpoint local en `webkvm-cli`:** el CLI lee `{DATA_DIR}/config.json` (puerto personalizado, dirección de bind, HTTP o HTTPS) en lugar de asumir `https://127.0.0.1:8080`, reintenta una vez con el otro esquema ante un desajuste HTTPS/HTTP, y trata una IP de bind local a la máquina como local para el acceso admin zero-token.
@@ -404,6 +444,7 @@ virtualización Linux.
 ---
 
 [0.1.11]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.11
+[0.1.12]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12
 [0.1.10]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.10
 [0.1.4]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.4
 [0.1.3]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.3

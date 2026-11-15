@@ -107,7 +107,7 @@ func TestBuildPoolXMLISCSI(t *testing.T) {
 	got, err := buildPoolXML("iscsi", models.CreatePoolRequest{
 		Name:         "iscsi1",
 		Path:         "/dev/disk/by-path",
-		SourceHost:   "192.168.1.50",
+		SourceHost:   "192.168.50.50",
 		SourceDevice: "iqn.2003-01.org.linux-iscsi.target:sn.12345",
 	})
 	if err != nil {
@@ -116,7 +116,7 @@ func TestBuildPoolXMLISCSI(t *testing.T) {
 	wants := []string{
 		"<pool type='iscsi'>",
 		"<name>iscsi1</name>",
-		"<host name='192.168.1.50'/>",
+		"<host name='192.168.50.50'/>",
 		"<device path='iqn.2003-01.org.linux-iscsi.target:sn.12345'/>",
 		"<path>/dev/disk/by-path</path>",
 	}
@@ -128,8 +128,8 @@ func TestBuildPoolXMLISCSI(t *testing.T) {
 	if strings.Contains(got, "<auth") {
 		t.Errorf("unexpected <auth> block in:\n%s", got)
 	}
-	if extractSourceHost(got) != "192.168.1.50" {
-		t.Errorf("extractSourceHost got %q, want %q", extractSourceHost(got), "192.168.1.50")
+	if extractSourceHost(got) != "192.168.50.50" {
+		t.Errorf("extractSourceHost got %q, want %q", extractSourceHost(got), "192.168.50.50")
 	}
 	if extractSourceDevice(got) != "iqn.2003-01.org.linux-iscsi.target:sn.12345" {
 		t.Errorf("extractSourceDevice got %q, want %q", extractSourceDevice(got), "iqn.2003-01.org.linux-iscsi.target:sn.12345")
@@ -162,7 +162,7 @@ func TestBuildPoolXMLISCSIWithCHAP(t *testing.T) {
 	got, err := buildPoolXML("iscsi", models.CreatePoolRequest{
 		Name:           "iscsi-chap",
 		Path:           "/dev/disk/by-path",
-		SourceHost:     "192.168.1.50",
+		SourceHost:     "192.168.50.50",
 		SourceDevice:   "iqn.2003-01.org.linux-iscsi.target:sn.12345",
 		SourceUsername: "admin_user",
 		SecretUUID:     "12345678-abcd-ef01-2345-6789abcdef01",
@@ -195,7 +195,7 @@ func TestBuildPoolXMLISCSIMissingFields(t *testing.T) {
 	_, err = buildPoolXML("iscsi", models.CreatePoolRequest{
 		Name:       "iscsi-bad",
 		Path:       "/dev/disk/by-path",
-		SourceHost: "192.168.1.50",
+		SourceHost: "192.168.50.50",
 		// missing SourceDevice
 	})
 	if err == nil {
@@ -205,7 +205,7 @@ func TestBuildPoolXMLISCSIMissingFields(t *testing.T) {
 	_, err = buildPoolXML("iscsi", models.CreatePoolRequest{
 		Name:           "iscsi-bad",
 		Path:           "/dev/disk/by-path",
-		SourceHost:     "192.168.1.50",
+		SourceHost:     "192.168.50.50",
 		SourceDevice:   "iqn.123",
 		SourceUsername: "user",
 		// missing SecretUUID

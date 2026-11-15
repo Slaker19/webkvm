@@ -206,3 +206,49 @@ func TestStoreFileIsValidJSON(t *testing.T) {
 		t.Fatalf("persisted port = %v, want 1234", f.Values["server.port"])
 	}
 }
+
+func TestStoreSecretMaskIsNotPersisted(t *testing.T) {
+	s, err := New(t.TempDir(), DefaultSchema())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "ha.fence_pve_token_secret"
+	if _, failed, err := s.SetMany(Set{key: "real-secret"}); err != nil || len(failed) != 0 {
+		t.Fatalf("SetMany = %v, %v", failed, err)
+	}
+	if got := s.GetString(key); got != "real-secret" {
+		t.Fatalf("secret = %q, want the stored value", got)
+	}
+	if snap := s.Snapshot(); snap[key] != maskedSecret {
+		t.Fatalf("snapshot = %v, want the mask", snap[key])
+	}
+	// The editor resubmits the mask when it edits another field in the
+	// same form; the real secret must survive.
+	if _, failed, err := s.SetMany(Set{key: maskedSecret, "server.port": float64(9091)}); err != nil || len(failed) != 0 {
+		t.Fatalf("SetMany = %v, %v", failed, err)
+	}
+	if got := s.GetString(key); got != "real-secret" {
+		t.Fatalf("secret overwritten by the mask: %q", got)
+	}
+}
+
+func TestCPGroupSettingDefaultAndValidation(t *testing.T) {
+	s, err := New(t.TempDir(), DefaultSchema())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.GetString("ha.cp_group"); got != "webkvm-cp" {
+		t.Fatalf("default = %q, want webkvm-cp", got)
+	}
+	for _, bad := range []string{"", "-x", "a b", "a=b", ".a", "a/b", "x;y"} {
+		if _, failed, _ := s.SetMany(Set{"ha.cp_group": bad}); len(failed) == 0 {
+			t.Fatalf("%q must be rejected", bad)
+		}
+	}
+	if _, failed, err := s.SetMany(Set{"ha.cp_group": "my.cp_group-1"}); err != nil || len(failed) > 0 {
+		t.Fatalf("valid value rejected: %v %v", err, failed)
+	}
+	if got := s.GetString("ha.cp_group"); got != "my.cp_group-1" {
+		t.Fatalf("stored = %q", got)
+	}
+}

@@ -17,6 +17,14 @@ import (
 
 // --- Disks / Devices / USB / PCI / Shared Folders ---
 
+func incusBridgedNIC(name, parent string, vlan *int) map[string]string {
+	device := map[string]string{"type": "nic", "nictype": "bridged", "parent": parent, "name": name}
+	if vlan != nil && *vlan > 0 {
+		device["vlan"] = strconv.Itoa(*vlan)
+	}
+	return device
+}
+
 func (b *IncusBackend) AttachDisk(id string, req models.AttachDiskRequest) error {
 	if b.client == nil {
 		return compute.ErrNotImplemented
@@ -158,17 +166,8 @@ func (b *IncusBackend) AttachNetworkIface(id string, req models.AttachNetRequest
 		return err
 	}
 	nicName := nextNicName(inst.Devices)
-	devMap := map[string]string{
-		"type":    "nic",
-		"nictype": "bridged",
-		"parent":  bridge,
-		"name":    nicName,
-	}
-	if req.VLANTag != nil && *req.VLANTag > 0 {
-		devMap["vlan"] = strconv.Itoa(*req.VLANTag)
-	}
-	inst.Devices[nicName] = devMap
-	inst.Config["user.network-config"] = lxdNetworkConfig(inst.Devices)
+	inst.Devices[nicName] = incusBridgedNIC(nicName, bridge, req.VLANTag)
+	inst.Config["user.network-config"] = lxdNetworkConfig(inst.Devices, nil)
 	op, err := b.client.UpdateInstance(id, api.InstancePut{
 		Config:      inst.Config,
 		Devices:     inst.Devices,
@@ -245,7 +244,7 @@ func (b *IncusBackend) DetachNetworkIface(id, mac string) error {
 		return fmt.Errorf("no network interface with MAC %s", mac)
 	}
 	delete(inst.Devices, devName)
-	inst.Config["user.network-config"] = lxdNetworkConfig(inst.Devices)
+	inst.Config["user.network-config"] = lxdNetworkConfig(inst.Devices, nil)
 	op, err := b.client.UpdateInstance(id, api.InstancePut{
 		Config:      inst.Config,
 		Devices:     inst.Devices,

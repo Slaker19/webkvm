@@ -79,6 +79,10 @@ func main() {
 		}
 		return
 	}
+	if command[0] == "ha" {
+		// Local, root-only: works without a WebKVM token (it never calls the API).
+		os.Exit(runHA(command[1:], defaultHADepsEnv(), jsonOutput))
+	}
 	if command[0] == "logout" {
 		_ = os.Remove(tokenConfigPath())
 		fmt.Println("logged out (cached token removed)")
@@ -159,9 +163,13 @@ System Commands:
   status               Check server status & health
   info                 Show host system hardware & virtualization info
   restart              Restart WebKVM backend service
+  updates list         List available host package updates
+  updates refresh      Refresh package repositories
+  updates upgrade [pkg...]  Upgrade all packages (or only the named ones)
   settings list        List all server settings and values
   settings get <key>   Get value of a setting
   settings set <k> <v> Update setting value
+  settings reboot      Reboot the host machine
   audit list [--limit] View system audit log entries
 
 Virtual Machine & Container Commands:
@@ -221,6 +229,11 @@ Cloud-Init Snippets:
   snippets show <id>   Display snippet details and YAML content
   snippets create --name <name> [--file <path>] [--type user-data] [--category custom]
   snippets delete <id> Delete a custom snippet
+
+  ha deps check [--storage] [--json]
+                       Cluster/HA packages on THIS node (read-only, no token needed)
+  ha deps install [--storage] [--accept-experimental] [--yes] [--json]
+                       Install them here as root; exit 10/11/12/13 explain what is left
 
 Network Commands:
   networks list        List virtual networks and bridges
@@ -583,8 +596,14 @@ func run(server, token string, insecure bool, cmd []string) error {
 	case "backup":
 		return runBackup(c, cmd)
 
+	case "updates":
+		return runUpdates(c, cmd)
+
 	case "snippets":
 		return runSnippets(c, cmd)
+
+	case "firewall":
+		return runFirewallCluster(cmd[1:])
 	}
 
 	return fmt.Errorf("unknown command %q", cmd[0])
@@ -1388,7 +1407,7 @@ func runNetworks(c *client, cmd []string) error {
 
 func runSettings(c *client, cmd []string) error {
 	if len(cmd) < 2 {
-		return fmt.Errorf("settings requires a subcommand (list|get|set)")
+		return fmt.Errorf("settings requires a subcommand (list|get|set|reboot)")
 	}
 	switch cmd[1] {
 	case "list":
@@ -1457,8 +1476,66 @@ func runSettings(c *client, cmd []string) error {
 		}
 		fmt.Printf("setting %s = %v updated successfully\n", key, val)
 		return nil
+
+	case "reboot":
+		if _, err := c.post("/api/host/reboot", nil); err != nil {
+			return err
+		}
+		fmt.Println("host reboot initiated")
+		return nil
 	}
 	return fmt.Errorf("unknown settings subcommand %q", cmd[1])
+}
+
+func runUpdates(c *client, cmd []string) error {
+	if len(cmd) < 2 {
+		return fmt.Errorf("updates requires a subcommand (list|refresh|upgrade)")
+	}
+	switch cmd[1] {
+	case "list":
+		out, err := c.get("/api/host/updates")
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printRawJSON(out)
+		}
+		var res struct {
+			Total          int  `json:"total"`
+			SecurityCount  int  `json:"security_count"`
+			RebootRequired bool `json:"reboot_required"`
+		}
+		_ = json.Unmarshal(out, &res)
+		fmt.Printf("updates=%d security=%d reboot_required=%v\n", res.Total, res.SecurityCount, res.RebootRequired)
+		return nil
+
+	case "refresh":
+		if _, err := c.post("/api/host/updates/refresh", nil); err != nil {
+			return err
+		}
+		fmt.Println("repositories refreshed")
+		return nil
+
+	case "upgrade":
+		var body any
+		if len(cmd) > 2 {
+			body = map[string]any{"packages": cmd[2:]}
+		}
+		out, err := c.post("/api/host/updates/upgrade", body)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return printRawJSON(out)
+		}
+		var job struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(out, &job)
+		fmt.Printf("upgrade started (job %s)\n", job.ID)
+		return nil
+	}
+	return fmt.Errorf("unknown updates subcommand %q", cmd[1])
 }
 
 func runAudit(c *client, cmd []string) error {

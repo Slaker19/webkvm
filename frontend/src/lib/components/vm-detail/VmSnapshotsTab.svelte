@@ -8,6 +8,7 @@
   import Icon from '$lib/components/Icon.svelte';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import RemoteUnsupportedNotice from '$lib/components/RemoteUnsupportedNotice.svelte';
 
   let {
     snapshots = [],
@@ -23,6 +24,11 @@
     schedSnapMax = $bindable(3),
     schedSaving = false,
     saveSchedule,
+    // scheduleUnsupported: remote VM; the automatic snapshot policy is part
+    // of the node's own schedule (501 from here). Snapshots themselves work.
+    scheduleUnsupported = false,
+    node = null,
+    nodeName = '',
   } = $props();
 
   function bytesToStr(b) {
@@ -45,7 +51,13 @@
     const day = String(d.getDate()).padStart(2, '0');
     const hh = String(d.getHours()).padStart(2, '0');
     const mm = String(d.getMinutes()).padStart(2, '0');
-    return `${y}-${m}-${day} ${hh}:${mm}`;
+    // Local time without a zone was ambiguous when the browser and the
+    // node disagree (8.29 defect 5).
+    const tz =
+      new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+        .formatToParts(d)
+        .find((p) => p.type === 'timeZoneName')?.value || '';
+    return `${y}-${m}-${day} ${hh}:${mm}${tz ? ' ' + tz : ''}`;
   }
 
   const snapshotTree = $derived.by(() => {
@@ -133,14 +145,37 @@
 {/snippet}
 
 <BlockCard bid="snaps" title={t('vmDetail.snapshots')} anchor="snapshots">
-  <div class="flex gap-2 mb-3">
-    <Input bind:value={snapName} placeholder="Snapshot name" class="flex-1" />
-    <Button onclick={createSnapshot} disabled={!snapName || actionLoading === 'snapshot'}>
+  <label for="snapshot-name" class="block text-xs font-medium mb-1"
+    >{t('vmDetail.snapshotNameLabel')}</label
+  >
+  <div class="flex gap-2 mb-1">
+    <Input
+      id="snapshot-name"
+      bind:value={snapName}
+      placeholder={t('vmDetail.snapshotNamePlaceholder')}
+      class="flex-1"
+    />
+    <Button
+      onclick={createSnapshot}
+      disabled={!snapName || actionLoading === 'snapshot'}
+      aria-describedby={!snapName ? 'snapshot-name-hint' : undefined}
+    >
       {#if actionLoading === 'snapshot'}<Spinner size="xs" color="text-white" />{:else}{t(
           'vmDetail.createSnapshot'
         )}{/if}
     </Button>
   </div>
+  {#if !snapName}
+    <p
+      id="snapshot-name-hint"
+      class="text-xs text-muted-foreground mb-2"
+      data-testid="snapshot-name-hint"
+    >
+      {t('vmDetail.snapshotNameRequired')}
+    </p>
+  {:else}
+    <div class="mb-2"></div>
+  {/if}
   <label
     class="flex items-center gap-2 text-sm text-muted-foreground mb-3 cursor-pointer select-none"
   >
@@ -166,13 +201,17 @@
           {t('vmDetail.snapScheduleTitle')}
         </span>
       </div>
-      <Switch
-        size="sm"
-        checked={schedSnap !== ''}
-        onchange={(v) => (schedSnap = v ? '0 2 * * *' : '')}
-      />
+      {#if !scheduleUnsupported}
+        <Switch
+          size="sm"
+          checked={schedSnap !== ''}
+          onchange={(v) => (schedSnap = v ? '0 2 * * *' : '')}
+        />
+      {/if}
     </div>
-    {#if !schedSnap}
+    {#if scheduleUnsupported}
+      <RemoteUnsupportedNotice {node} {nodeName} />
+    {:else if !schedSnap}
       <p class="text-xs text-muted-foreground py-1">
         {t('vmDetail.noSnapshotsScheduled')}
       </p>
@@ -206,15 +245,17 @@
             class="!h-8 w-24 tnum text-xs"
           />
           <span class="text-xs text-muted-foreground">
-            {t('vmDetail.retentionCount', { n: schedSnapMax }) || `${schedSnapMax} instantáneas`}
+            {t('vmDetail.retentionCount', { n: schedSnapMax })}
           </span>
         </div>
       </div>
     {/if}
-    <div class="mt-3 flex justify-end">
-      <Button size="xs" onclick={saveSchedule} disabled={schedSaving}>
-        {#if schedSaving}<Spinner size="xs" color="text-white" />{:else}{t('common.save')}{/if}
-      </Button>
-    </div>
+    {#if !scheduleUnsupported}
+      <div class="mt-3 flex justify-end">
+        <Button size="xs" onclick={saveSchedule} disabled={schedSaving}>
+          {#if schedSaving}<Spinner size="xs" color="text-white" />{:else}{t('common.save')}{/if}
+        </Button>
+      </div>
+    {/if}
   </div>
 </BlockCard>

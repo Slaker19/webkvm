@@ -22,7 +22,28 @@ type VM struct {
 	// Hypervisor is the backend that owns this instance: "kvm" or "incus".
 	Hypervisor string `json:"hypervisor"`
 	// Node is the cluster host or node ID where this instance runs (empty = local node).
-	Node       string  `json:"node,omitempty"`
+	Node string `json:"node,omitempty"`
+	// NodeID is the registry ID of the node (empty for the local node).
+	NodeID string `json:"node_id,omitempty"`
+	// Stale marks an entry served from the last good listing of a node that
+	// did not answer now (see the federated listing).
+	Stale bool `json:"stale,omitempty"`
+	// Managed is WebKVM's per-workload "managed" flag (nil = not reported,
+	// treated as managed). See PUT /api/vms/{id}/managed.
+	Managed *bool `json:"managed,omitempty"`
+	// MemberOnline is set for Incus instances in a cluster: false means the
+	// hosting member is offline and the instance is unreachable.
+	MemberOnline *bool `json:"member_online,omitempty"`
+	// ManagedBy names an external manager that owns the lifecycle. Today the
+	// only value is "pacemaker": WebKVM must not start, stop or delete it.
+	ManagedBy string `json:"managed_by,omitempty"`
+	// PacemakerNode is where crm_mon/pcs says a Pacemaker-managed domain
+	// runs. Informational only, set when ManagedBy is "pacemaker"; Node stays
+	// the routing key and is never replaced by it.
+	PacemakerNode string `json:"pacemaker_node,omitempty"`
+	// HAKey is the HA workload key (`kvm:<name>` or `incus:<project>/<name>`)
+	// of a Pacemaker-managed instance. Set together with ManagedBy.
+	HAKey      string  `json:"ha_key,omitempty"`
 	State      VMState `json:"state"`
 	VCPUs      int     `json:"vcpus"`
 	RAMMB      int64   `json:"ram_mb"`
@@ -113,6 +134,15 @@ type MediaScope struct {
 	CanNesting bool
 }
 
+// CreateHAOptions are the placement knobs of an HA enable done right after
+// creation. Empty values keep the enable defaults.
+type CreateHAOptions struct {
+	AllowedNodes       []string `json:"allowed_nodes,omitempty"`
+	PreferredNode      string   `json:"preferred_node,omitempty"`
+	Stickiness         int      `json:"stickiness,omitempty"`
+	MigrationThreshold int      `json:"migration_threshold,omitempty"`
+}
+
 type CreateVMRequest struct {
 	// Scope is set by the handler (never from the request body).
 	Scope MediaScope `json:"-"`
@@ -120,13 +150,24 @@ type CreateVMRequest struct {
 	// Type is the instance kind to create: "vm" (default, KVM) or
 	// "container" (LXD). Empty keeps the historical default (vm).
 	Type string `json:"type,omitempty"`
+	// Node is the target cluster node. Empty or "local" creates on the
+	// local backend; a registered remote ID can target libvirt or Incus.
+	// Remote creation is admin-only and validates resources on that target.
+	Node string `json:"node,omitempty"`
+	// TargetMember pins creation to one member of the Incus cluster the
+	// local daemon belongs to (distinct from Node, which selects a
+	// registered remote). Empty lets Incus place the instance.
+	TargetMember string `json:"target_member,omitempty"`
 	// Image is the LXD image reference for container creation, e.g.
 	// "ubuntu:24.04" or "images:alpine/3.20" (<remote>:<alias>, where
 	// remote is one of the official LXD remotes). When set, the request
 	// is routed to the LXD backend — zero ISOs involved.
-	Image       string `json:"image,omitempty"`
-	VCPUs       int    `json:"vcpus"`
-	RAMMB       int64  `json:"ram_mb"`
+	Image string `json:"image,omitempty"`
+	VCPUs int    `json:"vcpus"`
+	RAMMB int64  `json:"ram_mb"`
+	// AllowLowRAM is the explicit advanced override that accepts RAM below
+	// api.MinVMRAMMB (never below api.LowRAMFloorMB).
+	AllowLowRAM bool   `json:"allow_low_ram,omitempty"`
 	DiskGB      int64  `json:"disk_gb"`
 	ISO         string `json:"iso,omitempty"`
 	Network     string `json:"network,omitempty"`
@@ -161,6 +202,17 @@ type CreateVMRequest struct {
 	VirtIOISO        string `json:"virtio_iso,omitempty"`
 	ExistingDiskPool string `json:"existing_disk_pool,omitempty"`
 	ExistingDiskName string `json:"existing_disk_name,omitempty"`
+	BaseImageID      string `json:"base_image_id,omitempty"` // Cached local qcow2 image to use as the disk backing file.
+	BaseImagePath    string `json:"-"`                       // Resolved by the API; never accepted from request JSON.
+	// HA, when set, puts the new instance under Pacemaker HA once it exists.
+	// A failure leaves the VM created and reports ha_warning instead.
+	HA *CreateHAOptions `json:"ha,omitempty"`
+	// ISOPool / VirtIOISOPool name the storage pool of ISO / VirtIOISO when
+	// creating on a REMOTE libvirt node, where ISO and VirtIOISO are volume
+	// names of that node's pools (never paths). Optional: without them the
+	// name must be unique across the node's pools. Ignored locally.
+	ISOPool       string `json:"iso_pool,omitempty"`
+	VirtIOISOPool string `json:"virtio_iso_pool,omitempty"`
 	// DiskCacheIO applies the recommended cache='none' io='native'
 	// driver attributes to the main disk.
 	DiskCacheIO *bool `json:"disk_cache_io,omitempty"`
@@ -221,6 +273,7 @@ type UpdateVMRequest struct {
 	Name         *string    `json:"name,omitempty"`
 	VCPUs        *int       `json:"vcpus,omitempty"`
 	RAMMB        *int64     `json:"ram_mb,omitempty"`
+	AllowLowRAM  bool       `json:"allow_low_ram,omitempty"` // see CreateVMRequest.AllowLowRAM
 	DiskGB       *int64     `json:"disk_gb,omitempty"`
 	CPUMode      *string    `json:"cpu_mode,omitempty"`
 	CPUModel     *string    `json:"cpu_model,omitempty"`
@@ -908,7 +961,7 @@ type HostInterface struct {
 type ConfigureHostInterfaceRequest struct {
 	State   *string `json:"state,omitempty"`   // "up" | "down"
 	Isolate bool    `json:"isolate,omitempty"` // If true, removes interface from master bridge
-	IPv4    *string `json:"ipv4,omitempty"`    // e.g. "192.168.1.50/24" or "" to flush
+	IPv4    *string `json:"ipv4,omitempty"`    // e.g. "192.168.50.50/24" or "" to flush
 	Gateway *string `json:"gateway,omitempty"` // e.g. "192.168.1.1" or "" to clear
 }
 
@@ -983,7 +1036,7 @@ type VMMetaUpdate struct {
 // CloudInitNetworkConfig specifies static IP assignment, default gateways and DNS servers for a NIC.
 type CloudInitNetworkConfig struct {
 	Interface string   `json:"interface,omitempty"` // e.g. "eth0" or "enp1s0"
-	IPv4      string   `json:"ipv4,omitempty"`      // CIDR format, e.g. "192.168.1.50/24"
+	IPv4      string   `json:"ipv4,omitempty"`      // CIDR format, e.g. "192.168.50.50/24"
 	Gateway4  string   `json:"gateway4,omitempty"`  // IPv4 gateway, e.g. "192.168.1.1"
 	IPv6      string   `json:"ipv6,omitempty"`      // CIDR format, e.g. "2001:db8::50/64"
 	Gateway6  string   `json:"gateway6,omitempty"`  // IPv6 gateway
@@ -1440,6 +1493,11 @@ type DownloadJob struct {
 	// "error" string and hid the text from clients, since they only
 	// read this field on failure.
 	Error string `json:"error,omitempty"`
+	// ErrorCode is a stable, machine-readable identifier for the failure
+	// class (e.g. "host_upgrade_readonly_filesystem"), set only when Status
+	// is "error". Callers returning a coded error (interface{ Code() string })
+	// have it propagated here; it lets clients react without parsing prose.
+	ErrorCode string `json:"error_code,omitempty"`
 	// Message is human-readable commentary on the current step
 	// ("Finalizing and converting image..."). Purely informational.
 	Message    string `json:"message,omitempty"`

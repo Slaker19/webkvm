@@ -57,7 +57,7 @@
      stretch, otherwise `sticky` has no room to travel and the rail just
      scrolls away with the form. -->
 <div class="hidden lg:block">
-  <nav class="sticky top-4" aria-label={t('vmCreate.stepsNavLabel')}>
+  <nav class="sticky top-4" aria-label={t('vmCreate.stepsNavLabelVertical')}>
     <ul class="space-y-1 list-none m-0 p-0">
       {#each steps as s (s.id)}
         {@const isActive = activeId === s.id}

@@ -107,8 +107,17 @@ done
 
 # ...and every unit template must set the gate the backend enforces,
 # otherwise the button answers 403 no matter how the binary was installed.
-grep -F 'WEBKVM_ALLOW_UPDATE=1' "${ROOT}/scripts/webkvm.service" >/dev/null
 grep -F 'WEBKVM_ALLOW_UPDATE=1' "${ROOT}/packaging/standalone/install.sh" >/dev/null
+
+# The optional Cluster/HA module installs apt/dnf/pacman packages from the
+# service. ProtectSystem=full makes /usr read-only and every install fails
+# with "Read-only file system", so both unit templates must keep it off.
+grep -F 'ProtectSystem=off' "${ROOT}/scripts/webkvm.service" >/dev/null
+grep -F 'ProtectSystem=off' "${ROOT}/packaging/standalone/install.sh" >/dev/null
+if grep -qE '^[[:space:]]*ProtectSystem=full' "${ROOT}/scripts/webkvm.service" "${ROOT}/packaging/standalone/install.sh"; then
+  printf 'error: ProtectSystem=full breaks the Cluster/HA installer\n' >&2
+  exit 1
+fi
 
 # update.sh replaces the binary it is running under: the guards below are the
 # difference between a failed update and a host left with no service at all.

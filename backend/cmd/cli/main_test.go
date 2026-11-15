@@ -210,12 +210,12 @@ func TestDetectLocalServer(t *testing.T) {
 
 	// TLS pair present -> https on the configured bind.
 	write(map[string]any{
-		"server.port": 9443.0, "server.bind_addr": "192.168.1.40",
+		"server.port": 9443.0, "server.bind_addr": "192.168.50.40",
 		"server.tls_cert": "/opt/webkvm/certs/webkvm.crt",
 		"server.tls_key":  "/opt/webkvm/certs/webkvm.key",
 	})
-	if got := detectLocalServer(); got != "https://192.168.1.40:9443" {
-		t.Errorf("tls: got %q, want https://192.168.1.40:9443", got)
+	if got := detectLocalServer(); got != "https://192.168.50.40:9443" {
+		t.Errorf("tls: got %q, want https://192.168.50.40:9443", got)
 	}
 }
 

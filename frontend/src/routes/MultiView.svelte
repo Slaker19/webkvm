@@ -201,16 +201,22 @@
     for (const id of selectedVmIds) {
       const vm = vms.find((v) => v.id === id);
       if (vm && vm.state === 'running' && !tickets[id] && !loadingTickets[id]) {
-        fetchTicketFor(id);
+        fetchTicketFor(
+          id,
+          (vms.find((v) => v.id === id) || {}).node,
+          (vms.find((v) => v.id === id) || {}).hypervisor
+        );
       }
     }
   }
 
-  async function fetchTicketFor(vmId) {
+  async function fetchTicketFor(vmId, node = '', hv = '') {
     if (loadingTickets[vmId]) return;
     loadingTickets[vmId] = true;
     try {
-      const res = await (api.getVNCTicket ? api.getVNCTicket(vmId) : api.createVNCTicket(vmId));
+      const res = await (api.getVNCTicket
+        ? api.getVNCTicket(vmId, node, hv)
+        : api.createVNCTicket(vmId, node, hv));
       if (res && res.vnc_ticket) {
         tickets = { ...tickets, [vmId]: res.vnc_ticket };
       }
@@ -225,14 +231,14 @@
     try {
       if (vm.state === 'running') {
         toast.info(t('vms.stopping', { name: vm.name }));
-        await api.shutdownVM(vm.id);
+        await api.shutdownVM(vm.id, vm.node);
         const next = { ...tickets };
         delete next[vm.id];
         tickets = next;
       } else {
         toast.info(t('vms.starting', { name: vm.name }));
-        await api.startVM(vm.id);
-        later(() => fetchTicketFor(vm.id), 2500);
+        await api.startVM(vm.id, vm.node);
+        later(() => fetchTicketFor(vm.id, vm.node, vm.hypervisor), 2500);
       }
       await loadVMs();
     } catch (e) {
@@ -318,7 +324,8 @@
     if (el) {
       el.src = el.src;
     } else {
-      fetchTicketFor(vmId);
+      const vm = vms.find((v) => v.id === vmId);
+      fetchTicketFor(vmId, vm?.node, vm?.hypervisor);
     }
     toast.info(t('multiview.reconnectingStation'));
   }
@@ -370,7 +377,7 @@
     }
     toast.info(t('multiview.startingBatch', { count: stopped.length }));
     for (const vm of stopped) {
-      api.startVM(vm.id).catch(() => {});
+      api.startVM(vm.id, vm.node).catch(() => {});
     }
     later(loadVMs, 3000);
   }
@@ -937,7 +944,7 @@
           <div class="flex items-center flex-wrap gap-3">
             <!-- Columns -->
             <div class="inline-flex items-center gap-1">
-              <span class="text-muted-foreground hidden sm:inline">Columnas:</span>
+              <span class="text-muted-foreground hidden sm:inline">{t('multiview.columns')}:</span>
               <div class="inline-flex rounded-xl bg-background border border-border p-1 text-xs">
                 <button
                   onclick={() => setColumns(1)}
@@ -949,7 +956,8 @@
                   onclick={() => setColumns(2)}
                   class="px-2.5 py-0.5 rounded-lg {columns === 2
                     ? 'bg-accent text-accent-foreground font-bold'
-                    : 'text-muted-foreground hover:text-foreground'}">2 (Defecto)</button
+                    : 'text-muted-foreground hover:text-foreground'}"
+                  >{t('multiview.twoDefault')}</button
                 >
                 <button
                   onclick={() => setColumns(3)}

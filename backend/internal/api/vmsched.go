@@ -83,15 +83,17 @@ func (h *Handler) PowerVMNow(w http.ResponseWriter, r *http.Request) {
 	action := chi.URLParam(r, "action")
 	switch action {
 	case "start":
-		if err := h.checkStartQuota(id); err != nil {
-			jsonErr(w, http.StatusConflict, err.Error())
-			return
+		if !h.isRemote() {
+			if err := h.checkStartQuota(id); err != nil {
+				jsonErr(w, http.StatusConflict, err.Error())
+				return
+			}
 		}
 		if err := h.compute.StartDomain(id); err != nil {
 			h.vmActionErr(w, err, humanizeStartError)
 			return
 		}
-		if h.fwMgr != nil {
+		if h.fwMgr != nil && !h.isRemote() {
 			if _, ferr := h.fwMgr.Apply(); ferr != nil {
 				h.logError("firewall_reapply_after_start_failed", ferr, id)
 			}

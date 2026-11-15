@@ -41,11 +41,15 @@ type Config struct {
 	LibvirtURI string
 	JWTSecret  string
 	DataDir    string
-	Version    string
-	BuildTime  string
-	Commit     string
-	RepoDir    string
-	LogFile    string
+	// PoolsRoot overrides the directory for KVM/ISO/Incus pools. It exists so
+	// a shared DATA_DIR (HA control plane) can keep VM disks on node-local
+	// storage instead of filling the small replicated control volume.
+	PoolsRoot string
+	Version   string
+	BuildTime string
+	Commit    string
+	RepoDir   string
+	LogFile   string
 
 	// LibvirtStartDelaySec is the maximum duration in seconds to wait at boot
 	// for libvirt and storage pools (NFS, ZFS, USB mounts) to become ready.
@@ -84,6 +88,17 @@ type Config struct {
 	// reverse proxy). The installed systemd unit sets it to 0 because
 	// it serves plain HTTP behind a reverse proxy on localhost.
 	SecureCookies bool
+
+	// DisableAppArmor drops the AppArmor security label for domains
+	// defined by WebKVM. libvirt's generated profile marks external
+	// snapshot backing files read-only ("deny ... w"), which makes
+	// offline snapshot deletion fail on Debian/Ubuntu. QEMU still runs
+	// as libvirt-qemu with DAC and seccomp. Set
+	// WEBKVM_DISABLE_APPARMOR=0 to keep AppArmor confinement (and accept
+	// that offline external snapshot deletion may fail until libvirt is
+	// fixed). SELinux hosts are unaffected: the label is only added when
+	// AppArmor is active.
+	DisableAppArmor bool
 
 	// IncusEnabled (v2.2.0, formerly LXDEnabled) toggles the optional
 	// Incus container backend. Incus is disabled by default: when off (or
@@ -129,6 +144,15 @@ func Load() (*Config, error) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
+	poolsRoot := envStrFrom("WEBKVM_POOLS_DIR", "", dotenv)
+	if poolsRoot != "" {
+		if !filepath.IsAbs(poolsRoot) {
+			return nil, fmt.Errorf("WEBKVM_POOLS_DIR must be an absolute path")
+		}
+		if err := os.MkdirAll(poolsRoot, 0755); err != nil {
+			return nil, fmt.Errorf("create pools dir: %w", err)
+		}
+	}
 
 	secret, err := resolveJWTSecret(envStrFrom("JWT_SECRET", "", dotenv), dataDir)
 	if err != nil {
@@ -146,6 +170,7 @@ func Load() (*Config, error) {
 		LibvirtURI: envStrFrom("LIBVIRT_URI", "qemu:///system", dotenv),
 		JWTSecret:  secret,
 		DataDir:    dataDir,
+		PoolsRoot:  poolsRoot,
 		Version:    envStrFrom("WEBKVM_VERSION", "dev", dotenv),
 		BuildTime:  envStrFrom("WEBKVM_BUILD_TIME", "unknown", dotenv),
 		Commit:     envStrFrom("WEBKVM_COMMIT", "", dotenv),
@@ -160,6 +185,7 @@ func Load() (*Config, error) {
 		LogFile:              envStrFrom("WEBKVM_LOG_FILE", "", dotenv),
 		LibvirtStartDelaySec: envIntFrom("LIBVIRT_START_DELAY_SEC", envIntFrom("WEBKVM_LIBVIRT_START_DELAY_SEC", 0, dotenv), dotenv),
 		SecureCookies:        envBoolFrom("WEBKVM_COOKIE_SECURE", true, dotenv),
+		DisableAppArmor:      envBoolFrom("WEBKVM_DISABLE_APPARMOR", true, dotenv),
 		IncusEnabled:         envBoolFrom("WEBKVM_INCUS_ENABLED", false, dotenv),
 		IncusSocket:          envStrFrom("INCUS_SOCKET", "", dotenv),
 		WebAuthnRPID:         envStrFrom("WEBAUTHN_RP_ID", "", dotenv),
@@ -275,6 +301,9 @@ func defaultDataDir() string {
 }
 
 func (c *Config) PoolsDir() string {
+	if c.PoolsRoot != "" {
+		return c.PoolsRoot
+	}
 	return filepath.Join(c.DataDir, "pools")
 }
 

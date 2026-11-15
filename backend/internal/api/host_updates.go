@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"webkvm/internal/hostsched"
+	"webkvm/internal/safego"
 )
 
 type HostPackageUpdate struct {
@@ -35,14 +39,17 @@ type HostUpdatesSummary struct {
 }
 
 var (
-	updatesMu          sync.Mutex
-	cachedUpdates      *HostUpdatesSummary
-	lastCheckedTime    time.Time
-	isUpgradingHost    bool
-	isRefreshingHost   bool
-	upgradableLineRE   = regexp.MustCompile(`^([a-zA-Z0-9.+~-]+)/([^\s/]+)\s+(\S+)\s+(\S+)\s+\[(?:upgradable from|actualizable desde):\s+([^\]]+)\]`)
-	unpackingPkgRE     = regexp.MustCompile(`(?:Unpacking|Preparando para desempaquetar|Desempaquetando)\s+([a-zA-Z0-9.+~-]+)`)
-	settingUpPkgRE     = regexp.MustCompile(`(?:Setting up|Configurando)\s+([a-zA-Z0-9.+~-]+)`)
+	updatesMu        sync.Mutex
+	cachedUpdates    *HostUpdatesSummary
+	lastCheckedTime  time.Time
+	isUpgradingHost  bool
+	isRefreshingHost bool
+	upgradableLineRE = regexp.MustCompile(`^([a-zA-Z0-9.+~-]+)/([^\s/]+)\s+(\S+)\s+(\S+)\s+\[(?:upgradable from|actualizable desde):\s+([^\]]+)\]`)
+	unpackingPkgRE   = regexp.MustCompile(`(?:Unpacking|Preparando para desempaquetar|Desempaquetando)\s+([a-zA-Z0-9.+~-]+)`)
+	settingUpPkgRE   = regexp.MustCompile(`(?:Setting up|Configurando)\s+([a-zA-Z0-9.+~-]+)`)
+	// safePkgNameRE accepts the package-name shape the UI surfaces and blocks
+	// a leading dash so a hostile name cannot be parsed as a flag (--force-yes).
+	safePkgNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.+~-]*$`)
 )
 
 type PkgManager string
@@ -294,14 +301,11 @@ func (h *Handler) RefreshHostUpdates(w http.ResponseWriter, r *http.Request) {
 	var cmd *exec.Cmd
 	switch pm {
 	case PkgManagerAPT:
-		cmd = exec.CommandContext(ctx, "apt-get", "update")
-		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C")
+		cmd = pkgManagerCmd(ctx, "apt-get", []string{"DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"}, "update")
 	case PkgManagerDNF:
-		cmd = exec.CommandContext(ctx, "dnf", "makecache", "--refresh")
-		cmd.Env = append(os.Environ(), "LC_ALL=C")
+		cmd = pkgManagerCmd(ctx, "dnf", []string{"LC_ALL=C"}, "makecache", "--refresh")
 	case PkgManagerPacman:
-		cmd = exec.CommandContext(ctx, "pacman", "-Sy")
-		cmd.Env = append(os.Environ(), "LC_ALL=C")
+		cmd = pkgManagerCmd(ctx, "pacman", []string{"LC_ALL=C"}, "-Sy")
 	}
 
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -328,36 +332,127 @@ func (h *Handler) RefreshHostUpdates(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, http.StatusOK, summary)
 }
 
-// UpgradeHostUpdates starts an async background job executing the host system upgrade.
-func (h *Handler) UpgradeHostUpdates(w http.ResponseWriter, r *http.Request) {
-	pm := detectPackageManager()
-	if pm == PkgManagerNone {
-		jsonErr(w, http.StatusNotImplemented, "no supported package manager (apt, dnf, pacman) found on this host")
-		return
-	}
+// systemdRunAvailable reports whether systemd-run can launch the package
+// manager outside this service's hardened mount namespace. Package var so
+// tests do not depend on the host having systemd.
+var systemdRunAvailable = func() bool {
+	_, err := exec.LookPath("systemd-run")
+	return err == nil
+}
 
-	updatesMu.Lock()
-	if isUpgradingHost {
-		updatesMu.Unlock()
-		jsonErr(w, http.StatusConflict, "a host system upgrade is already in progress")
-		return
+// pkgManagerCmd builds the command that runs the host package manager. When
+// systemd-run is available it launches a transient service: systemd forks that
+// process from PID 1's namespace, escaping ProtectSystem=full (which would
+// otherwise mount /etc read-only and make dpkg/rpm fail with "Read-only file
+// system"). --pipe forwards stdout/stderr for live progress and implies --wait,
+// and --collect discards the unit afterwards. Without systemd-run (Docker,
+// non-systemd hosts) it falls back to a direct child, which is correct there
+// because those deployments never apply ProtectSystem.
+func pkgManagerCmd(ctx context.Context, name string, env []string, args ...string) *exec.Cmd {
+	if systemdRunAvailable() {
+		run := []string{"--pipe", "--collect", "--quiet"}
+		for _, e := range env {
+			run = append(run, "--setenv="+e)
+		}
+		run = append(run, "--", name)
+		run = append(run, args...)
+		return exec.CommandContext(ctx, "systemd-run", run...)
 	}
-	if isRefreshingHost {
-		updatesMu.Unlock()
-		jsonErr(w, http.StatusConflict, "cannot start upgrade while repository refresh is in progress")
-		return
-	}
-	isUpgradingHost = true
-	updatesMu.Unlock()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), env...)
+	return cmd
+}
 
-	owner := jobOwner(r)
-	jobTitle := fmt.Sprintf("Host System Upgrade (%s)", strings.ToUpper(string(pm)))
-	job := submitJobWithPool(owner, jobTitle, "", func(progress func(pct float64, stage string)) (any, error) {
+// upgradeCmd builds the package-manager invocation for a full or selective
+// upgrade. An empty pkgs means "upgrade everything"; otherwise only those
+// packages are upgraded (apt: install --only-upgrade, dnf: upgrade <pkg>,
+// pacman: -S <pkg>).
+func upgradeCmd(ctx context.Context, pm PkgManager, pkgs []string) *exec.Cmd {
+	switch pm {
+	case PkgManagerAPT:
+		env := []string{"DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"}
+		args := []string{"-y", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"}
+		if len(pkgs) > 0 {
+			args = append(args, "install", "--only-upgrade")
+			args = append(args, pkgs...)
+		} else {
+			args = append(args, "dist-upgrade")
+		}
+		return pkgManagerCmd(ctx, "apt-get", env, args...)
+	case PkgManagerDNF:
+		args := append([]string{"-y", "upgrade"}, pkgs...)
+		return pkgManagerCmd(ctx, "dnf", []string{"LC_ALL=C"}, args...)
+	case PkgManagerPacman:
+		if len(pkgs) > 0 {
+			args := append([]string{"-S", "--noconfirm"}, pkgs...)
+			return pkgManagerCmd(ctx, "pacman", []string{"LC_ALL=C"}, args...)
+		}
+		return pkgManagerCmd(ctx, "pacman", []string{"LC_ALL=C"}, "-Syu", "--noconfirm")
+	}
+	return nil
+}
+
+// Host-upgrade error codes, surfaced as the job's error_code so clients and
+// operators can tell failure classes apart without parsing prose.
+const (
+	// errHostUpgradeROFS is the hardened-namespace failure: the package
+	// manager ran inside this service's ProtectSystem=full mount namespace
+	// and hit a read-only /etc. The fix is to run it via systemd-run; seeing
+	// this code again means that escape failed (or was unavailable).
+	errHostUpgradeROFS    = "host_upgrade_readonly_filesystem"
+	errHostUpgradeTimeout = "host_upgrade_timeout"
+	errHostUpgradeFailed  = "host_upgrade_failed"
+)
+
+// hostUpgradeErr is a coded error returned by the upgrade worker. The generic
+// submitJob plumbing keys off Code() to populate the job's error_code.
+type hostUpgradeErr struct {
+	code string
+	msg  string
+}
+
+func (e *hostUpgradeErr) Error() string { return e.msg }
+func (e *hostUpgradeErr) Code() string  { return e.code }
+
+// hostUpgradeCode classifies a package-manager failure output into a stable
+// error code. Kept pure so it is unit-testable without invoking a real PM.
+func hostUpgradeCode(detail string) string {
+	if strings.Contains(strings.ToLower(detail), "read-only file system") {
+		return errHostUpgradeROFS
+	}
+	return errHostUpgradeFailed
+}
+
+// notifyUpgrade emits a completion notification through the configured
+// channels. Best-effort: a nil notifier (unit tests) or a delivery error is
+// ignored — the job result already carries the outcome.
+func (h *Handler) notifyUpgrade(pm PkgManager, err error) {
+	if h.notifier == nil {
+		return
+	}
+	label := strings.ToUpper(string(pm))
+	if err != nil {
+		h.notifier.Record("error", "Host upgrade failed ("+label+")", err.Error())
+		return
+	}
+	h.notifier.Record("info", "Host upgrade completed", "The system upgrade via "+label+" finished successfully.")
+}
+
+// upgradeJob returns the background job body that performs a host upgrade via
+// the detected package manager. Shared by the HTTP handler and the scheduled
+// host-update runner. The job owns the isUpgradingHost flag and clears it on
+// completion; completion is notified through the configured channels.
+func (h *Handler) upgradeJob(pm PkgManager, pkgs []string) func(progress func(pct float64, stage string)) (any, error) {
+	return func(progress func(pct float64, stage string)) (res any, err error) {
 		defer func() {
 			updatesMu.Lock()
 			isUpgradingHost = false
 			cachedUpdates = nil
 			updatesMu.Unlock()
+		}()
+		// Best-effort completion notification (success or failure).
+		defer func() {
+			h.notifyUpgrade(pm, err)
 		}()
 
 		progress(5, fmt.Sprintf("Inicializando gestor de paquetes %s...", strings.ToUpper(string(pm))))
@@ -365,21 +460,7 @@ func (h *Handler) UpgradeHostUpdates(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 		defer cancel()
 
-		var cmd *exec.Cmd
-		switch pm {
-		case PkgManagerAPT:
-			cmd = exec.CommandContext(ctx, "apt-get", "-y",
-				"-o", "Dpkg::Options::=--force-confdef",
-				"-o", "Dpkg::Options::=--force-confold",
-				"dist-upgrade")
-			cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C")
-		case PkgManagerDNF:
-			cmd = exec.CommandContext(ctx, "dnf", "-y", "upgrade")
-			cmd.Env = append(os.Environ(), "LC_ALL=C")
-		case PkgManagerPacman:
-			cmd = exec.CommandContext(ctx, "pacman", "-Syu", "--noconfirm")
-			cmd.Env = append(os.Environ(), "LC_ALL=C")
-		}
+		cmd := upgradeCmd(ctx, pm, pkgs)
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -444,13 +525,14 @@ func (h *Handler) UpgradeHostUpdates(w http.ResponseWriter, r *http.Request) {
 
 		if err := cmd.Wait(); err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
-				return nil, fmt.Errorf("apt-get upgrade timed out after 30 minutes")
+				return nil, &hostUpgradeErr{code: errHostUpgradeTimeout, msg: "host upgrade timed out after 30 minutes"}
 			}
 			detail := strings.TrimSpace(strings.Join(tailLines, "\n"))
+			msg := fmt.Sprintf("%s upgrade exited with error: %v", pm, err)
 			if detail != "" {
-				return nil, fmt.Errorf("apt-get upgrade exited with error: %w\n%s", err, detail)
+				msg += "\n" + detail
 			}
-			return nil, fmt.Errorf("apt-get upgrade exited with error: %w", err)
+			return nil, &hostUpgradeErr{code: hostUpgradeCode(detail), msg: msg}
 		}
 
 		progress(100, "Actualización del sistema completada con éxito")
@@ -460,10 +542,131 @@ func (h *Handler) UpgradeHostUpdates(w http.ResponseWriter, r *http.Request) {
 			"configured": len(configuredPkgs),
 			"timestamp":  time.Now().Format(time.RFC3339),
 		}, nil
-	})
+	}
+}
+
+// UpgradeHostUpdates starts an async background job executing the host system upgrade.
+func (h *Handler) UpgradeHostUpdates(w http.ResponseWriter, r *http.Request) {
+	pm := detectPackageManager()
+	if pm == PkgManagerNone {
+		jsonErr(w, http.StatusNotImplemented, "no supported package manager (apt, dnf, pacman) found on this host")
+		return
+	}
+
+	// Optional body: {"packages": [...]} for a selective upgrade. Empty body
+	// (or no "packages") means "upgrade everything".
+	var req struct {
+		Packages []string `json:"packages"`
+	}
+	if err := decodeBody(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	for _, p := range req.Packages {
+		if !safePkgNameRE.MatchString(p) {
+			jsonErr(w, http.StatusBadRequest, "invalid package name: "+p)
+			return
+		}
+	}
+
+	updatesMu.Lock()
+	if isUpgradingHost {
+		updatesMu.Unlock()
+		jsonErr(w, http.StatusConflict, "a host system upgrade is already in progress")
+		return
+	}
+	if isRefreshingHost {
+		updatesMu.Unlock()
+		jsonErr(w, http.StatusConflict, "cannot start upgrade while repository refresh is in progress")
+		return
+	}
+	isUpgradingHost = true
+	updatesMu.Unlock()
+
+	owner := jobOwner(r)
+	jobTitle := fmt.Sprintf("Host System Upgrade (%s)", strings.ToUpper(string(pm)))
+	if len(req.Packages) > 0 {
+		jobTitle = fmt.Sprintf("Host Package Upgrade (%s, %d pkg)", strings.ToUpper(string(pm)), len(req.Packages))
+	}
+	job := submitJobWithPool(owner, jobTitle, "", h.upgradeJob(pm, req.Packages))
 
 	h.audit.Log(auditFor(r, "host.updates_upgrade_started", "host", map[string]any{
 		"job_id": job.ID,
 	}))
 	jsonResp(w, http.StatusAccepted, job)
+}
+
+// RebootHost initiates a full host reboot. It is the action behind the
+// "restart required" prompt that appears after a host upgrade. The reboot is
+// scheduled in the background so the 202 response reaches the client before
+// systemd tears the machine down.
+func (h *Handler) RebootHost(w http.ResponseWriter, r *http.Request) {
+	if !isRoot() {
+		jsonErr(w, http.StatusForbidden, "reboot requires the backend to run as root")
+		return
+	}
+	if h.audit != nil {
+		h.audit.Log(auditFor(r, "host.reboot", "host", nil))
+	}
+	go func() {
+		defer safego.Recover("host_reboot")
+		time.Sleep(500 * time.Millisecond)
+		_ = exec.Command("systemctl", "reboot").Run()
+	}()
+	jsonResp(w, http.StatusAccepted, map[string]string{"status": "rebooting"})
+}
+
+// runScheduledUpgrade is the callback fired by the hostsched scheduler. It
+// submits a full host upgrade as a "system" job, guarded exactly like the
+// HTTP path so a manual upgrade and a scheduled one cannot overlap.
+func (h *Handler) runScheduledUpgrade() {
+	pm := detectPackageManager()
+	if pm == PkgManagerNone {
+		return
+	}
+	updatesMu.Lock()
+	if isUpgradingHost || isRefreshingHost {
+		updatesMu.Unlock()
+		slog.Info("hostsched_upgrade_skipped", "reason", "already running")
+		return
+	}
+	isUpgradingHost = true
+	updatesMu.Unlock()
+
+	title := fmt.Sprintf("Scheduled Host Upgrade (%s)", strings.ToUpper(string(pm)))
+	submitJobWithPool("system", title, "", h.upgradeJob(pm, nil))
+}
+
+// GetHostUpdateSchedule returns the current host-update schedule.
+func (h *Handler) GetHostUpdateSchedule(w http.ResponseWriter, r *http.Request) {
+	if h.hostSched == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "host update scheduler not initialized")
+		return
+	}
+	jsonResp(w, http.StatusOK, h.hostSched.Get())
+}
+
+// SetHostUpdateSchedule updates the host-update schedule (admin-only route).
+func (h *Handler) SetHostUpdateSchedule(w http.ResponseWriter, r *http.Request) {
+	if h.hostSched == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "host update scheduler not initialized")
+		return
+	}
+	var req hostsched.Config
+	if err := decodeBody(r, &req); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.hostSched.Set(req); err != nil {
+		jsonErr(w, http.StatusBadRequest, "invalid schedule: "+err.Error())
+		return
+	}
+	if h.hostScheduler != nil {
+		h.hostScheduler.Rebuild()
+	}
+	h.audit.Log(auditFor(r, "host.updates_schedule_set", "host", map[string]any{
+		"enabled": req.Enabled,
+		"cron":    req.UpgradeCron,
+	}))
+	jsonResp(w, http.StatusOK, h.hostSched.Get())
 }

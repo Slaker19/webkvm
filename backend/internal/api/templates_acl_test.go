@@ -37,6 +37,8 @@ type aclTemplateBackend struct {
 
 func (b *aclTemplateBackend) ListDomains() ([]models.VM, error) { return b.vms, nil }
 
+func (b *aclTemplateBackend) DomainExists(string) (bool, error) { return false, nil }
+
 func (b *aclTemplateBackend) GetVMMeta(id string) (models.VMMeta, error) {
 	if m, ok := b.metas[id]; ok {
 		return m, nil

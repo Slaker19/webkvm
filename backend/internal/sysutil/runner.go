@@ -1,6 +1,7 @@
 package sysutil
 
 import (
+	"bytes"
 	"context"
 	"os/exec"
 	"time"
@@ -10,6 +11,12 @@ import (
 type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 	RunWithTimeout(name string, timeout time.Duration, args ...string) ([]byte, error)
+}
+
+// InputCommandRunner extends CommandRunner for commands that consume stdin,
+// such as a reviewed script sent over SSH.
+type InputCommandRunner interface {
+	RunInput(ctx context.Context, name string, input []byte, args ...string) ([]byte, error)
 }
 
 // OSCommandRunner executes commands directly on the host system.
@@ -22,6 +29,13 @@ func (r *OSCommandRunner) Run(ctx context.Context, name string, args ...string) 
 	return cmd.CombinedOutput()
 }
 
+// RunInput runs a command with a byte slice connected to stdin.
+func (r *OSCommandRunner) RunInput(ctx context.Context, name string, input []byte, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = bytes.NewReader(input)
+	return cmd.CombinedOutput()
+}
+
 func (r *OSCommandRunner) RunWithTimeout(name string, timeout time.Duration, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -30,7 +44,8 @@ func (r *OSCommandRunner) RunWithTimeout(name string, timeout time.Duration, arg
 
 // MockCommandRunner allows simulating command executions in tests.
 type MockCommandRunner struct {
-	Handler func(ctx context.Context, name string, args ...string) ([]byte, error)
+	Handler      func(ctx context.Context, name string, args ...string) ([]byte, error)
+	InputHandler func(ctx context.Context, name string, input []byte, args ...string) ([]byte, error)
 }
 
 func (m *MockCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -38,6 +53,13 @@ func (m *MockCommandRunner) Run(ctx context.Context, name string, args ...string
 		return m.Handler(ctx, name, args...)
 	}
 	return nil, nil
+}
+
+func (m *MockCommandRunner) RunInput(ctx context.Context, name string, input []byte, args ...string) ([]byte, error) {
+	if m.InputHandler != nil {
+		return m.InputHandler(ctx, name, input, args...)
+	}
+	return m.Run(ctx, name, args...)
 }
 
 func (m *MockCommandRunner) RunWithTimeout(name string, timeout time.Duration, args ...string) ([]byte, error) {

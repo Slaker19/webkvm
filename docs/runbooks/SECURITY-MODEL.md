@@ -112,3 +112,17 @@ grep -E '"action":"(vm.appliance_deploy|appliance.deploy_cleanup|appliance.deplo
 - **Firewall applies are serialized** with a per-apply temp file; `flushTable` only ignores "table does not exist" and surfaces permission/binary errors.
 - **Disk attach policy**: one image may be attached to at most one VM (`409`), and a non-empty image requires explicit `force: true` (`409` otherwise) — enforced in `CreateDisk`, not just in the UI.
 - **Pool ACL coverage**: ISO upload/download, volume and ISO listings, and the fleet snapshot list are all scoped to `AllowedPools` / VM ACLs; `requirePermission` denies when the user store is unavailable instead of allowing.
+
+## 10. AppArmor and snapshot isolation
+
+On Debian/Ubuntu, libvirt's generated AppArmor profile marks the backing file
+of an external snapshot read-only and adds an explicit `deny ... w` rule. The
+offline block-commit used to delete or revert such a snapshot therefore fails
+with `EACCES`, silently. WebKVM disables the **AppArmor label only** for the
+domains it defines when AppArmor is active; QEMU remains the unprivileged
+`libvirt-qemu` user with DAC, seccomp and cgroups. SELinux is never disabled.
+
+Set `WEBKVM_DISABLE_APPARMOR=0` to keep the label and accept that those
+snapshot operations may fail until libvirt ships the upstream fix. Existing
+domains are migrated on the next start, revert or snapshot delete. See
+[SECURITY.md](../../SECURITY.md) section 7 for the full rationale.

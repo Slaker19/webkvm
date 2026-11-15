@@ -284,7 +284,7 @@ func (h *Handler) DeleteMedia(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.HasPrefix(id, "system:") {
-		jsonErr(w, http.StatusForbidden, "Los recursos del sistema están protegidos y no pueden eliminarse por funcionamiento correcto de WebKVM.")
+		jsonErrCode(w, http.StatusForbidden, "system_media_protected", "Los recursos del sistema están protegidos y no pueden eliminarse por funcionamiento correcto de WebKVM.")
 		return
 	}
 	// A bare filename has always been accepted as a custom asset;

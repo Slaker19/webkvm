@@ -75,9 +75,12 @@
     upsertTask({
       id: taskId,
       kind: 'storage',
-      title: `Creando ZPool: ${createZPoolName.trim()} (${createZPoolTopology})`,
+      title: t('storage.zpoolCreatingTitle', {
+        name: createZPoolName.trim(),
+        topology: createZPoolTopology,
+      }),
       pct: 35,
-      message: 'Creando conjunto ZFS y configuración...',
+      message: t('storage.zpoolCreatingMessage'),
       status: 'running',
     });
     try {
@@ -90,11 +93,16 @@
         mount_point: createZPoolMountPoint.trim() || undefined,
         auto_unmount: createZPoolAutoUnmount,
       });
-      finishTask(taskId, 'success', `ZPool ${createZPoolName.trim()} creado con éxito`, 100);
+      finishTask(
+        taskId,
+        'success',
+        t('storage.zpoolCreateSuccess', { name: createZPoolName.trim() }),
+        100
+      );
       showCreateZPool = false;
       onRefresh();
     } catch (e) {
-      finishTask(taskId, 'error', e.message || 'Error al crear ZPool', 35);
+      finishTask(taskId, 'error', e.message || t('storage.zpoolCreateError'), 35);
       showStorageErr('Create ZFS Pool Error', e);
     } finally {
       creatingZPool = false;
@@ -113,7 +121,7 @@
           toast.success(t('storage.zpoolDestroyed'));
           onRefresh();
         } catch (e) {
-          toast.error(e.message || 'Error al destruir ZPool');
+          toast.error(e.message || t('storage.zpoolDestroyError'));
         }
       },
     });
@@ -153,10 +161,7 @@
       kind: 'storage',
       title: `ZFS Scrub: ${poolName}`,
       pct: 50,
-      message:
-        action === 'stop'
-          ? 'Deteniendo verificación...'
-          : 'Ejecutando verificación de integridad...',
+      message: action === 'stop' ? t('storage.scrubStopping') : t('storage.scrubRunning'),
       status: 'running',
     });
     scrubbingPool[poolName] = true;
@@ -166,17 +171,19 @@
         taskId,
         'success',
         action === 'stop'
-          ? `Scrub cancelado para ${poolName}`
-          : `Scrub en progreso para ${poolName}`,
+          ? t('storage.scrubCancelledFor', { name: poolName })
+          : t('storage.scrubRunningFor', { name: poolName }),
         100
       );
       toast.success(
-        action === 'stop' ? `Scrub cancelado para ${poolName}` : `Scrub iniciado para ${poolName}`
+        action === 'stop'
+          ? t('storage.scrubCancelledFor', { name: poolName })
+          : t('storage.scrubStartedFor', { name: poolName })
       );
       onRefresh();
     } catch (e) {
-      finishTask(taskId, 'error', e.message || 'Error en ZFS scrub', 50);
-      toast.error('Error en ZFS scrub: ' + e.message);
+      finishTask(taskId, 'error', e.message || t('storage.zfsScrubError'), 50);
+      toast.error(e.message || t('storage.zfsScrubError'));
     } finally {
       scrubbingPool[poolName] = false;
     }
@@ -421,9 +428,9 @@
             bind:value={createZPoolAshift}
             class="input w-full font-mono text-xs"
           >
-            <option value={12}>12 (4 KB — Estándar SSD/HDD)</option>
-            <option value={9}>9 (512 B — Discos legados)</option>
-            <option value={13}>13 (8 KB — NVMe avanzado)</option>
+            <option value={12}>{t('storage.zfsAshift12')}</option>
+            <option value={9}>{t('storage.zfsAshift9')}</option>
+            <option value={13}>{t('storage.zfsAshift13')}</option>
           </select>
         </div>
         <div>
@@ -435,10 +442,10 @@
             bind:value={createZPoolCompression}
             class="input w-full font-mono text-xs"
           >
-            <option value="lz4">lz4 (Recomendado, rápido)</option>
-            <option value="zstd">zstd (Alta compresión)</option>
+            <option value="lz4">{t('storage.zfsCompressionLz4')}</option>
+            <option value="zstd">{t('storage.zfsCompressionZstd')}</option>
             <option value="gzip">gzip</option>
-            <option value="off">off (Desactivada)</option>
+            <option value="off">{t('storage.zfsCompressionOff')}</option>
           </select>
         </div>
       </div>

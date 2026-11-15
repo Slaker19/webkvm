@@ -17,7 +17,7 @@
   import { t } from '../lib/i18n.svelte.js';
   import { vmDiskPools, deployablePools, movablePools } from '$lib/purpose.js';
   import { isContainer } from '$lib/utils/computeType.js';
-  import { networkLabel } from '$lib/utils/networkLabel.js';
+  import { networkOptionLabel } from '$lib/utils/networkLabel.js';
   import { vmIps } from '$lib/utils/vmIps.js';
   import { events } from '$lib/stores/events.svelte.js';
   import { navigate, getRoute } from '$lib/router.svelte.js';
@@ -49,6 +49,24 @@
   import VmPciCard from '$lib/components/vm-detail/VmPciCard.svelte';
   import * as Dialog from '$lib/components/ui/dialog';
   import Switch from '$lib/components/Switch.svelte';
+  import RemoteNodeBanner from '$lib/components/RemoteNodeBanner.svelte';
+  import { fetchConsoleFile, consoleFileErrorText, saveBlob } from '$lib/utils/consoleFile.js';
+  import RemoteUnsupportedNotice from '$lib/components/RemoteUnsupportedNotice.svelte';
+  import MoveMemberDialog from '$lib/components/MoveMemberDialog.svelte';
+  import {
+    isRemoteVm,
+    isRemoteUnsupported,
+    tabSupport,
+    findNode,
+    needsClusterAccess,
+    vmHv,
+    remoteLoadUnsupported,
+  } from '$lib/utils/remoteRoutes.js';
+  import { safeStorage } from '$lib/utils/storage.js';
+  import HaToggle from '$lib/components/HaToggle.svelte';
+  import { clusterModule, refreshClusterModule } from '$lib/stores/clusterModule.svelte.js';
+  import { haWorkloads, refreshHaWorkloads } from '$lib/stores/haWorkloads.svelte.js';
+  import { isHaManaged } from '$lib/utils/haWorkloads.js';
   import {
     Play,
     PowerOff,
@@ -65,9 +83,32 @@
     KeyRound,
   } from '@lucide/svelte';
 
-  let { vmId } = $props();
+  let { vmId, node, hv = '' } = $props();
+
+  // Cluster node the VM lives on (empty/local = local hypervisor). Used to
+  // route every API call for this VM to the owning node.
+  const vmNode = $derived(node && node !== 'local' ? node : '');
+  // hv selector sent with every per-VM call that names the node: the route's
+  // hv, else the loaded VM's. Without hv=incus an Incus member's instance
+  // would take the libvirt/SSH path on the backend (409 no_key).
+  const vmHvSel = $derived(hv === 'kvm' || hv === 'incus' ? hv : vmHv(vm));
 
   let vm = $state(null);
+  // Registry node of a remote VM (for its banner / the link to its own UI),
+  // last load error (typed codes drive the Cluster access shortcut) and the
+  // Incus members offered by "Move to member".
+  let clusterNodes = $state([]);
+  let loadError = $state(null);
+  let incusMembers = $state([]);
+  let showMoveMember = $state(false);
+  const remoteVm = $derived(isRemoteVm(vm));
+  const registryNode = $derived(findNode(clusterNodes, vm));
+  const isIncusInstance = $derived(vm?.hypervisor === 'incus');
+  const canMoveMember = $derived(
+    isIncusInstance && !remoteVm && auth.isAdmin() && incusMembers.length > 1
+  );
+  const tabBlocked = (id) => tabSupport(id, vm) === 'none';
+  const vmLocked = $derived(isHaManaged(vm, haWorkloads.workloads));
   // v1.4 Fase 4: an LXD container has no KVM concepts (no chipset/UEFI/
   // TPM, no cdrom, no VNC, no per-disk attach). Sections and controls
   // below are gated on this derived flag (PLAN-LXD 5.4).
@@ -81,6 +122,12 @@
   // Firewall rules + port forwards (local editing state).
   let fwRules = $state([]);
   let fwForwards = $state([]);
+  // Class-L panels of a VM on another node (8.29 #1/#2): known up front from
+  // the route classes, or learnt from a 501 that still slips through.
+  let fwLoad501 = $state(false);
+  let schedLoad501 = $state(false);
+  const fwUnsupported = $derived(remoteLoadUnsupported(vm, 'firewall') || fwLoad501);
+  const schedUnsupported = $derived(remoteLoadUnsupported(vm, 'schedule') || schedLoad501);
   // VM metadata (template flag, owner, etc.).
   let vmMeta = $state(null);
   // Power & Snapshot schedule.
@@ -121,6 +168,7 @@
   // Metrics (Phase 21): in-memory time series per metric, updated via
   // SSE and on mount via a single REST fetch.
   let metrics = $state(null);
+  let metricsUnsupported = $state(false);
   const last60 = (arr) => (Array.isArray(arr) ? arr.slice(-60) : []);
   const cpuPoints = $derived(last60(metrics?.cpu?.points));
   const ramPoints = $derived(last60(metrics?.ram?.points));
@@ -129,30 +177,8 @@
   const netRxPoints = $derived(last60(metrics?.net_rx?.points));
   const netTxPoints = $derived(last60(metrics?.net_tx?.points));
 
-  // QEMU guest-agent telemetry (OS, real in-guest filesystem usage and
-  // every NIC address). Loaded on demand when the Guest tab is opened
-  // — it's a synchronous round-trip to the agent, so it must not be
-  // part of the page's initial load.
-  let guestInfo = $state(null);
-  let guestLoading = $state(false);
-
-  async function loadGuestInfo() {
-    if (!vmId || deleting) return;
-    guestLoading = true;
-    try {
-      guestInfo = await api.getGuestInfo(vmId);
-    } catch (e) {
-      guestInfo = { available: false, error: e.message };
-    } finally {
-      guestLoading = false;
-    }
-  }
-
-  $effect(() => {
-    if (activeSection === 'guest' && guestInfo === null && !guestLoading) {
-      loadGuestInfo();
-    }
-  });
+  // QEMU guest-agent telemetry is loaded by VmGuestTab itself (this page
+  // used to ask for /guest-info a second time when the tab was opened).
 
   const networkModels = [
     { value: 'virtio', label: 'virtio (recommended)' },
@@ -205,6 +231,24 @@
   // Add Net state
   let showAddNet = $state(false);
   let aNetNetwork = $state('default');
+  // Remote VM, ADVANCED: libvirt 10 nodes cannot list their bridges, so the
+  // operator types the exact bridge name instead of picking a libvirt network.
+  const NIC_BRIDGE_RE = /^[A-Za-z0-9._-]{1,15}$/;
+  let aNetCustom = $state('');
+  let nicAdvanced = $state(false);
+  const aNetCustomValue = $derived(aNetCustom.trim());
+  const aNetCustomError = $derived(
+    aNetCustomValue &&
+      (!NIC_BRIDGE_RE.test(aNetCustomValue) ||
+        aNetCustomValue === '.' ||
+        aNetCustomValue.includes('..'))
+      ? t('vmCreate.bridgeInvalid')
+      : ''
+  );
+  function setNicAdvanced(v) {
+    nicAdvanced = v;
+    safeStorage.setItem('webkvm.createWizardMode', v ? 'advanced' : 'easy');
+  }
   let aNetModel = $state('virtio');
   let aNetVlanTag = $state('');
 
@@ -308,7 +352,10 @@
     [
       { id: 'overview', label: t('vmDetail.overview') },
       !isContainerVm ? { id: 'console', label: t('vms.openConsole') } : null,
-      { id: 'terminal', label: isContainerVm ? 'Terminal Shell' : 'Consola Serie' },
+      {
+        id: 'terminal',
+        label: isContainerVm ? t('terminal.terminalShellTab') : t('terminal.serialTab'),
+      },
       { id: 'hardware', label: t('vmDetail.hardware') },
       !isContainerVm ? { id: 'cloudinit', label: 'Cloud-Init' } : null,
       { id: 'disks', label: t('vmDetail.disks') },
@@ -322,6 +369,21 @@
     ].filter(Boolean)
   );
 
+  // The serial WebSocket opens only once its tab is shown for a running VM
+  // (8.29 #5): a stopped VM used to open /serial on every detail load, wait
+  // 30 s for serial_grace_exhausted and write console.serial.open to the
+  // audit log. Once opened it stays mounted so switching tabs keeps it.
+  let serialWanted = $state(false);
+  $effect(() => {
+    if (
+      !serialWanted &&
+      activeSection === 'terminal' &&
+      (vm?.state === 'running' || vm?.state === 'paused')
+    ) {
+      serialWanted = true;
+    }
+  });
+
   function gotoSerial() {
     activeSection = 'terminal';
     queueMicrotask(() => {
@@ -333,6 +395,12 @@
   }
 
   async function openConsole(mode = 'vnc') {
+    // /console/{id} does not go through node dispatch: a VM on another
+    // node uses the in-page console (noVNC tab / .vv download) instead.
+    if (remoteVm) {
+      activeSection = 'console';
+      return;
+    }
     try {
       const { vnc_ticket } = await api.getVNCTicket(vmId);
       const modeParam = mode === 'spice' ? '&mode=spice' : '';
@@ -367,6 +435,12 @@
   }
 
   onMount(() => {
+    nicAdvanced = safeStorage.getItem('webkvm.createWizardMode') === 'advanced';
+    if (auth.isAdmin()) {
+      refreshClusterModule().then(() => {
+        if (clusterModule.enabled) refreshHaWorkloads();
+      });
+    }
     // A route without an id (e.g. an inaccessible VM link) must not
     // fire /api/vms/undefined/* requests.
     if (!vmId) {
@@ -374,8 +448,9 @@
       return;
     }
     loadCapabilities();
+    // Metrics are asked for by load() once the VM is known: a remote VM's
+    // /metrics is class L (501) and must not be requested at all.
     load();
-    loadMetrics();
     // Deep link: /vms/:id?serial=1 scrolls to the embedded serial console.
     if (getRoute().query?.serial === '1') later(gotoSerial, 400);
     const offMetrics = events.onVmMetrics((e) => {
@@ -420,17 +495,51 @@
     timers = [];
   }
 
+  // Set once the page is left: loads that answer afterwards drop their
+  // result (writing state and then reading a $derived such as remoteVm of a
+  // destroyed component is Svelte's `derived_inert`).
+  let destroyed = false;
   onDestroy(() => {
+    destroyed = true;
     unsubscribeEvents();
     clearAllTimers();
   });
 
+  let metricsRequested = false;
   async function loadMetrics() {
-    if (!vmId || deleting) return;
+    // Remote VMs: the metrics sampler only knows local domains (the route
+    // answers 501), so do not ask and do not spin on "collecting samples".
+    if (!vmId || deleting || remoteLoadUnsupported(vm, 'metrics')) return;
     try {
-      metrics = await api.getVMMetrics(vmId);
-    } catch {
+      const m = await api.getVMMetrics(vmId);
+      if (destroyed) return;
+      metrics = m;
+    } catch (e) {
+      if (destroyed) return;
       metrics = null;
+      if (isRemoteUnsupported(e)) metricsUnsupported = true;
+    }
+  }
+
+  // Registry nodes (admin) and Incus members: only what the banner and the
+  // move dialog need; failures are not fatal.
+  async function loadRemoteContext() {
+    if (!auth.isAdmin()) return;
+    try {
+      const res = await api.listNodes();
+      if (destroyed) return;
+      clusterNodes = res?.nodes || res || [];
+    } catch {
+      clusterNodes = [];
+    }
+    if (destroyed) return;
+    if (vm?.hypervisor === 'incus' && !isRemoteVm(vm)) {
+      try {
+        const c = await api.getIncusClusterMembers();
+        incusMembers = c?.members || [];
+      } catch {
+        incusMembers = [];
+      }
     }
   }
 
@@ -440,40 +549,54 @@
     error = '';
     try {
       const [vmData, snapData, bootData] = await Promise.all([
-        api.getVM(vmId),
-        api.listSnapshots(vmId).catch(() => []),
+        api.getVM(vmId, vmNode, hv),
+        api.listSnapshots(vmId, vmNode, vmHvSel).catch(() => []),
         api.getBootDevice(vmId).catch(() => ({ boot_device: 'hd' })),
       ]);
+      if (destroyed) return;
       vm = vmData;
+      loadError = null;
+      loadRemoteContext();
       snapshots = snapData;
-      if (bootData) bootDevice = bootData.boot_device;
-      api
-        .getVMMeta(vmId)
-        .then((m) => (vmMeta = m))
-        .catch(() => {});
-      api
-        .getVMFirewall(vmId)
-        .then((fw) => {
-          fwRules = (fw.rules || []).map((r) => ({ ...r }));
-          fwForwards = (fw.forwards || []).map((f) => ({ ...f }));
-        })
-        .catch(() => {});
-      api
-        .getVMSchedule(vmId)
-        .then((sc) => {
-          schedStart = sc.start_cron || '';
-          schedStop = sc.stop_cron || '';
-          schedSnap = sc.snapshot_cron || '';
-          schedSnapMax = sc.snapshot_max || 3;
-        })
-        .catch(() => {});
+      if (bootData?.boot_device) bootDevice = bootData.boot_device;
+      if (!metricsRequested) {
+        metricsRequested = true;
+        loadMetrics();
+      }
+      // Class-L reads of a remote VM are skipped (they answer 501).
+      if (!remoteLoadUnsupported(vmData, 'firewall')) {
+        api
+          .getVMFirewall(vmId)
+          .then((fw) => {
+            if (destroyed) return;
+            fwRules = (fw.rules || []).map((r) => ({ ...r }));
+            fwForwards = (fw.forwards || []).map((f) => ({ ...f }));
+          })
+          .catch((e) => {
+            if (!destroyed && isRemoteUnsupported(e)) fwLoad501 = true;
+          });
+      }
+      if (!remoteLoadUnsupported(vmData, 'schedule')) {
+        api
+          .getVMSchedule(vmId)
+          .then((sc) => {
+            if (destroyed) return;
+            schedStart = sc.start_cron || '';
+            schedStop = sc.stop_cron || '';
+            schedSnap = sc.snapshot_cron || '';
+            schedSnapMax = sc.snapshot_max || 3;
+          })
+          .catch((e) => {
+            if (!destroyed && isRemoteUnsupported(e)) schedLoad501 = true;
+          });
+      }
       Promise.all([
         api
-          .listNetworks()
+          .listNetworks(remoteVm ? vmNode : undefined)
           .then((n) => (networks = n))
           .catch(() => {}),
         api
-          .listPools()
+          .listPools(remoteVm ? vmNode : undefined)
           .then((p) => (pools = p))
           .catch(() => {}),
         api
@@ -484,12 +607,13 @@
           .me()
           .then((me) => (myAllowedNetworks = me?.allowed_networks || []))
           .catch(() => (myAllowedNetworks = [])),
+        // One metadata GET per load: it feeds vmMeta (app info) and keeps
+        // alias/cover/groups in sync after detail reloads.
         api
-          .getVMMeta(vmId)
+          .getVMMeta(vmId, vmNode, vmHvSel)
           .then((m) => {
-            // Cover changes are picked up by re-render, alias/groups
-            // in vm are already populated from ListVMs. We only need
-            // to keep them in sync after detail reloads.
+            if (destroyed) return;
+            vmMeta = m;
             if (vm && m) {
               vm = { ...vm, alias: m.alias || '', cover: m.cover || '', groups: m.groups || [] };
             }
@@ -507,6 +631,7 @@
         return;
       }
       error = e.message;
+      loadError = e;
     } finally {
       if (!silent) loading = false;
     }
@@ -519,7 +644,7 @@
     notesStatus = '';
     notesError = '';
     try {
-      const meta = await api.getVMMeta(vmId);
+      const meta = await api.getVMMeta(vmId, vmNode, vmHvSel);
       eAlias = meta.alias || '';
       eNotes = meta.notes || '';
       eNotesOriginal = meta.notes || '';
@@ -570,11 +695,16 @@
     savingIdentity = true;
     try {
       const groups = Array.from(eGroupsSet);
-      await api.updateVMMeta(vmId, {
-        alias: eAlias,
-        notes: eNotes,
-        groups: groups,
-      });
+      await api.updateVMMeta(
+        vmId,
+        {
+          alias: eAlias,
+          notes: eNotes,
+          groups: groups,
+        },
+        vmNode,
+        vmHvSel
+      );
       eNotesOriginal = eNotes;
       vm = { ...vm, alias: eAlias, groups };
       toast.success('Identity updated');
@@ -597,7 +727,7 @@
     notesStatus = 'saving';
     notesError = '';
     try {
-      await api.updateVMMeta(vmId, { notes: eNotes });
+      await api.updateVMMeta(vmId, { notes: eNotes }, vmNode, vmHvSel);
       eNotesOriginal = eNotes;
       notesStatus = 'saved';
       later(() => {
@@ -726,7 +856,7 @@
       return;
     }
     try {
-      await api.updateNetIface(vmId, mac, payload);
+      await api.updateNetIface(vmId, mac, payload, vmNode, vmHvSel);
       toast.success(t('vmDetail.networkInterfaceUpdated'));
       await load();
       // Re-seed the edit state for the (possibly new) MAC.
@@ -758,7 +888,7 @@
     actionLoading = 'netlink';
     try {
       const nextState = iface.link_state === 'down' ? 'up' : 'down';
-      await api.updateNetIface(vmId, iface.mac, { link_state: nextState });
+      await api.updateNetIface(vmId, iface.mac, { link_state: nextState }, vmNode, vmHvSel);
       toast.success(nextState === 'up' ? 'Cable de red conectado' : 'Cable de red desconectado');
       await load();
     } catch (e) {
@@ -842,6 +972,10 @@
   }
 
   async function doAction(action) {
+    if (vmLocked) {
+      toast.error(t('haWorkloads.lockedByHa'));
+      return;
+    }
     if (action === 'forceOffVM') {
       askConfirm({
         title: t('vmDetail.forceOffTitle'),
@@ -901,7 +1035,7 @@
     const previous = vm.autostart;
     autostartSaving = true;
     try {
-      await api.setVMAutostart(vmId, next);
+      await api.setVMAutostart(vmId, next, vmNode, vmHvSel);
       // Reflect the new value on the VM object so any other
       // UI reading vm.autostart (e.g. a future list view
       // badge) stays in sync.
@@ -919,14 +1053,18 @@
   }
 
   async function doActionRun(action) {
+    if (vmLocked) {
+      toast.error(t('haWorkloads.lockedByHa'));
+      return;
+    }
     actionLoading = action;
     try {
       if (action === 'forceRebootVM') {
-        await api.forceOffVM(vmId);
+        await api.forceOffVM(vmId, vmNode, vmHvSel);
         await waitForState('shutoff', 30000);
-        await api.startVM(vmId);
+        await api.startVM(vmId, vmNode, vmHvSel);
       } else {
-        await api[action](vmId);
+        await api[action](vmId, vmNode, vmHvSel);
       }
       const labels = {
         startVM: t('vmDetail.actionStarted'),
@@ -953,7 +1091,7 @@
   async function waitForState(targetState, timeoutMs = 30000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const cur = await api.getVM(vmId);
+      const cur = await api.getVM(vmId, vmNode, vmHvSel);
       if (cur.state === targetState) return;
       await new Promise((r) => setTimeout(r, 500));
     }
@@ -969,7 +1107,7 @@
     const previous = !!vmMeta.shared;
     shareSaving = true;
     try {
-      const m = await api.updateVMMeta(vmId, { shared: next });
+      const m = await api.updateVMMeta(vmId, { shared: next }, vmNode, vmHvSel);
       vmMeta = m && typeof m === 'object' ? m : { ...vmMeta, shared: next };
       toast.success(next ? t('vmDetail.shareTemplateOn') : t('vmDetail.shareTemplateOff'), {
         duration: 3000,
@@ -987,13 +1125,13 @@
     actionLoading = 'template';
     try {
       if (vmMeta?.template) {
-        await api.unsetVMTemplate(vmId);
+        await api.unsetVMTemplate(vmId, vmNode, vmHvSel);
         toast.success(t('vmDetail.unsetTemplateDone'));
       } else {
-        await api.makeVMTemplate(vmId);
+        await api.makeVMTemplate(vmId, vmNode, vmHvSel);
         toast.success(t('vmDetail.makeTemplateDone'));
       }
-      const m = await api.getVMMeta(vmId);
+      const m = await api.getVMMeta(vmId, vmNode, vmHvSel);
       vmMeta = m;
     } catch (e) {
       toast.error(e.message);
@@ -1024,13 +1162,14 @@
     if (!snapName) return;
     actionLoading = 'snapshot';
     try {
-      const res = await api.createSnapshot(vmId, {
-        name: snapName,
-        description: snapDesc,
-        memory: snapMemory,
-      });
+      const res = await api.createSnapshot(
+        vmId,
+        { name: snapName, description: snapDesc, memory: snapMemory },
+        vmNode,
+        vmHvSel
+      );
       await api.waitJob(res.job, {
-        title: `Creando instantánea: ${snapName} (${vm?.name || vmId})`,
+        title: t('taskCenter.creatingSnapshot', { name: `${snapName} (${vm?.name || vmId})` }),
         kind: 'snapshot',
       });
       snapName = '';
@@ -1055,7 +1194,7 @@
       onConfirm: async () => {
         confirmState.loading = true;
         try {
-          await api.revertSnapshot(vmId, sid);
+          await api.revertSnapshot(vmId, sid, vmNode, vmHvSel);
           confirmState.open = false;
           toast.success(t('vmDetail.reverted'));
           await load();
@@ -1076,7 +1215,7 @@
       onConfirm: async () => {
         confirmState.loading = true;
         try {
-          await api.deleteSnapshot(vmId, sid);
+          await api.deleteSnapshot(vmId, sid, vmNode, vmHvSel);
           confirmState.open = false;
           toast.success(t('vmDetail.snapshotDeleted'));
           await load();
@@ -1224,7 +1363,7 @@
     }
     actionLoading = 'resizedisk';
     try {
-      await api.resizeVmDisk(vm.id, resizeDiskTarget, resizeDiskSize);
+      await api.resizeVmDisk(vm.id, resizeDiskTarget, resizeDiskSize, vmNode, vmHvSel);
       showResizeDisk = false;
       toast.success(t('vmDetail.diskResized'));
       await load();
@@ -1240,7 +1379,7 @@
     if (!requireShutoff(t('vmDetail.requireShutoffChangeBus'))) return;
     actionLoading = 'changebus';
     try {
-      await api.changeDiskBus(vm.id, changeBusTarget, changeBusNew);
+      await api.changeDiskBus(vm.id, changeBusTarget, changeBusNew, vmNode, vmHvSel);
       showChangeBus = false;
       toast.success(t('vmDetail.diskBusChanged'));
       await load();
@@ -1284,7 +1423,7 @@
       onConfirm: async () => {
         confirmState.loading = true;
         try {
-          await api.deleteDisk(vmId, target);
+          await api.deleteDisk(vmId, target, vmNode, vmHvSel);
           confirmState.open = false;
           toast.success(t('vmDetail.diskRemoved'));
           await load();
@@ -1299,13 +1438,19 @@
   async function addNet() {
     actionLoading = 'addnet';
     try {
-      const payload = { network: aNetNetwork, model: aNetModel };
+      const useCustom = remoteVm && nicAdvanced && aNetCustomValue !== '';
+      if (useCustom && aNetCustomError) {
+        toast.error(aNetCustomError);
+        return;
+      }
+      const payload = { network: useCustom ? aNetCustomValue : aNetNetwork, model: aNetModel };
       if (aNetVlanTag && parseInt(aNetVlanTag, 10) > 0) {
         payload.vlan_tag = parseInt(aNetVlanTag, 10);
       }
       await api.createNetIface(vmId, payload);
       showAddNet = false;
       aNetVlanTag = '';
+      aNetCustom = '';
       toast.success(t('vmDetail.netAdded'));
       await load();
     } catch (e) {
@@ -1324,7 +1469,7 @@
       onConfirm: async () => {
         confirmState.loading = true;
         try {
-          await api.deleteNetIface(vmId, mac);
+          await api.deleteNetIface(vmId, mac, vmNode, vmHvSel);
           confirmState.open = false;
           toast.success(t('vmDetail.netRemoved'));
           await load();
@@ -1417,24 +1562,14 @@
   // Download a .rdp / .vv console file with the session cookie
   // (credentials: include — never a token in the URL), then save it as a blob.
   async function downloadConsoleFile(kind) {
-    const url = kind === 'rdp' ? api.getRDPUrl(vmId) : api.getSPICEUrl(vmId);
+    // node/hv: for a VM on another node the launcher must come from THAT node.
+    const sel = remoteVm ? [vmNode, hv] : [];
+    const url = kind === 'rdp' ? api.getRDPUrl(vmId, ...sel) : api.getSPICEUrl(vmId, ...sel);
     try {
-      const res = await fetch(url, {
-        credentials: 'include',
-      });
-      if (!res.ok)
-        throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = objectUrl;
-      a.download = kind === 'rdp' ? `${vm.name || vmId}.rdp` : `${vm.name || vmId}.vv`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(objectUrl);
+      const blob = await fetchConsoleFile(url);
+      saveBlob(blob, kind === 'rdp' ? `${vm.name || vmId}.rdp` : `${vm.name || vmId}.vv`);
     } catch (e) {
-      toast.error(e.message);
+      toast.error(consoleFileErrorText(t, e));
     }
   }
 
@@ -1582,6 +1717,23 @@
           <span class="text-xs text-muted-foreground font-mono truncate shrink-0">({vm.name})</span>
         {/if}
         <StatusBadge state={vm.state} size="sm" class="shrink-0" />
+        {#if vm.pacemaker_node}
+          <span
+            class="inline-flex shrink-0 items-center rounded border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground"
+            title={t('vms.pacemakerNode', { name: vm.pacemaker_node })}
+          >
+            {vm.pacemaker_node}
+          </span>
+        {/if}
+        {#if vmLocked}
+          <span
+            class="inline-flex shrink-0 items-center rounded border border-warning/40 bg-warning-subtle px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-warning"
+            title={t('vms.pacemakerManaged')}
+          >
+            {t('vms.pacemakerBadge')}
+          </span>
+        {/if}
+        <HaToggle {vm} onChanged={() => load(true)} />
         {#if vm.state === 'running' && vmIps(vm).length}
           <span
             class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-accent/10 border border-accent/20 text-accent font-mono truncate shrink-0 max-w-[24rem]"
@@ -1611,7 +1763,7 @@
            share switch + template button overflowed the viewport and
            clipped "Quitar como plantilla". -->
       <div class="flex flex-wrap items-center gap-2 min-w-0 max-w-full">
-        {#if auth.isAdmin() && vmMeta?.template}
+        {#if auth.isAdmin() && vmMeta?.template && !remoteVm}
           <div class="max-w-xs min-w-0">
             <Switch
               size="sm"
@@ -1624,20 +1776,42 @@
             />
           </div>
         {/if}
-        <Button
-          size="sm"
-          variant="outline"
-          onclick={toggleTemplate}
-          disabled={vm.state !== 'shutoff' || actionLoading === 'template'}
-        >
-          {vmMeta?.template ? t('vmDetail.unsetTemplate') : t('vmDetail.makeTemplate')}
-        </Button>
+        {#if !remoteVm}
+          <Button
+            size="sm"
+            variant="outline"
+            onclick={toggleTemplate}
+            disabled={vm.state !== 'shutoff' || actionLoading === 'template'}
+          >
+            {vmMeta?.template ? t('vmDetail.unsetTemplate') : t('vmDetail.makeTemplate')}
+          </Button>
+        {/if}
       </div>
     {/if}
   </div>
 
   {#if error && !error.toLowerCase().includes('forbidden')}
-    <Alert variant="error">{error}</Alert>
+    <Alert variant="error">
+      {error}
+      {#if !vm && needsClusterAccess(loadError?.code)}
+        <Button
+          size="sm"
+          variant="outline"
+          class="mt-2 block"
+          data-testid="load-error-access"
+          onclick={() => navigate('/nodes', { query: { focus: 'access' } })}
+        >
+          {t('remote.banner.access')}
+        </Button>
+      {/if}
+    </Alert>
+  {/if}
+
+  {#if vm && (remoteVm || (isIncusInstance && vm.node))}
+    <RemoteNodeBanner {vm} node={registryNode} error={loadError} />
+  {/if}
+  {#if remoteVm && vmMeta?.template}
+    <Alert variant="info">{t('vmDetail.remoteTemplateLocalOnly')}</Alert>
   {/if}
 
   {#if loading}
@@ -1656,7 +1830,12 @@
         <!-- Each panel stays mounted (CSS-hidden, not {#if}-removed) so
              switching tabs never tears down the serial WebSocket or a
              VNC connection living inside one of these cards. -->
-        <div class="space-y-5 {activeSection === 'overview' ? '' : 'hidden'}">
+        <div
+          id="tab-panel-overview"
+          role="tabpanel"
+          aria-labelledby="tab-overview"
+          class="space-y-5 {activeSection === 'overview' ? '' : 'hidden'}"
+        >
           <VmOverviewCard
             {vm}
             {vmId}
@@ -1670,6 +1849,8 @@
           />
           <VmMetricsTab
             {vm}
+            unsupported={remoteVm || metricsUnsupported}
+            node={registryNode}
             {metrics}
             {cpuPoints}
             {ramPoints}
@@ -1678,9 +1859,19 @@
             {netRxPoints}
             {netTxPoints}
           />
-          <VmFirewallTab {vmId} bind:fwRules bind:fwForwards />
+          <VmFirewallTab
+            {vmId}
+            bind:fwRules
+            bind:fwForwards
+            unsupported={fwUnsupported}
+            node={registryNode}
+            nodeName={vm?.node}
+          />
           <VmScheduleTab
             {vmId}
+            unsupported={schedUnsupported}
+            node={registryNode}
+            nodeName={vm?.node}
             bind:schedStart
             bind:schedStop
             bind:schedSnap
@@ -1690,21 +1881,49 @@
           />
         </div>
         {#if !isContainerVm}
-          <div class="space-y-4 {activeSection === 'console' ? '' : 'hidden'}">
-            <VmConsoleTab {vmId} {vm} {isContainerVm} onStart={() => doActionRun('startVM')} />
+          <div
+            id="tab-panel-console"
+            role="tabpanel"
+            aria-labelledby="tab-console"
+            class="space-y-4 {activeSection === 'console' ? '' : 'hidden'}"
+          >
+            <VmConsoleTab
+              {vmId}
+              {vm}
+              {isContainerVm}
+              node={remoteVm ? vmNode : ''}
+              {hv}
+              onStart={() => doActionRun('startVM')}
+            />
           </div>
         {/if}
-        <div class="space-y-5 {activeSection === 'terminal' ? '' : 'hidden'}">
+        <div
+          id="tab-panel-terminal"
+          role="tabpanel"
+          aria-labelledby="tab-terminal"
+          class="space-y-5 {activeSection === 'terminal' ? '' : 'hidden'}"
+        >
           <div id="vm-serial-block">
             <BlockCard
               bid="serial"
               title={isContainerVm ? 'Terminal Shell (xterm)' : t('vmDetail.serialConsoleTitle')}
             >
-              <TerminalPanel mode="vm" {vmId} />
+              {#if serialWanted}
+                <TerminalPanel mode="vm" {vmId} node={remoteVm ? vmNode : ''} hv={vmHvSel} />
+              {:else}
+                <p class="text-sm text-muted-foreground" data-testid="serial-vm-off">
+                  {t('vmDetail.serialStartHint')}
+                </p>
+              {/if}
             </BlockCard>
           </div>
         </div>
-        <div class={activeSection === 'hardware' ? '' : 'hidden'}>
+        <div
+          id="tab-panel-hardware"
+          role="tabpanel"
+          aria-labelledby="tab-hardware"
+          class={activeSection === 'hardware' ? '' : 'hidden'}
+        >
           <VmHardwareTab
             bind:this={hardwareTabRef}
             {vm}
@@ -1716,11 +1935,25 @@
           />
         </div>
         {#if !isContainerVm}
-          <div class={activeSection === 'cloudinit' ? '' : 'hidden'}>
-            <VmCloudInitTab {vmId} {vm} {isContainerVm} />
+          <div
+            id="tab-panel-cloudinit"
+            role="tabpanel"
+            aria-labelledby="tab-cloudinit"
+            class={activeSection === 'cloudinit' ? '' : 'hidden'}
+          >
+            {#if tabBlocked('cloudinit')}
+              <RemoteUnsupportedNotice node={registryNode} nodeName={vm?.node} />
+            {:else}
+              <VmCloudInitTab {vmId} {vm} {isContainerVm} />
+            {/if}
           </div>
         {/if}
-        <div class={activeSection === 'disks' ? '' : 'hidden'}>
+        <div
+          id="tab-panel-disks"
+          role="tabpanel"
+          aria-labelledby="tab-disks"
+          class={activeSection === 'disks' ? '' : 'hidden'}
+        >
           <VmDisksCard
             {vm}
             {pools}
@@ -1762,7 +1995,12 @@
             <VmSharedFoldersCard {vm} {vmId} {isContainerVm} {load} />
           {/if}
         </div>
-        <div class={activeSection === 'net' ? '' : 'hidden'}>
+        <div
+          id="tab-panel-net"
+          role="tabpanel"
+          aria-labelledby="tab-net"
+          class={activeSection === 'net' ? '' : 'hidden'}
+        >
           <VmNetCard
             {vm}
             {networks}
@@ -1775,17 +2013,32 @@
             bind:aNetModel
             bind:showAddNet
           />
-          {#if auth.isAdmin()}
+          {#if auth.isAdmin() && !remoteVm}
             <VmUsbCard {vm} {vmId} {load} />
             <VmPciCard {vm} {vmId} {isContainerVm} {load} />
           {/if}
         </div>
         {#if !isContainerVm}
-          <div class={activeSection === 'guest' ? '' : 'hidden'}>
-            <VmGuestTab {vmId} {vm} />
+          <div
+            id="tab-panel-guest"
+            role="tabpanel"
+            aria-labelledby="tab-guest"
+            class={activeSection === 'guest' ? '' : 'hidden'}
+          >
+            <VmGuestTab
+              {vmId}
+              {vm}
+              node={registryNode}
+              infoUnsupported={remoteLoadUnsupported(vm, 'guest-info')}
+            />
           </div>
         {/if}
-        <div class={activeSection === 'snaps' ? '' : 'hidden'}>
+        <div
+          id="tab-panel-snaps"
+          role="tabpanel"
+          aria-labelledby="tab-snaps"
+          class={activeSection === 'snaps' ? '' : 'hidden'}
+        >
           <VmSnapshotsTab
             {vmId}
             {snapshots}
@@ -1801,13 +2054,34 @@
             bind:schedSnapMax
             {schedSaving}
             {saveSchedule}
+            scheduleUnsupported={schedUnsupported}
+            node={registryNode}
+            nodeName={vm?.node}
           />
         </div>
-        <div class={activeSection === 'history' ? '' : 'hidden'}>
-          <VmHistoryTab {vmId} vmName={vm?.name} />
+        <div
+          id="tab-panel-history"
+          role="tabpanel"
+          aria-labelledby="tab-history"
+          class={activeSection === 'history' ? '' : 'hidden'}
+        >
+          {#if tabBlocked('history')}
+            <RemoteUnsupportedNotice node={registryNode} nodeName={vm?.node} />
+          {:else}
+            <VmHistoryTab {vmId} vmName={vm?.name} />
+          {/if}
         </div>
-        <div class={activeSection === 'alerts' ? '' : 'hidden'}>
-          <VmAlertsTab {vmId} />
+        <div
+          id="tab-panel-alerts"
+          role="tabpanel"
+          aria-labelledby="tab-alerts"
+          class={activeSection === 'alerts' ? '' : 'hidden'}
+        >
+          {#if tabBlocked('alerts')}
+            <RemoteUnsupportedNotice node={registryNode} nodeName={vm?.node} />
+          {:else}
+            <VmAlertsTab {vmId} />
+          {/if}
         </div>
       </div>
 
@@ -1828,7 +2102,7 @@
                   {:else if vm.state === 'shutoff'}
                     <Button
                       onclick={() => doAction('startVM')}
-                      disabled={busy}
+                      disabled={busy || vmLocked}
                       class="w-full {actionLoading === 'startVM' ? 'opacity-100!' : ''}"
                     >
                       {#if actionLoading === 'startVM'}<Spinner
@@ -1840,7 +2114,7 @@
                     <Button
                       variant="outline"
                       onclick={() => doAction('shutdownVM')}
-                      disabled={busy}
+                      disabled={busy || vmLocked}
                       class="w-full {actionLoading === 'shutdownVM' ? 'opacity-100!' : ''}"
                     >
                       {#if actionLoading === 'shutdownVM'}<Spinner
@@ -1851,7 +2125,7 @@
                     <Button
                       variant="destructive"
                       onclick={() => doAction('forceOffVM')}
-                      disabled={busy}
+                      disabled={busy || vmLocked}
                       class="w-full {actionLoading === 'forceOffVM' ? 'opacity-100!' : ''}"
                     >
                       {#if actionLoading === 'forceOffVM'}<Spinner
@@ -1862,7 +2136,7 @@
                     <Button
                       variant="destructive"
                       onclick={() => doAction('forceRebootVM')}
-                      disabled={busy}
+                      disabled={busy || vmLocked}
                       class="w-full {actionLoading === 'forceRebootVM' ? 'opacity-100!' : ''}"
                     >
                       {#if actionLoading === 'forceRebootVM'}<Spinner
@@ -1873,7 +2147,7 @@
                     <Button
                       variant="outline"
                       onclick={() => doAction('suspendVM')}
-                      disabled={busy}
+                      disabled={busy || vmLocked}
                       class="w-full {actionLoading === 'suspendVM' ? 'opacity-100!' : ''}"
                     >
                       {#if actionLoading === 'suspendVM'}<Spinner
@@ -1884,7 +2158,7 @@
                   {:else if vm.state === 'paused'}
                     <Button
                       onclick={() => doAction('resumeVM')}
-                      disabled={busy}
+                      disabled={busy || vmLocked}
                       class="w-full {actionLoading === 'resumeVM' ? 'opacity-100!' : ''}"
                     >
                       {#if actionLoading === 'resumeVM'}<Spinner
@@ -1895,7 +2169,7 @@
                     <Button
                       variant="destructive"
                       onclick={() => doAction('forceOffVM')}
-                      disabled={busy}
+                      disabled={busy || vmLocked}
                       class="w-full {actionLoading === 'forceOffVM' ? 'opacity-100!' : ''}"
                     >
                       {#if actionLoading === 'forceOffVM'}<Spinner
@@ -1943,12 +2217,12 @@
                   class="w-full text-xs"
                 >
                   <Terminal class="w-3.5 h-3.5 mr-1" />
-                  Consola SPICE
+                  {t('terminal.consoleSpiceBtn')}
                 </Button>
               {:else if vm.graphics_type === 'vnc'}
                 <Button onclick={() => (activeSection = 'console')} class="w-full text-xs">
                   <Terminal class="w-3.5 h-3.5 mr-1" />
-                  Consola noVNC
+                  {t('terminal.consoleNovncBtn')}
                 </Button>
               {/if}
               {#if vm.serial_port !== false}
@@ -1962,6 +2236,17 @@
               <Button variant="outline" onclick={showAppCredentials} class="w-full">
                 <KeyRound class="w-4 h-4 mr-1.5" />
                 {t('vmDetail.appCredentials')}
+              </Button>
+            {/if}
+            {#if canMoveMember}
+              <Button
+                variant="outline"
+                class="w-full"
+                onclick={() => (showMoveMember = true)}
+                data-testid="move-member-button"
+              >
+                <Icon name="arrowRightLeft" size={16} />
+                {t('remote.move.button')}
               </Button>
             {/if}
             {#if auth.isAdmin() && !isContainerVm}
@@ -1979,11 +2264,11 @@
               <Button
                 variant="destructive"
                 onclick={() => doAction('deleteVM')}
-                disabled={busy}
+                disabled={busy || vmLocked}
                 class="w-full"
               >
                 <Trash2 class="w-4 h-4 mr-1.5" />
-                {t('vmDetail.deleteVM')}
+                {isContainerVm ? t('vmDetail.deleteContainer') : t('vmDetail.deleteVM')}
               </Button>
               {#if !isContainerVm}
                 <Button
@@ -2004,7 +2289,7 @@
                   class="w-full text-xs"
                 >
                   <CopyPlus class="w-4 h-4 mr-1.5" />
-                  Clonado por Lotes...
+                  {t('terminal.batchCloneBtn')}
                 </Button>
               {/if}
               {#if movePoolOptions.length > 0}
@@ -2081,8 +2366,12 @@
                 description={autostartSaving
                   ? t('vmDetail.notesSaving')
                   : vm.autostart
-                    ? t('vmDetail.autostartDescOn')
-                    : t('vmDetail.autostartDescOff')}
+                    ? isContainerVm
+                      ? t('vmDetail.autostartDescOnCt')
+                      : t('vmDetail.autostartDescOn')
+                    : isContainerVm
+                      ? t('vmDetail.autostartDescOffCt')
+                      : t('vmDetail.autostartDescOff')}
               />
             </div>
           </div>
@@ -2154,10 +2443,19 @@
   onConfirm={confirmState.onConfirm}
 />
 
+<MoveMemberDialog
+  bind:open={showMoveMember}
+  {vm}
+  members={incusMembers}
+  onMoved={() => load(true)}
+/>
+
 <DeleteVmDialog
   bind:open={showDeleteFlow}
   vmId={vm?.id}
   vmName={vm?.name}
+  node={vmNode}
+  hv={vmHvSel}
   {vmDisks}
   active={vm?.state === 'running' || vm?.state === 'paused'}
   isContainer={isContainerVm}
@@ -2545,10 +2843,49 @@
           >{t('vmDetail.networkLabel')}</label
         >
         <select id="anet-net" bind:value={aNetNetwork} class="input">
-          {#each vmNetworks as net (net.name)}<option value={net.name}>{networkLabel(net)}</option
+          {#each vmNetworks as net (net.name)}<option value={net.name}
+              >{networkOptionLabel(t, net)}</option
             >{/each}
         </select>
+        {#if remoteVm && vmNetworks.length === 0 && !nicAdvanced}
+          <p class="text-xs text-muted-foreground mt-1" data-testid="anet-no-networks">
+            {t('vmCreate.remoteNoNetworksEasy')}
+          </p>
+        {/if}
       </div>
+      {#if remoteVm}
+        <div class="space-y-2">
+          <Button
+            variant="outline"
+            size="sm"
+            class="min-h-11"
+            aria-pressed={nicAdvanced}
+            data-testid="anet-advanced"
+            onclick={() => setNicAdvanced(!nicAdvanced)}
+          >
+            {t('vmDetail.nicAdvanced')}
+          </Button>
+          {#if nicAdvanced}
+            <label for="anet-bridge" class="block text-sm font-medium"
+              >{t('vmCreate.remoteBridgeLabel')}</label
+            >
+            <Input
+              id="anet-bridge"
+              data-testid="anet-bridge"
+              class="font-mono min-h-11"
+              maxlength={15}
+              placeholder="vmbr0"
+              autocomplete="off"
+              spellcheck={false}
+              bind:value={aNetCustom}
+            />
+            <p class="text-xs text-muted-foreground">{t('vmCreate.remoteBridgeHelper')}</p>
+            {#if aNetCustomError}
+              <p class="text-xs text-destructive" role="alert">{aNetCustomError}</p>
+            {/if}
+          {/if}
+        </div>
+      {/if}
       {#if !isContainerVm}
         <div>
           <label for="anet-model" class="block text-sm font-medium mb-1.5"
@@ -2585,7 +2922,7 @@
         onclick={() => (showAddNet = false)}
         disabled={actionLoading === 'addnet'}>{t('common.cancel')}</Button
       >
-      <Button onclick={addNet} disabled={actionLoading === 'addnet'}>
+      <Button onclick={addNet} disabled={actionLoading === 'addnet' || !!aNetCustomError}>
         {#if actionLoading === 'addnet'}<Spinner size="sm" color="text-white" />{:else}{t(
             'common.add'
           )}{/if}
@@ -2961,10 +3298,7 @@
               viewBox="0 0 24 24"
               ><path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg
             >
-            <span
-              >El cambio de red o puente se aplica en caliente. La modificación de la dirección MAC
-              física requiere apagar la máquina.</span
-            >
+            <span>{t('vmDetail.networkHotChangeHint')}</span>
           </div>
         {/if}
         {#if !vm?.networks || vm.networks.length === 0}

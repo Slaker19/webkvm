@@ -1,5 +1,27 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { theme, THEMES, ACCENTS, setTheme, setAccent, cycleTheme } from './theme.svelte.js';
+import {
+  theme,
+  THEMES,
+  ACCENTS,
+  setTheme,
+  setAccent,
+  cycleTheme,
+  resolveTheme,
+} from './theme.svelte.js';
+
+// 8.26 minor: with no stored choice the default follows the system.
+describe('resolveTheme', () => {
+  it('follows prefers-color-scheme when nothing is stored', () => {
+    expect(resolveTheme(null, true)).toBe('light');
+    expect(resolveTheme(null, false)).toBe('zinc');
+    expect(resolveTheme('bogus', true)).toBe('light');
+  });
+  it('a stored choice always wins', () => {
+    expect(resolveTheme('zinc', true)).toBe('zinc');
+    expect(resolveTheme('oled', true)).toBe('oled');
+    expect(resolveTheme('light', false)).toBe('light');
+  });
+});
 
 describe('theme store (node env)', () => {
   beforeEach(() => {

@@ -17,7 +17,7 @@ func newTestManager(t *testing.T) *Manager {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return NewManager(s, func(id string) string { return "192.168.1.50" }, 8081, slog.Default())
+	return NewManager(s, func(id string) string { return "192.168.50.50" }, 8081, slog.Default())
 }
 
 // TestRulesetReplacesTableAtomically pins the fix for a bug that could
@@ -81,5 +81,20 @@ func TestRulesetIsValidNft(t *testing.T) {
 	if out, err := exec.Command("nft", "-c", "-f", f.Name()).CombinedOutput(); err != nil {
 		t.Fatalf("nft rejected the generated ruleset: %v: %s\n---\n%s",
 			err, strings.TrimSpace(string(out)), rs)
+	}
+}
+
+// Loopback traffic (reverse proxy on the same host, console proxy, local
+// health checks) must never hit the management-network drop: 127.0.0.0/8
+// is not in @mgmt because managementCIDRs skips lo.
+func TestRulesetAcceptsLoopbackBeforeMgmtDrop(t *testing.T) {
+	rs := newTestManager(t).BuildRuleset()
+	lo := strings.Index(rs, `iifname "lo" accept`)
+	drop := strings.Index(rs, "ip saddr != @mgmt drop")
+	if lo < 0 {
+		t.Fatalf("no loopback accept in ruleset:\n%s", rs)
+	}
+	if drop >= 0 && lo > drop {
+		t.Fatal("loopback accept must precede the management drop")
 	}
 }

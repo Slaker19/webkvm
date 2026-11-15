@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"webkvm/internal/audit"
+	"webkvm/internal/logging"
 	"webkvm/internal/metrics"
 	"webkvm/internal/models"
 )
@@ -116,7 +117,7 @@ func (h *Handler) AlertmanagerWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, ip := audit.FromRequest(r)
+	ip, fromHeader := logging.ClientIPInfo(r)
 	if h.jail != nil && h.jail.IsBanned(ip) {
 		jsonErr(w, http.StatusForbidden, "IP address temporarily banned")
 		return
@@ -142,7 +143,7 @@ func (h *Handler) AlertmanagerWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		if subtle.ConstantTimeCompare([]byte(got), []byte(expectedSecret)) != 1 {
 			if h.jail != nil {
-				h.jail.RecordFailure(ip, "unauthorized alertmanager webhook")
+				h.jail.RecordFailureClient(ip, fromHeader, "unauthorized alertmanager webhook")
 			}
 			jsonErr(w, http.StatusUnauthorized, "invalid webhook secret")
 			return

@@ -80,7 +80,7 @@
     try {
       await api.syncHostRaid(device, action);
       onRefresh();
-      toast.success(`Acción ${action} iniciada en ${device}`);
+      toast.success(t('storage.raidActionStarted', { action, device }));
     } catch (e) {
       showStorageErr('RAID Sync Error', e);
     }
@@ -96,9 +96,9 @@
         try {
           await api.stopHostRaid(device);
           onRefresh();
-          toast.success(`Array RAID ${device} detenido`);
+          toast.success(t('storage.raidStopped', { device }));
         } catch (e) {
-          toast.error(e.message || 'Error al detener array RAID');
+          toast.error(e.message || t('storage.raidStopError'));
         }
       },
     });
@@ -116,7 +116,7 @@
           onRefresh();
           toast.success(t('storage.raidDestroyed'));
         } catch (e) {
-          toast.error(e.message || 'Error al destruir array RAID');
+          toast.error(e.message || t('storage.raidDestroyError'));
         }
       },
     });
@@ -134,7 +134,7 @@
           toast.success(t('storage.diskUnmounted'));
           onRefresh();
         } catch (e) {
-          toast.error(e.message || 'Error al desmontar disco');
+          toast.error(e.message || t('storage.diskUnmountError'));
         }
       },
     });
@@ -151,18 +151,18 @@
         upsertTask({
           id: taskId,
           kind: 'storage',
-          title: `Borrando disco: ${disk.path}`,
+          title: t('storage.wipingDiskTitle', { path: disk.path }),
           pct: 20,
-          message: 'Limpiando firmas de sistema de archivos y particiones...',
+          message: t('storage.wipingDiskMessage'),
           status: 'running',
         });
         try {
           await api.wipeHostDisk(disk.path);
-          finishTask(taskId, 'success', `Disco ${disk.path} borrado con éxito`, 100);
+          finishTask(taskId, 'success', t('storage.diskWipeSuccess', { path: disk.path }), 100);
           toast.success(t('storage.diskWiped'));
           onRefresh();
         } catch (e) {
-          finishTask(taskId, 'error', e.message || 'Error al borrar disco', 20);
+          finishTask(taskId, 'error', e.message || t('storage.diskWipeError'), 20);
           toast.error(e.message);
         }
       },
@@ -420,8 +420,8 @@
                               ? 'bg-destructive/15 text-destructive border-destructive/30'
                               : 'bg-muted text-muted-foreground border-border'}"
                         title={disk.smart.healthy
-                          ? 'S.M.A.R.T. Saludable'
-                          : 'Atención / Fallo S.M.A.R.T.'}
+                          ? t('storage.smartHealthy')
+                          : t('storage.smartFailureAlert')}
                       >
                         SMART: {disk.smart.status}
                       </span>

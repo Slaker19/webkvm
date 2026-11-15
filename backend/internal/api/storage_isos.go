@@ -69,7 +69,7 @@ func (h *Handler) DeleteISO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.compute.DeleteISO(name, pool); err != nil {
-		if errors.Is(err, compute.ErrVolumeNotFound) {
+		if errors.Is(err, compute.ErrVolumeNotFound) || isNotFoundError(err) {
 			jsonErr(w, http.StatusNotFound, err.Error())
 			return
 		}

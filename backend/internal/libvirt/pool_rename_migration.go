@@ -67,6 +67,9 @@ func onSystemDisk(poolPath, poolsDir string) bool {
 // succeeded; if defining the new pool then fails, the directory is
 // moved back.
 func (c *Connector) migrateLegacyISOPool() {
+	if c.cfg == nil || c.conn == nil {
+		return // remote/pooled connector: storage layout is the remote node's concern
+	}
 	if config.ISOPoolName == legacyISOPoolName {
 		return // nothing to migrate
 	}

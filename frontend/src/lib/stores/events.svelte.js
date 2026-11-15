@@ -48,6 +48,9 @@ class EventsStore {
   connect() {
     if (!browser) return;
     if (!auth.isLoggedIn) return;
+    // /api/events answers 403 until the forced password change is done;
+    // connecting anyway left a "Reconnecting…" pill and a retry loop.
+    if (auth.mustChangePassword) return;
     if (this._es || this._reconnectTimer) return;
     this._open();
   }

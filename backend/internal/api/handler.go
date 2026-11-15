@@ -19,7 +19,9 @@ import (
 	"webkvm/internal/configstore"
 	"webkvm/internal/events"
 	"webkvm/internal/firewall"
+	"webkvm/internal/hainstall"
 	"webkvm/internal/helperscripts"
+	"webkvm/internal/hostsched"
 	"webkvm/internal/libvirt"
 	"webkvm/internal/metrics"
 	"webkvm/internal/netguard"
@@ -53,13 +55,23 @@ type Handler struct {
 	settings      *configstore.Store
 	tokens        *tokens.Store
 	nodes         *nodes.Registry
+	// sshKeys holds the managed cluster SSH key and pinned host keys;
+	// libvirtPool the long-lived connections to remote libvirt nodes.
+	sshKeys       *nodes.SSHKeyStore
+	libvirtPool   *libvirt.Pool
+	sshTests      *clusterSSHTests
 	backupStore   *backupstore.Store
 	backupRunner  *backupstore.Runner
 	notifier      *notify.Notifier
 	fwStore       *firewall.Store
 	fwMgr         *firewall.Manager
+	clusterFW     *firewall.ClusterManager
+	haInstall     *hainstall.Manager
+	haCluster     *haClusterState
 	vmSchedStore  *vmsched.Store
 	vmScheduler   *vmsched.Scheduler
+	hostSched     *hostsched.Store
+	hostScheduler *hostsched.Scheduler
 	snippets      *cloudinit.SnippetStore
 	// V13-C-03/04: metric history + alert engine.
 	metricHist *metrics.TimeSeriesStore
@@ -74,8 +86,56 @@ type Handler struct {
 	// concurrent deploys must never race: the second one waits, then
 	// verifies the target is still free. The map is trimmed when the last
 	// holder releases, so it cannot grow without bound.
-	deployMu    sync.Mutex
-	deployLocks map[string]*deployLockEntry
+	deploy *deployState
+
+	// remote is non-nil on the per-node clones built by forBackend: every
+	// instance operation of such a handler targets that libvirt node.
+	remote *remoteTarget
+	// remoteRouters caches the per-node route trees (shared by all clones).
+	remoteRouters *remoteRouterCache
+	// workloads persists per-(node,hv,id) workload state (managed flag).
+	workloads *workloadStore
+}
+
+// deployState serializes appliance deployments per VM name. It lives behind
+// a pointer so Handler clones share it and never copy the mutex.
+type deployState struct {
+	mu    sync.Mutex
+	locks map[string]*deployLockEntry
+}
+
+// sharedInitMu guards the lazy creation of the pointer-held shared state of
+// handlers built without NewRouter (tests).
+var sharedInitMu sync.Mutex
+
+func (h *Handler) deployState() *deployState {
+	sharedInitMu.Lock()
+	defer sharedInitMu.Unlock()
+	if h.deploy == nil {
+		h.deploy = &deployState{}
+	}
+	return h.deploy
+}
+
+func (h *Handler) haState() *haClusterState {
+	sharedInitMu.Lock()
+	defer sharedInitMu.Unlock()
+	if h.haCluster == nil {
+		h.haCluster = &haClusterState{}
+	}
+	return h.haCluster
+}
+
+func (h *Handler) sshTestState() *clusterSSHTests {
+	sharedInitMu.Lock()
+	defer sharedInitMu.Unlock()
+	if h.sshTests == nil {
+		h.sshTests = &clusterSSHTests{store: h.sshKeys}
+		if h.sshKeys != nil {
+			h.sshTests.m = h.sshKeys.LoadLastTests()
+		}
+	}
+	return h.sshTests
 }
 
 // deployLockEntry is an acquired-or-waited deploy slot for one VM name.
@@ -89,30 +149,31 @@ type deployLockEntry struct {
 // acquireDeployLock blocks until it holds the deploy lock for vmName. The
 // returned func releases it and must be deferred by the caller.
 func (h *Handler) acquireDeployLock(vmName string) func() {
-	h.deployMu.Lock()
-	if h.deployLocks == nil {
-		h.deployLocks = make(map[string]*deployLockEntry)
+	ds := h.deployState()
+	ds.mu.Lock()
+	if ds.locks == nil {
+		ds.locks = make(map[string]*deployLockEntry)
 	}
-	e := h.deployLocks[vmName]
+	e := ds.locks[vmName]
 	if e == nil {
 		e = &deployLockEntry{}
-		h.deployLocks[vmName] = e
+		ds.locks[vmName] = e
 	}
 	e.holders++
 	mu := &e.mu
 	name := vmName
-	h.deployMu.Unlock()
+	ds.mu.Unlock()
 
 	mu.Lock()
 	return func() {
-		h.deployMu.Lock()
-		if e := h.deployLocks[name]; e != nil {
+		ds.mu.Lock()
+		if e := ds.locks[name]; e != nil {
 			e.holders--
 			if e.holders <= 0 {
-				delete(h.deployLocks, name)
+				delete(ds.locks, name)
 			}
 		}
-		h.deployMu.Unlock()
+		ds.mu.Unlock()
 		mu.Unlock()
 	}
 }
@@ -185,6 +246,10 @@ func jsonErr(w http.ResponseWriter, status int, msg string) {
 	jsonResp(w, status, map[string]string{"error": msg})
 }
 
+func jsonErrCode(w http.ResponseWriter, status int, code, msg string) {
+	jsonResp(w, status, map[string]string{"error": msg, "code": code})
+}
+
 func decodeBody(r *http.Request, v interface{}) error {
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
@@ -197,6 +262,20 @@ func decodeBody(r *http.Request, v interface{}) error {
 // returned entry simply has empty User/Role.
 func auditFor(r *http.Request, action, resource string, detail map[string]interface{}) audit.Entry {
 	u, role, ip := audit.FromRequest(r)
+	// Requests routed to another node (remote KVM, Incus cluster member) tag
+	// every audit entry with where they acted.
+	if d, ok := dispatchFrom(r); ok {
+		merged := make(map[string]interface{}, len(detail)+3)
+		for k, v := range detail {
+			merged[k] = v
+		}
+		merged["node"] = d.Node
+		if d.NodeID != "" {
+			merged["node_id"] = d.NodeID
+		}
+		merged["hv"] = d.HV
+		detail = merged
+	}
 	return audit.Entry{User: u, Role: role, IP: ip, Action: action, Resource: resource, Detail: detail}
 }
 

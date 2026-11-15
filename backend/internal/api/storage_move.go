@@ -242,6 +242,11 @@ func (h *Handler) MoveVolume(w http.ResponseWriter, r *http.Request) {
 	job := submitJobWithPool(
 		jobOwner(r), fmt.Sprintf("%s %s → %s", verb, volName, destPool), destPool,
 		func(progress func(float64, string)) (any, error) {
+			if isBaseImage {
+				imageID := strings.TrimSuffix(strings.TrimPrefix(volName, "base-"), ".qcow2")
+				release := h.acquireDeployLock("base-image:" + imageID)
+				defer release()
+			}
 			err := h.compute.MoveVolume(srcPool, volName, destPool, compute.MoveVolumeOpts{
 				Kind:       kind,
 				NewName:    req.NewName,

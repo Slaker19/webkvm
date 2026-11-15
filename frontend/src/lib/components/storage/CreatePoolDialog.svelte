@@ -295,7 +295,7 @@
               <Input
                 id="create-iscsi-host"
                 bind:value={poolSourceHost}
-                placeholder="192.168.1.50"
+                placeholder="192.168.50.50"
               />
             </div>
             <div>
@@ -374,7 +374,7 @@
               <Input
                 id="create-source-host"
                 bind:value={poolSourceHost}
-                placeholder="192.168.1.50"
+                placeholder="192.168.50.50"
               />
             </div>
           </div>
@@ -417,7 +417,7 @@
               </div>
               <div>
                 <label for="create-cifs-pass" class="block text-xs font-semibold mb-1"
-                  >Contraseña</label
+                  >{t('common.password')}</label
                 >
                 <Input
                   id="create-cifs-pass"

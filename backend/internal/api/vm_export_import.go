@@ -60,6 +60,10 @@ func (h *Handler) ExportVM(w http.ResponseWriter, r *http.Request) {
 
 	switch format {
 	case "ova":
+		if vm.Hypervisor == "incus" {
+			jsonErr(w, http.StatusBadRequest, "format=ova is only available for KVM virtual machines")
+			return
+		}
 		h.exportOVA(w, r, id, target)
 	case "backup":
 		h.exportBackup(w, r, id)
@@ -462,7 +466,7 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 				h.audit.Log(auditFor(r, "vm.import_quota_rollback", uuid, map[string]interface{}{
 					"name": resolvedName, "pool": pool, "error": rerr.Error(),
 				}))
-				jsonErr(w, http.StatusConflict, "Cuota excedida tras la importación del disco. Recursos limpiados por seguridad.")
+				jsonErrCode(w, http.StatusConflict, "quota_exceeded_after_import", "Cuota excedida tras la importación del disco. Recursos limpiados por seguridad.")
 				return
 			}
 		} else if imported, gerr := h.compute.GetDomain(uuid); gerr == nil && len(imported.Disks) > 0 {
@@ -481,7 +485,7 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 				h.audit.Log(auditFor(r, "vm.import_quota_rollback", uuid, map[string]interface{}{
 					"name": imported.Name, "volume": vol, "error": rerr.Error(),
 				}))
-				jsonErr(w, http.StatusConflict, "Cuota excedida tras la importación del disco. Recursos limpiados por seguridad.")
+				jsonErrCode(w, http.StatusConflict, "quota_exceeded_after_import", "Cuota excedida tras la importación del disco. Recursos limpiados por seguridad.")
 				return
 			}
 		}

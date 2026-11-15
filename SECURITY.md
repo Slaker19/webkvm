@@ -42,6 +42,12 @@ WebKVM implements multi-layered defensive security controls:
 ### 6. Secrets & Key Storage
 - Secrets (JWT keys, CIFS credentials, API tokens) are written with strict `0600` file permissions and excluded from configuration backups and API responses.
 
+### 7. AppArmor and external snapshots
+
+On Debian/Ubuntu, libvirt's generated AppArmor profile grants QEMU only read access to the backing file of an external snapshot and adds an explicit `deny ... w` rule. Deleting that snapshot with the VM off, or starting the VM after reverting to it, fails with `EACCES` and no audit record (libvirt issue #622, Debian bug #1061725).
+
+To keep external snapshots usable, WebKVM adds `<seclabel type='none' model='apparmor'/>` to the domains it defines. This disables only the AppArmor label; QEMU still runs as the unprivileged `libvirt-qemu` user with DAC, seccomp and cgroups. On SELinux hosts the seclabel is not added. Set `WEBKVM_DISABLE_APPARMOR=0` to keep AppArmor confinement; offline external snapshot deletion/revert may then fail until libvirt ships the upstream fix. Existing domains are migrated automatically on the next start, revert, or snapshot deletion, so an in-place UI update needs no manual XML edit. Running domains keep their profile until the next start.
+
 ---
 
 ## Known / Risk-Accepted Advisories

@@ -10,6 +10,7 @@ import (
 
 	"webkvm/internal/audit"
 	"webkvm/internal/auth"
+	"webkvm/internal/logging"
 	"webkvm/internal/models"
 
 	"github.com/go-chi/chi/v5"
@@ -309,7 +310,7 @@ func (h *Handler) WebAuthnLoginFinish(w http.ResponseWriter, r *http.Request) {
 
 	u, cred, err := h.webauthn.FinishLogin(sessionID, findUser, credBytes, r)
 	if err != nil {
-		_, _, ip := audit.FromRequest(r)
+		ip, fromHeader := logging.ClientIPInfo(r)
 		if h.loginLimiter != nil {
 			userKey := "passkey"
 			if u != nil && u.Username != "" {
@@ -318,7 +319,7 @@ func (h *Handler) WebAuthnLoginFinish(w http.ResponseWriter, r *http.Request) {
 			h.loginLimiter.RecordFailure(r, userKey)
 		}
 		if h.jail != nil {
-			h.jail.RecordFailure(ip, "failed passkey login: "+err.Error())
+			h.jail.RecordFailureClient(ip, fromHeader, "failed passkey login: "+err.Error())
 		}
 		if h.audit != nil {
 			h.audit.Log(audit.Entry{

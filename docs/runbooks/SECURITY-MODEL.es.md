@@ -155,3 +155,17 @@ grep -E '"action":"(vm.appliance_deploy|appliance.deploy_cleanup|appliance.deplo
   volúmenes e ISOs y la lista global de snapshots están limitados a
   `AllowedPools` / ACLs de VM; `requirePermission` deniega cuando el
   user store no está disponible en vez de permitir.
+## 10. AppArmor y aislamiento de snapshots
+
+En Debian/Ubuntu, el perfil AppArmor generado por libvirt marca el fichero base
+de un snapshot externo como solo lectura y añade una regla explícita
+`deny ... w`. El block-commit offline para borrar o revertir ese snapshot falla
+por tanto con `EACCES`, sin registro. WebKVM desactiva **solo la etiqueta
+AppArmor** de los dominios que define cuando AppArmor está activo; QEMU sigue
+siendo el usuario sin privilegios `libvirt-qemu` con DAC, seccomp y cgroups.
+SELinux nunca se desactiva.
+
+Define `WEBKVM_DISABLE_APPARMOR=0` para mantener la etiqueta y aceptar que esas
+operaciones de snapshot puedan fallar hasta que libvirt publique la corrección.
+Los dominios existentes se migran en el siguiente arranque, revert o borrado de
+snapshot. Ver [SECURITY.es.md](../../SECURITY.es.md), sección 7.

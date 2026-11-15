@@ -157,7 +157,7 @@
               id="{idPrefix}-static-ip"
               bind:value={staticIP}
               class="input w-full font-mono text-xs"
-              placeholder="192.168.1.50/24"
+              placeholder="192.168.50.50/24"
             />
           </div>
           <div>

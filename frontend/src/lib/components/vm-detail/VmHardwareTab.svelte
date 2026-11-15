@@ -13,7 +13,13 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Pencil } from '@lucide/svelte';
-  import { networkLabel } from '$lib/utils/networkLabel.js';
+  import { networkOptionLabel } from '$lib/utils/networkLabel.js';
+  import {
+    ramIssue,
+    ramIssueText,
+    MIN_VM_RAM_MB,
+    LOW_RAM_FLOOR_MB,
+  } from '$lib/utils/ramValidation.js';
 
   let {
     vm = {},
@@ -30,6 +36,23 @@
   let eVcpus = $state(2);
   let eRamMB = $state(2048);
   let eMinRamMB = $state(0);
+  // Explicit advanced override for less than 512 MB (sent as allow_low_ram).
+  let eAllowLowRam = $state(false);
+  // Same RAM rule as the wizard and the backend. Only checked when RAM or
+  // its floor changes: a VM that already has less can still be edited.
+  const ramChanged = $derived(
+    eRamMB !== vm?.ram_mb || (!isContainerVm && eMinRamMB !== (vm?.min_ram_mb || 0))
+  );
+  const eRamIssue = $derived(
+    hwEditing && ramChanged
+      ? ramIssue({
+          ramMB: eRamMB,
+          minRamMB: isContainerVm ? 0 : eMinRamMB,
+          allowLow: eAllowLowRam,
+        })
+      : ''
+  );
+  const eRamError = $derived(ramIssueText(t, eRamIssue));
   let eIOThreads = $state(0);
   let eCPUMode = $state('host-passthrough');
   let eCPUModel = $state('');
@@ -132,6 +155,7 @@
     eVcpus = vm.vcpus || 2;
     eRamMB = vm.ram_mb || 2048;
     eMinRamMB = vm.min_ram_mb || 0;
+    eAllowLowRam = false;
     eIOThreads = vm.iothreads || 0;
     eCPUMode = vm.cpu_mode || 'host-passthrough';
     eCPUModel = vm.cpu_model || '';
@@ -180,12 +204,19 @@
   }
 
   async function saveEdit() {
+    if (eRamIssue) {
+      toast.error(eRamError);
+      return;
+    }
     editSaving = true;
     try {
       const data = {};
       if (eName !== vm.name) data.name = eName;
       if (eVcpus !== vm.vcpus) data.vcpus = eVcpus;
-      if (eRamMB !== vm.ram_mb) data.ram_mb = eRamMB;
+      if (eRamMB !== vm.ram_mb) {
+        data.ram_mb = eRamMB;
+        if (eAllowLowRam && eRamMB < MIN_VM_RAM_MB) data.allow_low_ram = true;
+      }
       if (!isContainerVm) {
         if (eMinRamMB !== (vm.min_ram_mb || 0)) data.min_ram_mb = eMinRamMB;
         if (eIOThreads !== (vm.iothreads || 0)) data.iothreads = eIOThreads;
@@ -303,7 +334,7 @@
           size="sm"
           class="!h-7 !text-xs min-w-[100px]"
           onclick={saveEdit}
-          disabled={editSaving}
+          disabled={editSaving || !!eRamIssue}
         >
           {#if editSaving}
             <Spinner size="sm" color="text-white" />
@@ -420,7 +451,7 @@
 
           <SettingRow
             label={t('vmDetail.groupsLabel')}
-            helper="Organiza esta instancia asociándola a uno o varios grupos de trabajo."
+            helper={t('vmCreate.groupAssignmentHelper')}
           >
             {#if groupsList.length > 0}
               <div class="flex flex-wrap gap-1.5 max-w-sm justify-end pt-1">
@@ -458,7 +489,7 @@
           <SettingRow label={t('vmDetail.networkLabel')} helper={t('vmCreate.networkHelper')}>
             <select id="edit-net" bind:value={eNetwork} class="input max-w-xs">
               {#each vmNetworks as net (net.name)}
-                <option value={net.name}>{networkLabel(net)}</option>
+                <option value={net.name}>{networkOptionLabel(t, net)}</option>
               {/each}
             </select>
           </SettingRow>
@@ -488,6 +519,7 @@
                 max="64"
                 bind:value={eVcpus}
                 class="tnum w-24 text-center font-medium"
+                aria-label={t('common.vcpu')}
               />
               <span class="text-xs text-muted-foreground">vCPU</span>
             </div>
@@ -496,9 +528,9 @@
           {#if !isContainerVm}
             <SettingRow label={t('vmDetail.cpuModeLabel')} helper={t('vmCreate.cpuModeHelper')}>
               <select id="edit-cpu" bind:value={eCPUMode} class="input max-w-xs">
-                <option value="host-passthrough">host-passthrough (Rendimiento nativo)</option>
-                <option value="host-model">host-model (Compatible con migración)</option>
-                <option value="max">max (Todas las características QEMU)</option>
+                <option value="host-passthrough">{t('vmCreate.cpuModeHostPassthrough')}</option>
+                <option value="host-model">{t('vmCreate.cpuModeHostModel')}</option>
+                <option value="max">{t('vmCreate.cpuModeMax')}</option>
                 <option value="custom">custom</option>
               </select>
             </SettingRow>
@@ -545,19 +577,21 @@
             helper={vm?.status === 'running'
               ? `${t('vmCreate.ramHelper')} • ${t('vmDetail.liveBallooningActive')}`
               : t('vmCreate.ramHelper')}
+            error={eRamError}
           >
             <div class="space-y-2 max-w-md flex flex-col items-end">
               <div class="flex flex-wrap items-center justify-end gap-2">
                 <Input
                   id="edit-ram"
                   type="number"
-                  min="256"
+                  min={eAllowLowRam ? LOW_RAM_FLOOR_MB : MIN_VM_RAM_MB}
                   step="256"
                   bind:value={eRamMB}
                   class="tnum w-32 text-center font-medium"
+                  aria-label={t('vmDetail.ramLabel')}
                 />
                 <span class="text-xs text-muted-foreground"
-                  >MB ({(eRamMB / 1024).toFixed(1)} GB)</span
+                  >MB{eRamMB >= 1024 ? ` (${(eRamMB / 1024).toFixed(1)} GB)` : ''}</span
                 >
               </div>
               <!-- Quick RAM pills -->
@@ -574,6 +608,29 @@
                   </button>
                 {/each}
               </div>
+              {#if eRamMB < MIN_VM_RAM_MB && ramChanged}
+                <label
+                  class="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer select-none max-w-xs"
+                >
+                  <input
+                    id="edit-allow-low-ram"
+                    type="checkbox"
+                    bind:checked={eAllowLowRam}
+                    class="w-4 h-4 mt-0.5 rounded border-border"
+                  />
+                  <span>
+                    <span class="font-medium text-foreground"
+                      >{t('vmRam.allowLow', { min: MIN_VM_RAM_MB })}</span
+                    >
+                    <span class="block"
+                      >{t('vmRam.allowLowHelp', {
+                        min: MIN_VM_RAM_MB,
+                        floor: LOW_RAM_FLOOR_MB,
+                      })}</span
+                    >
+                  </span>
+                </label>
+              {/if}
             </div>
           </SettingRow>
 
@@ -588,10 +645,13 @@
                   step="256"
                   bind:value={eMinRamMB}
                   class="tnum w-32 text-center font-medium"
+                  aria-label={t('vmDetail.minRamLabel')}
                 />
                 <span class="text-xs text-muted-foreground">
                   {eMinRamMB > 0
-                    ? `MB (${(eMinRamMB / 1024).toFixed(1)} GB)`
+                    ? eMinRamMB >= 1024
+                      ? `MB (${(eMinRamMB / 1024).toFixed(1)} GB)`
+                      : 'MB'
                     : t('vmDetail.minRamDynamic')}
                 </span>
               </div>
@@ -625,15 +685,15 @@
             >
               <select id="edit-video" bind:value={eVideoModel} class="input max-w-xs">
                 <option value="virtio" disabled={!supports('video', 'virtio')}
-                  >VirtIO GPU (Moderno y rápido)</option
+                  >{t('vmCreate.videoVirtio')}</option
                 >
                 <option value="qxl" disabled={!supports('video', 'qxl')}
-                  >QXL (Excelente soporte SPICE/Windows){!supports('video', 'qxl')
+                  >{t('vmCreate.videoQxl')}{!supports('video', 'qxl')
                     ? ' — ' + unavailableReason('video', 'qxl')
                     : ''}</option
                 >
                 <option value="vga" disabled={!supports('video', 'vga')}
-                  >VGA Estándar (Máxima compatibilidad)</option
+                  >{t('vmCreate.videoVga')}</option
                 >
                 <option value="cirrus" disabled={!supports('video', 'cirrus')}
                   >Cirrus (Legado / SO antiguos)</option
@@ -677,14 +737,14 @@
             </SettingRow>
 
             <SettingRow
-              label="Servidores Gráficos de Consola"
-              helper="Activa o desactiva las consolas gráficas (VNC, SPICE o ambas simultáneamente)"
+              label={t('vmCreate.graphicsServerLabel')}
+              helper={t('vmCreate.graphicsServerHelper')}
             >
               <select bind:value={eGraphicsType} class="input max-w-xs">
-                <option value="both">Ambas activas (noVNC + SPICE)</option>
-                <option value="vnc">Solo noVNC (RFB estándar)</option>
-                <option value="spice">Solo SPICE (Alto rendimiento / Web SPICE)</option>
-                <option value="none">Desactivadas (Sin consola gráfica / Headless)</option>
+                <option value="both">{t('vmCreate.graphicsBoth')}</option>
+                <option value="vnc">{t('vmCreate.graphicsVNC')}</option>
+                <option value="spice">{t('vmCreate.graphicsSPICE')}</option>
+                <option value="none">{t('vmCreate.graphicsNone')}</option>
               </select>
             </SettingRow>
 
@@ -794,10 +854,7 @@
         </div>
       {:else if editTab === 'os'}
         <div class="space-y-3 pt-1">
-          <SettingRow
-            label={t('vmDetail.osTypeLabel')}
-            helper="Familia del sistema operativo invitado para optimizar drivers e iconografía."
-          >
+          <SettingRow label={t('vmDetail.osTypeLabel')} helper={t('vmCreate.guestOSFamilyHelper')}>
             <select id="edit-ostype" bind:value={eOSType} class="input max-w-xs">
               <option value="">{t('vmDetail.auto')}</option>
               <option value="linux">{t('vmDetail.linux')}</option>
@@ -809,7 +866,7 @@
 
           <SettingRow
             label={t('vmDetail.osVersionLabel')}
-            helper="Versión específica o variante de la distribución (ej. ubuntu24.04, win11, arch)."
+            helper={t('vmCreate.guestOSVersionHelper')}
           >
             <Input
               id="edit-osver"
@@ -826,7 +883,7 @@
       <Button variant="outline" onclick={() => (hwEditing = false)} disabled={editSaving}>
         {t('common.cancel')}
       </Button>
-      <Button onclick={saveEdit} disabled={editSaving} class="min-w-[130px]">
+      <Button onclick={saveEdit} disabled={editSaving || !!eRamIssue} class="min-w-[130px]">
         {#if editSaving}
           <Spinner size="sm" color="text-white" /> {t('vmDetail.saving')}
         {:else}
@@ -857,9 +914,9 @@
           {@render hwRow(
             'activity',
             t('vmDetail.ramLabel'),
-            `${vm.ram_mb} MB (${(vm.ram_mb / 1024).toFixed(1)} GB)`,
+            `${vm.ram_mb} MB${vm.ram_mb >= 1024 ? ` (${(vm.ram_mb / 1024).toFixed(1)} GB)` : ''}`,
             'cpu',
-            `${(vm.ram_mb / 1024).toFixed(1)} GB`,
+            vm.ram_mb >= 1024 ? `${(vm.ram_mb / 1024).toFixed(1)} GB` : `${vm.ram_mb} MB`,
             true
           )}
           {#if !isContainerVm}
@@ -920,14 +977,14 @@
             )}
             {@render hwRow(
               'tv',
-              'Consola Gráfica',
+              t('vmCreate.graphicsServerLabel'),
               vm.graphics_type === 'vnc'
-                ? 'Solo noVNC'
+                ? t('vmCreate.graphicsVNC')
                 : vm.graphics_type === 'spice'
-                  ? 'Solo SPICE'
+                  ? t('vmCreate.graphicsSPICE')
                   : vm.graphics_type === 'none'
-                    ? t('common.disabled')
-                    : 'noVNC + SPICE',
+                    ? t('vmCreate.graphicsNone')
+                    : t('vmCreate.graphicsBoth'),
               'display',
               vm.graphics_type === 'none' ? t('common.off') : vm.graphics_type || 'both',
               false,
@@ -1099,7 +1156,7 @@
           {@render hwRow(
             'power',
             t('vmCreate.startAtBoot'),
-            vm.autostart ? 'Inicio Automático con el Host' : 'Manual',
+            vm.autostart ? t('vmDetail.autostart') : t('vmDetail.manual'),
             'general',
             vm.autostart ? 'yes' : 'no',
             vm.autostart

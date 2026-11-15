@@ -32,6 +32,9 @@ type Connector struct {
 	conn     *libvirt.Connect
 	mu       sync.RWMutex
 	purposes *PoolPurposeStore
+	// keepAlive makes Open arm libvirt's client keepalive (pooled remote
+	// connections) so a silently dead SSH link is noticed in seconds.
+	keepAlive bool
 }
 
 var (
@@ -113,6 +116,15 @@ func (c *Connector) Open() error {
 			conn.Close()
 		}
 		return fmt.Errorf("libvirt connection not alive: %w", err)
+	}
+	if c.keepAlive {
+		// Needs the default event loop, started by ensureEventLoop above;
+		// failure (unsupported by the server) is not fatal.
+		if eventsErr == nil {
+			if err := conn.SetKeepAlive(5, 3); err != nil {
+				slog.Debug("libvirt_keepalive_unavailable", "err", err)
+			}
+		}
 	}
 	c.conn = conn
 	return nil

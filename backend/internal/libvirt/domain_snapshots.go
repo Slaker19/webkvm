@@ -224,6 +224,15 @@ func (c *Connector) CreateSnapshot(domainID string, req models.CreateSnapshotReq
 			_, err = dom.CreateSnapshotXML(xmlStr, libvirt.DOMAIN_SNAPSHOT_CREATE_DISK_ONLY|libvirt.DOMAIN_SNAPSHOT_CREATE_QUIESCE)
 		} else {
 			err = fmt.Errorf("not running")
+			// A stopped VM: an internal (inside-the-qcow2) snapshot needs no
+			// overlay file. The external disk-only form libvirt would
+			// otherwise create offline left a root-owned overlay that the
+			// VM could not start with (found live on a remote node), and
+			// cannot be deleted without starting a helper QEMU. Raw or
+			// otherwise unsupported disks fall through to disk-only below.
+			if _, ierr := dom.CreateSnapshotXML(xmlStr, 0); ierr == nil {
+				err = nil
+			}
 		}
 		if err != nil {
 			// Fall back: disk-only without quiesce, then a full
@@ -237,6 +246,8 @@ func (c *Connector) CreateSnapshot(domainID string, req models.CreateSnapshotReq
 			}
 		}
 	}
+
+	c.chownDiskChain(dom)
 
 	snap := models.Snapshot{
 		ID:          req.Name,
@@ -266,6 +277,15 @@ func (c *Connector) DeleteSnapshot(domainID, snapID string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	newDom, changed, err := c.ensureDomainAppArmorLabel(dom)
+	if err != nil {
+		dom.Free()
+		return 0, err
+	}
+	if changed {
+		dom.Free()
+		dom = newDom
+	}
 	defer dom.Free()
 
 	var allocated int64
@@ -283,6 +303,7 @@ func (c *Connector) DeleteSnapshot(domainID, snapID string) (int64, error) {
 	}
 	defer snap.Free()
 
+	c.chownDiskChain(dom)
 	if err := deleteSnapshotRecursive(snap); err != nil {
 		return 0, err
 	}
@@ -311,6 +332,15 @@ func (c *Connector) RevertSnapshot(domainID, snapID string) error {
 	if err != nil {
 		return err
 	}
+	newDom, changed, err := c.ensureDomainAppArmorLabel(dom)
+	if err != nil {
+		dom.Free()
+		return err
+	}
+	if changed {
+		dom.Free()
+		dom = newDom
+	}
 	defer dom.Free()
 
 	snap, err := dom.SnapshotLookupByName(snapID, 0)
@@ -319,7 +349,11 @@ func (c *Connector) RevertSnapshot(domainID, snapID string) error {
 	}
 	defer snap.Free()
 
-	return snap.RevertToSnapshot(0)
+	if err := snap.RevertToSnapshot(0); err != nil {
+		return err
+	}
+	c.chownDiskChain(dom)
+	return nil
 }
 
 // snapshotHasMemory reports whether the snapshot captured the domain's RAM
@@ -335,7 +369,14 @@ func snapshotHasMemory(xmlDesc string) bool {
 	if e := strings.Index(block, ">"); e >= 0 {
 		block = block[:e]
 	}
-	return strings.Contains(block, "snapshot='") || strings.Contains(block, `snapshot="`)
+	// libvirt writes <memory snapshot='no'/> for disk-only snapshots: that
+	// attribute is present but means "no RAM captured".
+	for _, mode := range []string{"internal", "external"} {
+		if strings.Contains(block, "snapshot='"+mode+"'") || strings.Contains(block, `snapshot="`+mode+`"`) {
+			return true
+		}
+	}
+	return false
 }
 
 // extractSnapshotCreation returns the <creationTime> as a formatted

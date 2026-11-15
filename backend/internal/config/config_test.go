@@ -270,3 +270,40 @@ func TestLoadCORSDefaultsToSameOrigin(t *testing.T) {
 		t.Fatalf("CORSOrigin default = %q, want empty", cfg.CORSOrigin)
 	}
 }
+
+func TestPoolsDirOverride(t *testing.T) {
+	cfg := &Config{DataDir: "/opt/webkvm", PoolsRoot: "/var/lib/webkvm/pools"}
+	if got := cfg.PoolsDir(); got != "/var/lib/webkvm/pools" {
+		t.Fatalf("PoolsDir = %q", got)
+	}
+	if got := cfg.DiskPoolPath(); got != "/var/lib/webkvm/pools/webkvm-disks" {
+		t.Fatalf("DiskPoolPath = %q", got)
+	}
+	cfg.PoolsRoot = ""
+	if got := cfg.PoolsDir(); got != "/opt/webkvm/pools" {
+		t.Fatalf("fallback PoolsDir = %q", got)
+	}
+}
+
+func TestLoadDisableAppArmor(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DATA_DIR", dir)
+
+	t.Setenv("WEBKVM_DISABLE_APPARMOR", "0")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DisableAppArmor {
+		t.Fatal("DisableAppArmor should be false with WEBKVM_DISABLE_APPARMOR=0")
+	}
+
+	t.Setenv("WEBKVM_DISABLE_APPARMOR", "1")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.DisableAppArmor {
+		t.Fatal("DisableAppArmor should be true with WEBKVM_DISABLE_APPARMOR=1")
+	}
+}

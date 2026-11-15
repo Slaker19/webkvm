@@ -1,5 +1,25 @@
 <script>
   import { SvelteSet, SvelteURLSearchParams, SvelteMap } from 'svelte/reactivity';
+  import {
+    migrationTargets,
+    canonicalNodeName,
+    mergeSelfVms,
+    missingHaWorkloads,
+    foldHaMissing,
+    withoutSelfDuplicates,
+    nodeHealth as registryHealth,
+  } from '$lib/utils/nodes.js';
+  import {
+    nodeIssues,
+    nodeHealth,
+    vmQuery,
+    vmHv,
+    isRemoteVm,
+    remoteErrorText,
+  } from '$lib/utils/remoteRoutes.js';
+  import { mergePendingVms } from '$lib/utils/pendingVms.js';
+  import NodeHealthBanner from '$lib/components/NodeHealthBanner.svelte';
+  import VmNodeCell from '$lib/components/vm-list/VmNodeCell.svelte';
   import SearchInput from '$lib/components/SearchInput.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Alert from '$lib/components/Alert.svelte';
@@ -44,6 +64,11 @@
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+  import HaToggle from '$lib/components/HaToggle.svelte';
+  import HaReleasedList from '$lib/components/HaReleasedList.svelte';
+  import { clusterModule, refreshClusterModule } from '$lib/stores/clusterModule.svelte.js';
+  import { haWorkloads, refreshHaWorkloads } from '$lib/stores/haWorkloads.svelte.js';
+  import { isHaManaged } from '$lib/utils/haWorkloads.js';
   import BulkActionBar from '$lib/components/BulkActionBar.svelte';
   import Gauge from '$lib/components/Gauge.svelte';
   import { gaugeStyle, toggleGaugeStyle } from '$lib/stores/gaugeStyle.svelte.js';
@@ -90,6 +115,9 @@
 
   let vms = $state([]);
   let loading = $state(true);
+  // First load only: this server's VMs are shown while the federated list
+  // (which waits on every remote node) is still on its way.
+  let remoteLoading = $state(false);
   let error = $state('');
 
   // View mode: 'grid' (cards) vs 'table' (dense tabular)
@@ -132,16 +160,33 @@
 
   // Cluster nodes (telemetry & filtering for multi-node clusters)
   let clusterNodes = $state([]);
+  // Display name of this host: the registry now names the local node after
+  // the hostname, but instances keep "local" as their internal node key.
+  const localNodeName = $derived(clusterNodes.find((n) => n.type === 'local')?.name || 'local');
+  // A remote registry entry that points back at this server (is_self) is
+  // this server: never a second chip, group or target.
+  const remoteNodes = $derived(withoutSelfDuplicates(clusterNodes));
+  const nodeKey = (v) => canonicalNodeName(v?.node, clusterNodes, localNodeName);
   const availableNodes = $derived.by(() => {
-    const set = new SvelteSet(['local']);
-    for (const n of clusterNodes) {
-      if (n.name) set.add(n.name);
+    const set = new SvelteSet([localNodeName]);
+    for (const n of remoteNodes) {
+      if (n.type !== 'local' && n.name) set.add(n.name);
     }
-    for (const v of vms) {
-      if (v.node) set.add(v.node);
-    }
+    for (const v of vms) set.add(nodeKey(v));
     return Array.from(set);
   });
+  const nodeFilterKey = $derived(
+    nodeFilter === 'all' ? 'all' : canonicalNodeName(nodeFilter, clusterNodes, localNodeName)
+  );
+  const nodeDisplay = (name) =>
+    name === localNodeName ? `${name} (${t('nodeSelf.thisServer')})` : name;
+  const healthText = (h) =>
+    h === 'no_access' ? t('nodeSelf.statusNoAccess') : t(`remote.status.${h}`);
+  // VMs reported through the self-duplicate entry merge into this server.
+  function applySelfMerge() {
+    const merged = mergeSelfVms(vms, clusterNodes, localNodeName);
+    if (merged.length !== vms.length || merged.some((v, i) => v !== vms[i])) vms = merged;
+  }
 
   // Read initial filter state from URL query.
   const route = $derived(getRoute());
@@ -152,6 +197,11 @@
   let groupFilter = $state(readQuery('group') || 'all');
   let stateFilter = $state(readQuery('state') || 'all');
   let nodeFilter = $state(readQuery('node') || 'all');
+  // Unmanaged VMs stay visible by default; the toggle can hide them.
+  let showUnmanaged = $state(readQuery('unmanaged') !== '0');
+  let groupByNode = $state(readQuery('group_by') !== 'off');
+  // Last SSH test per node id (admin only) so the banner can name the exact code.
+  let sshAccess = $state({});
   // v1.4 Fase 4: type filter (All · VMs · Containers), PLAN-LXD 5.1.
   let typeFilter = $state(readQuery('type') || 'all');
 
@@ -162,6 +212,7 @@
     if (groupFilter && groupFilter !== 'all') q.set('group', groupFilter);
     if (stateFilter && stateFilter !== 'all') q.set('state', stateFilter);
     if (nodeFilter && nodeFilter !== 'all') q.set('node', nodeFilter);
+    if (!showUnmanaged) q.set('unmanaged', '0');
     if (typeFilter && typeFilter !== 'all') q.set('type', typeFilter);
     if (selectMode) q.set('select', '1');
     const target = '/vms' + (q.toString() ? '?' + q.toString() : '');
@@ -216,6 +267,14 @@
   let confirmDeleteOpen = $state(false);
   let confirmDeleteVm = $state(null);
   let confirmDeleteLoading = $state(false);
+
+  // Migrate dialog state (cluster: move a VM to another node)
+  let migrateOpen = $state(false);
+  let migrateVm = $state(null);
+  let migrateDest = $state('');
+  let migrateLive = $state(true);
+  let migrateSharedStorage = $state(false);
+  let migrateBusy = $state(false);
 
   // Bulk confirm dialog
   let confirmBulkOpen = $state(false);
@@ -371,20 +430,24 @@ apt-get update -y
     // Never fire the same mutation twice (double-click / key
     // repeat). A busy flag is set synchronously before any await.
     if (quickBusy === key) return;
+    if (memberOffline(vm)) {
+      toast.error(t('remote.list.memberOfflineHint'));
+      return;
+    }
     quickBusy = key;
     menuFor = null;
     try {
       switch (action) {
         case 'start':
-          await api.startVM(vm.id);
+          await api.startVM(vm.id, vm.node, vmHv(vm));
           toast.success(t('vms.startedName', { name: vm.alias || vm.name }));
           break;
         case 'shutdown':
-          await api.shutdownVM(vm.id);
+          await api.shutdownVM(vm.id, vm.node, vmHv(vm));
           toast.success(t('vms.shutdownSent', { name: vm.alias || vm.name }));
           break;
         case 'forceoff':
-          await api.forceOffVM(vm.id);
+          await api.forceOffVM(vm.id, vm.node, vmHv(vm));
           toast.success(t('vms.forceoffDone', { name: vm.alias || vm.name }));
           break;
         case 'clone': {
@@ -401,10 +464,29 @@ apt-get update -y
           return;
         }
         case 'template':
-          await api.makeVMTemplate(vm.id);
+          await api.makeVMTemplate(vm.id, vm.node, vmHv(vm));
           toast.success(t('vms.madeTemplate', { name: vm.alias || vm.name }));
           break;
+        case 'migrate': {
+          const candidates = migrationTargets(clusterNodes, vm, localNodeName).map((n) => n.name);
+          if (candidates.length === 0) {
+            toast.error(t('vms.noMigrateTarget'));
+            return;
+          }
+          migrateVm = vm;
+          migrateDest = candidates[0];
+          migrateLive = vm.state !== 'shutoff';
+          migrateSharedStorage = false;
+          migrateOpen = true;
+          return;
+        }
         case 'console': {
+          // The legacy /console/{id} page does not go through node dispatch:
+          // a VM on another node opens its console inside its detail page.
+          if (isRemoteVm(vm)) {
+            navigate('/vms/' + vm.id, { query: { ...vmQuery(vm), tab: 'console' } });
+            return;
+          }
           // The VNC console is a separate server-rendered page (not an
           // SPA route) authenticated with a short-lived, VM-scoped
           // ticket — never the session JWT. Mirrors VmDetail.svelte's
@@ -419,7 +501,7 @@ apt-get update -y
         }
         case 'serial':
           // Embedded serial console lives in the VM detail page.
-          navigate('/vms/' + vm.id, { query: { serial: '1' } });
+          navigate('/vms/' + vm.id, { query: { serial: '1', ...vmQuery(vm) } });
           return;
       }
       await loadVMs();
@@ -455,7 +537,10 @@ apt-get update -y
       out = out.filter((v) => (typeFilter === 'container' ? isContainer(v) : v.type === 'vm'));
     }
     if (nodeFilter !== 'all') {
-      out = out.filter((v) => (v.node || 'local') === nodeFilter);
+      out = out.filter((v) => nodeKey(v) === nodeFilterKey);
+    }
+    if (!showUnmanaged) {
+      out = out.filter((v) => v.managed !== false);
     }
     if (q) {
       out = out.filter(
@@ -518,7 +603,16 @@ apt-get update -y
         ram: lastMetricVal(metricsByVm[v.id]?.ram?.points),
       };
     }
-    return applySort(filteredVms, metricsMap);
+    const sorted = applySort(filteredVms, metricsMap);
+    if (!groupByNode) return sorted;
+    // Stable: keep the chosen order inside every node group.
+    const order = {};
+    let n = 0;
+    for (const v of sorted) {
+      const k = nodeKey(v);
+      if (!(k in order)) order[k] = n++;
+    }
+    return [...sorted].sort((a, b) => order[nodeKey(a)] - order[nodeKey(b)]);
   });
 
   const SORT_OPTIONS = [
@@ -571,10 +665,20 @@ apt-get update -y
     dragOverVmId = null;
   }
 
+  // HA-managed workloads are driven by Pacemaker: lock the power actions and
+  // use the HA controls (Move, Disable) instead of Migrate.
+  const haManaged = (vm) => isHaManaged(vm, haWorkloads.workloads);
+
   onMount(() => {
-    loadVMs();
+    if (auth.isAdmin()) {
+      refreshClusterModule().then(() => {
+        if (clusterModule.enabled) refreshHaWorkloads();
+      });
+    }
+    loadVMs({ localFirst: true });
     loadGroups();
     loadNodes();
+    loadSshAccess();
     // Subscribe to VM state events for realtime updates
     const off = events.onVmState((e) => {
       const idx = vms.findIndex((v) => v.id === e.vm_id);
@@ -601,27 +705,133 @@ apt-get update -y
   // Never leave the appliance-job poller running after this
   // page unmounts — a leaked interval would keep hitting the API (and
   // re-rendering toasts) while the user is elsewhere.
+  // Set once the page is left. An in-flight load that answers afterwards
+  // must drop its result: writing state and then reading a $derived of a
+  // destroyed component is what Svelte reports as `derived_inert`.
+  let destroyed = false;
   onDestroy(() => {
+    destroyed = true;
     stopAppPoller();
   });
 
-  async function loadVMs() {
+  // localFirst (first load): ask for this server's VMs (?scope=local) next
+  // to the federated list and render them as soon as they arrive; the full
+  // list replaces them when the remote nodes have answered. Reloads after
+  // an action keep the full list on screen and ask for the full list only
+  // (no flicker of remote VMs). VMs just created from this browser are
+  // merged in until a listing includes them (utils/pendingVms.js).
+  async function loadVMs({ localFirst = false } = {}) {
     loading = true;
     error = '';
+    let fullArrived = false;
+    if (localFirst) {
+      api
+        .listVMs({ scope: 'local' })
+        .then((list) => {
+          if (destroyed || fullArrived || !Array.isArray(list)) return;
+          const merged = mergePendingVms(list);
+          // Nothing local yet: keep the spinner rather than an empty list.
+          if (merged.length === 0) return;
+          vms = merged;
+          applySelfMerge();
+          loading = false;
+          remoteLoading = true;
+        })
+        .catch(() => {});
+    }
     try {
-      vms = await api.listVMs();
+      const list = await api.listVMs();
+      fullArrived = true;
+      if (destroyed) return;
+      vms = mergePendingVms(list);
+      applySelfMerge();
       // Fire-and-forget sparkline load; don't block the table render.
       loadSparklines();
     } catch (e) {
+      fullArrived = true;
+      if (destroyed) return;
       error = e.message;
     } finally {
-      loading = false;
+      if (!destroyed) {
+        loading = false;
+        remoteLoading = false;
+      }
+    }
+  }
+
+  async function loadSshAccess() {
+    if (!auth.isAdmin()) return;
+    try {
+      const ov = await api.getClusterSSH();
+      if (destroyed) return;
+      const map = {};
+      for (const n of ov?.nodes || []) {
+        const code = n.last_test?.ok === false ? n.last_test?.code || '' : '';
+        const hk = n.host_key?.state === 'changed' ? 'host_key_changed' : '';
+        // pool_error: why the node's connection is failing right now (typed
+        // code), so the banner is exact even if no test was ever run.
+        const pool = n.pool_error || '';
+        if (code || hk || pool) map[n.id] = { code: hk || pool || code };
+      }
+      sshAccess = map;
+    } catch {
+      sshAccess = {};
+    }
+  }
+
+  const memberOffline = (vm) => vm?.member_online === false;
+  // Nodes that answer but cannot be logged into over SSH yet: their VMs are
+  // missing from the list, so the banner says why (never "offline").
+  const healthIssues = $derived([
+    ...nodeIssues(vms, remoteNodes, sshAccess),
+    ...remoteNodes
+      .filter((n) => n.type !== 'local' && registryHealth(n) === 'no_access')
+      .map((n) => ({
+        id: n.id,
+        name: n.name,
+        kind: 'no_access',
+        stale: false,
+        code: sshAccess[n.id]?.code || n.access_code || 'no_key',
+        access: true,
+      })),
+  ]);
+  function healthOf(vm) {
+    const key = nodeKey(vm);
+    const node = isRemoteVm(vm) ? clusterNodes.find((n) => n.id === vm.node_id) : null;
+    if (node && registryHealth(node) === 'no_access') return 'no_access';
+    return nodeHealth(
+      node,
+      vms.filter((v) => nodeKey(v) === key)
+    );
+  }
+  // HA workloads (cluster_ha module, admin only) that the VM list does not
+  // show, with the reason: unregistered node, no SSH access, offline...
+  const haMissingAll = $derived(
+    clusterModule.enabled && haWorkloads.loaded && !loading && !error
+      ? missingHaWorkloads(haWorkloads.workloads, vms, clusterNodes)
+      : []
+  );
+  // One notice per cause: workloads hidden by a node already in the health
+  // banner are named there; the HA notice keeps only the other reasons.
+  const haFold = $derived(foldHaMissing(haMissingAll, healthIssues));
+  const haMissing = $derived(haFold.rest);
+  async function toggleManaged(vm, managed) {
+    try {
+      await api.setVMManaged(vm.id, vm.node, vmHv(vm), managed);
+      vms = vms.map((v) => (v.id === vm.id && v.node === vm.node ? { ...v, managed } : v));
+      const name = vm.alias || vm.name;
+      toast.success(
+        t(managed ? 'remote.list.managedSaved' : 'remote.list.unmanagedSaved', { name })
+      );
+    } catch (e) {
+      toast.error(remoteErrorText(t, e));
     }
   }
 
   async function loadGroups() {
     try {
       const res = await api.listGroups();
+      if (destroyed) return;
       groups = res.groups || [];
     } catch {
       groups = [];
@@ -631,7 +841,9 @@ apt-get update -y
   async function loadNodes() {
     try {
       const res = await api.listNodes();
+      if (destroyed) return;
       clusterNodes = res.nodes || res || [];
+      applySelfMerge();
     } catch {
       clusterNodes = [];
     }
@@ -658,6 +870,7 @@ apt-get update -y
           }
         })
       );
+      if (destroyed) return;
       metricsByVm = { ...metricsByVm, ...updates };
     } finally {
       sparklinesLoading = false;
@@ -725,7 +938,7 @@ apt-get update -y
     if (!confirmDeleteVm) return;
     confirmDeleteLoading = true;
     try {
-      await api.deleteVM(confirmDeleteVm.id);
+      await api.deleteVM(confirmDeleteVm.id, false, confirmDeleteVm.node, vmHv(confirmDeleteVm));
       toast.success(t('vms.deleted'));
       confirmDeleteOpen = false;
       confirmDeleteVm = null;
@@ -734,6 +947,30 @@ apt-get update -y
       toast.error(e.message);
     } finally {
       confirmDeleteLoading = false;
+    }
+  }
+
+  async function doMigrate() {
+    if (!migrateVm || !migrateDest) return;
+    migrateBusy = true;
+    try {
+      await api.migrateVM(
+        migrateVm.id,
+        migrateVm.node || 'local',
+        migrateDest,
+        migrateLive,
+        migrateSharedStorage
+      );
+      toast.success(
+        t('vms.migrated', { name: migrateVm.alias || migrateVm.name, node: migrateDest })
+      );
+      migrateOpen = false;
+      migrateVm = null;
+      await loadVMs();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      migrateBusy = false;
     }
   }
 
@@ -748,22 +985,41 @@ apt-get update -y
     if (ids.length === 0) return;
     confirmBulkLoading = true;
     let succeeded = 0,
-      failed = 0;
+      failed = 0,
+      skipped = 0;
+    const vmNode = (id) => vms.find((v) => v.id === id)?.node;
+    // hv keeps an Incus instance on another member off the libvirt/SSH path.
+    const vmHvOf = (id) => vmHv(vms.find((v) => v.id === id));
+    const isPacemakerManaged = (id) => haManaged(vms.find((v) => v.id === id));
     try {
       for (const id of ids) {
+        if (isPacemakerManaged(id)) {
+          skipped++;
+          continue;
+        }
         try {
-          if (confirmBulkAction === 'start') await api.startVM(id);
-          else if (confirmBulkAction === 'shutdown') await api.shutdownVM(id);
-          else if (confirmBulkAction === 'reboot') await api.rebootVM(id);
-          else if (confirmBulkAction === 'suspend') await api.suspendVM(id);
-          else if (confirmBulkAction === 'resume') await api.resumeVM(id);
-          else if (confirmBulkAction === 'forceoff') await api.forceOffVM(id);
-          else if (confirmBulkAction === 'delete') await api.deleteVM(id);
-          else if (confirmBulkAction === 'autostart-on') await api.setVMAutostart(id, true);
-          else if (confirmBulkAction === 'autostart-off') await api.setVMAutostart(id, false);
+          if (confirmBulkAction === 'start') await api.startVM(id, vmNode(id), vmHvOf(id));
+          else if (confirmBulkAction === 'shutdown')
+            await api.shutdownVM(id, vmNode(id), vmHvOf(id));
+          else if (confirmBulkAction === 'reboot') await api.rebootVM(id, vmNode(id), vmHvOf(id));
+          else if (confirmBulkAction === 'suspend') await api.suspendVM(id, vmNode(id), vmHvOf(id));
+          else if (confirmBulkAction === 'resume') await api.resumeVM(id, vmNode(id), vmHvOf(id));
+          else if (confirmBulkAction === 'forceoff')
+            await api.forceOffVM(id, vmNode(id), vmHvOf(id));
+          else if (confirmBulkAction === 'delete')
+            await api.deleteVM(id, false, vmNode(id), vmHvOf(id));
+          else if (confirmBulkAction === 'autostart-on')
+            await api.setVMAutostart(id, true, vmNode(id), vmHvOf(id));
+          else if (confirmBulkAction === 'autostart-off')
+            await api.setVMAutostart(id, false, vmNode(id), vmHvOf(id));
           else if (confirmBulkAction === 'snapshot') {
             const snapName = 'bulk-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-            await api.createSnapshot(id, { name: snapName, description: 'Bulk snapshot' });
+            await api.createSnapshot(
+              id,
+              { name: snapName, description: 'Bulk snapshot' },
+              vmNode(id),
+              vmHvOf(id)
+            );
           }
           succeeded++;
         } catch (_) {
@@ -772,19 +1028,20 @@ apt-get update -y
       }
       const label =
         {
-          start: 'iniciadas',
-          shutdown: 'apagadas',
-          reboot: 'reiniciadas',
-          suspend: 'pausadas',
-          resume: 'reanudadas',
-          forceoff: 'apagadas forzosamente',
-          delete: 'eliminadas',
-          'autostart-on': 'autostart activado',
-          'autostart-off': 'autostart desactivado',
-          snapshot: 'instantáneas creadas',
-        }[confirmBulkAction] || 'procesadas';
-      if (succeeded) toast.success(`${succeeded} VM${succeeded !== 1 ? 's' : ''} ${label}`);
-      if (failed) toast.error(`${failed} failed`);
+          start: t('vms.bulkActions.start'),
+          shutdown: t('vms.bulkActions.shutdown'),
+          reboot: t('vms.bulkActions.reboot'),
+          suspend: t('vms.bulkActions.suspend'),
+          resume: t('vms.bulkActions.resume'),
+          forceoff: t('vms.bulkActions.forceoff'),
+          delete: t('vms.bulkActions.delete'),
+          'autostart-on': t('vms.bulkActions.autostartOn'),
+          'autostart-off': t('vms.bulkActions.autostartOff'),
+          snapshot: t('vms.bulkActions.snapshot'),
+        }[confirmBulkAction] || t('vms.bulkActions.processed');
+      if (succeeded) toast.success(t('vms.bulkActionSummary', { count: succeeded, action: label }));
+      if (failed) toast.error(t('vms.bulkActionFailed', { count: failed }));
+      if (skipped) toast.info(t('vms.bulkActionSkipped', { count: skipped }));
       confirmBulkOpen = false;
       selectedKeys = new SvelteSet();
       selectMode = false;
@@ -865,7 +1122,7 @@ apt-get update -y
       // are eligible. The backend has always accepted this field
       // (templates.go) — the dialog simply never sent it, so every
       // instantiation silently landed on the default pool.
-      instPoolOptions = deployablePools(pools, 'vm');
+      instPoolOptions = pools;
       instNetOptions = (nets.networks || nets || []).map((n) => ({
         name: n.name,
         type: n.mode || n.type || '',
@@ -893,27 +1150,30 @@ apt-get update -y
     }
     if (instCI) {
       if (!instCIUser.trim()) {
-        return ciFail('Username is required for cloud-init provisioning');
+        return ciFail(t('vmCreate.ciUserRequired'));
       }
       if (
         /^(root|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|proxy|www-data|backup|list|irc|_apt|nobody|systemd-network|systemd-timesync|dhcpcd|messagebus|syslog|systemd-resolve|uuidd|tss|sshd|pollinate|tcpdump|landscape|fwupd-refresh|polkitd|sudo|adm|admin)$/i.test(
           instCIUser
         )
       ) {
-        return ciFail(
-          `"${instCIUser}" is a system group and would fail to provision; choose a different user name`
-        );
+        return ciFail(t('vmCreate.ciUserReserved'));
       }
       if (!instCIPassword) {
-        return ciFail('Password is required for cloud-init provisioning');
+        return ciFail(t('vmCreate.ciPasswordRequired'));
       }
-      if (instCIPassword.length < 6 || instCIPassword.length > 12) {
-        return ciFail('Password must be 6-12 characters');
-      }
+      if (instCIPassword.length < 6) return ciFail(t('vmCreate.ciPasswordMin'));
+      if (instCIPassword.length > 12) return ciFail(t('vmCreate.ciPasswordMax'));
     }
     instSaving = true;
     try {
-      const data = { name: instName.trim(), network: instNet, linked: instLinked };
+      const sourceTemplate = instTemplates.find((template) => template.id === instTemplateId);
+      const isIncusTemplate = sourceTemplate?.hypervisor === 'incus';
+      const data = {
+        name: instName.trim(),
+        linked: !isIncusTemplate && instLinked,
+      };
+      if (!isIncusTemplate) data.network = instNet;
       // Empty means "server default", which the backend resolves.
       if (instPool) data.pool = instPool;
       if (instCI) {
@@ -1055,7 +1315,7 @@ apt-get update -y
   function scriptInputHandler(e) {
     if (e.target.value.trim() && !appForm.cloud_init_supported) {
       appForm.cloud_init_supported = true;
-      toast.info('Cloud-init activado automáticamente (los scripts lo requieren)');
+      toast.info(t('vms.cloudInitAutoEnabled'));
     }
   }
 
@@ -1063,7 +1323,7 @@ apt-get update -y
     try {
       const r = await api.getApplianceProvision(app.id);
       viewScriptApp = app;
-      viewScriptText = r.script || '(sin script de instalación)';
+      viewScriptText = r.script || t('vms.noProvisionScript');
       showScriptView = true;
     } catch (e) {
       toast.error(e.message);
@@ -1253,7 +1513,7 @@ apt-get update -y
       if (app.cloud_init_supported) {
         const user = (appCIUsers[app.id] || '').trim();
         const pass = appCIPasswords[app.id] || '';
-        if (!user) return ciFail('Username is required for cloud-init provisioning');
+        if (!user) return ciFail(t('vmCreate.ciUserRequired'));
         if (
           /^(root|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|proxy|www-data|backup|list|irc|_apt|nobody|systemd-network|systemd-timesync|dhcpcd|messagebus|syslog|systemd-resolve|uuidd|tss|sshd|pollinate|tcpdump|landscape|fwupd-refresh|polkitd|sudo|adm|admin)$/i.test(
             user
@@ -1263,9 +1523,9 @@ apt-get update -y
             `"${user}" is a system group and would fail to provision; choose a different user name`
           );
         }
-        if (!pass) return ciFail('Password is required for cloud-init provisioning');
-        if (pass.length < 6) return ciFail('Password must be at least 6 characters');
-        if (pass.length > 12) return ciFail('Password must be at most 12 characters');
+        if (!pass) return ciFail(t('vmCreate.ciPasswordRequired'));
+        if (pass.length < 6) return ciFail(t('vmCreate.ciPasswordMin'));
+        if (pass.length > 12) return ciFail(t('vmCreate.ciPasswordMax'));
         body.cloud_init = {
           user,
           password: pass,
@@ -1569,7 +1829,9 @@ apt-get update -y
 <div class="p-3 sm:p-5 w-full max-w-[1800px] mx-auto">
   <PageHeader
     title={t('vms.title')}
-    subtitle={`${vms.length} ${vms.length === 1 ? t('vms.machine') : t('vms.machines')}${vms.length > 0 ? ` · ${runningVms.length} ${t('common.running')} · ${totalVcpus} vCPU · ${totalRamGB} GB RAM` : ''}`}
+    subtitle={loading && vms.length === 0
+      ? t('common.loading')
+      : `${vms.length} ${vms.length === 1 ? t('vms.machine') : t('vms.machines')}${vms.length > 0 ? ` · ${runningVms.length} ${t('common.running')} · ${totalVcpus} vCPU · ${totalRamGB} GB RAM` : ''}${remoteLoading ? ` · ${t('vms.loadingOtherNodes')}` : ''}`}
   >
     {#snippet actions()}
       <!-- Gauge shape preference (rings vs bars). Per-browser, so the
@@ -1630,6 +1892,8 @@ apt-get update -y
       </div>
     {/snippet}
   </PageHeader>
+
+  <HaReleasedList hideWhenEmpty onChanged={() => loadVMs()} />
 
   {#if !loading && vms.length > 0}
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
@@ -1842,7 +2106,7 @@ apt-get update -y
             <Container class="w-3 h-3 {f.c}" />
           {/if}
           {f.l}
-          <span class="text-[10px] opacity-60"
+          <span class="text-[10px] font-normal"
             >({f.v === 'all'
               ? vms.length
               : f.v === 'container'
@@ -1853,7 +2117,7 @@ apt-get update -y
       </button>
     {/each}
 
-    <span class="text-xs text-muted-foreground/50 mx-0.5">|</span>
+    <span class="text-xs text-muted-foreground/50 mx-0.5" aria-hidden="true">|</span>
 
     <button
       onclick={() => (stateFilter = 'all')}
@@ -1861,7 +2125,7 @@ apt-get update -y
         ? 'border-foreground text-foreground bg-muted font-medium'
         : 'border-border text-muted-foreground hover:text-foreground hover:border-border-hover'}"
     >
-      {t('vms.allStates')} <span class="text-[10px] opacity-60">({vms.length})</span>
+      {t('vms.allStates')} <span class="text-[10px] font-normal">({vms.length})</span>
     </button>
     {#each [{ v: 'running', c: 'bg-status-running', l: 'running' }, { v: 'shutoff', c: 'bg-status-shutoff', l: 'shutoff' }, { v: 'paused', c: 'bg-status-paused', l: 'paused' }, { v: 'crashed', c: 'bg-status-crashed', l: 'crashed' }] as s (s.v)}
       {@const count = vms.filter((v) => v.state === s.v).length}
@@ -1874,38 +2138,68 @@ apt-get update -y
         >
           <span class="inline-block w-1.5 h-1.5 rounded-full mr-1.5 {s.c}"></span>
           {s.l}
-          <span class="text-[10px] opacity-60">({count})</span>
+          <span class="text-[10px] font-normal">({count})</span>
         </button>
       {/if}
     {/each}
 
     {#if availableNodes.length > 1}
-      <span class="text-xs text-muted-foreground/50 mx-0.5">|</span>
-      <button
-        onclick={() => (nodeFilter = 'all')}
-        class="text-xs px-2.5 py-1 rounded-full border transition-colors {nodeFilter === 'all'
-          ? 'border-accent bg-accent/15 text-accent font-medium'
-          : 'border-border text-muted-foreground hover:text-foreground hover:border-border-hover'}"
-      >
-        <Server class="w-3 h-3 inline mr-1" />
-        {t('vms.allNodes')}
-      </button>
-      {#each availableNodes as nodeName (nodeName)}
-        {@const count = vms.filter((v) => (v.node || 'local') === nodeName).length}
+      <span class="text-xs text-muted-foreground/50 mx-0.5" aria-hidden="true">|</span>
+      <div role="group" aria-label={t('nodeSelf.nodeFilterAria')} class="contents">
         <button
-          onclick={() => (nodeFilter = nodeFilter === nodeName ? 'all' : nodeName)}
-          class="text-xs px-2.5 py-1 rounded-full border transition-colors {nodeFilter === nodeName
+          onclick={() => (nodeFilter = 'all')}
+          aria-pressed={nodeFilter === 'all'}
+          class="text-xs px-2.5 py-1 rounded-full border transition-colors {nodeFilter === 'all'
             ? 'border-accent bg-accent/15 text-accent font-medium'
             : 'border-border text-muted-foreground hover:text-foreground hover:border-border-hover'}"
         >
-          <Server class="w-3 h-3 inline mr-1 text-muted-foreground" />
-          {nodeName} <span class="text-[10px] opacity-60">({count})</span>
+          <Server class="w-3 h-3 inline mr-1" />
+          {t('vms.allNodes')}
         </button>
-      {/each}
+        {#each availableNodes as nodeName (nodeName)}
+          {@const count = vms.filter((v) => nodeKey(v) === nodeName).length}
+          <button
+            onclick={() => (nodeFilter = nodeFilterKey === nodeName ? 'all' : nodeName)}
+            aria-pressed={nodeFilterKey === nodeName}
+            class="text-xs px-2.5 py-1 rounded-full border transition-colors {nodeFilterKey ===
+            nodeName
+              ? 'border-accent bg-accent/15 text-accent font-medium'
+              : 'border-border text-muted-foreground hover:text-foreground hover:border-border-hover'}"
+          >
+            <Server class="w-3 h-3 inline mr-1 text-muted-foreground" />
+            {nodeDisplay(nodeName)}
+            {#if healthIssues.some((i) => i.name === nodeName)}
+              <!-- The banner already announces the issue; keeping it out of
+                   the chip's accessible name avoids "(Some nodes need
+                   attention)" inside the filter label (8.29 defect 5). -->
+              <span
+                class="inline-block w-1.5 h-1.5 rounded-full bg-warning ml-0.5"
+                title={t('remote.health.title')}
+                aria-hidden="true"
+              ></span>
+            {/if}
+            <span class="text-[10px] font-normal">({count})</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
+
+    {#if availableNodes.length > 1 || vms.some((v) => v.managed === false)}
+      <span class="text-xs text-muted-foreground/50 mx-0.5" aria-hidden="true">|</span>
+      <label class="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+        <input type="checkbox" bind:checked={showUnmanaged} data-testid="show-unmanaged" />
+        {t('remote.list.showUnmanaged')}
+      </label>
+      {#if availableNodes.length > 1}
+        <label class="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+          <input type="checkbox" bind:checked={groupByNode} data-testid="group-by-node" />
+          {t('remote.list.groupByNode')}
+        </label>
+      {/if}
     {/if}
 
     {#if visibleGroups.length > 0}
-      <span class="text-xs text-muted-foreground/50 mx-0.5">|</span>
+      <span class="text-xs text-muted-foreground/50 mx-0.5" aria-hidden="true">|</span>
       {#each visibleGroups as g (g)}
         <button
           onclick={() => (groupFilter = groupFilter === g.name ? 'all' : g.name)}
@@ -1920,7 +2214,7 @@ apt-get update -y
             class="inline-block w-1.5 h-1.5 rounded-full mr-1.5"
             style="background-color: {g.color}"
           ></span>
-          {g.name} <span class="text-[10px] opacity-60">({g.member_count})</span>
+          {g.name} <span class="text-[10px] font-normal">({g.member_count})</span>
         </button>
       {/each}
     {/if}
@@ -1930,6 +2224,57 @@ apt-get update -y
     <Alert variant="error">{error}</Alert>
   {/if}
 
+  <NodeHealthBanner issues={healthIssues} hiddenWorkloads={haFold.byNode} />
+
+  {#if haMissing.length}
+    <div
+      role="status"
+      class="rounded-md border border-info/30 bg-info/10 p-3 text-sm text-foreground"
+      data-testid="ha-missing-notice"
+    >
+      <p class="font-semibold">{t('nodeSelf.haMissing.title')}</p>
+      <ul class="mt-1 space-y-1.5">
+        {#each haMissing as w (w.key)}
+          <li class="flex flex-wrap items-center gap-2" data-testid="ha-missing-{w.name}">
+            <span class="min-w-0 break-words"
+              >{t(`nodeSelf.haMissing.${w.reason}`, { name: w.name, node: w.node })}</span
+            >
+            {#if w.reason === 'not_registered'}
+              <button
+                type="button"
+                class="rounded border border-info/40 px-2 py-1 text-xs font-medium hover:bg-info/10"
+                onclick={() => navigate('/nodes')}>{t('nodeSelf.haMissing.addNode')}</button
+              >
+            {:else if w.reason === 'no_access'}
+              <button
+                type="button"
+                class="rounded border border-info/40 px-2 py-1 text-xs font-medium hover:bg-info/10"
+                onclick={() => navigate('/nodes', { query: { focus: 'access' } })}
+                >{t('nodeSelf.haMissing.setUpAccess')}</button
+              >
+            {:else if w.reason === 'offline' || w.reason === 'disabled'}
+              <button
+                type="button"
+                class="rounded border border-info/40 px-2 py-1 text-xs font-medium hover:bg-info/10"
+                onclick={() => navigate('/nodes')}>{t('nodeSelf.haMissing.openNodes')}</button
+              >
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+
+  {#if remoteLoading}
+    <p
+      class="mb-3 flex items-center gap-2 text-xs text-muted-foreground"
+      role="status"
+      data-testid="vms-remote-loading"
+    >
+      <Spinner size="xs" />
+      {t('vms.loadingOtherNodesHint')}
+    </p>
+  {/if}
   {#if loading}
     <div class="flex items-center justify-center py-24"><Spinner size="lg" /></div>
   {:else if filteredVms.length === 0}
@@ -2001,7 +2346,30 @@ apt-get update -y
               </tr>
             </thead>
             <tbody class="divide-y divide-border/60">
-              {#each sortedVms as vm (vm.id)}
+              {#each sortedVms as vm, vi (vm.id)}
+                {#if groupByNode && (vi === 0 || nodeKey(sortedVms[vi - 1]) !== nodeKey(vm))}
+                  {@const gname = nodeKey(vm)}
+                  <tr class="bg-muted/60" data-testid="node-group-header">
+                    <th
+                      scope="colgroup"
+                      colspan={selectMode ? 9 : 8}
+                      class="px-3 py-1.5 text-left text-xs font-semibold text-foreground"
+                    >
+                      <span class="inline-flex items-center gap-2">
+                        <Server class="w-3 h-3" />
+                        {nodeDisplay(gname)}
+                        <span class="font-normal text-muted-foreground"
+                          >{t('remote.list.groupCount', {
+                            count: sortedVms.filter((x) => nodeKey(x) === gname).length,
+                          })}</span
+                        >
+                        <span class="font-normal text-muted-foreground"
+                          >· {healthText(healthOf(vm))}</span
+                        >
+                      </span>
+                    </th>
+                  </tr>
+                {/if}
                 {@const isSelected = selectedKeys.has(vm.id)}
                 {@const metrics = metricsByVm[vm.id]}
                 {@const cpuPts = last30(metrics?.cpu?.points)}
@@ -2021,7 +2389,7 @@ apt-get update -y
                       else next.add(vm.id);
                       selectedKeys = next;
                     } else {
-                      navigate(`/vms/${vm.id}`);
+                      navigate(`/vms/${vm.id}`, { query: vmQuery(vm) });
                     }
                   }}
                 >
@@ -2061,6 +2429,22 @@ apt-get update -y
                               ({vm.name})
                             </span>
                           {/if}
+                          {#if haManaged(vm)}
+                            <span
+                              class="shrink-0 rounded border border-warning/40 bg-warning-subtle px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-warning"
+                              title={t('vms.pacemakerManaged')}
+                            >
+                              {t('vms.pacemakerBadge')}
+                            </span>
+                          {/if}
+                          <span
+                            class="shrink-0"
+                            role="presentation"
+                            onclick={(e) => e.stopPropagation()}
+                            onkeydown={(e) => e.stopPropagation()}
+                          >
+                            <HaToggle {vm} compact onChanged={() => loadVMs()} />
+                          </span>
                           {#if pinned}
                             <Icon name="pin" size={11} class="text-accent shrink-0" />
                           {/if}
@@ -2076,12 +2460,12 @@ apt-get update -y
                     </div>
                   </td>
                   <td class="px-3 py-2.5 whitespace-nowrap">
-                    <span
-                      class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-muted text-muted-foreground border border-border/70"
-                    >
-                      <Server class="w-2.5 h-2.5" />
-                      {vm.node || 'local'}
-                    </span>
+                    <VmNodeCell
+                      {vm}
+                      nodeLabel={nodeKey(vm)}
+                      health={healthOf(vm)}
+                      onToggleManaged={toggleManaged}
+                    />
                   </td>
                   <td class="px-3 py-2.5 whitespace-nowrap">
                     <span
@@ -2158,9 +2542,9 @@ apt-get update -y
                       {#if vm.state === 'running'}
                         <button
                           type="button"
-                          onclick={() => navigate(`/vms/${vm.id}`)}
+                          onclick={() => navigate(`/vms/${vm.id}`, { query: vmQuery(vm) })}
                           class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                          title="Console"
+                          title={t('vms.openConsole')}
                         >
                           <SquareTerminal class="w-3.5 h-3.5" />
                         </button>
@@ -2193,11 +2577,15 @@ apt-get update -y
                             onkeydown={(e) => e.stopPropagation()}
                           >
                             {#if auth.canMutate()}
-                              {#if vm.state === 'shutoff' && !vm.template}
+                              {#if haManaged(vm)}
+                                <p class="w-full px-2 py-1.5 text-xs text-muted-foreground">
+                                  {t('haWorkloads.lockedByHa')}
+                                </p>
+                              {:else if vm.state === 'shutoff' && !vm.template}
                                 <button
                                   type="button"
                                   class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                                  disabled={quickBusy === `${vm.id}:start`}
+                                  disabled={memberOffline(vm) || quickBusy === `${vm.id}:start`}
                                   onclick={() => quickAction(vm, 'start')}
                                 >
                                   {#if quickBusy === `${vm.id}:start`}<Spinner
@@ -2212,7 +2600,7 @@ apt-get update -y
                                 <button
                                   type="button"
                                   class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                                  disabled={quickBusy === `${vm.id}:shutdown`}
+                                  disabled={memberOffline(vm) || quickBusy === `${vm.id}:shutdown`}
                                   onclick={() => quickAction(vm, 'shutdown')}
                                 >
                                   {#if quickBusy === `${vm.id}:shutdown`}<Spinner
@@ -2224,7 +2612,7 @@ apt-get update -y
                                 <button
                                   type="button"
                                   class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted text-destructive flex items-center gap-2"
-                                  disabled={quickBusy === `${vm.id}:forceoff`}
+                                  disabled={memberOffline(vm) || quickBusy === `${vm.id}:forceoff`}
                                   onclick={() => quickAction(vm, 'forceoff')}
                                 >
                                   {#if quickBusy === `${vm.id}:forceoff`}<Spinner
@@ -2256,7 +2644,10 @@ apt-get update -y
                             <button
                               type="button"
                               class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                              onclick={() => navigate(`/vms/${vm.id}?tab=hardware`)}
+                              onclick={() =>
+                                navigate(`/vms/${vm.id}?tab=hardware`, {
+                                  query: { node: vm.node },
+                                })}
                             >
                               <Icon name="settings" size={14} />
                               {t('vmDetail.hardware')}
@@ -2265,7 +2656,10 @@ apt-get update -y
                               <button
                                 type="button"
                                 class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                                onclick={() => navigate(`/vms/${vm.id}?tab=snapshots`)}
+                                onclick={() =>
+                                  navigate(`/vms/${vm.id}?tab=snapshots`, {
+                                    query: { node: vm.node },
+                                  })}
                               >
                                 <Icon name="camera" size={14} />
                                 {t('vmDetail.snapshots')}
@@ -2283,7 +2677,7 @@ apt-get update -y
                               <button
                                 type="button"
                                 class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                                disabled={quickBusy === `${vm.id}:clone`}
+                                disabled={memberOffline(vm) || quickBusy === `${vm.id}:clone`}
                                 onclick={() => quickAction(vm, 'clone')}
                               >
                                 {#if quickBusy === `${vm.id}:clone`}<Spinner
@@ -2296,7 +2690,7 @@ apt-get update -y
                             <button
                               type="button"
                               class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                              onclick={() => navigate(`/vms/${vm.id}`)}
+                              onclick={() => navigate(`/vms/${vm.id}`, { query: vmQuery(vm) })}
                             >
                               <Icon name="external-link" size={14} />
                               {t('vms.details')}
@@ -2316,7 +2710,23 @@ apt-get update -y
       <div
         class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 3xl:grid-cols-6 gap-3.5"
       >
-        {#each sortedVms as vm (vm.id)}
+        {#each sortedVms as vm, vi (vm.id)}
+          {#if groupByNode && (vi === 0 || nodeKey(sortedVms[vi - 1]) !== nodeKey(vm))}
+            <div
+              class="col-span-full flex items-center gap-2 pt-2 text-xs font-semibold text-foreground"
+              role="heading"
+              aria-level="3"
+              data-testid="node-group-header"
+            >
+              <Server class="w-3 h-3" />
+              {nodeDisplay(nodeKey(vm))}
+              <span class="font-normal text-muted-foreground"
+                >{t('remote.list.groupCount', {
+                  count: sortedVms.filter((x) => nodeKey(x) === nodeKey(vm)).length,
+                })} · {healthText(healthOf(vm))}</span
+              >
+            </div>
+          {/if}
           {@const isSelected = selectedKeys.has(vm.id)}
           {@const metrics = metricsByVm[vm.id]}
           {@const cpuPts = last30(metrics?.cpu?.points)}
@@ -2338,13 +2748,13 @@ apt-get update -y
                 else next.add(vm.id);
                 selectedKeys = next;
               } else {
-                navigate(`/vms/${vm.id}`);
+                navigate(`/vms/${vm.id}`, { query: vmQuery(vm) });
               }
             }}
             onkeydown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                if (!selectMode) navigate(`/vms/${vm.id}`);
+                if (!selectMode) navigate(`/vms/${vm.id}`, { query: vmQuery(vm) });
               }
             }}
             aria-pressed={selectMode ? isSelected : undefined}
@@ -2370,12 +2780,13 @@ apt-get update -y
               {:else}
                 <div
                   class="absolute inset-0 flex items-center justify-center text-5xl font-bold text-muted-foreground/30 select-none"
+                  aria-hidden="true"
                 >
                   {(vm.alias || vm.name).charAt(0).toUpperCase()}
                 </div>
               {/if}
               <div
-                class="absolute top-2 left-2 inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-black/50 text-white text-[10px] uppercase tracking-wider backdrop-blur"
+                class="absolute top-2 left-2 inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-black/70 text-white text-[10px] uppercase tracking-wider backdrop-blur"
               >
                 <span class="w-1.5 h-1.5 rounded-full {stateDotClass(vm.state)}"></span>
                 {vm.state}
@@ -2441,6 +2852,22 @@ apt-get update -y
                   <div class="font-medium text-sm truncate min-w-0" title={vm.alias || vm.name}>
                     {vm.alias || vm.name}
                   </div>
+                  {#if haManaged(vm)}
+                    <span
+                      class="shrink-0 rounded border border-warning/40 bg-warning-subtle px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-warning"
+                      title={t('vms.pacemakerManaged')}
+                    >
+                      {t('vms.pacemakerBadge')}
+                    </span>
+                  {/if}
+                  <span
+                    class="shrink-0"
+                    role="presentation"
+                    onclick={(e) => e.stopPropagation()}
+                    onkeydown={(e) => e.stopPropagation()}
+                  >
+                    <HaToggle {vm} compact onChanged={() => loadVMs()} />
+                  </span>
                   {#if vm.template}
                     <span
                       title={t('vms.templateBadgeTitle')}
@@ -2499,11 +2926,15 @@ apt-get update -y
                         onkeydown={(e) => e.stopPropagation()}
                       >
                         {#if auth.canMutate()}
-                          {#if vm.state === 'shutoff' && !vm.template}
+                          {#if haManaged(vm)}
+                            <p class="w-full px-2 py-1.5 text-xs text-muted-foreground">
+                              {t('haWorkloads.lockedByHa')}
+                            </p>
+                          {:else if vm.state === 'shutoff' && !vm.template}
                             <button
                               type="button"
                               class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                              disabled={quickBusy === `${vm.id}:start`}
+                              disabled={memberOffline(vm) || quickBusy === `${vm.id}:start`}
                               onclick={() => quickAction(vm, 'start')}
                             >
                               {#if quickBusy === `${vm.id}:start`}<Spinner
@@ -2516,7 +2947,7 @@ apt-get update -y
                             <button
                               type="button"
                               class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                              disabled={quickBusy === `${vm.id}:shutdown`}
+                              disabled={memberOffline(vm) || quickBusy === `${vm.id}:shutdown`}
                               onclick={() => quickAction(vm, 'shutdown')}
                             >
                               {#if quickBusy === `${vm.id}:shutdown`}<Spinner
@@ -2528,7 +2959,7 @@ apt-get update -y
                             <button
                               type="button"
                               class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted text-destructive flex items-center gap-2"
-                              disabled={quickBusy === `${vm.id}:forceoff`}
+                              disabled={memberOffline(vm) || quickBusy === `${vm.id}:forceoff`}
                               onclick={() => quickAction(vm, 'forceoff')}
                             >
                               {#if quickBusy === `${vm.id}:forceoff`}<Spinner
@@ -2560,7 +2991,8 @@ apt-get update -y
                         <button
                           type="button"
                           class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                          onclick={() => navigate(`/vms/${vm.id}?tab=hardware`)}
+                          onclick={() =>
+                            navigate(`/vms/${vm.id}?tab=hardware`, { query: vmQuery(vm) })}
                         >
                           <Icon name="settings" size={14} />
                           {t('vmDetail.hardware')}
@@ -2568,7 +3000,8 @@ apt-get update -y
                         <button
                           type="button"
                           class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                          onclick={() => navigate(`/vms/${vm.id}?tab=snapshots`)}
+                          onclick={() =>
+                            navigate(`/vms/${vm.id}?tab=snapshots`, { query: vmQuery(vm) })}
                         >
                           <Icon name="camera" size={14} />
                           {t('vmDetail.snapshots')}
@@ -2577,7 +3010,7 @@ apt-get update -y
                           <button
                             type="button"
                             class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                            disabled={quickBusy === `${vm.id}:clone`}
+                            disabled={memberOffline(vm) || quickBusy === `${vm.id}:clone`}
                             onclick={() => quickAction(vm, 'clone')}
                           >
                             {#if quickBusy === `${vm.id}:clone`}<Spinner class="w-3.5 h-3.5" />{/if}
@@ -2592,11 +3025,11 @@ apt-get update -y
                             <Icon name="tag" size={14} />
                             {t('vms.assignToGroup')}
                           </button>
-                          {#if vm.state === 'shutoff'}
+                          {#if vm.state === 'shutoff' && !isRemoteVm(vm)}
                             <button
                               type="button"
                               class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                              disabled={quickBusy === `${vm.id}:template`}
+                              disabled={memberOffline(vm) || quickBusy === `${vm.id}:template`}
                               onclick={() => quickAction(vm, 'template')}
                             >
                               {#if quickBusy === `${vm.id}:template`}<Spinner
@@ -2607,10 +3040,21 @@ apt-get update -y
                             </button>
                           {/if}
                         {/if}
+                        {#if clusterNodes.length > 1 && auth.isAdmin() && !haManaged(vm)}
+                          <button
+                            type="button"
+                            class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
+                            disabled={memberOffline(vm)}
+                            onclick={() => quickAction(vm, 'migrate')}
+                          >
+                            <Icon name="arrowRightLeft" size={14} />
+                            {t('vms.migrate')}
+                          </button>
+                        {/if}
                         <button
                           type="button"
                           class="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-muted flex items-center gap-2"
-                          onclick={() => navigate(`/vms/${vm.id}`)}
+                          onclick={() => navigate(`/vms/${vm.id}`, { query: vmQuery(vm) })}
                         >
                           <Icon name="external-link" size={14} />
                           {t('vms.details')}
@@ -2646,12 +3090,23 @@ apt-get update -y
                       {/if}
                     </span>
                   {/if}
+                  <VmNodeCell
+                    {vm}
+                    nodeLabel={nodeKey(vm)}
+                    health={healthOf(vm)}
+                    onToggleManaged={toggleManaged}
+                  />
                   <span
                     class="inline-flex items-center gap-1 shrink-0 text-muted-foreground/70"
-                    title="{t('vms.nodeCol')}: {vm.node || 'local'}"
+                    title="{t('vms.nodeCol')}: {nodeKey(vm)}{vm.pacemaker_node
+                      ? ` · ${t('vms.pacemakerNode', { name: vm.pacemaker_node })}`
+                      : ''}"
                   >
-                    <Server class="w-2.5 h-2.5 text-muted-foreground/60" />
-                    <span class="text-[10px] font-mono">{vm.node || 'local'}</span>
+                    {#if vm.pacemaker_node}
+                      <span class="text-[10px] font-mono text-muted-foreground"
+                        >({vm.pacemaker_node})</span
+                      >
+                    {/if}
                   </span>
                 </span>
               </div>
@@ -2716,6 +3171,61 @@ apt-get update -y
   loading={confirmDeleteLoading}
   onConfirm={doDelete}
 />
+
+<!-- Migrate (cluster) -->
+<Dialog.Root bind:open={migrateOpen}>
+  <Dialog.Content class="sm:max-w-md">
+    <Dialog.Header>
+      <Dialog.Title>{t('vms.migrateTitle', { name: migrateVm?.name || '' })}</Dialog.Title>
+      <Dialog.Description>{t('vms.migrateDesc')}</Dialog.Description>
+    </Dialog.Header>
+    <div class="space-y-3">
+      <div class="space-y-1">
+        <label for="migrate-destination" class="block text-xs font-semibold text-foreground"
+          >{t('vms.migrateDest')}</label
+        >
+        <select id="migrate-destination" bind:value={migrateDest} class="input w-full min-h-11">
+          {#each migrationTargets(clusterNodes, migrateVm, localNodeName) as n (n.id || n.name)}
+            <option value={n.name}>{n.name === 'local' ? t('vms.localNode') : n.name}</option>
+          {/each}
+        </select>
+      </div>
+      <label class="flex min-h-11 items-center gap-2 text-sm cursor-pointer select-none">
+        <input
+          type="checkbox"
+          bind:checked={migrateLive}
+          disabled={migrateVm?.state === 'shutoff'}
+          class="w-4 h-4 rounded border-border"
+        />
+        <span>{t('vms.migrateLive')}</span>
+      </label>
+      <div class="space-y-1">
+        <label class="flex min-h-11 items-center gap-2 text-sm cursor-pointer select-none">
+          <input
+            type="checkbox"
+            bind:checked={migrateSharedStorage}
+            class="w-4 h-4 mt-0.5 rounded border-border"
+          />
+          <span>{t('vms.migrateSharedStorage')}</span>
+        </label>
+        <p class="pl-6 text-xs text-muted-foreground">{t('vms.migrateSharedStorageDesc')}</p>
+      </div>
+    </div>
+    <Dialog.Footer class="gap-2">
+      <Button variant="outline" onclick={() => (migrateOpen = false)} disabled={migrateBusy}>
+        {t('common.cancel')}
+      </Button>
+      <Button
+        variant="default"
+        onclick={doMigrate}
+        disabled={migrateBusy || !migrateDest || (!migrateLive && !migrateSharedStorage)}
+      >
+        {#if migrateBusy}<Spinner size="xs" class="mr-1" />{/if}
+        {t('vms.migrate')}
+      </Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>
 
 <!-- Bulk action confirmation -->
 <ConfirmDialog
@@ -2791,6 +3301,7 @@ apt-get update -y
   templates={instTemplates}
   netOptions={instNetOptions}
   poolOptions={instPoolOptions}
+  hasRemoteNodes={remoteNodes.some((node) => node.type !== 'local')}
   saving={instSaving}
   onInstantiate={async (payload) => {
     instTemplateId = payload.templateId;
@@ -2814,6 +3325,7 @@ apt-get update -y
       <Dialog.Title>{t('vms.appliancesTitle')}</Dialog.Title>
       <Dialog.Description>{t('vms.appliancesDesc')}</Dialog.Description>
     </Dialog.Header>
+    <Alert variant="info">{t('appstore.deployTargetNotice')}</Alert>
 
     {#if auth.isAdmin() && !appDeploying}
       <div class="mb-3 flex justify-end">
@@ -2992,7 +3504,7 @@ apt-get update -y
                             type="button"
                             onclick={() => openViewScript(app)}
                             class="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
-                            title="Ver / editar script de instalación"
+                            title={t('vms.viewProvisionScript')}
                           >
                             <FileCode2 class="w-3.5 h-3.5" />
                           </button>
@@ -3003,8 +3515,8 @@ apt-get update -y
                               type="button"
                               onclick={() => openAppEdit(app)}
                               class="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
-                              aria-label="Edit appliance"
-                              title="Edit appliance"
+                              aria-label={t('appstore.editAppliance', { id: app.name })}
+                              title={t('appstore.editAppliance', { id: app.name })}
                             >
                               <Pencil class="w-3.5 h-3.5" />
                             </button>
@@ -3012,8 +3524,8 @@ apt-get update -y
                               type="button"
                               onclick={() => askDeleteApp(app)}
                               class="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-colors"
-                              aria-label="Delete appliance"
-                              title="Delete appliance"
+                              aria-label={t('appstore.deleteAppliance')}
+                              title={t('appstore.deleteAppliance')}
                             >
                               <Trash2 class="w-3.5 h-3.5" />
                             </button>
@@ -3361,16 +3873,17 @@ set -e
   <Dialog.Content class="sm:max-w-3xl">
     <Dialog.Header>
       <Dialog.Title>
-        Script de instalación{viewScriptApp ? ` — ${viewScriptApp.name || viewScriptApp.id}` : ''}
+        {t('vms.scriptTitle')}{viewScriptApp ? ` — ${viewScriptApp.name || viewScriptApp.id}` : ''}
       </Dialog.Title>
       <Dialog.Description>
-        Bash ejecutado como root en el primer arranque de la VM.
+        {t('vms.scriptDesc')}
       </Dialog.Description>
     </Dialog.Header>
     <pre
       class="max-h-[55vh] overflow-auto rounded-lg border border-border bg-muted/50 p-4 text-[11px] font-mono leading-snug whitespace-pre-wrap">{viewScriptText}</pre>
     <Dialog.Footer class="gap-2">
-      <Button variant="outline" onclick={() => (showScriptView = false)}>Cerrar</Button>
+      <Button variant="outline" onclick={() => (showScriptView = false)}>{t('common.close')}</Button
+      >
       {#if auth.isAdmin() && viewScriptApp}
         <Button
           onclick={() => {
@@ -3378,7 +3891,8 @@ set -e
             openAppEdit(viewScriptApp);
           }}
         >
-          <Pencil class="w-3.5 h-3.5 mr-1.5" /> Editar
+          <Pencil class="w-3.5 h-3.5 mr-1.5" />
+          {t('common.edit')}
         </Button>
       {/if}
     </Dialog.Footer>

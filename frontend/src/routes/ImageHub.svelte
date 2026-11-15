@@ -395,7 +395,7 @@
         isoTargetPool
       );
       finishTask(taskId, 'success', t('storage.isoUploaded'), 100);
-      toast.success(`ISO ${file.name} subida con éxito`);
+      toast.success(t('imagehub.isoUploadSuccess', { name: file.name }));
       await loadData();
     } catch (err) {
       finishTask(taskId, 'error', err.message, uploadIsoProgress || 0);
@@ -442,9 +442,9 @@
         upsertTask({
           id: taskId,
           kind: 'general',
-          title: `Creando contenedor: ${launchName.trim()}`,
+          title: t('imagehub.creatingContainerTitle', { name: launchName.trim() }),
           pct: 25,
-          message: 'Aprovisionando contenedor...',
+          message: t('imagehub.creatingContainerMessage'),
           status: 'running',
         });
         const payload = {
@@ -459,17 +459,22 @@
         let res;
         try {
           res = await api.createVM(payload);
-          finishTask(taskId, 'success', 'Contenedor creado correctamente', 100);
+          finishTask(taskId, 'success', t('imagehub.containerCreated'), 100);
         } catch (err) {
-          finishTask(taskId, 'error', err.message || 'Error al crear contenedor', 25);
+          finishTask(taskId, 'error', err.message || t('imagehub.containerCreateError'), 25);
           throw err;
         }
-        toast.success(`Contenedor ${res.name} creado con éxito!`);
+        toast.success(t('imagehub.containerCreateSuccess', { name: res.name }));
         quickLaunchItem = null;
         navigate(`/vms/${res.id}`);
       } else {
-        // VM create redirect with preset base
-        navigate(`/vms/new`);
+        navigate('/vms/new', {
+          query: {
+            base_image: quickLaunchItem.id,
+            name: launchName.trim(),
+            network: launchNetwork,
+          },
+        });
       }
     } catch (err) {
       toast.error(err.message || t('imagehub.launchError'));
@@ -590,10 +595,9 @@
               <Icon name="box" size={18} />
             </div>
             <div>
-              <h3 class="text-sm font-bold text-foreground">Pool de Contenedores Incus / LXC</h3>
+              <h3 class="text-sm font-bold text-foreground">{t('imagehub.containerPoolTitle')}</h3>
               <p class="text-xs text-muted-foreground">
-                Las imágenes en caché permiten crear contenedores en 0.2 segundos de forma
-                instantánea.
+                {t('imagehub.containerCacheBenefit')}
               </p>
             </div>
           </div>
@@ -606,7 +610,8 @@
             />
             <input
               type="text"
-              placeholder="Buscar (Ubuntu, Debian, Alpine...)"
+              placeholder={t('imagehub.searchContainers')}
+              aria-label={t('imagehub.searchLabel')}
               bind:value={containerSearch}
               class="w-full pl-8 pr-3 py-1.5 rounded-xl bg-background border border-border text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-accent/40"
             />
@@ -716,8 +721,8 @@
                     <button
                       onclick={() => deleteContainer(img.fingerprint)}
                       class="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                      aria-label="Eliminar de la caché local"
-                      title="Eliminar de la caché local"
+                      aria-label={t('imagehub.deleteFromLocalCache')}
+                      title={t('imagehub.deleteFromLocalCache')}
                     >
                       <Icon name="trash" size={13} />
                     </button>
@@ -728,7 +733,7 @@
                     onclick={() => openQuickLaunch(img, 'container')}
                     class="ml-auto font-semibold flex items-center gap-1 shadow-sm"
                   >
-                    <span>Lanzar Contenedor</span>
+                    <span>{t('imagehub.launchContainer')}</span>
                     <Icon name="arrowRight" size={12} />
                   </Button>
                 {:else}
@@ -741,10 +746,10 @@
                   >
                     {#if pullingContainerRef === img.ref}
                       <Spinner size="xs" />
-                      <span>Descargando...</span>
+                      <span>{t('imagehub.downloading')}</span>
                     {:else}
                       <Icon name="download" size={12} />
-                      <span>Pre-cargar al Pool Local</span>
+                      <span>{t('imagehub.preloadLocalPool')}</span>
                     {/if}
                   </Button>
                 {/if}
@@ -767,11 +772,10 @@
             </div>
             <div>
               <h3 class="text-sm font-bold text-foreground">
-                Pool de Discos Base QCOW2 (Copy-on-Write)
+                {t('imagehub.basePoolTitle')}
               </h3>
               <p class="text-xs text-muted-foreground">
-                Las imágenes descargadas en este pool permiten crear VMs instantáneas en 1 segundo
-                usando enlaces CoW.
+                {t('imagehub.basePoolBenefit')}
               </p>
             </div>
           </div>
@@ -808,7 +812,8 @@
               />
               <input
                 type="text"
-                placeholder="Buscar disco base..."
+                placeholder={t('imagehub.searchBaseDisks')}
+                aria-label={t('imagehub.searchLabel')}
                 bind:value={baseSearch}
                 class="w-full pl-8 pr-3 py-1.5 rounded-xl bg-background border border-border text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-accent/40"
               />
@@ -841,19 +846,19 @@
                       class="px-2 py-0.5 rounded-full bg-success/15 text-success font-mono text-[10px] font-bold border border-success/30 shrink-0 flex items-center gap-1"
                     >
                       <Icon name="check" size={11} />
-                      <span>En Pool Local</span>
+                      <span>{t('imagehub.inLocalPool')}</span>
                     </span>
                   {:else}
                     <span
                       class="px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-mono text-[10px] font-bold shrink-0"
                     >
-                      No descargado
+                      {t('imagehub.notDownloaded')}
                     </span>
                   {/if}
                 </div>
 
                 <p class="text-xs text-muted-foreground line-clamp-2 my-2 leading-relaxed">
-                  {b.description || 'Disco base cloud oficial listo para Copy-on-Write.'}
+                  {b.description || t('imagehub.baseReadyDescription')}
                 </p>
 
                 <div
@@ -877,8 +882,8 @@
                     <button
                       onclick={() => deleteBaseCloud(b.id)}
                       class="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                      aria-label="Eliminar disco base del pool"
-                      title="Eliminar disco base del pool"
+                      aria-label={t('imagehub.deleteBaseDisk')}
+                      title={t('imagehub.deleteBaseDisk')}
                     >
                       <Icon name="trash" size={13} />
                     </button>
@@ -902,7 +907,7 @@
                     onclick={() => openQuickLaunch(b, 'vm')}
                     class="ml-auto font-semibold flex items-center gap-1 shadow-sm"
                   >
-                    <span>Crear VM (CoW 1s)</span>
+                    <span>{t('imagehub.createCowVM')}</span>
                     <Icon name="arrowRight" size={12} />
                   </Button>
                 {:else}
@@ -915,10 +920,10 @@
                   >
                     {#if pullingBaseId === b.id}
                       <Spinner size="xs" />
-                      <span>Descargando...</span>
+                      <span>{t('imagehub.downloading')}</span>
                     {:else}
                       <Icon name="download" size={12} />
-                      <span>Descargar al Pool Local</span>
+                      <span>{t('imagehub.downloadToPool')}</span>
                     {/if}
                   </Button>
                 {/if}
@@ -940,9 +945,9 @@
               <Icon name="disc" size={18} />
             </div>
             <div>
-              <h3 class="text-sm font-bold text-foreground">Biblioteca Centralizada de ISOs</h3>
+              <h3 class="text-sm font-bold text-foreground">{t('imagehub.isoLibraryTitle')}</h3>
               <p class="text-xs text-muted-foreground">
-                Instaladores de sistemas operativos (Windows, Linux, FreeBSD, TrueNAS).
+                {t('imagehub.isoLibraryDesc')}
               </p>
             </div>
           </div>
@@ -954,7 +959,7 @@
                 class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-card border border-border hover:bg-muted text-xs font-semibold text-foreground shadow-sm transition-all"
               >
                 <Icon name="upload" size={13} />
-                <span>Subir ISO</span>
+                <span>{t('imagehub.uploadISOButton')}</span>
               </span>
             </label>
 
@@ -965,7 +970,7 @@
               class="font-semibold shadow-sm gap-1.5"
             >
               <Icon name="download" size={13} />
-              <span>Descargar por URL</span>
+              <span>{t('imagehub.downloadISOByURL')}</span>
             </Button>
           </div>
         </div>
@@ -973,7 +978,7 @@
         {#if uploadingIso}
           <div class="p-4 rounded-2xl bg-accent/10 border border-accent/30 space-y-2">
             <div class="flex items-center justify-between text-xs font-bold text-accent">
-              <span>Subiendo archivo ISO...</span>
+              <span>{t('imagehub.isoUploading')}</span>
               <span>{uploadIsoProgress}%</span>
             </div>
             <div class="w-full h-2 rounded-full bg-muted overflow-hidden">
@@ -990,8 +995,8 @@
           <div class="border border-dashed border-border rounded-2xl bg-card/40">
             <EmptyState
               icon="disc"
-              title="No hay imágenes ISO en el pool"
-              description="Sube un archivo .iso o introduce una URL de descarga."
+              title={t('imagehub.noISOsInPool')}
+              description={t('imagehub.noISOsDescription')}
             />
           </div>
         {:else}
@@ -1037,8 +1042,8 @@
                     <button
                       onclick={() => deleteIsoFile(iso)}
                       class="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                      aria-label="Eliminar archivo ISO"
-                      title="Eliminar archivo ISO"
+                      aria-label={t('imagehub.deleteISOFile')}
+                      title={t('imagehub.deleteISOFile')}
                     >
                       <Icon name="trash" size={13} />
                     </button>
@@ -1046,10 +1051,10 @@
                   <Button
                     size="xs"
                     variant="outline"
-                    onclick={() => navigate('/vms/new')}
+                    onclick={() => navigate('/vms/new', { query: { iso: iso.path } })}
                     class="ml-auto font-semibold flex items-center gap-1"
                   >
-                    <span>Instalar en VM</span>
+                    <span>{t('imagehub.installInVM')}</span>
                     <Icon name="arrowRight" size={12} />
                   </Button>
                 </div>
@@ -1069,13 +1074,13 @@
 <Dialog.Root bind:open={showDownloadIsoModal}>
   <Dialog.Content class="sm:max-w-md [&>*]:min-w-0">
     <Dialog.Header>
-      <Dialog.Title>Descargar ISO por URL</Dialog.Title>
+      <Dialog.Title>{t('imagehub.downloadISOByURL')}</Dialog.Title>
     </Dialog.Header>
 
     <div class="space-y-3">
       <div>
         <label for="iso-url-input" class="text-xs font-semibold text-foreground block mb-1"
-          >URL Oficial de Descarga *</label
+          >{t('imagehub.officialDownloadURL')}</label
         >
         <Input
           id="iso-url-input"
@@ -1086,7 +1091,7 @@
       </div>
       <div>
         <label for="iso-name-input" class="text-xs font-semibold text-foreground block mb-1"
-          >Nombre de Archivo *</label
+          >{t('imagehub.fileNameRequired')}</label
         >
         <Input
           id="iso-name-input"
@@ -1117,7 +1122,7 @@
         onclick={() => (showDownloadIsoModal = false)}
         disabled={downloadingIso}
       >
-        Cancelar
+        {t('common.cancel')}
       </Button>
       <Button
         variant="primary"
@@ -1128,10 +1133,10 @@
       >
         {#if downloadingIso}
           <Spinner size="sm" class="mr-1" />
-          <span>Iniciando...</span>
+          <span>{t('imagehub.startingDownload')}</span>
         {:else}
           <Icon name="download" size={14} class="mr-1" />
-          <span>Descargar al Pool</span>
+          <span>{t('imagehub.downloadToPool')}</span>
         {/if}
       </Button>
     </Dialog.Footer>
@@ -1149,20 +1154,20 @@
     <Dialog.Header>
       <Dialog.Title class="flex items-center gap-2">
         <Icon name="zap" size={18} class="text-success" />
-        Lanzamiento Instantáneo
+        {t('imagehub.quickLaunchTitle')}
       </Dialog.Title>
     </Dialog.Header>
 
     <div class="space-y-3">
       <div>
         <label for="launch-name-input" class="text-xs font-semibold text-foreground block mb-1"
-          >Nombre de la Instancia *</label
+          >{t('imagehub.instanceNameRequired')}</label
         >
         <Input id="launch-name-input" bind:value={launchName} class="w-full text-xs" />
       </div>
       <div>
         <label for="launch-net-select" class="text-xs font-semibold text-foreground block mb-1"
-          >Red / Bridge *</label
+          >{t('imagehub.networkBridgeLabel')}</label
         >
         <select id="launch-net-select" bind:value={launchNetwork} class="input w-full text-xs">
           {#each networks as n (n.name)}
@@ -1179,7 +1184,7 @@
         onclick={() => (quickLaunchItem = null)}
         disabled={launching}
       >
-        Cancelar
+        {t('common.cancel')}
       </Button>
       <Button
         variant="primary"
@@ -1190,10 +1195,12 @@
       >
         {#if launching}
           <Spinner size="sm" class="mr-1" />
-          <span>Lanzando...</span>
+          <span>{t('imagehub.launching')}</span>
         {:else}
           <Icon name="zap" size={14} class="mr-1 text-warning" />
-          <span>Lanzar en 1s</span>
+          <span>
+            {launchType === 'vm' ? t('imagehub.configureCowVM') : t('imagehub.launchContainer')}
+          </span>
         {/if}
       </Button>
     </Dialog.Footer>

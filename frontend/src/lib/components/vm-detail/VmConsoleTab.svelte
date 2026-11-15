@@ -6,8 +6,17 @@
   import { Button } from '$lib/components/ui/button';
   import Icon from '$lib/components/Icon.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
+  import { navigate } from '$lib/router.svelte.js';
+  import RemoteVncConsole from './RemoteVncConsole.svelte';
+  import { needsClusterAccess } from '$lib/utils/remoteRoutes.js';
+  import { fetchConsoleFile, consoleFileErrorText, saveBlob } from '$lib/utils/consoleFile.js';
 
-  let { vmId, vm = null, isContainerVm = false, onStart = null } = $props();
+  let { vmId, vm = null, isContainerVm = false, onStart = null, node = '', hv = '' } = $props();
+  // A VM on another node must not use the legacy /console/{id} page (it does
+  // not go through node dispatch): connect noVNC in-page with ?node=&hv=.
+  const remote = $derived(!!node);
+  let errorCode = $state('');
+  let remoteRfb = $state(null);
 
   let vncTicket = $state('');
   let loading = $state(false);
@@ -18,23 +27,54 @@
   let isFullscreen = $state(false);
 
   const isRunning = $derived(vm?.state === 'running');
-  const graphicsType = $derived(vm?.graphics_type || 'both');
+  const graphicsType = $derived(remote ? 'vnc' : vm?.graphics_type || 'both');
 
   async function loadTicket() {
-    if (!vmId || isContainerVm) return;
+    // One ticket request at a time (the effect below and a click could
+    // otherwise ask twice on open).
+    if (!vmId || isContainerVm || loading) return;
     loading = true;
     error = '';
+    errorCode = '';
     try {
-      const res = await api.getVNCTicket(vmId);
+      const res = await api.getVNCTicket(vmId, node, hv);
       vncTicket = res.vnc_ticket || '';
     } catch (e) {
       error = e.message || 'Error getting console ticket';
+      errorCode = e.code || '';
     } finally {
       loading = false;
     }
   }
 
+  let vvBusy = $state(false);
+  // The .vv launcher is fetched here (not a plain <a download>) so a failure
+  // (host key not pinned, console busy, ...) shows a translated message
+  // instead of silently saving the JSON error as a file.
+  async function downloadVv() {
+    vvBusy = true;
+    try {
+      const blob = await fetchConsoleFile(api.getSPICEUrl(vmId, node, hv));
+      saveBlob(blob, `${vm?.name || vmId}.vv`);
+    } catch (e) {
+      toast.error(consoleFileErrorText(t, e));
+    } finally {
+      vvBusy = false;
+    }
+  }
+
   function sendMacro(macro) {
+    if (remote) {
+      if (macro === 'cad') remoteRfb?.sendCtrlAltDel?.();
+      else if (macro === 'taskmgr') {
+        remoteRfb?.sendKey?.(0xffe3, 'ControlLeft', true);
+        remoteRfb?.sendKey?.(0xffe1, 'ShiftLeft', true);
+        remoteRfb?.sendKey?.(0xff1b, 'Escape');
+        remoteRfb?.sendKey?.(0xffe1, 'ShiftLeft', false);
+        remoteRfb?.sendKey?.(0xffe3, 'ControlLeft', false);
+      }
+      return;
+    }
     if (!iframeEl?.contentWindow) return;
     try {
       iframeEl.contentWindow.postMessage(
@@ -75,23 +115,24 @@
   }
 
   function openPopout() {
-    if (!vmId) return;
+    if (!vmId || remote) return;
     const modeParam = consoleMode === 'spice' ? '&mode=spice' : '';
     const url = `/console/${vmId}?vt=${encodeURIComponent(vncTicket)}${modeParam}`;
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
   $effect(() => {
-    if (isRunning && !vncTicket && !loading) {
+    // `!error`: a failed ticket (e.g. node unreachable) must not retry in a
+    // tight loop; the Reconnect button retries on demand.
+    if (isRunning && !vncTicket && !loading && !error) {
       loadTicket();
     }
   });
 
   onMount(() => {
+    // The first ticket is requested by the $effect above; asking here too
+    // sent two vnc-ticket POSTs on every detail open.
     document.addEventListener('fullscreenchange', onFullscreenChange);
-    if (isRunning) {
-      loadTicket();
-    }
   });
 
   onDestroy(() => {
@@ -196,16 +237,30 @@
           <Icon name={isFullscreen ? 'minimize' : 'maximize'} size={13} class="mr-1" />
           <span class="hidden md:inline">{t('vmDetail.fullscreen')}</span>
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onclick={openPopout}
-          title={t('vmDetail.popout')}
-          class="h-7 px-2 text-xs"
-        >
-          <Icon name="external-link" size={13} class="mr-1" />
-          <span class="hidden md:inline">{t('vmDetail.popout')}</span>
-        </Button>
+        {#if remote}
+          <Button
+            variant="outline"
+            size="sm"
+            onclick={downloadVv}
+            disabled={vvBusy}
+            title={t('remote.console.remoteSpice')}
+            class="h-7 px-2 text-xs"
+            data-testid="remote-vv-link"
+          >
+            {t('remote.console.downloadVv')}
+          </Button>
+        {:else}
+          <Button
+            variant="outline"
+            size="sm"
+            onclick={openPopout}
+            title={t('vmDetail.popout')}
+            class="h-7 px-2 text-xs"
+          >
+            <Icon name="external-link" size={13} class="mr-1" />
+            <span class="hidden md:inline">{t('vmDetail.popout')}</span>
+          </Button>
+        {/if}
       {/if}
     </div>
   </div>
@@ -226,11 +281,32 @@
         >
           <Icon name="error" size={32} />
           <span class="text-sm font-medium">{error}</span>
+          {#if needsClusterAccess(errorCode)}
+            <Button
+              variant="outline"
+              size="sm"
+              onclick={() => navigate('/nodes', { query: { focus: 'access' } })}
+            >
+              {t('remote.console.openAccess')}
+            </Button>
+          {/if}
           <Button variant="outline" size="sm" onclick={loadTicket} class="mt-2">
             <Icon name="refresh" size={13} class="mr-1.5" />
             {t('vmDetail.reconnect')}
           </Button>
         </div>
+      {:else if vncTicket && remote}
+        {#key vncTicket}
+          <RemoteVncConsole
+            {vmId}
+            ticket={vncTicket}
+            {node}
+            {hv}
+            name={vm?.name || ''}
+            bind:rfbOut={remoteRfb}
+            onReticket={loadTicket}
+          />
+        {/key}
       {:else if vncTicket}
         <iframe
           bind:this={iframeEl}

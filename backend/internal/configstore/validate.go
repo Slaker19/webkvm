@@ -19,6 +19,7 @@ var fieldValidators = map[string]func(Field, interface{}) string{
 	"server.public_host":   validateHostOrIP,
 	"server.tls_domain":    validateHostname,
 	"server.trusted_cidrs": validateCIDRList,
+	"ha.cp_group":          validateCPGroup,
 	"branding.logo":        validateMediaRef,
 	"branding.favicon":     validateMediaRef,
 }
@@ -147,4 +148,21 @@ func validHostname(s string) bool {
 // without re-plumbing SetMany.
 func (s *Store) validateCrossField(in Set) map[string]string {
 	return map[string]string{}
+}
+
+// cpGroupRE is the shape of a Pacemaker group id WebKVM accepts: it ends up
+// in pcs argv, so it cannot start with '-' or carry metacharacters.
+var cpGroupRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
+
+// validateCPGroup validates ha.cp_group. An empty value is refused: the
+// default is applied by the schema, not by leaving the key blank.
+func validateCPGroup(_ Field, v interface{}) string {
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	if !cpGroupRE.MatchString(s) {
+		return "must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"
+	}
+	return ""
 }

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake `date +%s`: the fake clock (advanced only by fake sleep).
+cat "${FAKE_S:?}/clock"

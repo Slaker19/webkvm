@@ -1,7 +1,7 @@
 # WebKVM — Contexto para desarrollo (AGENTS)
 
-> Documento vivo para agentes y humanos. Actualizar al cerrar cada fase.
-> Última actualización: 2026-11-06. Rama `main` en `v0.1.11`. Working tree limpio.
+> Documento vivo para agentes y humanos.
+> Rama `main` en `v0.1.12` (release en preparación).
 
 ## 1. Qué es
 
@@ -42,17 +42,20 @@ webkvm/
 ## 3. Backend (Go)
 
 ### 3.1 Entradas
+
 - `backend/cmd/server/main.go`: carga `config.Load` + `configstore`, TLS (`tls.go`: off/selfsigned/letsencrypt), abre libvirt, `EnsureDefaults + CleanupStaleImports`, inyecta todo en `api.NewRouter(...)` (sin globales salvo `libvirt.SetNetStore/SetNATChecker`, `compute.BindHelpers`). HTTP: 30s header / 30m write / 120s idle + `LimitListener` + `Cooldown`. Shutdown ordenado con `FlushAndWait()` y `hub.Close()` antes.
 - `backend/cmd/cli/main.go`: `--server/--token/--insecure/--json`, `login/logout`, zero-token local firmando HS256 con `/opt/webkvm/jwt.key` como admin. Subcomandos: `vms/images/storage/disks/networks/settings/audit/users/tokens/backup/snippets`.
 - `backend/internal/frontend/embed.go`: `//go:embed all:dist`. El frontend se sirve desde aquí.
 
 ### 3.2 Paquetes `internal/` (37)
+
 `api audit auth backupstore backup user cloudinit compute compute/incus config configstore diskprobe diskstate events firewall frontend fsutil helperscripts hostcaps imgsafe libvirt libvirtbackup logging mdraid metrics models netguard netstore nodes notify remotebrowse safego smart sysutil tokens vmsched vzdump zvol`
 
 Ficheros grandes (orientación, no editar monolitos sin descomponer):
 `compute/incus/incus.go:4220 backupstore/runner.go:2727 api/vms.go:2208 api/storage.go:2003 api/console.go:1535 api/host_disks.go:1528 models/types.go:1500 libvirt/domain.go:1395 libvirt/storage.go:1383`
 
 ### 3.3 Módulos clave
+
 - **Libvirt/KVM** `internal/libvirt/`: `domain.go` + `domain_{xml,lifecycle,devices,snapshots,pci,usb,shares,policy,export_import}.go`, `storage.go`, `network.go`, `guestagent.go`, `ova.go`, `secret.go`, `metrics.go`, etc.
 - **Compute seam** `internal/compute/`: `backend.go:533` interfaz `Backend` (~80 métodos). `kvm.go` adaptador delgado, `combined.go` KVM+Incus. Handlers **nunca** importan libvirt directo: van vía `compute.Backend`.
 - **Auth** `internal/auth/`: `jwt.go` (Manager, Claims epoch/jti/mcp, CSRF double-submit), `rbac.go`, `ticket.go` (ticket `?ticket=` 30s un solo uso para serial/host-PTY/SSE), `vnc_ticket.go` (`?vt=` 1h reutilizable acotado a VM), `cookie/ratelimit/blacklist/totp/webauthn/must_change.go`.
@@ -63,6 +66,7 @@ Ficheros grandes (orientación, no editar monolitos sin descomponer):
 - **Transversales**: `backupstore/` (store/runner/producer/retention/s3/sftp/chain), `metrics/` (history/grafana/prometheus/alerts), `notify/`, `nodes/registry.go`, `audit/audit.go`, `config/` + `configstore/` (hot-reload), `netguard/` (jail/limitlistener/cooldown/ssh_watcher), `vmsched/` (cron), `vzdump/`, `appliances/`, `models/types.go:1500`.
 
 ### 3.4 Patrones obligatorios
+
 1. **`sysutil.CommandRunner`** (`sysutil/runner.go:9`): `OSCommandRunner` en prod, `MockCommandRunner` en tests. Todo `exec` nuevo **debe** usarlo (inyectado). Ref: `smart/smart.go`, `mdraid/`, `zvol/`, `hostcaps/`.
 2. **`context`**: `exec.CommandContext`, `RunWithTimeout`, timeout 15s en virsh guest-agent. Nada de `time.Sleep` rígido en backend: usar `<-ctx.Done()` / canales.
 3. **Tickets, no JWT en URL**: JWT solo en cookie HttpOnly o `Authorization: Bearer`. En URLs solo `?ticket=` (30s/1 uso) o `?vt=` (consola). Validar scope por path (`ticketAllowedPath` / `vncTicketAllowedPath`).
@@ -96,26 +100,11 @@ Ficheros grandes (orientación, no editar monolitos sin descomponer):
 - CI `.github/workflows/`: `ci.yml` (frontend: lint+prettier+i18n+undefined+test+build; backend: libvirt-dev + reuse artifact frontend-dist + golangci-lint + `go test -race`; packaging: `test-installer.sh`), `release.yml` (tag `v*` → tarball+deb/rpm+SHA256 fail-closed), `docker-publish.yml`.
 - Datadir `/opt/webkvm` es única fuente de estado (users, jwt.key, config, pools-meta). Backup sin qcow2/iso.
 
-## 6. Estado actual (Fases 1-6 hechas, ver CONTEXT_NOTES.md)
+## 6. Estado actual
 
-- F1 Red/build: bind `0.0.0.0:8080`, `build-in-docker.sh`.
-- F2 Frontend: `VmDetail` 6479L → 16 comps, i18n en/es/ca 100%.
-- F3 Backend: `domain.go` 4048→~1400L (`lifecycle/snapshots/devices/export_import/xml` + tests).
-- F4 Concurrencia: sleeps → `ctx.Done()`, virsh con timeout, SSE consolidado.
-- F5 Abstracción: `CommandRunner` OS/Mock, `smart` con mock, sin `panic` en `cloudinit/user`.
-- F6 Validación: binarios en `/usr/local/bin`, systemd healthy, `go test -short ./...` OK, `smoke.sh` OK.
-- F7 (0.1.8-dev): Soporte completo para formateo directo, montaje persistente systemd y creación automática de storage pools en arrays RAID (`c9c679c`). Integración nativa por kernel sysfs (`/sys/block/md*/md`) para descubrimiento instantáneo sin subprocesos, ciclo de vida (`GET /api/host/raid`, `DELETE /api/host/raid/{device}` protegido contra desmontaje), scrub/check en vivo y tarjetas de monitorización en UI (`be6e06d`). Soporte no destructivo para montaje de RAIDs existentes sin formatear (`mode: "mount"`), conservación de datos probada y selección granular de storage pools (multi-carpeta o raíz dedicado) (`d163b7c`). Auditoría exhaustiva web: depuración de errores 400 en SMART sobre arrays virtuales, saneamiento de payloads en diálogos de almacenamiento, corrección en tests DOM y pase al 100% en todas las suites (`b7db7e6`).
-- F8 (0.1.8-dev): Refactorización integral de almacenamiento: descomposición de `frontend/src/routes/Storage.svelte` (5.295L → 542L) en 14 componentes modulares en `src/lib/components/storage/` (`32d7301`). Abstracción con inyección de `sysutil.CommandRunner` en los paquetes de bajo nivel `internal/mdraid` e `internal/zvol` con tests unitarios basados en mocks (`0bb8f47`). Descomposición del monolito `backend/internal/api/storage.go` (2.003L) en 6 submódulos limpios de dominio (`storage_pools.go`, `storage_volumes.go`, `storage_isos.go`, `storage_uploads.go`, `storage_jobs.go`, `storage_download_client.go`) conservando el 100% de compatibilidad de API (`60fd69c`). Saneamiento de rutas dobles en RAID sync/stop, migración universal al wrapper seguro `safeStorage` (con fallback en memoria) para prevenir bloqueos de `localStorage` en navegación privada o iframes en todos los stores (`i18n`, `vmOrder`, `vmLayout`, `sidebarOrder`, `terminalSettings`, `tasks`, `MultiView`, `VmCreate`) y corrección del ciclo de vida y memory leaks en `Status.svelte` (`3113c2e`). Blindaje contra path traversal en volúmenes/ISOs y mapeo de estados no-running en suspensión a 409 Conflict (`220fc1a`). Desbloqueo de restauración de backups UEFI modernos (libvirt 9/10 / Ubuntu 24/26) permitiendo el bloque `<firmware>` en la política de sanitización XML (`domain_policy.go`) y saneamiento de alias de borrado de discos en `DELETE /api/vms/{id}` (`4cc3efd`). Suite exhaustiva E2E de 54 pruebas multi-rol en vivo al 100% de éxito. Desplegado y verificado en VM 101 `webkvm-dev` (192.168.1.40).
-- F9 (0.1.8-dev): Rediseño radical del subsistema de aplicaciones de terceros (Helper Scripts / App Store): reemplazo del crawler de 600+ peticiones individuales a GitHub API (que moría por rate limit 403) por una ingesta streaming en un único tarball comprimido de 630 KB (`catalog.go`), parseando e indexando los 625 scripts en solo 0.65 segundos. Arranque automático del contenedor en el deploy (`started: true`), generación de credenciales automáticas sin colisión de nombres de grupo (`ubuntu`, password aleatorio de 12 chars), saneamiento de nombres de sugerencia (eliminación de prefijos `cs-` y sufijos aleatorios feos), enlace directo a la instancia/consola en el modal de éxito y tarjetas UI completamente modernizadas con insignias de puerto de servicio (`:3000`), tags, specs y avatares (`7f94a48`). Desplegado y verificado en vivo en VM 101 con despliegue de AdGuard Home en 8.8 segundos.
-- F10 (0.1.8): Corrección de la fricción real reportada en el [issue #5](https://github.com/Slaker19/webkvm/issues/5) del repositorio: (1) cookies de sesión/CSRF sin flag `Secure` cuando el TLS está apagado y `WEBKVM_COOKIE_SECURE` no está fijado explícitamente — el navegador descartaba la sesión en HTTP plano y el login entraba en bucle (helper `cookiesSecure` + `TestCookiesSecure`); (2) subcomando `webkvm-cli users update` (password/role/email/active vía `PUT /api/users/{username}`), antes anunciado en la ayuda pero inexistente; (3) autodetección del endpoint local en `webkvm-cli` leyendo `{DATA_DIR}/config.json` (puerto, bind, HTTP/HTTPS) con reintento único de esquema ante desajuste HTTPS/HTTP y zero-token extendido a binds LAN locales de la propia máquina (tests `TestDetectLocalServer` / `TestClient_SchemeFlipRetry`); (4) el instalador ya no crea `vmbr1` + dnsmasq en modo solo-bridge (opt-in con `--network=both` o `WEBKVM_NAT_BRIDGE=1`, coherente con el contrato documentado del modo).
-- F11 (0.1.9): Aceleración GPU y refactorización modular integral: (1) Aceleración GPU 1-clic (`/dev/dri/renderD128`) para contenedores Incus en creación (`VmCreate.svelte`) y caliente (`VmHardwareTab.svelte`); (2) Passthrough de dispositivos PCI para contenedores Incus (`AttachPCIDevice`/`DetachPCIDevice` y `VmPciCard.svelte`); (3) Descomposición del monolito `backend/internal/api/vms.go` (2.216L → 494L) en 5 submódulos de dominio limpios (`vm_lifecycle.go`, `vm_snapshots.go`, `vm_devices.go`, `vm_clones.go`, `vm_export_import.go`); (4) Unificación de `vmScheduler` con `computeBackend` para soporte multiplataforma KVM/Incus; (5) Poda manual de copias de seguridad bajo demanda (`POST /api/backup/targets/{id}/prune`, `webkvm-cli backup prune`, botón en `Backup.svelte`); (6) Soporte de etiquetado 802.1Q VLAN en `VmDetail.svelte` y badges visuales en `VmNetCard.svelte`. Cobertura total de pruebas en verde.
-- F12 (0.1.10): Libertad total de red, refactorización modular y blindaje de seguridad: (1) Soporte nativo para creación de switches virtuales puros Capa 2 sin IP requerida en el anfitrión (`no CIDR`) y trunking universal 802.1Q VLAN (`vlan_filtering 1`) unificado para KVM e Incus; (2) Selector de modos L2/L3 en `Networks.svelte` y mapa interactivo visual de topología de red y puertos de instancias; (3) Watcher de salud SMART en segundo plano (`smart.Watcher`) con alertas automáticas ante fallo o temperatura alta; (4) Exportación de terminal a archivo `.log` con 1 clic; (5) Descomposición modular de diálogos de `VmList.svelte` en `lib/components/vm-list/` y de `incus.go` (4.387L) en 5 submódulos limpios de dominio; (6) Remediación completa de auditoría de seguridad Cloudflare (batch clone ACLs, persistencia OVA, sobreescritura 2FA, tar-slip en vzdump, inspección recursiva de disco de sistema `assertNotSystemDisk` y protección de cuentas privilegiadas en metadatos `ci_user`); (7) Acciones en bloque (`reboot`, `suspend`, `resume`) en `VmList`; (8) Creación de redes en CLI (`webkvm-cli networks create`) y unificación de scripts/rutas de despliegue a `/opt/webkvm/source`.
-- F13 (0.1.10-dev): (1) Aceleración 3D (virgl) por VM: `accel_3d` añade `<acceleration accel3d='yes'/>` al modelo virtio y un `<graphics type='egl-headless'>` con nodo `/dev/dri/renderD*`; toggle en el asistente de creación y en la pestaña Hardware, oculto/desactivado si el host no lo soporta (`hostcaps`). Corregido un bug real: cambiar el tipo de consola borraba **todos** los `<graphics>`, incluido el renderer egl-headless (regresión cubierta por test). El saneador de importación acepta `egl-headless` solo con nodo `/dev/dri/renderD<dígitos>`. (2) Rescatados los arreglos válidos del PR #10: límite de subida de ISO 10→50 GiB, `SetAutostart` en pools creados desde la UI, `RefreshPool` en `GetISOs`, re-subida de ficheros fantasma (solo si libvirt no conoce el volumen y ningún dominio lo referencia), inferencia de propósito de pool, y un único desplegable de pools ISO. (3) Botón Revert de snapshots rediseñado: bloqueado con explicación para snapshots solo-disco con la VM encendida, permitido para snapshots con memoria (`has_memory`). El PR #10 se cerró sin fusionar su subsistema Docker (fuera del alcance del proyecto).
-- F14 (0.1.10-dev, sin versionar): (1) Actualizador `#/status` muestra tag **y** commit (`latest_commit`/`build_commit` en `/api/system/status`; `main.Commit` por ldflags en Makefile/release.yml) y en modo `source` compara el commit del build contra `origin/main`. (2) Consola noVNC embebida en `VmDetail` con macros de teclado y fullscreen. (3) Apps 1-clic con Docker (`pihole`, `vaultwarden`, `jellyfin`, …) ahora despliegan como **VM** (sus scripts usan docker/systemd); openSUSE Leap 16.1 apuntada a URL sin build. (4) Backup → notificaciones (`Runner.SetAlertFunc`). (5) Suite smoke E2E con Playwright en `e2e/` (8 tests: login + 5 rutas sin errores de consola + asserts).
-- Últimos commits: `daf63b2 feat(vms)`.
+Para el historial detallado de cambios, releases y fases de desarrollo, consulta [CHANGELOG.md](CHANGELOG.md) y [CHANGELOG.es.md](CHANGELOG.es.md).
 
-Pendiente conocido (cola larga, baja visibilidad — verificada el 2026-11-06): los god-objects históricos ya están descompuestos (`Storage.svelte` 516L → 14 componentes en `lib/components/storage/`, `api/storage*.go` en 7 submódulos, `domain.go` en submódulos). Quedan restos de `exec.Command` sin `CommandRunner` en la capa API/host (`host_disks`, `host_netplan`, `host_updates`, `image_hub`, `services`, `system`, `console_serial`, `backupstore/net_mount`, y el `xz` de `appliances.go`) y pollers `setInterval` puntuales (AuditLog, Backup, Firewall, MultiView, Nodes, Status, VmList, SecurityJailTab) para señales que SSE no cubre (progreso de jobs, logs, estado de firewall). Ninguno es bloqueante.
-
+Pendiente conocido (cola larga, baja visibilidad): los god-objects históricos ya están descompuestos (`Storage.svelte` 516L → 14 componentes en `lib/components/storage/`, `api/storage*.go` en 7 submódulos, `domain.go` en submódulos). Quedan restos de `exec.Command` sin `CommandRunner` en la capa API/host (`host_disks`, `host_netplan`, `host_updates`, `image_hub`, `services`, `system`, `console_serial`, `backupstore/net_mount`, y el `xz` de `appliances.go`) y pollers `setInterval` puntuales (AuditLog, Backup, Firewall, MultiView, Nodes, Status, VmList, SecurityJailTab) para señales que SSE no cubre (progreso de jobs, logs, estado de firewall). Ninguno es bloqueante.
 
 ## 7. Cómo seguir desarrollando
 
@@ -139,44 +128,22 @@ Pendiente conocido (cola larga, baja visibilidad — verificada el 2026-11-06): 
 - Dominio: `backend/internal/libvirt/domain*.go`, `backend/internal/compute/backend.go`
 - UI clave: `frontend/src/routes/VmDetail.svelte`, `frontend/src/lib/components/vm-detail/`, `TerminalPanel.svelte`, `MultiView.svelte`, `TaskDrawer.svelte`, `frontend/src/lib/stores/events.svelte.js`, `frontend/src/lib/i18n.svelte.js`
 - Ops: `Makefile`, `Dockerfile`, `docker-compose.yml`, `scripts/webkvm.service`, `packaging/standalone/install.sh`, `docs/runbooks/RUNBOOKS.md`
-- Historia: `CHANGELOG.md`, `AUDIT_IMPROVEMENTS.md`, `CONTEXT_NOTES.md`
+- Historia: `CHANGELOG.md`, `AUDIT_IMPROVEMENTS.md`
 
-## graphify
+## UI/UX guidelines
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+When working on UI/UX components, visual design, transitions, or animations:
 
-When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+- Never animate keyboard-driven high-frequency actions (e.g. quick search, Command Palette).
+- Use custom ease-out curves (`cubic-bezier(0.23, 1, 0.32, 1)`) for UI entries; avoid sluggish `ease-in`.
+- Buttons should provide subtle press feedback (`:active { transform: scale(0.97) }`).
+- Animate only `transform` and `opacity` to avoid layout thrashing and stay on the GPU compositor.
+- Duration budget: 150–250 ms for dropdowns and popovers; modals and drawers up to 300 ms.
+- Popovers scale from their trigger origin (`transform-origin: var(--transform-origin)`).
 
-Rules:
-- When graphify-out/graph.json exists, run `graphify query "<question>"` before your first grep, search or source-file read for a codebase question, and put this rule in every subagent prompt that explores code. Read raw files only for lines the graph or an earlier read already located. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.
+## Releases and updates
 
-<!-- antislop:start -->
-## antislop
-For UI, copy, people, mobile layout, or code comments work, read `antislop.md` (core) and then the skill for the task:
-- UI / visual: `skills/antislop-ui/SKILL.md`
-- Copy & text: `skills/antislop-copywriting/SKILL.md`
-- People: `skills/antislop-human/SKILL.md`
-- Mobile / responsive: `skills/antislop-layoutmobile/SKILL.md`
-- Code comments: `skills/antislop-code/SKILL.md`
-Before starting, follow the core's "Two Usage Modes" section in strict order: explicit session instruction first, then global preference, then ask. A session instruction always wins. For a resolved mode, say `antislop active: <mode> (session override).` or `antislop active: <mode> (global preference).` once before presenting findings or making edits, using the actual mode and source. Acknowledging the user's request without naming the source does not replace this notice.
-Only an explicit choice of antislop during or after selects a session mode. A request to review, audit, or avoid file edits does not select a mode; read the global preference in that case. Another skill's mode does not select antislop's mode.
-If the mode is unresolved, ask during/after and end the response; wait for the answer before any UI review, planning, or concept. For read-only tasks, put the active-mode notice only at the start of the final answer, never in progress messages. For editing tasks, announce before the first edit and omit it from the final answer.
-To update antislop later: download `antislop.md` again, or run `npx antislop-ai --update` if it was installed as skill folders.
-<!-- antislop:end -->
-
-## UI/UX & Design Engineering Intelligence
-
-When working on UI/UX components, visual design, transitions, or animations in WebKVM:
-- **`ui-ux-pro-max`**: Design intelligence for visual styles, color contrast (4.5:1), responsive layout, accessibility semantics, and stack guidelines for Svelte 5 + Tailwind v4. Searchable datasets are available via `search.py` in `~/.config/opencode/skills/ui-ux-pro-max/scripts/`.
-- **`emil-design-eng` / `animate`**: High-craft design engineering and micro-interactions based on Emil Kowalski's philosophy:
-  - Never animate keyboard-driven high-frequency actions (e.g. quick search, Command Palette).
-  - Use custom ease-out curves (`cubic-bezier(0.23, 1, 0.32, 1)`) for UI entries; avoid sluggish `ease-in`.
-  - Buttons must provide subtle press feedback (`:active { transform: scale(0.97) }`).
-  - Animate only `transform` and `opacity` to avoid layout thrashing and stay on the GPU compositor.
-  - Duration budget: 150–250ms max for dropdowns and popovers; modals and drawers up to 300ms.
-  - Popovers scale from their trigger origin (`transform-origin: var(--transform-origin)`).
+- Release checklist: `docs/RELEASING.md` (ES: `docs/RELEASING.es.md`). Tag format: `v0.1.12`; release/Docker workflows trigger on `v*`.
+- Native installs update from `/#/status`. The backend requires `WEBKVM_ALLOW_UPDATE=1`, verifies `SHA256SUMS`, keeps `webkvm.previous` and health-checks with rollback. Docker pulls a new image instead.
+- The UI button updates only the node serving the panel. HA clusters must update every node through Pacemaker; see `docs/runbooks/HA-CLUSTER.md` section 12.11.
+- After an in-place update, existing VMs receive the AppArmor workaround lazily on the next start, revert or snapshot delete; `WEBKVM_DISABLE_APPARMOR=0` keeps AppArmor.

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -24,6 +25,9 @@ import (
 	"webkvm/internal/configstore"
 	"webkvm/internal/events"
 	"webkvm/internal/firewall"
+	"webkvm/internal/ha"
+	"webkvm/internal/hostsched"
+	"webkvm/internal/incusremote"
 	"webkvm/internal/libvirt"
 	"webkvm/internal/libvirtbackup"
 	"webkvm/internal/logging"
@@ -42,7 +46,7 @@ import (
 
 // Set by -ldflags at build time. Defaults are used for `go run`.
 var (
-	Version   = "0.1.11"
+	Version   = "0.1.12"
 	BuildTime = "unknown"
 	Commit    = ""
 )
@@ -126,6 +130,11 @@ func main() {
 		logger.Error("config_load_failed", "err", err)
 		os.Exit(1)
 	}
+	if cfg.DisableAppArmor && libvirt.AppArmorActive() {
+		logger.Warn("apparmor_disabled_for_webkvm_domains",
+			"reason", "libvirt marks external snapshot backing files read-only under AppArmor",
+			"reenable_with", "WEBKVM_DISABLE_APPARMOR=0")
+	}
 	// Build-time -ldflags Version takes precedence; only fall back to the
 	// env var if the binary was built without one.
 	if Version != "dev" {
@@ -198,12 +207,19 @@ func main() {
 	}
 	logger.Info("configstore_loaded", "path", settingsStore.Path(), "pending_restart", settingsStore.PendingRestart())
 
-	// Honor the persisted server.bind_addr / server.port from the
-	// store. Env-var wins on first boot (we never overwrite a value
-	// the operator explicitly set in the systemd unit file), but on
-	// a subsequent restart the operator's UI change sticks — which
-	// is the whole point of Settings being more than
-	// a vanity screen.
+	// SEG-2: the audit log, request log and jail must resolve the client IP
+	// exactly like the rate limiters (live settings, not env vars). Without
+	// this, a proxied request is attributed to NPM's IP and never banned.
+	logging.SetClientIPResolver(func(r *http.Request) (net.IP, bool) {
+		return auth.ResolveClientIP(r, settingsStore)
+	})
+
+	// Apply server.bind_addr / server.port from the settings store. NOTE:
+	// the store always answers (its schema defaults are 127.0.0.1 and 8080),
+	// so these values WIN over the BIND_ADDR and PORT environment variables,
+	// even on the very first start; the env vars only matter when the store
+	// returns nothing. Change the address/port in Settings (or config.json),
+	// not in the unit file. The override is logged below.
 	bindAddr := cfg.BindAddr
 	if v := settingsStore.GetString("server.bind_addr"); v != "" {
 		bindAddr = v
@@ -352,6 +368,11 @@ func main() {
 	globalRateLimiter := auth.NewGlobalRateLimiter(settingsStore)
 	defer globalRateLimiter.Close()
 	loginLimiter := auth.NewLoginRateLimiterWithSettings(settingsStore)
+	// F-B: login counters live on the shared DRBD volume (DATADIR) so a
+	// control-plane failover does not hand an attacker a clean slate.
+	if err := loginLimiter.EnablePersistence(filepath.Join(cfg.DataDir, "ratelimit.json")); err != nil {
+		logger.Warn("ratelimit_persistence_load_failed", "err", err)
+	}
 
 	// Created before the tokens store because the API-token validator
 	// below reads the owner's live role and session epoch from it.
@@ -430,6 +451,16 @@ func main() {
 	}
 	logger.Info("nodes_loaded", "path", nodesReg.Path(), "count", len(nodesReg.List()))
 
+	// Managed cluster SSH key + pooled connections to remote libvirt nodes.
+	// The URI-based federation wrappers (HostResources, ListRemoteDomains...)
+	// use this pool once registered.
+	sshKeyStore := nodes.SharedSSHKeyStore(cfg.DataDir)
+	libvirtPool := libvirt.NewPool(api.ClusterSSHConnURI(sshKeyStore, func() nodes.Transport {
+		return nodes.ParseTransport(settingsStore.GetString("cluster.libvirt_transport"))
+	}))
+	libvirt.SetDefaultPool(libvirtPool)
+	defer libvirtPool.Close()
+
 	serverBootTime := time.Now()
 	nodesReg.SetLocalProber(func() (string, string, int64, int64, int64, string, error) {
 		status := "online"
@@ -446,6 +477,33 @@ func main() {
 		}
 		uptime := int64(time.Since(serverBootTime).Seconds())
 		return status, cfg.Version, uptime, free, total, lvStatus, nil
+	})
+	nodesReg.SetRemoteProber(func(uri string) (int, int64, int64, error) {
+		cpus, free, total, err := libvirt.HostResources(uri)
+		// Typed error so the registry can tell "SSH access not set up"
+		// (no key, host key unpinned, key rejected) from a down host.
+		return cpus, free, total, libvirt.ClassifyNodeError(err)
+	})
+	// This host's CPUs/RAM come from a local read (never the SSH pool, and
+	// never the values a previous control-plane host persisted).
+	nodesReg.SetLocalCapacityReader(nodes.ReadLocalCapacity)
+	nodesReg.SetIncusProber(func(node nodes.Node) (string, error) {
+		credentials, err := nodesReg.IncusCredentials().Load(node.CredentialID)
+		if err != nil {
+			return "", err
+		}
+		probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		backend, err := incus.NewRemoteIncusBackend(probeCtx, node.URI, incusremote.Credentials{
+			ClientCertificate: credentials.ClientCertificate,
+			ClientKey:         credentials.ClientKey,
+			ServerCertificate: credentials.ServerCertificate,
+		}, node.Project)
+		if err != nil {
+			return "", err
+		}
+		defer backend.Close()
+		return backend.ServerInfo()
 	})
 	go nodesReg.StartHealthMonitor(eventCtx, 30*time.Second)
 
@@ -711,6 +769,9 @@ func main() {
 		ipResolver = lv.GetDomainIP
 	}
 	fwMgr := firewall.NewManager(fwStore, ipResolver, cfg.Port, logger)
+	// The reverse proxy lives in server.trusted_cidrs; merge it into the
+	// management networks so 22/8080 stay reachable through NPM.
+	fwMgr.SetManagementCIDRs(settingsStore.GetList("server.trusted_cidrs"))
 	// V13-C-01: host firewall store + Safe Apply. The confirmed host
 	// ruleset is loaded and applied at startup so it survives restarts
 	// and never drifts.
@@ -862,15 +923,37 @@ func main() {
 	vmScheduler.Start()
 	logger.Info("vmsched_ready")
 
+	// Host package-update scheduler: automatic upgrades via cron. The run
+	// callback is wired in NewRouter once the Handler exists.
+	hostSchedStore := hostsched.NewStore(cfg.DataDir)
+	if herr := hostSchedStore.Load(); herr != nil {
+		logger.Warn("hostsched_load_failed", "err", herr)
+	}
+	hostScheduler := hostsched.NewScheduler(hostSchedStore, nil, logger)
+	hostScheduler.Start()
+	logger.Info("hostsched_ready")
+
 	jail, err := netguard.New(cfg.DataDir, logger)
 	if err != nil {
 		logger.Warn("jail_init_failed", "err", err)
+	}
+	// The ban list came from the shared volume; the nft set is node-local,
+	// so this node must rebuild it after a failover.
+	if err == nil && jail != nil {
+		if n := jail.ReapplyBans(); n > 0 {
+			logger.Info("jail_bans_restored", "count", n)
+		}
 	}
 	if notifier != nil {
 		jail.SetAlertFunc(func(level, subject, msg string) {
 			notifier.Record(level, subject, msg)
 		})
 	}
+	// Background feed of the HA fencing evidence ledger (only probes while
+	// modules.cluster_ha is on).
+	(&ha.FencingCollector{DataDir: cfg.DataDir, Logger: logger,
+		Enabled: func() bool { return settingsStore.GetBool("modules.cluster_ha") }}).Start(eventCtx)
+
 	go jail.Janitor(eventCtx)
 	go jail.StartSSHWatcher(eventCtx)
 
@@ -891,7 +974,7 @@ func main() {
 		})
 	}
 
-	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, jail, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, metricHist, alerter, incusMetrics)
+	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, jail, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, hostSchedStore, hostScheduler, metricHist, alerter, incusMetrics)
 
 	srv := &http.Server{
 		Addr:    net.JoinHostPort(cfg.BindAddr, fmt.Sprintf("%d", cfg.Port)),
@@ -1054,6 +1137,11 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("forced_shutdown", "err", err)
 		os.Exit(1)
+	}
+	// F-B: the counters are written at most once per second; flush the
+	// remaining window so a graceful failover keeps the lockouts.
+	if err := loginLimiter.Flush(); err != nil {
+		logger.Warn("ratelimit_flush_failed", "err", err)
 	}
 	logger.Info("server_stopped")
 }

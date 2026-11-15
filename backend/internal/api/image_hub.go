@@ -427,6 +427,16 @@ func (h *Handler) PullBaseCloudImage(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 
+		// One download per image, serialized with create/delete/move: a
+		// concurrent pull into another pool would both duplicate the file
+		// and race a VM create reading it.
+		release := h.acquireDeployLock("base-image:" + id)
+		defer release()
+		if cached := h.findAllCachedBaseImages(id); len(cached) > 0 {
+			updateJob(jobID, 100, "completed", app.Name+" is already cached.")
+			return
+		}
+
 		updateJob(jobID, 5, "downloading", "Starting download of "+app.Name+" from official mirror...")
 		destPath := filepath.Join(poolDir, baseImageName(app.ID))
 		tmpDest := destPath + ".tmp"
@@ -518,6 +528,8 @@ func (h *Handler) DeleteBaseCloudImage(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid image id")
 		return
 	}
+	release := h.acquireDeployLock("base-image:" + id)
+	defer release()
 
 	// Look the image up rather than assuming the legacy folder: it may
 	// have been downloaded into any pool, or moved between pools

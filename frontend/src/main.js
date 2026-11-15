@@ -7,7 +7,10 @@ import App from './App.svelte';
 // tooltip, dialog, etc.) resolve correctly. The base `:root`
 // tokens in `app.css` are already dark, so this is purely about
 // activating the `dark:` variant — the visual change is a no-op.
-if (typeof document !== 'undefined') {
+// The light theme (applied by the theme store when App is imported above) must
+// keep `.dark` off, otherwise every `dark:` utility also applies on a light
+// background (washed-out destructive buttons, ~1.4:1 contrast).
+if (typeof document !== 'undefined' && document.documentElement.dataset.theme !== 'light') {
   document.documentElement.classList.add('dark');
 }
 

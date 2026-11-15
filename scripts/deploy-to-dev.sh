@@ -2,8 +2,8 @@
 # Deploy compiled webkvm binary to dev target
 set -Eeuo pipefail
 
-DEV_IP="${WEBKVM_DEV_IP:-192.168.1.40}"
-DEV_USER="${WEBKVM_DEV_USER:-alvin}"
+DEV_IP="${WEBKVM_DEV_IP:-192.0.2.10}"
+DEV_USER="${WEBKVM_DEV_USER:-debian}"
 DEV_PORT="${WEBKVM_DEV_PORT:-8080}"
 DEV_PROTO="${WEBKVM_DEV_PROTO:-https}"
 LOCAL_BIN="$(dirname "$0")/../backend/webkvm"

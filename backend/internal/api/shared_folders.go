@@ -43,6 +43,10 @@ func (h *Handler) DetachSharedFolder(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	tag := chi.URLParam(r, "tag")
 	if err := h.compute.DetachSharedFolder(id, tag); err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

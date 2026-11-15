@@ -259,11 +259,11 @@ write_files:
     <div class="border border-dashed border-border rounded-2xl bg-card/40">
       <EmptyState
         icon="code"
-        title="No se encontraron snippets"
-        description="Crea una nueva plantilla de aprovisionamiento o ajusta la búsqueda."
+        title={t('snippets.noMatchesTitle')}
+        description={t('snippets.noMatchesDesc')}
       >
         {#snippet action()}
-          <Button size="sm" onclick={openCreate}>Crear primer Snippet</Button>
+          <Button size="sm" onclick={openCreate}>{t('snippets.createFirst')}</Button>
         {/snippet}
       </EmptyState>
     </div>
@@ -300,14 +300,14 @@ write_files:
                 <button
                   onclick={() => copyContent(sn.content)}
                   class="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                  title="Copiar código"
+                  title={t('snippets.copyCode')}
                 >
                   <Icon name="copy" size={13} />
                 </button>
                 <button
                   onclick={() => openEdit(sn)}
                   class="p-1 rounded-lg text-muted-foreground hover:text-accent hover:bg-muted transition-colors"
-                  title={sn.is_preset ? 'Ver receta' : 'Editar receta'}
+                  title={sn.is_preset ? t('snippets.viewRecipe') : t('snippets.editRecipe')}
                 >
                   <Icon name={sn.is_preset ? 'eye' : 'pencil'} size={13} />
                 </button>
@@ -315,8 +315,8 @@ write_files:
                   <button
                     onclick={() => deleteSnippet(sn.id)}
                     class="p-1 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                    aria-label="Eliminar snippet"
-                    title="Eliminar snippet"
+                    aria-label={t('snippets.deleteSnippet')}
+                    title={t('snippets.deleteSnippet')}
                   >
                     <Icon name="trash" size={13} />
                   </button>
@@ -325,7 +325,7 @@ write_files:
             </div>
 
             <p class="text-xs text-muted-foreground line-clamp-2 mb-3">
-              {sn.description || 'Plantilla de aprovisionamiento lista para producción.'}
+              {sn.description || t('snippets.readyDescription')}
             </p>
           </div>
 
@@ -366,10 +366,12 @@ write_files:
           </div>
           <div>
             <h3 class="text-sm font-bold text-foreground">
-              {isNew ? 'Cloud-Init Studio (Nuevo Snippet)' : `Editando: ${editingSnippet.name}`}
+              {isNew
+                ? t('snippets.studioNewTitle')
+                : t('snippets.studioEditTitle', { name: editingSnippet.name })}
             </h3>
             <p class="text-[11px] text-muted-foreground">
-              Editor interactivo #cloud-config con previsualización en vivo
+              {t('snippets.interactiveEditor')}
             </p>
           </div>
         </div>
@@ -385,10 +387,10 @@ write_files:
             >
               {#if saving}
                 <Spinner size="sm" class="mr-1" />
-                <span>Guardando...</span>
+                <span>{t('common.saving')}</span>
               {:else}
                 <Icon name="save" size={14} class="mr-1" />
-                <span>Guardar Snippet</span>
+                <span>{t('snippets.saveSnippet')}</span>
               {/if}
             </Button>
           {/if}
@@ -411,20 +413,22 @@ write_files:
             <div>
               <label
                 for="snippet-name-input"
-                class="text-xs font-semibold text-foreground block mb-1">Nombre del Snippet *</label
+                class="text-xs font-semibold text-foreground block mb-1"
+                >{t('snippets.nameLabel')}</label
               >
               <Input
                 id="snippet-name-input"
                 bind:value={formName}
                 disabled={editingSnippet.is_preset}
-                placeholder="Mi Receta"
+                placeholder={t('snippets.namePlaceholder')}
                 class="w-full text-xs"
               />
             </div>
             <div>
               <label
                 for="snippet-type-select"
-                class="text-xs font-semibold text-foreground block mb-1">Tipo de Documento</label
+                class="text-xs font-semibold text-foreground block mb-1"
+                >{t('snippets.documentType')}</label
               >
               <select
                 id="snippet-type-select"
@@ -441,13 +445,13 @@ write_files:
 
           <div>
             <label for="snippet-desc-input" class="text-xs font-semibold text-foreground block mb-1"
-              >Descripción</label
+              >{t('snippets.descriptionLabel')}</label
             >
             <Input
               id="snippet-desc-input"
               bind:value={formDescription}
               disabled={editingSnippet.is_preset}
-              placeholder="Describe qué paquetes o configuraciones aplica..."
+              placeholder={t('snippets.descriptionPlaceholder')}
               class="w-full text-xs"
             />
           </div>
@@ -456,10 +460,10 @@ write_files:
           <div class="flex-1 flex flex-col min-h-0 pt-2">
             <div class="flex items-center justify-between mb-1.5">
               <label for="snippet-content-textarea" class="text-xs font-semibold text-foreground"
-                >Código #cloud-config (YAML)</label
+                >{t('snippets.codeLabel')}</label
               >
               <div class="flex items-center gap-1">
-                <span class="text-[10px] text-muted-foreground">Variables:</span>
+                <span class="text-[10px] text-muted-foreground">{t('snippets.variables')}</span>
                 <button
                   type="button"
                   onclick={() => insertVariable('.VM.Hostname')}
@@ -502,12 +506,12 @@ write_files:
           <div class="flex items-center justify-between pb-2 border-b border-border">
             <div class="flex items-center gap-1.5 text-xs font-semibold text-foreground">
               <Icon name="eye" size={14} class="text-accent" />
-              <span>Previsualización Renderizada</span>
+              <span>{t('snippets.renderedPreview')}</span>
             </div>
             {#if previewLoading}
               <div class="flex items-center gap-1 text-[11px] text-muted-foreground">
                 <Spinner size="xs" />
-                <span>Generando...</span>
+                <span>{t('snippets.generating')}</span>
               </div>
             {:else}
               <Badge
@@ -515,7 +519,7 @@ write_files:
                 class="font-mono text-[10px] font-bold flex items-center gap-1"
               >
                 <Icon name="check" size={11} />
-                <span>Renderizado</span>
+                <span>{t('snippets.rendered')}</span>
               </Badge>
             {/if}
           </div>
@@ -525,7 +529,9 @@ write_files:
             class="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-background p-2.5 rounded-xl border border-border text-xs"
           >
             <div>
-              <span class="text-[10px] text-muted-foreground block">User Test</span>
+              <span class="text-[10px] text-muted-foreground block"
+                >{t('snippets.previewUserTest')}</span
+              >
               <input
                 bind:value={previewUser}
                 oninput={triggerLivePreview}
@@ -533,7 +539,9 @@ write_files:
               />
             </div>
             <div>
-              <span class="text-[10px] text-muted-foreground block">Hostname Test</span>
+              <span class="text-[10px] text-muted-foreground block"
+                >{t('snippets.previewHostnameTest')}</span
+              >
               <input
                 bind:value={previewHostname}
                 oninput={triggerLivePreview}
@@ -541,7 +549,9 @@ write_files:
               />
             </div>
             <div>
-              <span class="text-[10px] text-muted-foreground block">IP Test</span>
+              <span class="text-[10px] text-muted-foreground block"
+                >{t('snippets.previewIPTest')}</span
+              >
               <input
                 bind:value={previewIP}
                 oninput={triggerLivePreview}
@@ -553,18 +563,18 @@ write_files:
           <!-- Live Output Window -->
           <div class="flex-1 flex flex-col min-h-0">
             <div class="flex items-center justify-between text-[11px] text-muted-foreground mb-1">
-              <span>Resultado final inyectado:</span>
+              <span>{t('snippets.finalOutput')}</span>
               <button
                 onclick={() => copyContent(previewData)}
                 class="hover:text-accent flex items-center gap-1"
               >
                 <Icon name="copy" size={11} />
-                <span>Copiar</span>
+                <span>{t('snippets.copyCode')}</span>
               </button>
             </div>
             <pre
               class="flex-1 p-3 rounded-xl bg-background border border-border text-foreground font-mono text-[11px] leading-relaxed overflow-auto select-text whitespace-pre-wrap">{previewData ||
-                '# Introduce contenido para previsualizar...'}</pre>
+                t('snippets.previewPlaceholder')}</pre>
           </div>
         </div>
       </div>

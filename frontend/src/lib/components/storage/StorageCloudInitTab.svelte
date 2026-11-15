@@ -44,8 +44,7 @@
       description: '',
       category: 'custom',
       type: 'user-data',
-      content:
-        '#cloud-config\n# Tu configuración personalizada aquí\npackage_update: true\npackages:\n  - curl\n',
+      content: `#cloud-config\n# ${t('snippets.customConfigPlaceholder')}\npackage_update: true\npackages:\n  - curl\n`,
     };
     showSnippetModal = true;
   }

@@ -10,10 +10,17 @@
   import Icon from '$lib/components/Icon.svelte';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import RemoteUnsupportedNotice from '$lib/components/RemoteUnsupportedNotice.svelte';
+  import { isRemoteUnsupported, remoteErrorText } from '$lib/utils/remoteRoutes.js';
 
-  let { vmId, vm = null } = $props();
+  // node: registry entry of the VM's node (remote VMs), for the 501 notice.
+  // infoUnsupported: known up front that /guest-info answers 501 for this VM
+  // (remote node, class L): show the notice and never ask (8.29 #2).
+  let { vmId, vm = null, node = null, infoUnsupported = false } = $props();
 
   let guestInfo = $state(null);
+  // The guest-agent calls run local processes: a remote node answers 501.
+  let guestUnsupported = $state(false);
   let guestLoading = $state(false);
   let actionLoading = $state('');
 
@@ -26,11 +33,22 @@
 
   export async function loadGuestInfo() {
     if (!vmId) return;
+    if (infoUnsupported) {
+      guestUnsupported = true;
+      guestInfo = { available: false };
+      return;
+    }
     guestLoading = true;
     try {
+      guestUnsupported = false;
       guestInfo = await api.getGuestInfo(vmId);
     } catch (e) {
-      guestInfo = { available: false, error: e.message };
+      if (isRemoteUnsupported(e)) {
+        guestUnsupported = true;
+        guestInfo = { available: false };
+      } else {
+        guestInfo = { available: false, error: remoteErrorText(t, e) };
+      }
     } finally {
       guestLoading = false;
     }
@@ -45,7 +63,7 @@
       toast.success(t('vmDetail.fstrimSuccess', { size: formatBytes(totalTrimmed) }));
       await loadGuestInfo();
     } catch (e) {
-      toast.error(e.message || t('vmDetail.fstrimError'));
+      toast.error(remoteErrorText(t, e) || t('vmDetail.fstrimError'));
     } finally {
       actionLoading = '';
     }
@@ -59,7 +77,7 @@
       const res = await api.guestExec(vm.id, { command: toRun });
       guestExecResult = res;
     } catch (e) {
-      toast.error(e.message);
+      toast.error(remoteErrorText(t, e));
     } finally {
       guestExecRunning = false;
     }
@@ -72,7 +90,7 @@
       await api.guestSyncTime(vm.id);
       toast.success(t('vmDetail.guestClockSynced'));
     } catch (e) {
-      toast.error(e.message);
+      toast.error(remoteErrorText(t, e));
     } finally {
       guestSyncingClock = false;
     }
@@ -90,7 +108,7 @@
         toast.success(t('vmDetail.guestThawSuccess', { count: res.count }));
       }
     } catch (e) {
-      toast.error(e.message);
+      toast.error(remoteErrorText(t, e));
     } finally {
       guestFreezeLoading = false;
     }
@@ -149,14 +167,18 @@
             />{t('vmDetail.fstrimBtn')}{/if}
         </Button>
       {/if}
-      <Button size="xs" variant="outline" onclick={loadGuestInfo} disabled={guestLoading}>
-        {#if guestLoading}<Spinner size="xs" />{:else}{t('common.refresh')}{/if}
-      </Button>
+      {#if !guestUnsupported}
+        <Button size="xs" variant="outline" onclick={loadGuestInfo} disabled={guestLoading}>
+          {#if guestLoading}<Spinner size="xs" />{:else}{t('common.refresh')}{/if}
+        </Button>
+      {/if}
     </div>
   {/snippet}
 
   {#if guestLoading && !guestInfo}
     <div class="flex justify-center py-10"><Spinner size="lg" /></div>
+  {:else if guestUnsupported}
+    <RemoteUnsupportedNotice {node} nodeName={vm?.node} />
   {:else if !guestInfo?.available}
     <div class="rounded-lg border border-border bg-muted/20 p-4 text-center">
       <Icon name="info" size={20} class="mx-auto mb-2 text-muted-foreground" />

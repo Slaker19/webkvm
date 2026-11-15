@@ -96,7 +96,7 @@ func (f *fakeLXD3) op(id string, status string) string {
 
 func (f *fakeLXD3) handleServer(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprint(w, `{"type":"sync","status":"Success","status_code":200,"metadata":{"api_extensions":["instances","snapshots","resources","networks","container_backup","instance_create_start"],"api_status":"stable","api_version":"1.0","auth":"trusted","public":false,"environment":{"server_version":"6.9.0-fake","certificate":""}}}`)
+	fmt.Fprint(w, `{"type":"sync","status":"Success","status_code":200,"metadata":{"api_extensions":["instances","snapshots","resources","networks","container_backup","instance_create_start","container_only_migration"],"api_status":"stable","api_version":"1.0","auth":"trusted","public":false,"environment":{"server_version":"6.9.0-fake","certificate":""}}}`)
 }
 
 func (f *fakeLXD3) handleInstances(w http.ResponseWriter, r *http.Request) {
@@ -881,3 +881,10 @@ func TestInstanceToVMTagsAndAlias(t *testing.T) {
 
 // Ensure the whole exported surface still satisfies the seam.
 var _ = io.Discard
+
+func TestInstanceToVMUsesClusterLocation(t *testing.T) {
+	vm := instanceToVM(&api.Instance{Name: "example-app", Status: "Running", Location: "node-a"})
+	if vm.Node != "node-a" {
+		t.Fatalf("node = %q, want the Incus member location node-a", vm.Node)
+	}
+}

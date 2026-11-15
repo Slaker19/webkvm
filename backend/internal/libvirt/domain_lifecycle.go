@@ -13,11 +13,24 @@ func (c *Connector) StartDomain(id string) error {
 	if err != nil {
 		return err
 	}
-	defer dom.Free()
 	state, _, err := dom.GetState()
 	if err == nil && state == libvirt.DOMAIN_RUNNING {
+		dom.Free()
 		return ErrDomainAlreadyRunning
 	}
+	newDom, changed, err := c.ensureDomainAppArmorLabel(dom)
+	if err != nil {
+		dom.Free()
+		return err
+	}
+	if changed {
+		dom.Free()
+		dom = newDom
+	}
+	defer dom.Free()
+	// Backing files of external snapshots are not relabeled by libvirt on
+	// start, so make the whole chain accessible to QEMU first.
+	c.chownDiskChain(dom)
 	return dom.Create()
 }
 
@@ -109,9 +122,10 @@ func (c *Connector) DeleteDomain(id string) error {
 	}
 	defer dom.Free()
 
-	state, _, err := dom.GetState()
-	if err == nil && state == libvirt.DOMAIN_RUNNING {
-		dom.Destroy()
+	// A paused or PM-suspended domain is still active: UndefineFlags alone
+	// would turn it into a transient running domain and leave QEMU resident.
+	if active, aerr := dom.IsActive(); aerr == nil && active {
+		_ = dom.Destroy()
 	}
 
 	flags := libvirt.DOMAIN_UNDEFINE_MANAGED_SAVE | libvirt.DOMAIN_UNDEFINE_SNAPSHOTS_METADATA | libvirt.DOMAIN_UNDEFINE_NVRAM

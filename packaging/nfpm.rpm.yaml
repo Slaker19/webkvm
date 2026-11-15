@@ -46,6 +46,16 @@ contents:
   - src: ./scripts/setup-network.sh
     dst: /usr/share/webkvm/setup-network.sh
     file_info: { mode: 0755 }
+  # OCF agent ocf:webkvm:webkvm (control plane as a Pacemaker resource).
+  # Inert until an operator creates the resource; it starts nothing itself.
+  - src: ./packaging/ocf/webkvm
+    dst: /usr/lib/ocf/resource.d/webkvm/webkvm
+    file_info: { mode: 0755 }
+  # OCF agent ocf:webkvm:incus (one Incus instance on shared storage as a
+  # Pacemaker resource). Inert until an operator creates the resource.
+  - src: ./packaging/ocf/incus
+    dst: /usr/lib/ocf/resource.d/webkvm/incus
+    file_info: { mode: 0755 }
   - src: ./LICENSE
     dst: /usr/share/doc/webkvm/LICENSE
     file_info: { mode: 0644 }

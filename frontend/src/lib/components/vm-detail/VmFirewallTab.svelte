@@ -12,8 +12,19 @@
     mergeFirewall,
     VM_TEMPLATE_PRESETS,
   } from '$lib/utils/firewallTemplates.js';
+  import RemoteUnsupportedNotice from '$lib/components/RemoteUnsupportedNotice.svelte';
 
-  let { vmId, fwRules = $bindable([]), fwForwards = $bindable([]) } = $props();
+  // unsupported: the VM lives on another node, whose per-VM firewall is only
+  // managed by that node's own WebKVM (GET/PUT /firewall answer 501 there).
+  // The card then shows the notice and no edit controls.
+  let {
+    vmId,
+    fwRules = $bindable([]),
+    fwForwards = $bindable([]),
+    unsupported = false,
+    node = null,
+    nodeName = '',
+  } = $props();
 
   let fwTplSel = $state('');
   let fwSaving = $state(false);
@@ -90,120 +101,124 @@
 </script>
 
 <BlockCard bid="firewall" title={t('vmDetail.firewall')} anchor="firewall">
-  <!-- Quick per-VM template (merge, never replaces) -->
-  <div class="mb-4 flex flex-wrap items-center gap-2">
-    <select
-      class="input h-8 text-xs"
-      bind:value={fwTplSel}
-      aria-label={t('firewall.vmPickTemplate')}
-    >
-      <option value="">{t('firewall.vmPickTemplate')}</option>
-      {#each VM_TEMPLATE_PRESETS as tpl (tpl.id)}
-        <option value={tpl.id}>{t(tpl.labelKey)}</option>
-      {/each}
-    </select>
-    <Button size="xs" variant="outline" disabled={!fwTplSel} onclick={applyVmTemplate}>
-      {t('firewall.vmApplyTemplate')}
-    </Button>
-  </div>
-  <!-- Port forwards -->
-  <div class="mb-4">
-    <h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
-      {t('vmDetail.portForwards')}
-    </h3>
-    <div class="space-y-2">
-      {#each fwForwards as fw (fw.id)}
-        <div class="flex items-center gap-2 {fw.disabled ? 'opacity-50' : ''}">
-          <span title={fw.disabled ? t('firewall.enableRule') : t('firewall.disableRule')}>
-            <Switch
-              size="sm"
-              checked={!fw.disabled}
-              onchange={() => (fw.disabled = !fw.disabled)}
+  {#if unsupported}
+    <RemoteUnsupportedNotice {node} {nodeName} />
+  {:else}
+    <!-- Quick per-VM template (merge, never replaces) -->
+    <div class="mb-4 flex flex-wrap items-center gap-2">
+      <select
+        class="input h-8 text-xs"
+        bind:value={fwTplSel}
+        aria-label={t('firewall.vmPickTemplate')}
+      >
+        <option value="">{t('firewall.vmPickTemplate')}</option>
+        {#each VM_TEMPLATE_PRESETS as tpl (tpl.id)}
+          <option value={tpl.id}>{t(tpl.labelKey)}</option>
+        {/each}
+      </select>
+      <Button size="xs" variant="outline" disabled={!fwTplSel} onclick={applyVmTemplate}>
+        {t('firewall.vmApplyTemplate')}
+      </Button>
+    </div>
+    <!-- Port forwards -->
+    <div class="mb-4">
+      <h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
+        {t('vmDetail.portForwards')}
+      </h3>
+      <div class="space-y-2">
+        {#each fwForwards as fw (fw.id)}
+          <div class="flex items-center gap-2 {fw.disabled ? 'opacity-50' : ''}">
+            <span title={fw.disabled ? t('firewall.enableRule') : t('firewall.disableRule')}>
+              <Switch
+                size="sm"
+                checked={!fw.disabled}
+                onchange={() => (fw.disabled = !fw.disabled)}
+              />
+            </span>
+            <select class="input w-24" bind:value={fw.proto}>
+              <option value="tcp">tcp</option>
+              <option value="udp">udp</option>
+              <option value="both">both</option>
+            </select>
+            <Input
+              type="number"
+              class="w-28 tnum"
+              bind:value={fw.host_port}
+              min="1"
+              max="65535"
+              placeholder="Host port"
             />
-          </span>
-          <select class="input w-24" bind:value={fw.proto}>
-            <option value="tcp">tcp</option>
-            <option value="udp">udp</option>
-            <option value="both">both</option>
-          </select>
-          <Input
-            type="number"
-            class="w-28 tnum"
-            bind:value={fw.host_port}
-            min="1"
-            max="65535"
-            placeholder="Host port"
-          />
-          <span class="text-muted-foreground">→</span>
-          <Input
-            type="number"
-            class="w-28 tnum"
-            bind:value={fw.guest_port}
-            min="1"
-            max="65535"
-            placeholder="Guest port"
-          />
-          {#if fw.applied}
-            <span class="text-xs text-success">{t('vmDetail.fwApplied')}</span>
-          {:else if fw.target_ip}
-            <span class="text-xs text-muted-foreground">{fw.target_ip}</span>
-          {:else}
-            <span class="text-xs text-warning">{t('vmDetail.fwPending')}</span>
-          {/if}
-          <Button size="xs" variant="ghost" onclick={() => removeForward(fw.id)}>×</Button>
-        </div>
-      {/each}
-      {#if fwForwards.length === 0}
-        <EmptyState compact icon="shieldOff" title={t('vmDetail.noForwards')} />
-      {/if}
+            <span class="text-muted-foreground">→</span>
+            <Input
+              type="number"
+              class="w-28 tnum"
+              bind:value={fw.guest_port}
+              min="1"
+              max="65535"
+              placeholder="Guest port"
+            />
+            {#if fw.applied}
+              <span class="text-xs text-success">{t('vmDetail.fwApplied')}</span>
+            {:else if fw.target_ip}
+              <span class="text-xs text-muted-foreground">{fw.target_ip}</span>
+            {:else}
+              <span class="text-xs text-warning">{t('vmDetail.fwPending')}</span>
+            {/if}
+            <Button size="xs" variant="ghost" onclick={() => removeForward(fw.id)}>×</Button>
+          </div>
+        {/each}
+        {#if fwForwards.length === 0}
+          <EmptyState compact icon="shieldOff" title={t('vmDetail.noForwards')} />
+        {/if}
+      </div>
+      <Button size="xs" variant="outline" class="mt-2" onclick={addForward}>
+        {t('vmDetail.addForward')}
+      </Button>
     </div>
-    <Button size="xs" variant="outline" class="mt-2" onclick={addForward}>
-      {t('vmDetail.addForward')}
-    </Button>
-  </div>
 
-  <!-- Inbound rules -->
-  <div>
-    <h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
-      {t('vmDetail.inboundRules')}
-    </h3>
-    <div class="space-y-2">
-      {#each fwRules as r (r.id)}
-        <div class="flex items-center gap-2 {r.disabled ? 'opacity-50' : ''}">
-          <span title={r.disabled ? t('firewall.enableRule') : t('firewall.disableRule')}>
-            <Switch size="sm" checked={!r.disabled} onchange={() => (r.disabled = !r.disabled)} />
-          </span>
-          <select class="input w-24" bind:value={r.proto}>
-            <option value="tcp">tcp</option>
-            <option value="udp">udp</option>
-            <option value="both">both</option>
-          </select>
-          <Input
-            type="number"
-            class="w-28 tnum"
-            bind:value={r.port}
-            min="1"
-            max="65535"
-            placeholder="Port"
-          />
-          <select class="input w-24" bind:value={r.action}>
-            <option value="allow">{t('vmDetail.fwAllow')}</option>
-            <option value="drop">{t('vmDetail.fwDrop')}</option>
-            <option value="reject">{t('vmDetail.fwReject')}</option>
-          </select>
-          <Button size="xs" variant="ghost" onclick={() => removeRule(r.id)}>×</Button>
-        </div>
-      {/each}
-      {#if fwRules.length === 0}
-        <EmptyState compact icon="shieldOff" title={t('vmDetail.noRules')} />
-      {/if}
+    <!-- Inbound rules -->
+    <div>
+      <h3 class="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
+        {t('vmDetail.inboundRules')}
+      </h3>
+      <div class="space-y-2">
+        {#each fwRules as r (r.id)}
+          <div class="flex items-center gap-2 {r.disabled ? 'opacity-50' : ''}">
+            <span title={r.disabled ? t('firewall.enableRule') : t('firewall.disableRule')}>
+              <Switch size="sm" checked={!r.disabled} onchange={() => (r.disabled = !r.disabled)} />
+            </span>
+            <select class="input w-24" bind:value={r.proto}>
+              <option value="tcp">tcp</option>
+              <option value="udp">udp</option>
+              <option value="both">both</option>
+            </select>
+            <Input
+              type="number"
+              class="w-28 tnum"
+              bind:value={r.port}
+              min="1"
+              max="65535"
+              placeholder="Port"
+            />
+            <select class="input w-24" bind:value={r.action}>
+              <option value="allow">{t('vmDetail.fwAllow')}</option>
+              <option value="drop">{t('vmDetail.fwDrop')}</option>
+              <option value="reject">{t('vmDetail.fwReject')}</option>
+            </select>
+            <Button size="xs" variant="ghost" onclick={() => removeRule(r.id)}>×</Button>
+          </div>
+        {/each}
+        {#if fwRules.length === 0}
+          <EmptyState compact icon="shieldOff" title={t('vmDetail.noRules')} />
+        {/if}
+      </div>
+      <Button size="xs" variant="outline" class="mt-2" onclick={addRule}>
+        {t('vmDetail.addRule')}
+      </Button>
     </div>
-    <Button size="xs" variant="outline" class="mt-2" onclick={addRule}>
-      {t('vmDetail.addRule')}
-    </Button>
-  </div>
 
-  <Button size="sm" onclick={saveFirewall} disabled={fwSaving} class="mt-4">
-    {t('common.save')}
-  </Button>
+    <Button size="sm" onclick={saveFirewall} disabled={fwSaving} class="mt-4">
+      {t('common.save')}
+    </Button>
+  {/if}
 </BlockCard>

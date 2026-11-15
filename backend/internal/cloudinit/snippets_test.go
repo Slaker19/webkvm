@@ -110,13 +110,13 @@ func TestExpandTemplate(t *testing.T) {
 	var vars TemplateVars
 	vars.VM.User = "ubuntu"
 	vars.VM.Hostname = "srv-01"
-	vars.VM.IP = "192.168.1.50"
+	vars.VM.IP = "192.168.50.50"
 
 	expanded, err := ExpandTemplate(raw, vars)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := "User is ubuntu on host srv-01 with IP 192.168.1.50"
+	expected := "User is ubuntu on host srv-01 with IP 192.168.50.50"
 	if expanded != expected {
 		t.Errorf("got %q, want %q", expanded, expected)
 	}

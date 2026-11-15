@@ -42,7 +42,7 @@ func TestExtractSSHFailureIP(t *testing.T) {
 		},
 		{
 			name:     "accepted password should not match",
-			line:     "Accepted password for alvin from 192.168.1.100 port 52608 ssh2",
+			line:     "Accepted password for operator from 192.168.1.100 port 52608 ssh2",
 			expected: "",
 		},
 		{

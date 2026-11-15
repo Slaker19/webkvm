@@ -23,6 +23,7 @@ import (
 	"webkvm/internal/compute"
 	"webkvm/internal/config"
 	"webkvm/internal/events"
+	"webkvm/internal/incusremote"
 	"webkvm/internal/models"
 )
 
@@ -104,11 +105,24 @@ func NewIncusBackend(socketPath string, opts ...IncusBackendOption) (*IncusBacke
 	if err != nil {
 		return nil, err
 	}
+	return newIncusBackend(client, socketPath, opts...), nil
+}
+
+// NewRemoteIncusBackend connects through the authenticated Incus HTTPS API.
+func NewRemoteIncusBackend(ctx context.Context, endpoint string, credentials incusremote.Credentials, project string, opts ...IncusBackendOption) (*IncusBackend, error) {
+	client, err := incusremote.Connect(ctx, endpoint, credentials, project)
+	if err != nil {
+		return nil, err
+	}
+	return newIncusBackend(client, "", opts...), nil
+}
+
+func newIncusBackend(client incus.InstanceServer, socketPath string, opts ...IncusBackendOption) *IncusBackend {
 	b := &IncusBackend{client: client, socketPath: socketPath}
 	for _, o := range opts {
 		o(b)
 	}
-	return b, nil
+	return b
 }
 
 // EnsureIncusPool creates the dedicated Incus container storage pool
@@ -147,14 +161,30 @@ func (b *IncusBackend) EnsureIncusPool(ctx context.Context, cfg *config.Config) 
 
 func (b *IncusBackend) bridgeForNetwork(name string) (string, error) {
 	name = strings.TrimSpace(name)
+	if b.socketPath == "" && b.client != nil {
+		if name == "" {
+			return "", errors.New("an Incus network must be selected for a remote instance")
+		}
+		network, _, err := b.client.GetNetwork(name)
+		if err != nil {
+			return "", fmt.Errorf("read remote Incus network %q: %w", name, err)
+		}
+		if network == nil || network.Name != name || network.Type != "bridge" {
+			return "", fmt.Errorf("remote Incus network %q is not an available bridge network", name)
+		}
+		return network.Name, nil
+	}
 	if name == "" {
 		if mb := incusMainBridge(); mb != "" {
 			return mb, nil
 		}
 		return "", compute.ErrNoPhysicalBridge
 	}
-	if !isPhysicalBridge(name) {
-		return "", fmt.Errorf("%w: %q is not a physical Linux bridge on the host", compute.ErrNoPhysicalBridge, name)
+	// Any existing Linux bridge is a valid explicit choice, including
+	// libvirt/Incus NAT bridges. The empty path above still requires a
+	// physical bridge, so NAT is never selected silently.
+	if !isLinuxBridge(name) {
+		return "", fmt.Errorf("%w: %q is not a Linux bridge on the host", compute.ErrNoPhysicalBridge, name)
 	}
 	return name, nil
 }
@@ -203,6 +233,17 @@ func (b *IncusBackend) ServerInfo() (string, error) {
 		return "", err
 	}
 	return s.Environment.ServerVersion, nil
+}
+
+func (b *IncusBackend) ServerArchitecture() (string, error) {
+	s, _, err := b.client.GetServer()
+	if err != nil {
+		return "", err
+	}
+	if s == nil || s.Environment.KernelArchitecture == "" {
+		return "", errors.New("incus server did not report its architecture")
+	}
+	return s.Environment.KernelArchitecture, nil
 }
 
 func (b *IncusBackend) Close() {
@@ -413,6 +454,9 @@ func instanceToVM(i *api.Instance) models.VM {
 		Name:       i.Name,
 		Type:       "container",
 		Hypervisor: "incus",
+		// In a clustered Incus the instance lives on this member; without it
+		// the UI attributes every container to the panel's host.
+		Node:       i.Location,
 		State:      lxdState(i.Status),
 		VCPUs:      parseIntConfig(i.Config["limits.cpu"]),
 		RAMMB:      parseMemoryMB(i.Config["limits.memory"]),
@@ -424,13 +468,20 @@ func instanceToVM(i *api.Instance) models.VM {
 	if i.Type == string(api.InstanceTypeVM) {
 		vm.Type = "vm"
 	}
-	devNames := make([]string, 0, len(i.Devices))
-	for name := range i.Devices {
+	// ExpandedDevices merges profile devices, which is where a stock
+	// container keeps its root disk. Reading only Devices hid that disk,
+	// so clones could not find the root pool and quota counted 0 GB.
+	devSource := i.ExpandedDevices
+	if len(devSource) == 0 {
+		devSource = i.Devices
+	}
+	devNames := make([]string, 0, len(devSource))
+	for name := range devSource {
 		devNames = append(devNames, name)
 	}
 	sort.Strings(devNames)
 	for _, name := range devNames {
-		dev := i.Devices[name]
+		dev := devSource[name]
 		switch dev["type"] {
 		case "disk":
 			if name == "root" {
@@ -695,7 +746,7 @@ func lxdCloudInitConfig(cfg cloudinit.Config, networkBridge string) (map[string]
 	return out, true
 }
 
-func lxdNetworkConfig(devices map[string]map[string]string) string {
+func lxdNetworkConfig(devices map[string]map[string]string, networks []models.CloudInitNetworkConfig) string {
 	names := make([]string, 0, len(devices))
 	for name, dev := range devices {
 		if dev["type"] == "nic" {
@@ -706,10 +757,47 @@ func lxdNetworkConfig(devices map[string]map[string]string) string {
 		return "network:\n  version: 2\n"
 	}
 	sort.Strings(names)
+	byIface := make(map[string]models.CloudInitNetworkConfig, len(networks))
+	for _, n := range networks {
+		if n.Interface != "" {
+			byIface[n.Interface] = n
+		}
+	}
 	var sb strings.Builder
 	sb.WriteString("network:\n  version: 2\n  ethernets:\n")
-	for _, n := range names {
-		sb.WriteString("    " + n + ":\n      dhcp4: true\n      dhcp6: true\n      optional: true\n")
+	for _, name := range names {
+		cfg, static := byIface[name]
+		if !static && len(networks) == 1 && networks[0].Interface == "" {
+			cfg, static = networks[0], true
+		}
+		if !static || (cfg.IPv4 == "" && cfg.IPv6 == "") {
+			sb.WriteString("    " + name + ":\n      dhcp4: true\n      dhcp6: true\n      optional: true\n")
+			continue
+		}
+		sb.WriteString("    " + name + ":\n      dhcp4: false\n      dhcp6: false\n      optional: true\n")
+		var addrs []string
+		if cfg.IPv4 != "" {
+			addrs = append(addrs, cfg.IPv4)
+		}
+		if cfg.IPv6 != "" {
+			addrs = append(addrs, cfg.IPv6)
+		}
+		sb.WriteString("      addresses: [" + strings.Join(addrs, ", ") + "]\n")
+		if cfg.Gateway4 != "" {
+			sb.WriteString("      gateway4: " + cfg.Gateway4 + "\n")
+		}
+		if cfg.Gateway6 != "" {
+			sb.WriteString("      gateway6: " + cfg.Gateway6 + "\n")
+		}
+		if len(cfg.DNS) > 0 || len(cfg.Search) > 0 {
+			sb.WriteString("      nameservers:\n")
+			if len(cfg.DNS) > 0 {
+				sb.WriteString("        addresses: [" + strings.Join(cfg.DNS, ", ") + "]\n")
+			}
+			if len(cfg.Search) > 0 {
+				sb.WriteString("        search: [" + strings.Join(cfg.Search, ", ") + "]\n")
+			}
+		}
 	}
 	return sb.String()
 }

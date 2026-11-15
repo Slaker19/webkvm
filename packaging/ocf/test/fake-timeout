@@ -1,0 +1,14 @@
+#!/bin/sh
+# Fake `timeout`: duration ignored. Scenario key `hang` = an incus subcommand
+# that "hangs" (non --force calls only) -> rc 124 without running it.
+S="${FAKE_S:?}"
+echo "timeout $*" >>"$S/calls"
+shift
+h=""
+[ -f "$S/hang" ] && h=$(cat "$S/hang")
+if [ -n "$h" ] && [ "$1" = "incus" ] && [ "$2" = "$h" ]; then
+	f=0
+	for a in "$@"; do [ "$a" = "--force" ] && f=1; done
+	[ "$f" = 0 ] && exit 124
+fi
+exec "$@"

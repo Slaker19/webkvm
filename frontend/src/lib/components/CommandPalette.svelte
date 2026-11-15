@@ -239,7 +239,7 @@
               id: `action-stop-${v.id}`,
               category: 'actions',
               label: () => `${t('common.stop')}: ${v.name}`,
-              action: () => api.shutdownVM(v.id).catch(() => {}),
+              action: () => api.shutdownVM(v.id, v.node).catch(() => {}),
               icon: 'stop',
               keywords: `stop shutdown ${v.name}`,
             });
@@ -248,7 +248,7 @@
               id: `action-start-${v.id}`,
               category: 'actions',
               label: () => `${t('common.start')}: ${v.name}`,
-              action: () => api.startVM(v.id).catch(() => {}),
+              action: () => api.startVM(v.id, v.node).catch(() => {}),
               icon: 'play',
               keywords: `start boot ${v.name}`,
             });
@@ -295,6 +295,7 @@
   });
 
   function runCommand(cmd) {
+    commandRan = true;
     if (cmd.action) {
       cmd.action();
     } else if (cmd.path) {
@@ -302,6 +303,29 @@
     }
     open = false;
   }
+
+  // Focus handling of this custom overlay: remember what had focus when it
+  // opened and give it back on close (Esc, click outside or a command).
+  let returnFocusEl = null;
+  let wasOpen = false;
+  let commandRan = false;
+
+  $effect(() => {
+    if (open && !wasOpen) {
+      wasOpen = true;
+      returnFocusEl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    } else if (!open && wasOpen) {
+      wasOpen = false;
+      const el = returnFocusEl;
+      returnFocusEl = null;
+      const skip = commandRan;
+      commandRan = false;
+      // A command navigates or opens its own dialog: that target owns focus.
+      queueMicrotask(() => {
+        if (!skip && el?.isConnected) el.focus();
+      });
+    }
+  });
 
   $effect(() => {
     if (open) {
@@ -393,6 +417,7 @@
   >
     <div
       role="dialog"
+      aria-modal="true"
       aria-label={t('layout.openPalette')}
       tabindex="-1"
       class="bg-popover text-popover-foreground border border-border rounded-xl shadow-2xl w-full max-w-xl mx-4 overflow-hidden"

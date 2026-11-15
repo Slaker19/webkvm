@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,7 +21,8 @@ import (
 func (h *Handler) ListVolumes(w http.ResponseWriter, r *http.Request) {
 	poolName := r.URL.Query().Get("pool")
 	if poolName == "" {
-		poolName = config.DiskPoolName
+		h.listAllVolumes(w, r)
+		return
 	}
 	if !h.poolVisibleTo(r, poolName) {
 		jsonResp(w, http.StatusOK, []models.StorageVolume{})
@@ -28,10 +30,69 @@ func (h *Handler) ListVolumes(w http.ResponseWriter, r *http.Request) {
 	}
 	vols, err := h.compute.ListStorageVolumes(poolName)
 	if err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+		h.writeVolumeListError(w, poolName, err)
 		return
 	}
 	jsonResp(w, http.StatusOK, vols)
+}
+
+// listAllVolumes answers GET /storage/volumes without ?pool=: the volumes
+// of every visible pool. An inactive pool (or one whose listing fails) is
+// skipped and named in X-WebKVM-Skipped-Pools instead of failing the whole
+// listing; the raw libvirt error is logged, never returned.
+func (h *Handler) listAllVolumes(w http.ResponseWriter, r *http.Request) {
+	pools, err := h.compute.ListStoragePools()
+	if err != nil {
+		h.logError("storage_volumes_list_failed", err, "")
+		jsonErrCode(w, http.StatusBadGateway, "volumes_unavailable", "the storage pools could not be listed")
+		return
+	}
+	out := []models.StorageVolume{}
+	var skipped []string
+	for _, p := range pools {
+		if !h.poolVisibleTo(r, p.Name) {
+			continue
+		}
+		if p.State != "" && p.State != "active" {
+			skipped = append(skipped, p.Name)
+			continue
+		}
+		vols, err := h.compute.ListStorageVolumes(p.Name)
+		if err != nil {
+			h.logError("storage_volumes_list_failed", err, p.Name)
+			skipped = append(skipped, p.Name)
+			continue
+		}
+		out = append(out, vols...)
+	}
+	if len(skipped) > 0 {
+		sort.Strings(skipped)
+		w.Header().Set("X-WebKVM-Skipped-Pools", strings.Join(skipped, ","))
+	}
+	jsonResp(w, http.StatusOK, out)
+}
+
+// writeVolumeListError maps a failed listing of one pool to a typed error:
+// pool_inactive (409), pool_not_found (404) or volumes_unavailable (502).
+func (h *Handler) writeVolumeListError(w http.ResponseWriter, pool string, err error) {
+	h.logError("storage_volumes_list_failed", err, pool)
+	status, code, msg := http.StatusBadGateway, "volumes_unavailable", "the volumes of this pool could not be listed"
+	if pools, perr := h.compute.ListStoragePools(); perr == nil {
+		found := false
+		for _, p := range pools {
+			if p.Name != pool {
+				continue
+			}
+			found = true
+			if p.State != "" && p.State != "active" {
+				status, code, msg = http.StatusConflict, "pool_inactive", "the storage pool is not active; start it first"
+			}
+		}
+		if !found {
+			status, code, msg = http.StatusNotFound, "pool_not_found", "the storage pool does not exist"
+		}
+	}
+	jsonResp(w, status, map[string]string{"error": msg, "code": code, "pool": pool})
 }
 
 // ProbeStorageDisk inspects a pool disk image by absolute path. Body:
@@ -152,7 +213,7 @@ func (h *Handler) DeleteVolume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.compute.DeleteStorageVolume(pool, name); err != nil {
-		if errors.Is(err, compute.ErrVolumeNotFound) {
+		if errors.Is(err, compute.ErrVolumeNotFound) || isNotFoundError(err) {
 			jsonErr(w, http.StatusNotFound, err.Error())
 			return
 		}

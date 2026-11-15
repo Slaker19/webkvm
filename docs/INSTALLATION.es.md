@@ -265,15 +265,52 @@ bajo `/var/tmp` y se imprime su ruta.
 
 ### 9. Actualización
 
-Vuelve a ejecutar el instalador con el código o el binario nuevo. El instalador:
+Las actualizaciones se pueden realizar directamente desde la interfaz web o mediante la línea de comandos. Todos los datos bajo `/opt/webkvm` (configuración, discos, ISOs, usuarios, registros de auditoría) se conservan intactos.
 
-1. Respalda el binario y el fichero de unidad actuales (`*.previous`).
-2. Instala los nuevos.
-3. Reinicia el servicio y comprueba `/api/health`.
-4. **Revierte todo automáticamente si algún paso falla.**
+#### Opción 1: Actualización desde la Web UI (instalaciones nativas)
 
-Todo lo que hay bajo `/opt/webkvm` (configuración, discos, ISOs, usuarios) se
-conserva.
+Los administradores pueden iniciar la actualización desde el panel:
+
+1. Ve a la pestaña **Estado** (`/#/status`) y pulsa en **Actualizar** (**Update**).
+2. **Requisito de entorno**: El backend requiere `WEBKVM_ALLOW_UPDATE=1` en las variables de entorno del servicio (el instalador nativo lo configura por defecto en `webkvm.service`).
+3. **Ejecución**: El actualizador se ejecuta en segundo plano (detached) e informa de su progreso en `/var/log/webkvm/update.log`.
+4. **Selección de modo**:
+   - **Modo `release`**: Se elige automáticamente cuando `REPO_DIR` no es un repositorio git. Descarga el binario independiente oficial de GitHub (`webkvm-<version>-linux_amd64`) y valida su checksum frente a `SHA256SUMS` antes de reemplazar `/usr/local/bin/webkvm`.
+   - **Modo `source`**: Se elige automáticamente cuando `REPO_DIR` es un clon de git. Ejecuta `git pull --ff-only` y recompila tanto el frontend como el backend (requiere Go ≥ 1.26 y Node.js ≥ 20 en el host).
+5. **Seguridad y reversión automática**: El binario actual se respalda en `/usr/local/bin/webkvm.previous`. Tras reemplazarlo, el servicio se reinicia y realiza una comprobación de salud contra `/api/health` durante 30 segundos. Si falla, revierte automáticamente a `webkvm.previous`.
+6. **Validación**: Comprueba la versión activa con `webkvm version` y consulta `curl -sk https://localhost:8080/api/health`.
+
+#### Opción 2: Reejecutar el instalador o mediante CLI
+
+También puedes actualizar ejecutando el instalador standalone o la utilidad de línea de comandos:
+
+```bash
+# Con la utilidad de actualización instalada:
+sudo webkvm-update            # modo release (descarga el binario verificado)
+sudo webkvm-update --source   # modo source (recompila el repositorio local)
+
+# O reejecutando el instalador con un binario descargado:
+sudo WEBKVM_BINARY=/ruta/a/webkvm-0.1.12-linux_amd64 bash packaging/standalone/install.sh --yes
+```
+
+Los artefactos oficiales de la release **v0.1.12** se publican en GitHub Releases:
+- `webkvm-0.1.12-linux_amd64` (binario del servidor independiente)
+- `webkvm-cli-0.1.12-linux_amd64` (binario de CLI independiente)
+- `webkvm-0.1.12.tar.gz` (código fuente y binario empaquetado)
+- Paquetes para distribuciones `.deb` (Debian/Ubuntu) y `.rpm` (RHEL/Fedora)
+- `SHA256SUMS` (sumas de verificación criptográfica)
+
+#### Restricciones de despliegue
+
+> [!WARNING]
+> - **Despliegues en Docker**: **NO** utilices el actualizador integrado dentro de un contenedor Docker. En entornos de contenedores, actualiza descargando la imagen más reciente (`docker compose pull && docker compose up -d`). Consulta [DOCKER.es.md](DOCKER.es.md).
+> - **Clústeres HA (Pacemaker)**: El botón de actualización de la UI solo actualiza el nodo local que sirve el panel y reinicia su servicio local; **NO** lo utilices como actualizador para todo el clúster. Las actualizaciones en clústeres HA deben coordinarse nodo a nodo a través de Pacemaker durante una ventana de mantenimiento. Consulta [HA-CLUSTER.es.md](runbooks/HA-CLUSTER.es.md).
+
+#### Comportamiento de AppArmor tras la actualización
+
+En hosts con AppArmor, WebKVM asigna `<seclabel type='none' model='apparmor'/>` para evitar que libvirt deniegue el acceso de solo lectura al archivo base del snapshot. Las máquinas virtuales existentes se migran de forma **diferida (lazy)** en el siguiente arranque, reversión o eliminación de snapshot, sin requerir edición manual de XML. Define `WEBKVM_DISABLE_APPARMOR=0` para conservar el confinamiento de AppArmor. Los hosts con SELinux no se ven afectados. Consulta [SECURITY.es.md](../SECURITY.es.md).
+
+Para el procedimiento detallado paso a paso y rollback, consulta el [Runbook de Actualización y Rollback](runbooks/UPGRADE-ROLLBACK.es.md).
 
 ### 10. Desinstalación
 
@@ -397,6 +434,8 @@ Tres planos:
 | `WEBKVM_ADMIN_PASSWORD` | — | Contraseña inicial de administrador (si no, se genera aleatoria). |
 | `WEBKVM_INCUS_ENABLED` | `0` | Activa el módulo de contenedores Incus/LXD (requiere el daemon en el host). |
 | `INCUS_SOCKET` | automático | Sobrescribe el socket unix del daemon de contenedores (primero Incus: `/var/lib/incus/unix.socket`, `/run/incus/*`; luego las rutas de LXD por snap y por apt). |
+| `WEBKVM_ALLOW_UPDATE` | `1` (instalador nativo) | Activa `POST /api/system/update` (actualizador de la UI). Pon `0` para desactivar las actualizaciones desde la UI. |
+| `WEBKVM_DISABLE_APPARMOR` | `1` | Workaround de AppArmor para snapshots externos; solo se aplica si AppArmor está activo. Pon `0` para mantener la confinación. Ver SECURITY.es.md. |
 
 El fichero `.env` del directorio de trabajo se carga como respaldo (godotenv);
 las variables de entorno reales siempre ganan.

@@ -70,12 +70,42 @@ func (c *Connector) GetDomainXML(id string) (string, error) {
 	return dom.GetXMLDesc(0)
 }
 
+// undefineRollback removes a partially created domain, including the NVRAM
+// file libvirt writes for UEFI guests; a plain Undefine leaves that behind.
+func undefineRollback(dom *libvirt.Domain) {
+	if err := dom.UndefineFlags(libvirt.DOMAIN_UNDEFINE_NVRAM); err != nil {
+		_ = dom.Undefine()
+	}
+}
+
+// diskTargets returns the primary disk target and the optical targets that
+// must not collide with it on the SATA bus.
+func diskTargets(diskBus string) (disk, iso, virtioISO string) {
+	if diskBus == "sata" || diskBus == "scsi" || diskBus == "ide" {
+		return "sda", "sdb", "sdc"
+	}
+	return "vda", "sda", "sdb"
+}
+
 func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) {
 	if err := c.ensureConnected(); err != nil {
 		return models.VM{}, err
 	}
 
 	usingExistingDisk := req.ExistingDiskPool != "" && req.ExistingDiskName != ""
+	usingBaseImage := req.BaseImagePath != ""
+	if usingExistingDisk && usingBaseImage {
+		return models.VM{}, fmt.Errorf("choose either an existing disk or a cached base image")
+	}
+	if usingBaseImage && c.isRemote() {
+		return models.VM{}, fmt.Errorf("cached base images are local to this WebKVM server")
+	}
+	if usingBaseImage && (req.DiskGB < 0 || req.DiskGB > 1024) {
+		return models.VM{}, fmt.Errorf("cached base image disk size must be between 0 and 1024 GB")
+	}
+	if usingBaseImage && req.DiskFormat != "" && req.DiskFormat != "qcow2" {
+		return models.VM{}, fmt.Errorf("cached base images require qcow2 disks")
+	}
 
 	poolName := req.StoragePool
 	if poolName == "" {
@@ -88,6 +118,9 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 	}
 
 	diskFormat := req.DiskFormat
+	if usingBaseImage {
+		diskFormat = "qcow2"
+	}
 	if diskFormat == "" {
 		diskFormat = "qcow2"
 	}
@@ -120,10 +153,7 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 	if err := validateDiskBus(diskBus); err != nil {
 		return models.VM{}, err
 	}
-	targetDev := "vda"
-	if diskBus == "sata" || diskBus == "scsi" || diskBus == "ide" {
-		targetDev = "sda"
-	}
+	targetDev, isoTarget, virtioISOTarget := diskTargets(diskBus)
 
 	cpuMode := req.CPUMode
 	if cpuMode == "" {
@@ -162,6 +192,9 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 	var videoXML string
 	accel3d := req.Accel3D
 	if accel3d {
+		if c.isRemote() {
+			return models.VM{}, fmt.Errorf("3D acceleration can only be configured on the local server for now")
+		}
 		if videoModel != "virtio" {
 			return models.VM{}, fmt.Errorf("3D acceleration requires the virtio video model (got %q)", videoModel)
 		}
@@ -183,7 +216,7 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 	// Linux bridge (vmbr0, vmbr1, …). A provided network must be an existing
 	// host bridge; an empty selection lands on the main bridge. Never a
 	// libvirt virtual/NAT network.
-	if req.Network != "" && !isLinuxBridge(req.Network) {
+	if req.Network != "" && !c.bridgeExists(req.Network) {
 		return models.VM{}, fmt.Errorf("network %q is not a host Linux bridge; WebKVM only uses real bridges (vmbr0, vmbr1, …)", req.Network)
 	}
 	if req.Network == "" && mainBridge() == "" {
@@ -192,7 +225,7 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 
 	isoXML := ""
 	if req.ISO != "" {
-		resolvedISO, err := c.resolveMediaPath(req.ISO, req.Scope)
+		resolvedISO, err := c.resolveCreateMedia(req.ISO, req.Scope)
 		if err != nil {
 			return models.VM{}, fmt.Errorf("resolve ISO: %w", err)
 		}
@@ -206,21 +239,21 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 			isoXML = fmt.Sprintf(`<disk type='file' device='disk'>
       <driver name='qemu' type='raw'/>
       <source file='%s'/>
-      <target dev='sda' bus='sata'/>
-    </disk>`, xmlEscape(req.ISO))
+      <target dev='%s' bus='sata'/>
+    </disk>`, xmlEscape(req.ISO), isoTarget)
 		} else {
 			isoXML = fmt.Sprintf(`<disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
       <source file='%s'/>
-      <target dev='sda' bus='sata'/>
+      <target dev='%s' bus='sata'/>
       <readonly/>
-    </disk>`, xmlEscape(req.ISO))
+    </disk>`, xmlEscape(req.ISO), isoTarget)
 		}
 	}
 
 	virtioISOXML := ""
 	if req.VirtIOISO != "" {
-		resolvedVirtIO, err := c.resolveMediaPath(req.VirtIOISO, req.Scope)
+		resolvedVirtIO, err := c.resolveCreateMedia(req.VirtIOISO, req.Scope)
 		if err != nil {
 			return models.VM{}, fmt.Errorf("resolve virtio ISO: %w", err)
 		}
@@ -228,9 +261,9 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 		virtioISOXML = fmt.Sprintf(`<disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
       <source file='%s'/>
-      <target dev='sdb' bus='sata'/>
+      <target dev='%s' bus='sata'/>
       <readonly/>
-    </disk>`, xmlEscape(req.VirtIOISO))
+    </disk>`, xmlEscape(req.VirtIOISO), virtioISOTarget)
 	}
 
 	chipset := req.Chipset
@@ -389,7 +422,13 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 		memoryXML += fmt.Sprintf("\n  <currentMemory unit='MiB'>%d</currentMemory>", req.RAMMB)
 	}
 
-	xmlConfig := buildDomainXML(req.Name, uuidStr, title, memoryXML, req.VCPUs, iothreadsXML, cputuneXML, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, diskFullPath, targetDev, diskBus, isoXML, virtioISOXML, interfaceXMLWithVLAN(req.Network, networkModel, req.VLANTag), serialXML, graphicsXML, videoXML, devicesExtra)
+	ifaceXML := interfaceXMLWithVLAN(req.Network, networkModel, req.VLANTag)
+	if c.isRemote() && req.Network != "" {
+		// bridgeExists already validated it on the remote host; the local
+		// /sys check in interfaceXMLWithVLAN would replace it with ours.
+		ifaceXML = interfaceXMLForBridge(req.Network, networkModel, req.VLANTag)
+	}
+	xmlConfig := buildDomainXML(req.Name, uuidStr, title, memoryXML, req.VCPUs, iothreadsXML, cputuneXML, osXML, featuresXML, cpuXML, controllerXML, diskDriverAttrs, diskFullPath, targetDev, diskBus, isoXML, virtioISOXML, ifaceXML, serialXML, graphicsXML, videoXML, devicesExtra)
 
 	dom, err := c.defineDomain(xmlConfig, TrustedDomain)
 	if err != nil {
@@ -400,14 +439,25 @@ func (c *Connector) CreateDomain(req models.CreateVMRequest) (models.VM, error) 
 	// Fase 5: apply the create-time autostart flag (libvirtd autostart).
 	if req.Autostart != nil {
 		if err := dom.SetAutostart(*req.Autostart); err != nil {
-			dom.Undefine()
+			undefineRollback(dom)
 			return models.VM{}, fmt.Errorf("set autostart: %w", err)
 		}
 	}
 
-	if !usingExistingDisk && req.DiskGB > 0 {
+	if usingBaseImage {
+		sizeBytes := uint64(req.DiskGB) * 1024 * 1024 * 1024
+		if err := createBaseImageOverlay(req.BaseImagePath, diskFullPath, sizeBytes); err != nil {
+			undefineRollback(dom)
+			return models.VM{}, fmt.Errorf("create disk from cached base image: %w", err)
+		}
+		if err := c.RefreshPool(poolName); err != nil {
+			_ = os.Remove(diskFullPath)
+			undefineRollback(dom)
+			return models.VM{}, fmt.Errorf("refresh disk pool after base image clone: %w", err)
+		}
+	} else if !usingExistingDisk && req.DiskGB > 0 {
 		if err := c.createDiskInPool(poolName, diskName, req.DiskGB*1024, diskFormat); err != nil {
-			dom.Undefine()
+			undefineRollback(dom)
 			return models.VM{}, fmt.Errorf("create disk: %w", err)
 		}
 	}
@@ -633,7 +683,7 @@ func (c *Connector) UpdateDomain(id string, req models.UpdateVMRequest) (models.
 		// becomes <source bridge='…'/>, anything else stays a libvirt
 		// <source network='…'/>.
 		newSrc := fmt.Sprintf("<source network='%s'/>", xmlEscape(*req.Network))
-		if isLinuxBridge(*req.Network) {
+		if c.bridgeExists(*req.Network) {
 			newSrc = fmt.Sprintf("<source bridge='%s'/>", xmlEscape(*req.Network))
 		}
 		xmlDesc = regexp.MustCompile(`<source (network|bridge)='[^']*'/>`).ReplaceAllString(xmlDesc, newSrc)
@@ -853,6 +903,9 @@ func (c *Connector) lookupDomain(id string) (*libvirt.Domain, error) {
 	if err != nil {
 		dom, err = c.conn.LookupDomainByName(id)
 		if err != nil {
+			if isNoDomainErr(err) {
+				return nil, fmt.Errorf("%w: %w", ErrDomainNotFound, err)
+			}
 			return nil, fmt.Errorf("domain not found: %w", err)
 		}
 	}

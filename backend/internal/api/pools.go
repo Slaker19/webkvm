@@ -138,7 +138,7 @@ func (h *Handler) validateDiskSourcePath(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid source path")
 	}
-	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
+	if real, rerr := h.evalSymlinks(resolved); rerr == nil {
 		resolved = filepath.Clean(real)
 	}
 	pools, err := h.compute.ListStoragePools()
@@ -150,7 +150,7 @@ func (h *Handler) validateDiskSourcePath(path string) (string, error) {
 		if base == "" {
 			continue
 		}
-		if realBase, berr := filepath.EvalSymlinks(base); berr == nil {
+		if realBase, berr := h.evalSymlinks(base); berr == nil {
 			base = realBase
 		}
 		base = filepath.Clean(base)
@@ -178,7 +178,7 @@ func (h *Handler) resolveVolumeFromSource(path string) (pool, name string, ok bo
 	if err != nil {
 		return "", "", false
 	}
-	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
+	if real, rerr := h.evalSymlinks(resolved); rerr == nil {
 		resolved = real
 	}
 	resolved = filepath.Clean(resolved)
@@ -188,7 +188,7 @@ func (h *Handler) resolveVolumeFromSource(path string) (pool, name string, ok bo
 	}
 	for _, p := range pools {
 		base := filepath.Clean(p.Path)
-		if realBase, berr := filepath.EvalSymlinks(base); berr == nil {
+		if realBase, berr := h.evalSymlinks(base); berr == nil {
 			base = filepath.Clean(realBase)
 		}
 		rel, rerr := filepath.Rel(base, resolved)
@@ -226,7 +226,7 @@ func (h *Handler) validateSharedFolderPath(path string) error {
 	if err != nil {
 		return fmt.Errorf("invalid host path")
 	}
-	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
+	if real, rerr := h.evalSymlinks(resolved); rerr == nil {
 		resolved = real
 	}
 	resolved = filepath.Clean(resolved)
@@ -247,7 +247,7 @@ func (h *Handler) validateSharedFolderPath(path string) error {
 		if base == "" {
 			continue
 		}
-		if realBase, berr := filepath.EvalSymlinks(base); berr == nil {
+		if realBase, berr := h.evalSymlinks(base); berr == nil {
 			base = realBase
 		}
 		base = filepath.Clean(base)

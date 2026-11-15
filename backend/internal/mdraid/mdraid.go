@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	safeMDDeviceRE = regexp.MustCompile(`^/dev/md[0-9]+$|^/dev/md/[a-zA-Z0-9_\-]+$`)
+	safeMDDeviceRE                       = regexp.MustCompile(`^/dev/md[0-9]+$|^/dev/md/[a-zA-Z0-9_\-]+$`)
 	runner         sysutil.CommandRunner = sysutil.DefaultRunner
 )
 

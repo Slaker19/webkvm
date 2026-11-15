@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"webkvm/internal/compute"
 	"webkvm/internal/models"
+	"webkvm/internal/nodes"
 	"webkvm/internal/user"
 )
 
@@ -148,5 +150,35 @@ func TestCreateVM_ContainerNoPool_AdminUnchanged(t *testing.T) {
 	}
 	if got := be.created[0].StoragePool; got != "" {
 		t.Fatalf("admin StoragePool = %q, want empty (Incus resolves it)", got)
+	}
+}
+
+func TestCreateVM_RemoteIncusMissingCredentialsFailsClosed(t *testing.T) {
+	h, be := newCreateContainerHarness(t, models.Quota{})
+	registry, err := nodes.New(t.TempDir(), "qemu:///system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := registry.CreateTyped(
+		"remote-incus",
+		"https://incus.example:8443",
+		nodes.BackendIncus,
+		"default",
+		strings.Repeat("a", 64),
+		strings.Repeat("b", 64),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.nodes = registry
+
+	rec := postCreateVM(t, h, models.CreateVMRequest{
+		Name: "remote-ct", Image: "images:alpine/3.20", Network: "incusbr0", Node: remote.ID,
+	}, "admin", models.RoleAdmin)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if len(be.created) != 0 {
+		t.Fatal("remote Incus create fell through to the local compute backend")
 	}
 }

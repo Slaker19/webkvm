@@ -11,6 +11,7 @@
    *   <Alert variant="success" dismissible>Done.</Alert>
    */
   import { cn } from '$lib/utils.js';
+  import { t } from '$lib/i18n.svelte.js';
 
   let {
     variant = 'info', // error | warning | success | info
@@ -72,7 +73,7 @@
         type="button"
         onclick={close}
         class="shrink-0 opacity-60 hover:opacity-100 -mt-0.5 -mr-1 p-1"
-        aria-label="Dismiss"
+        aria-label={t('common.dismiss')}
       >
         <svg
           class="w-3.5 h-3.5"

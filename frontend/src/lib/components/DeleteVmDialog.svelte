@@ -34,6 +34,10 @@
     vmDisks = [],
     active = false,
     isContainer = false,
+    node,
+    // hv selector (kvm|incus) sent next to node: an Incus member's
+    // instance must not take the libvirt path.
+    hv = '',
     // onDeleteStart fires right before the API call so the parent can
     // stop polling a VM that is about to disappear; onDeleteFailed
     // lets it resume if the delete errors.
@@ -84,7 +88,7 @@
     busy = true;
     onDeleteStart();
     try {
-      const res = await api.deleteVM(vmId, deleteDisks);
+      const res = await api.deleteVM(vmId, deleteDisks, node, hv);
       open = false;
       showStep2 = false;
       toast.success(t('vmDetail.vmDeleted', { name: vmName }));
@@ -168,10 +172,15 @@
       </Dialog.Description>
     </Dialog.Header>
     <div class="space-y-2">
-      <p class="text-sm">
+      <label for="delete-vm-confirm-name" class="block text-sm">
         {typeNameParts.before}<strong>{vmName || ''}</strong>{typeNameParts.after}
-      </p>
-      <Input bind:value={confirmText} placeholder={vmName} autocomplete="off" />
+      </label>
+      <Input
+        id="delete-vm-confirm-name"
+        bind:value={confirmText}
+        placeholder={vmName}
+        autocomplete="off"
+      />
     </div>
     <Dialog.Footer class="gap-2">
       <Button variant="outline" onclick={() => (showStep2 = false)} disabled={busy}>

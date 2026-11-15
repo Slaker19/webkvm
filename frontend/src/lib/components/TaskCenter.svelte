@@ -16,6 +16,7 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import { t } from '$lib/i18n.svelte.js';
+  import { localizedApiErrorMessage } from '$lib/apiErrors.js';
   import { progressLabel } from '$lib/progress.js';
   import {
     tasks,
@@ -77,33 +78,42 @@
             const id = 'async:' + j.id;
             const pct = Math.min(100, Math.max(0, Math.round(j.progress || 0)));
             if (j.status === 'running' || j.status === 'queued') {
-              let title = j.name || 'Operación en segundo plano';
+              let title = j.name || t('taskCenter.backgroundDefault');
               let kind = 'general';
               if (title.startsWith('clone:')) {
                 kind = 'clone';
-                title = `Clonando VM: ${title.slice(6)}`;
+                title = t('taskCenter.cloningVM', { name: title.slice(6) });
               } else if (title.startsWith('batch-clone:')) {
                 kind = 'clone';
-                title = `Clonado en lote: ${title.slice(12)}`;
+                title = t('taskCenter.batchCloning', { name: title.slice(12) });
               } else if (title.startsWith('snapshot:')) {
                 kind = 'snapshot';
-                title = `Creando instantánea: ${title.slice(9)}`;
+                title = t('taskCenter.creatingSnapshot', { name: title.slice(9) });
               } else if (title.startsWith('move ')) {
                 kind = 'storage';
-                title = `Moviendo disco: ${title.slice(5)}`;
+                title = t('taskCenter.movingDisk', { name: title.slice(5) });
               }
               upsertTask({
                 id,
                 kind,
                 title,
                 pct,
-                message: j.message || (j.status === 'queued' ? 'En cola...' : `${pct}%`),
+                message:
+                  j.message || (j.status === 'queued' ? t('taskCenter.queuedMessage') : `${pct}%`),
                 status: 'running',
               });
             } else if (j.status === 'done' || j.status === 'completed') {
-              finishTask(id, 'success', j.message || 'Completado con éxito', 100);
+              finishTask(id, 'success', j.message || t('taskCenter.successDefault'), 100);
             } else if (j.status === 'error') {
-              finishTask(id, 'error', j.error || j.message || 'Error en la operación', pct);
+              finishTask(
+                id,
+                'error',
+                localizedApiErrorMessage(
+                  { code: j.error_code, error: j.error || j.message },
+                  t('taskCenter.errorDefault')
+                ),
+                pct
+              );
             }
           }
         }

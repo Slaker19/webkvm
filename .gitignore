@@ -80,3 +80,16 @@ __pycache__/
 .opencode/
 .planning/
 graphify-out/
+.agents/
+anti-slop/
+/skills-lock.json
+
+# Internal reports, plans and UI walkthrough screenshots (never publish)
+/tasks/
+/ROADMAP-*.md
+
+# Lab-only operational scripts (host paths, VMIDs, backup locations)
+/scripts/lab/
+
+# Runtime module state written by webkvm-cli from the repo cwd
+ha-module.json

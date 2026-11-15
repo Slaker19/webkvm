@@ -5,14 +5,16 @@
  * backed by valid Incus/LXD image references and local cached images.
  */
 
+import { t } from '../i18n.svelte.js';
+
 export const INCUS_IMAGE_CATEGORIES = [
-  { id: 'all', label: 'Todas las Distribuciones' },
-  { id: 'local', label: 'Locales (En Caché)' },
-  { id: 'images', label: 'Remotas (images:)' },
-  { id: 'popular', label: 'Populares / Servidor' },
-  { id: 'minimal', label: 'Ligeras / Microservicios' },
-  { id: 'enterprise', label: 'Enterprise / RHEL' },
-  { id: 'dev', label: 'Desarrollo / Rolling' },
+  { id: 'all', labelKey: 'incusImages.categories.all' },
+  { id: 'local', labelKey: 'incusImages.categories.local' },
+  { id: 'images', labelKey: 'incusImages.categories.images' },
+  { id: 'popular', labelKey: 'incusImages.categories.popular' },
+  { id: 'minimal', labelKey: 'incusImages.categories.minimal' },
+  { id: 'enterprise', labelKey: 'incusImages.categories.enterprise' },
+  { id: 'dev', labelKey: 'incusImages.categories.dev' },
 ];
 
 export const INCUS_IMAGE_PRESETS = [
@@ -22,7 +24,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:ubuntu/resolute',
     category: 'popular',
     distro: 'ubuntu',
-    desc: 'Ubuntu 26.04 Resolute LTS (desarrollo / compilación más reciente).',
+    descriptionKey: 'incusImages.descriptions.ubuntuResolute',
     arch: 'x86_64 / arm64',
     badge: '26.04',
     recommended_vcpu: 2,
@@ -41,7 +43,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:ubuntu/24.04',
     category: 'popular',
     distro: 'ubuntu',
-    desc: 'LTS más reciente de Ubuntu con soporte oficial hasta 2029.',
+    descriptionKey: 'incusImages.descriptions.ubuntuNoble',
     arch: 'x86_64 / arm64',
     badge: 'LTS',
     recommended_vcpu: 2,
@@ -54,7 +56,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:ubuntu/22.04',
     category: 'popular',
     distro: 'ubuntu',
-    desc: 'Versión LTS clásica y ampliamente compatible.',
+    descriptionKey: 'incusImages.descriptions.ubuntuJammy',
     arch: 'x86_64 / arm64',
     badge: 'LTS',
     recommended_vcpu: 2,
@@ -67,7 +69,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:debian/forky',
     category: 'dev',
     distro: 'debian',
-    desc: 'Siguiente generación de Debian 14 con paquetería de última hornada.',
+    descriptionKey: 'incusImages.descriptions.debianForky',
     arch: 'x86_64 / arm64',
     badge: 'Debian 14',
     recommended_vcpu: 2,
@@ -80,7 +82,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:debian/13',
     category: 'popular',
     distro: 'debian',
-    desc: 'Siguiente generación de Debian con paquetería actualizada.',
+    descriptionKey: 'incusImages.descriptions.debianTrixie',
     arch: 'x86_64 / arm64',
     badge: 'Testing',
     recommended_vcpu: 2,
@@ -93,9 +95,9 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:debian/12',
     category: 'popular',
     distro: 'debian',
-    desc: 'Debian estable, ideal para servidores de producción y bases de datos.',
+    descriptionKey: 'incusImages.descriptions.debianBookworm',
     arch: 'x86_64 / arm64',
-    badge: 'Estable',
+    badgeKey: 'incusImages.badges.stable',
     recommended_vcpu: 2,
     recommended_ram_mb: 2048,
     recommended_disk_gb: 20,
@@ -106,7 +108,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:debian/11',
     category: 'popular',
     distro: 'debian',
-    desc: 'Debian oldstable optimizada para servicios heredados.',
+    descriptionKey: 'incusImages.descriptions.debianBullseye',
     arch: 'x86_64 / arm64',
     badge: 'Oldstable',
     recommended_vcpu: 1,
@@ -119,7 +121,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:debian/sid',
     category: 'dev',
     distro: 'debian',
-    desc: 'Rama inestable de Debian para desarrolladores y bleeding-edge.',
+    descriptionKey: 'incusImages.descriptions.debianSid',
     arch: 'x86_64 / arm64',
     badge: 'Unstable',
     recommended_vcpu: 2,
@@ -134,7 +136,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:alpine/3.24',
     category: 'minimal',
     distro: 'alpine',
-    desc: 'Alpine Linux versión más reciente.',
+    descriptionKey: 'incusImages.descriptions.alpine324',
     arch: 'x86_64 / arm64',
     badge: '3.24',
     recommended_vcpu: 1,
@@ -147,7 +149,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:alpine/3.23',
     category: 'minimal',
     distro: 'alpine',
-    desc: 'Alpine Linux versión reciente estable.',
+    descriptionKey: 'incusImages.descriptions.alpine323',
     arch: 'x86_64 / arm64',
     badge: '3.23',
     recommended_vcpu: 1,
@@ -160,7 +162,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:alpine/3.22',
     category: 'minimal',
     distro: 'alpine',
-    desc: 'Alpine Linux versión estable.',
+    descriptionKey: 'incusImages.descriptions.alpine322',
     arch: 'x86_64 / arm64',
     badge: '3.22',
     recommended_vcpu: 1,
@@ -173,7 +175,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:alpine/3.21',
     category: 'minimal',
     distro: 'alpine',
-    desc: 'Ultraligera basada en musl y BusyBox (~5MB). Máximo rendimiento y bajo consumo.',
+    descriptionKey: 'incusImages.descriptions.alpine321',
     arch: 'x86_64 / arm64',
     badge: '5 MB',
     recommended_vcpu: 1,
@@ -186,7 +188,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:alpine/3.20',
     category: 'minimal',
     distro: 'alpine',
-    desc: 'Versión estable consolidada de Alpine Linux.',
+    descriptionKey: 'incusImages.descriptions.alpine320',
     arch: 'x86_64 / arm64',
     badge: '5 MB',
     recommended_vcpu: 1,
@@ -199,7 +201,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:alpine/edge',
     category: 'minimal',
     distro: 'alpine',
-    desc: 'Rama rolling de vanguardia para pruebas de paquetes y bleeding-edge.',
+    descriptionKey: 'incusImages.descriptions.alpineEdge',
     arch: 'x86_64 / arm64',
     badge: 'Edge',
     recommended_vcpu: 1,
@@ -212,7 +214,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:voidlinux',
     category: 'minimal',
     distro: 'void',
-    desc: 'Distribución independiente ligera con gestor XBPS y runit.',
+    descriptionKey: 'incusImages.descriptions.voidGlibc',
     arch: 'x86_64',
     badge: 'Lightweight',
     recommended_vcpu: 1,
@@ -225,7 +227,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:voidlinux/musl',
     category: 'minimal',
     distro: 'void',
-    desc: 'Variante ultra compacta de Void Linux compilada contra musl libc.',
+    descriptionKey: 'incusImages.descriptions.voidMusl',
     arch: 'x86_64',
     badge: 'musl',
     recommended_vcpu: 1,
@@ -238,7 +240,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:openwrt/23.05',
     category: 'minimal',
     distro: 'openwrt',
-    desc: 'Sistema operativo embebido ultraligero ideal para enrutamiento y micro-servicios.',
+    descriptionKey: 'incusImages.descriptions.openwrt',
     arch: 'x86_64 / arm64',
     badge: 'Router',
     recommended_vcpu: 1,
@@ -251,7 +253,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:devuan/daedalus',
     category: 'minimal',
     distro: 'devuan',
-    desc: 'Bifurcación de Debian sin systemd (usa SysVinit / OpenRC / runit).',
+    descriptionKey: 'incusImages.descriptions.devuan',
     arch: 'x86_64 / arm64',
     badge: 'No-systemd',
     recommended_vcpu: 1,
@@ -266,7 +268,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:rockylinux/10',
     category: 'enterprise',
     distro: 'rocky',
-    desc: 'Siguiente generación compatible con Red Hat Enterprise Linux 10.',
+    descriptionKey: 'incusImages.descriptions.rocky10',
     arch: 'x86_64 / arm64',
     badge: 'RHEL 10',
     recommended_vcpu: 2,
@@ -279,7 +281,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:rockylinux/9',
     category: 'enterprise',
     distro: 'rocky',
-    desc: '100% compatible binario con Red Hat Enterprise Linux 9 desde remote images:.',
+    descriptionKey: 'incusImages.descriptions.rocky9',
     arch: 'x86_64 / arm64',
     badge: 'Enterprise',
     recommended_vcpu: 2,
@@ -292,7 +294,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:rockylinux/8',
     category: 'enterprise',
     distro: 'rocky',
-    desc: 'Versión empresarial con compatibilidad RHEL 8.',
+    descriptionKey: 'incusImages.descriptions.rocky8',
     arch: 'x86_64 / arm64',
     badge: 'Enterprise',
     recommended_vcpu: 2,
@@ -305,7 +307,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:almalinux/9',
     category: 'enterprise',
     distro: 'almalinux',
-    desc: 'Enterprise Linux comunitaria compatible 1:1 con RHEL 9.',
+    descriptionKey: 'incusImages.descriptions.alma9',
     arch: 'x86_64 / arm64',
     badge: 'Enterprise',
     recommended_vcpu: 2,
@@ -318,7 +320,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:almalinux/8',
     category: 'enterprise',
     distro: 'almalinux',
-    desc: 'Enterprise Linux comunitaria compatible 1:1 con RHEL 8.',
+    descriptionKey: 'incusImages.descriptions.alma8',
     arch: 'x86_64 / arm64',
     badge: 'Enterprise',
     recommended_vcpu: 2,
@@ -331,7 +333,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:centos/10-Stream',
     category: 'enterprise',
     distro: 'centos',
-    desc: 'Rama upstream más reciente de desarrollo para RHEL 10.',
+    descriptionKey: 'incusImages.descriptions.centos10',
     arch: 'x86_64 / arm64',
     badge: 'Stream 10',
     recommended_vcpu: 2,
@@ -344,7 +346,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:centos/9-Stream',
     category: 'enterprise',
     distro: 'centos',
-    desc: 'Rama de desarrollo upstream de Red Hat Enterprise Linux 9.',
+    descriptionKey: 'incusImages.descriptions.centos9',
     arch: 'x86_64 / arm64',
     badge: 'Upstream',
     recommended_vcpu: 2,
@@ -357,7 +359,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:oracle/10',
     category: 'enterprise',
     distro: 'oracle',
-    desc: 'Siguiente generación Enterprise optimizada para bases de datos.',
+    descriptionKey: 'incusImages.descriptions.oracle10',
     arch: 'x86_64 / arm64',
     badge: 'Oracle 10',
     recommended_vcpu: 2,
@@ -370,7 +372,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:oracle/9',
     category: 'enterprise',
     distro: 'oracle',
-    desc: 'Distribución empresarial optimizada para bases de datos y cargas pesadas.',
+    descriptionKey: 'incusImages.descriptions.oracle9',
     arch: 'x86_64',
     badge: 'UEK',
     recommended_vcpu: 2,
@@ -383,7 +385,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:amazonlinux/2023',
     category: 'enterprise',
     distro: 'amazon',
-    desc: 'Distribución orientada a la nube de AWS optimizada para contenedores.',
+    descriptionKey: 'incusImages.descriptions.amazonLinux',
     arch: 'x86_64 / arm64',
     badge: 'Cloud',
     recommended_vcpu: 2,
@@ -396,7 +398,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:opensuse/16.0',
     category: 'enterprise',
     distro: 'opensuse',
-    desc: 'Siguiente generación de openSUSE Leap.',
+    descriptionKey: 'incusImages.descriptions.opensuseLeap16',
     arch: 'x86_64 / arm64',
     badge: 'Leap 16',
     recommended_vcpu: 2,
@@ -409,7 +411,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:opensuse/15.6',
     category: 'enterprise',
     distro: 'opensuse',
-    desc: 'Distribución estable orientada a servidores empresariales con YaST.',
+    descriptionKey: 'incusImages.descriptions.opensuseLeap15',
     arch: 'x86_64 / arm64',
     badge: 'Leap',
     recommended_vcpu: 2,
@@ -424,7 +426,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:archlinux',
     category: 'dev',
     distro: 'arch',
-    desc: 'Rolling release con los paquetes más recientes del kernel y librerías.',
+    descriptionKey: 'incusImages.descriptions.arch',
     arch: 'x86_64',
     badge: 'Rolling',
     recommended_vcpu: 2,
@@ -437,7 +439,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:fedora/44',
     category: 'dev',
     distro: 'fedora',
-    desc: 'Siguiente generación de Fedora con las tecnologías más punteras.',
+    descriptionKey: 'incusImages.descriptions.fedora44',
     arch: 'x86_64 / arm64',
     badge: 'Fedora 44',
     recommended_vcpu: 2,
@@ -450,7 +452,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:fedora/43',
     category: 'dev',
     distro: 'fedora',
-    desc: 'Versión de vanguardia de Fedora con paquetería actualizada.',
+    descriptionKey: 'incusImages.descriptions.fedora43',
     arch: 'x86_64 / arm64',
     badge: 'Fedora 43',
     recommended_vcpu: 2,
@@ -463,7 +465,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:fedora/41',
     category: 'dev',
     distro: 'fedora',
-    desc: 'Innovación rápida con las últimas tecnologías del ecosistema Linux.',
+    descriptionKey: 'incusImages.descriptions.fedora41',
     arch: 'x86_64 / arm64',
     badge: 'Cutting Edge',
     recommended_vcpu: 2,
@@ -476,9 +478,9 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:fedora/40',
     category: 'dev',
     distro: 'fedora',
-    desc: 'Versión estable de Fedora para desarrollo y servidores.',
+    descriptionKey: 'incusImages.descriptions.fedora40',
     arch: 'x86_64 / arm64',
-    badge: 'Estable',
+    badgeKey: 'incusImages.badges.stable',
     recommended_vcpu: 2,
     recommended_ram_mb: 2048,
     recommended_disk_gb: 20,
@@ -489,7 +491,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:nixos/26.05',
     category: 'dev',
     distro: 'nixos',
-    desc: 'Distribución declarativa y reproducible basada en el gestor de paquetes Nix.',
+    descriptionKey: 'incusImages.descriptions.nixos',
     arch: 'x86_64 / arm64',
     badge: 'Declarative',
     recommended_vcpu: 2,
@@ -502,7 +504,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:opensuse/tumbleweed',
     category: 'dev',
     distro: 'opensuse',
-    desc: 'Rolling release estable con Zypper y soporte de snapshots Btrfs.',
+    descriptionKey: 'incusImages.descriptions.opensuseTumbleweed',
     arch: 'x86_64',
     badge: 'Rolling',
     recommended_vcpu: 2,
@@ -515,7 +517,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:kali',
     category: 'dev',
     distro: 'kali',
-    desc: 'Especializada en auditorías de seguridad y pruebas de penetración.',
+    descriptionKey: 'incusImages.descriptions.kali',
     arch: 'x86_64',
     badge: 'Security',
     recommended_vcpu: 2,
@@ -528,7 +530,7 @@ export const INCUS_IMAGE_PRESETS = [
     ref: 'images:gentoo',
     category: 'dev',
     distro: 'gentoo',
-    desc: 'Distribución source-based meta altamente optimizable con Portage.',
+    descriptionKey: 'incusImages.descriptions.gentoo',
     arch: 'x86_64 / arm64',
     badge: 'Source',
     recommended_vcpu: 4,
@@ -538,7 +540,23 @@ export const INCUS_IMAGE_PRESETS = [
   },
 ];
 
-export const CUSTOM_IMAGE = { label: 'Personalizada / Otra…', ref: '' };
+export const CUSTOM_IMAGE = { labelKey: 'incusImages.customImage', ref: '' };
+
+const PRESETS_BY_REF = new Map(INCUS_IMAGE_PRESETS.map((preset) => [preset.ref, preset]));
+
+export function localizeIncusImages(images = []) {
+  return images.map((image) => {
+    const preset = PRESETS_BY_REF.get(image.ref);
+    if (!preset) return image;
+    return {
+      ...preset,
+      ...image,
+      label: image.label || preset.label,
+      desc: t(preset.descriptionKey),
+      badge: preset.badgeKey ? t(preset.badgeKey) : preset.badge,
+    };
+  });
+}
 
 /**
  * Friendly label for an image reference. Known presets map to their
@@ -546,7 +564,8 @@ export const CUSTOM_IMAGE = { label: 'Personalizada / Otra…', ref: '' };
  */
 export function labelForImage(ref, dynamicList = null) {
   if (!ref) return '';
-  const list = dynamicList && dynamicList.length ? dynamicList : INCUS_IMAGE_PRESETS;
+  const list =
+    dynamicList && dynamicList.length ? dynamicList : localizeIncusImages(INCUS_IMAGE_PRESETS);
   const hit = list.find((p) => p.ref === ref);
   return hit ? hit.label : ref;
 }
@@ -556,7 +575,8 @@ export function labelForImage(ref, dynamicList = null) {
  */
 export function getRecommendedResources(ref, dynamicList = null) {
   if (!ref) return { vcpus: 2, ramMB: 2048, diskGB: 20 };
-  const list = dynamicList && dynamicList.length ? dynamicList : INCUS_IMAGE_PRESETS;
+  const list =
+    dynamicList && dynamicList.length ? dynamicList : localizeIncusImages(INCUS_IMAGE_PRESETS);
   const hit = list.find((p) => p.ref === ref);
   if (hit) {
     return {

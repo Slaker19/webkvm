@@ -11,7 +11,12 @@
     <script>
       (function () {
         try {
-          var t = localStorage.getItem('webkvm.theme.mode.v1') || 'zinc';
+          // No stored choice: follow the system light/dark preference.
+          var t =
+            localStorage.getItem('webkvm.theme.mode.v1') ||
+            (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+              ? 'light'
+              : 'zinc');
           var a = localStorage.getItem('webkvm.theme.accent.v1') || 'indigo';
           if (['zinc', 'oled', 'light'].indexOf(t) !== -1) {
             document.documentElement.setAttribute('data-theme', t);

@@ -78,6 +78,14 @@ func IsManagedNetwork(id string) bool {
 // ListNetworks returns the host's Linux bridges, including native virtualization
 // bridges (virbr*, incusbr*).
 func (c *Connector) ListNetworks() ([]models.Network, error) {
+	if c.isRemote() {
+		// The host's /sys describes the WebKVM machine, not the node.
+		nets := c.remoteNetworks()
+		if nets == nil {
+			nets = []models.Network{}
+		}
+		return nets, nil
+	}
 	bridges := listLinuxBridges()
 	result := make([]models.Network, 0, len(bridges))
 	for _, b := range bridges {
@@ -1161,7 +1169,7 @@ func (c *Connector) StopNetwork(name string) (models.Network, error) {
 	return networkView(name), nil
 }
 
-// bridgeIPv4 returns the bridge's IPv4 CIDR (e.g. "192.168.1.30/24"), or ""
+// bridgeIPv4 returns the bridge's IPv4 CIDR (e.g. "192.168.50.30/24"), or ""
 // when the bridge has no IPv4 address.
 func bridgeIPv4(br string) string {
 	out, err := exec.Command("ip", "-4", "-o", "addr", "show", "dev", br, "scope", "global").CombinedOutput()

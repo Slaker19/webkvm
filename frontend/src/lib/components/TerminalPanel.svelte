@@ -31,6 +31,7 @@
     setTerminalFnKeys,
   } from '$lib/stores/terminalSettings.svelte.js';
   import { t } from '$lib/i18n.svelte.js';
+  import { remoteErrorText } from '$lib/utils/remoteRoutes.js';
 
   /**
    * High-performance, full-featured embedded terminal.
@@ -39,7 +40,14 @@
    * mode: 'vm'   -> connects to /api/vms/{vmId}/serial
    * mode: 'host' -> connects to /api/host/terminal (admin)
    */
-  let { mode = 'vm', vmId = null, height = '480px', fullPage = false } = $props();
+  let {
+    mode = 'vm',
+    vmId = null,
+    height = '480px',
+    fullPage = false,
+    node = '',
+    hv = '',
+  } = $props();
 
   let container = $state(null);
   let status = $state('idle'); // idle | connecting | connected | closed | error
@@ -219,8 +227,8 @@
         const initialRows = term ? term.rows : 30;
         url = `${wsBase()}/api/host/terminal?ticket=${encodeURIComponent(r.ticket)}&cols=${initialCols}&rows=${initialRows}`;
       } else {
-        const r = await api.getConsoleTicket(vmId);
-        url = `${wsBase()}/api/vms/${encodeURIComponent(vmId)}/serial?ticket=${encodeURIComponent(r.ticket)}`;
+        const r = await api.getConsoleTicket(vmId, node, hv);
+        url = api.getSerialWsUrl(vmId, r.ticket, node, hv);
       }
       // Reset BEFORE the attempt, not after. The old code assigned
       // openedThisAttempt = true here — i.e. immediately before
@@ -251,14 +259,16 @@
           } else if (e.data instanceof ArrayBuffer) {
             text = new TextDecoder().decode(e.data);
           }
-          if (
-            text.includes('[console unavailable: the VM is powered off') ||
-            text.includes('[this VM has no serial console device')
-          ) {
+          const poweredOff = text.includes('[console unavailable: the VM is powered off');
+          const noSerial = text.includes('[this VM has no serial console device');
+          if (poweredOff || noSerial) {
             status = 'closed';
             autoRetry = false;
-          }
-          if (typeof e.data === 'string') {
+            // The backend sends these in English: show the translated line.
+            term.write(
+              `\r\n${t(poweredOff ? 'terminal.vmPoweredOff' : 'terminal.noSerialDevice')}\r\n`
+            );
+          } else if (typeof e.data === 'string') {
             term.write(e.data);
           } else if (e.data instanceof ArrayBuffer) {
             term.write(new Uint8Array(e.data));
@@ -271,7 +281,7 @@
         if (event.code === 4409) {
           status = 'closed';
           initTerm();
-          appendLine('[Console opened in another tab/window — click Restart to reclaim]');
+          appendLine(t('terminal.openedElsewhere'));
           return;
         }
         if (!openedThisAttempt) {
@@ -279,15 +289,13 @@
           if (failedAttempts >= 2) {
             status = 'error';
             initTerm();
-            appendLine(
-              '[Could not open console: is the host or VM available? Click Restart to retry]'
-            );
+            appendLine(t('terminal.errOpen'));
             return;
           }
         }
         if (status !== 'error') status = 'closed';
         if (!showedDisconnect) {
-          appendLine('\r\n[Disconnected — reconnecting...]');
+          appendLine('\r\n' + t('terminal.reconnecting'));
           showedDisconnect = true;
         }
         if (autoRetry && status !== 'error') {
@@ -299,7 +307,8 @@
     } catch (e) {
       status = 'error';
       initTerm();
-      appendLine('[Error obtaining ticket: ' + e.message + ']');
+      // Not t() params: the terminal is not HTML (no entity escaping).
+      appendLine(`[${t('terminal.errTicket')} ${remoteErrorText(t, e)}]`);
     }
   }
 

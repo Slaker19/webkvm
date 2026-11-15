@@ -29,15 +29,29 @@ export const ACCENT_COLORS = {
 const THEME_KEY = 'webkvm.theme.mode.v1';
 const ACCENT_KEY = 'webkvm.theme.accent.v1';
 
+// resolveTheme: a stored choice wins; with none, follow the system
+// preference (light when the OS asks for it, the dark default otherwise).
+// index.html applies the same rule before the app loads (no flash).
+export function resolveTheme(saved, prefersLight) {
+  if (THEMES.includes(saved)) return saved;
+  return prefersLight ? 'light' : 'zinc';
+}
+
 function initialTheme() {
   if (!browser) return 'zinc';
+  let saved = null;
   try {
-    const saved = safeStorage.getItem(THEME_KEY);
-    if (THEMES.includes(saved)) return saved;
+    saved = safeStorage.getItem(THEME_KEY);
   } catch {
     /* ignore */
   }
-  return 'zinc';
+  let prefersLight = false;
+  try {
+    prefersLight = !!window.matchMedia?.('(prefers-color-scheme: light)')?.matches;
+  } catch {
+    /* ignore */
+  }
+  return resolveTheme(saved, prefersLight);
 }
 
 function initialAccent() {

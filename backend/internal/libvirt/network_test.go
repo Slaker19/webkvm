@@ -100,7 +100,7 @@ func TestCreateNetworkDirectValidatesNetworkFields(t *testing.T) {
 		Name:      "wk-test-direct-val",
 		Kind:      "direct",
 		Interface: "nonexistent-nic-12345",
-		CIDR:      "192.168.1.500/24",
+		CIDR:      "192.168.50.500/24",
 	})
 	if err == nil || !strings.Contains(err.Error(), "interface") {
 		// Non-existent interface fails first before CIDR or after interface check
@@ -250,7 +250,7 @@ func TestGatewayFromCIDR(t *testing.T) {
 		{"192.168.100.0/24", "192.168.100.1"},
 		{"10.0.0.0/8", "10.0.0.1"},
 		{"172.16.0.0/16", "172.16.0.1"},
-		{"192.168.1.50/24", "192.168.1.50"}, // explicitly preserved if not network address
+		{"192.168.50.50/24", "192.168.50.50"}, // explicitly preserved if not network address
 		{"", ""},
 	}
 	for _, tc := range cases {

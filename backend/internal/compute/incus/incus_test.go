@@ -519,10 +519,10 @@ func TestBridgeForNetwork(t *testing.T) {
 		t.Errorf("empty network without a physical bridge: err=%v, want ErrNoPhysicalBridge", err)
 	}
 
-	// v2.4 agnostic L2: a named network must BE a real host Linux bridge.
-	// Virtual/NAT names ("webkvm-bridge", "default", virbr0, lxdbr0) are
-	// rejected outright — never a logical→physical guess.
-	for _, bad := range []string{"webkvm-bridge", "default", "virbr0", "lxdbr0", "lan"} {
+	// A named network must BE a real host Linux bridge. Logical names
+	// ("webkvm-bridge", "default") are rejected — never a logical→physical
+	// guess. Existing NAT bridges are explicit choices (below).
+	for _, bad := range []string{"webkvm-bridge", "default", "lan", "does-not-exist"} {
 		if _, err := b.bridgeForNetwork(bad); !errors.Is(err, compute.ErrNoPhysicalBridge) {
 			t.Errorf("bridgeForNetwork(%q): want ErrNoPhysicalBridge, got %v", bad, err)
 		}
@@ -532,6 +532,16 @@ func TestBridgeForNetwork(t *testing.T) {
 	if real := findAnyPhysicalBridge(); real != "" {
 		if br, err := b.bridgeForNetwork(real); err != nil || br != real {
 			t.Errorf("named physical bridge: bridge=%q err=%v (want %q)", br, err, real)
+		}
+	}
+
+	// Explicitly selected NAT bridges are allowed when they exist; only
+	// the empty/auto path insists on a physical bridge.
+	for _, nat := range []string{"virbr0", "incusbr0"} {
+		if isLinuxBridge(nat) {
+			if br, err := b.bridgeForNetwork(nat); err != nil || br != nat {
+				t.Errorf("named NAT bridge %q: bridge=%q err=%v", nat, br, err)
+			}
 		}
 	}
 }

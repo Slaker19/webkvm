@@ -38,6 +38,12 @@ var serialSessions sync.Map
 // it to the VM's serial console via virDomainOpenConsole.
 func (h *Handler) SerialProxy(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !h.checkConsoleTicket(w, r, id) {
+		return
+	}
+	if h.isRemote() {
+		h.auditRemoteConsole(r, "console.serial.open", id)
+	}
 
 	// WebSocket upgrades FIRST; the serial stream is acquired (and
 	// re-acquired) with retries so a guest REBOOT never kills the web
@@ -550,6 +556,7 @@ func (h *Handler) VMConsoleTicket(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, "issue ticket: "+err.Error())
 		return
 	}
+	bindConsoleTicket(tk, h.consoleNodeID(), id, auth.TicketTTL)
 	jsonResp(w, http.StatusOK, map[string]any{"ticket": tk, "expires_in": 30})
 }
 
@@ -568,6 +575,7 @@ func (h *Handler) VNCTicket(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, "issue ticket: "+err.Error())
 		return
 	}
+	bindConsoleTicket(tk, h.consoleNodeID(), id, auth.VNCTicketTTL)
 	jsonResp(w, http.StatusOK, map[string]any{"vnc_ticket": tk, "expires_in": int(auth.VNCTicketTTL.Seconds())})
 }
 

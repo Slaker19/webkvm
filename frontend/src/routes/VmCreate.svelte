@@ -4,7 +4,7 @@
   import PasswordModal from '$lib/components/PasswordModal.svelte';
   import ErrorModal from '$lib/components/ErrorModal.svelte';
   import CloudInitPreviewDialog from '$lib/components/CloudInitPreviewDialog.svelte';
-  import { onMount, untrack } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { api, auth } from '$lib/stores/auth.svelte.js';
   import { upsertTask, updateTask, finishTask } from '$lib/stores/tasks.svelte.js';
   import {
@@ -14,13 +14,24 @@
     pick,
     capabilities,
   } from '$lib/stores/capabilities.svelte.js';
-  import { navigate } from '$lib/router.svelte.js';
+  import { getRoute, navigate } from '$lib/router.svelte.js';
+  import {
+    accessState,
+    withProbeAccess,
+    accessBlocksCreate,
+    SETUP_PROBLEM_CODES,
+  } from '$lib/utils/clusterAccess.js';
+  import { withoutSelfDuplicates } from '$lib/utils/nodes.js';
+  import RemoteListAccessAlert from '$lib/components/RemoteListAccessAlert.svelte';
+  import { remoteMediaFields } from '$lib/utils/remoteMedia.js';
+  import { effectiveBootOrder } from '$lib/utils/vmBoot.js';
   import { toast } from '$lib/components/ui/toast';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Card } from '$lib/components/ui/card';
   import SettingRow from '$lib/components/SettingRow.svelte';
   import Switch from '$lib/components/Switch.svelte';
+  import { clusterModule, refreshClusterModule } from '$lib/stores/clusterModule.svelte.js';
   import Icon from '$lib/components/Icon.svelte';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
@@ -40,16 +51,30 @@
   import { vmDiskPools, containerPools } from '$lib/purpose.js';
   import { getCloudInitErrorKey } from '$lib/utils/cloudInitValidation.js';
   import { isValidVmName } from '$lib/utils/vmName.js';
+  import { addPendingVm } from '$lib/utils/pendingVms.js';
+  import {
+    ramIssue,
+    ramIssueText,
+    MIN_VM_RAM_MB,
+    LOW_RAM_FLOOR_MB,
+  } from '$lib/utils/ramValidation.js';
   import {
     INCUS_IMAGE_PRESETS,
     INCUS_IMAGE_CATEGORIES,
     CUSTOM_IMAGE,
+    localizeIncusImages,
     labelForImage,
     getRecommendedResources,
     filterIncusImages,
     isValidImageRef,
   } from '$lib/utils/incusImages.js';
-  import { networkLabel, networkLabelFor, preselectNetwork } from '$lib/utils/networkLabel.js';
+  import {
+    networkLabel,
+    networkLabelFor,
+    preselectNetwork,
+    networkGroups,
+    networkOptionLabel,
+  } from '$lib/utils/networkLabel.js';
 
   let name = $state('');
   // v1.4 Fase 4: instance kind selector ("vm" = KVM, "container" = LXC).
@@ -105,13 +130,25 @@
   // containerImage is derived: a preset ref, or the manual custom ref.
   let imageChoice = $state('images:ubuntu/24.04');
   let customImage = $state('');
+  let touched = $state({ name: false, vcpus: false, ramMB: false, diskSize: false, image: false });
   let selectedIncusCat = $state('all');
   let searchIncusQuery = $state('');
   let rawIncusImages = $state([]);
   let incusHostArch = $state('');
   let incusEnabled = $state(true);
+  let localIncusInventory = $state(null);
+  let remoteIncusInventory = $state(null);
+  let loadingTargetInventory = $state(false);
+  let targetInventoryError = $state('');
+  let targetInventoryRequest = 0;
   const combinedIncusImages = $derived(
-    rawIncusImages.length > 0 ? rawIncusImages : INCUS_IMAGE_PRESETS
+    localizeIncusImages(
+      remoteIncusInventory
+        ? remoteIncusInventory.images
+        : rawIncusImages.length > 0
+          ? rawIncusImages
+          : INCUS_IMAGE_PRESETS
+    )
   );
   const filteredIncusPresets = $derived(
     filterIncusImages(combinedIncusImages, {
@@ -123,6 +160,7 @@
   const incusCategoriesWithCount = $derived(
     INCUS_IMAGE_CATEGORIES.filter((c) => c.id !== 'local' || localImagesCount > 0).map((c) => ({
       ...c,
+      label: t(c.labelKey),
       badgeCount: c.id === 'local' ? localImagesCount : 0,
     }))
   );
@@ -144,12 +182,30 @@
   let ramMB = $state(2048);
   let storagePool = $state('');
   let containerStoragePool = $state('');
+  let baseImageID = $state('');
+  let enableHA = $state(false);
+  let baseImageName = $state('');
+  let baseImageError = $state('');
   let cpuMode = $state('host-passthrough');
   let cpuModel = $state('');
   let videoModel = $state('virtio');
   let accel3d = $state(false);
   let graphicsType = $state('both');
   let network = $state('');
+  // ADVANCED + remote KVM node: a node whose libvirt has no interface driver
+  // (libvirt 10: Debian/Ubuntu) cannot list its bridges, so the operator may
+  // type the exact bridge name instead of picking a libvirt network.
+  let customBridge = $state('');
+  const BRIDGE_NAME_RE = /^[A-Za-z0-9._-]{1,15}$/;
+  const customBridgeError = $derived(
+    customBridge.trim() && !BRIDGE_NAME_RE.test(customBridge.trim())
+      ? t('vmCreate.bridgeInvalid')
+      : ''
+  );
+  function onCustomBridgeInput() {
+    const v = customBridge.trim();
+    network = BRIDGE_NAME_RE.test(v) && v !== '.' && v !== '..' && !v.includes('..') ? v : '';
+  }
   let iso = $state('');
   let loading = $state(false);
   let error = $state('');
@@ -192,6 +248,8 @@
     }
     return networks;
   });
+  // Host bridges (VM on the LAN) vs libvirt NAT/isolated networks.
+  const netGroups = $derived(networkGroups(vmNetworks));
   let isos = $state([]);
   let loadingData = $state(true);
 
@@ -299,6 +357,128 @@
   // The switch is visible in both easy and advanced mode.
   let startAtBoot = $state(false);
   let incusProfiles = $state([]);
+  // Target node for admin cluster creation. Remote KVM and Incus destinations
+  // stay separate so a selected backend never falls back to the local host.
+  let node = $state('local');
+  let clusterNodes = $state([]);
+  // Incus cluster members (targets for containers) and managed SSH access.
+  let incusMembers = $state([]);
+  let sshOverview = $state(null);
+  const MEMBER_PREFIX = 'member:';
+  const targetMember = $derived(
+    node.startsWith(MEMBER_PREFIX) ? node.slice(MEMBER_PREFIX.length) : ''
+  );
+  // A member is served by the local Incus daemon, so everything that is
+  // "local only" below also applies to it.
+  const nodeIsLocal = $derived(node === 'local' || !!targetMember);
+  // This server is named like everywhere else: "<hostname> (this server)".
+  const localTargetLabel = $derived.by(() => {
+    const local = clusterNodes.find((candidate) => candidate.type === 'local');
+    return local?.name
+      ? t('vmCreate.localNodeNamed', { name: local.name })
+      : t('vmCreate.targetNodeThisServer');
+  });
+  const targetNodes = $derived([
+    {
+      id: 'local',
+      name: localTargetLabel,
+      backend: isContainer ? 'incus' : 'libvirt',
+    },
+    ...(isContainer && incusMembers.length > 1
+      ? incusMembers
+          .filter((m) => m.status === 'Online')
+          .map((m) => ({
+            id: MEMBER_PREFIX + m.name,
+            name: t('remote.create.nodeMember', { name: m.name }),
+            backend: 'incus',
+          }))
+      : []),
+    // A remote entry that points at this same server is listed once, as
+    // "Local" (withoutSelfDuplicates).
+    ...withoutSelfDuplicates(clusterNodes).filter(
+      (candidate) =>
+        candidate.type !== 'local' &&
+        candidate.enabled &&
+        (isContainer
+          ? candidate.backend === 'incus'
+          : (candidate.backend || 'libvirt') === 'libvirt')
+    ),
+  ]);
+  const selectedTargetNode = $derived(
+    clusterNodes.find((candidate) => candidate.id === node) || null
+  );
+  const isRemoteIncusTarget = $derived(
+    isContainer && node !== 'local' && selectedTargetNode?.backend === 'incus'
+  );
+  const isRemoteKvmTarget = $derived(
+    isKvm && node !== 'local' && (selectedTargetNode?.backend || 'libvirt') === 'libvirt'
+  );
+  const baseImageTargetError = $derived(
+    baseImageID && ((!isKvm && !isCloudInit) || isRemoteKvmTarget)
+      ? t('vmCreate.baseImageLocalOnly')
+      : ''
+  );
+  // Remote KVM creation: explicit network, ISO / existing disk only from that
+  // node's own storage pools, and its managed SSH access must be ready.
+  const remoteSshNode = $derived(
+    isRemoteKvmTarget
+      ? withProbeAccess(sshOverview?.nodes?.find((n) => n.id === node) || null, selectedTargetNode)
+      : null
+  );
+  const remoteAccess = $derived(isRemoteKvmTarget ? accessState(remoteSshNode) : 'ready');
+  // Node id for the per-node follow-up calls (volumes, extra disks/NICs) of a
+  // remote KVM target; undefined for this server and Incus members.
+  const remoteKvmNode = $derived(isRemoteKvmTarget ? node : undefined);
+  let remoteIsosError = $state('');
+  // Code (no_key, host_key_unpinned, host_key_changed, ssh_auth_denied) of a
+  // remote listing that failed because the managed SSH access is not set up:
+  // the Resources and Network steps show the real cause instead of an empty
+  // dropdown / "no networks".
+  let remoteListAccessCode = $state('');
+  const targetNodeName = $derived(
+    node === 'local'
+      ? t('vmCreate.targetNodeThisServer')
+      : targetNodes.find((candidate) => candidate.id === node)?.name || node
+  );
+  let accessTesting = $state(false);
+  // One-click re-test of the selected node's managed SSH access; refreshes
+  // the overview so the state (ready / not set up) updates in place.
+  async function testRemoteAccessNow() {
+    if (!node || node === 'local') return;
+    accessTesting = true;
+    try {
+      await api.testNodeSSH(node);
+    } catch {
+      /* the overview below carries whatever state resulted */
+    }
+    try {
+      sshOverview = await api.getClusterSSH();
+    } catch {
+      /* keep the previous overview */
+    } finally {
+      accessTesting = false;
+    }
+  }
+  const remoteKvmReady = $derived(
+    !isRemoteKvmTarget ||
+      (!accessBlocksCreate(remoteAccess) && !!network && !loadingTargetInventory)
+  );
+  const remoteIncusImageUnavailable = $derived(
+    isRemoteIncusTarget &&
+      imageChoice !== CUSTOM_IMAGE.ref &&
+      remoteIncusInventory?.images?.length > 0 &&
+      !remoteIncusInventory.images.some((image) => image.ref === containerImage)
+  );
+  const remoteIncusReady = $derived(
+    !isRemoteIncusTarget ||
+      (remoteIncusInventory?.node_id === node &&
+        !targetInventoryError &&
+        !loadingTargetInventory &&
+        incusProfiles.length > 0 &&
+        !!containerStoragePool &&
+        !!network &&
+        !remoteIncusImageUnavailable)
+  );
 
   const audioModels = $derived([
     { value: 'none', label: t('vmCreate.audioModelNone') },
@@ -383,6 +563,8 @@
   let ciGateway = $state('');
   let ciDNS = $state('');
   let minRamMB = $state(0);
+  // Explicit advanced override for less than 512 MB (allow_low_ram).
+  let allowLowRam = $state(false);
   let iothreads = $state(0);
   let ciSnippetIds = $state([]);
   const ciSnippetId = $derived(ciSnippetIds[0] || '');
@@ -405,7 +587,6 @@
   let loadingVolumes = $state(false);
 
   // Validation
-  let touched = $state({ name: false, vcpus: false, ramMB: false, diskSize: false, image: false });
   const nameError = $derived(
     !name.trim()
       ? t('vmCreate.nameRequired')
@@ -416,7 +597,13 @@
           : ''
   );
   const vcpusError = $derived(vcpus < 1 || vcpus > 64 ? t('vmCreate.vcpusRange') : '');
-  const ramError = $derived(ramMB < 512 ? t('vmCreate.ramMin') : '');
+  // One RAM rule with Edit and the backend (utils/ramValidation.js).
+  const ramError = $derived(
+    ramIssueText(
+      t,
+      ramIssue({ ramMB, minRamMB: isContainer ? 0 : minRamMB, allowLow: allowLowRam })
+    )
+  );
   const diskSizeError = $derived(
     !useExistingDisk && (diskSize < 1 || diskSize > 1024) ? t('vmCreate.diskSizeRange') : ''
   );
@@ -431,13 +618,13 @@
           : ''
   );
   const applianceError = $derived(
-    isCloudInit && !selectedAppliance ? t('vmCreate.cloudApplianceRequired') : ''
+    isCloudInit && !baseImageID && !selectedAppliance ? t('vmCreate.cloudApplianceRequired') : ''
   );
   // ciEnabled is sticky (auto-enabled by LXC / Cloud-Init and kept when the
   // operator switches back), but plain KVM renders no cloud-init fields and
   // sends no cloud_init payload — so only validate where it applies,
   // otherwise LXC → KVM leaves Identity blocked by an invisible error.
-  const ciApplicable = $derived(ciEnabled && !isKvm);
+  const ciApplicable = $derived(ciEnabled && (!isKvm || !!baseImageID));
   const ciErrorKey = $derived(
     getCloudInitErrorKey({
       enabled: ciApplicable,
@@ -456,12 +643,42 @@
       !imageError &&
       !applianceError &&
       !ciError &&
+      !baseImageError &&
+      !baseImageTargetError &&
+      remoteIncusReady &&
+      remoteKvmReady &&
       !cpuTopologyError
+  );
+
+  // Everything that still blocks creation, shown on the Review step: a
+  // disabled button with no explanation is a dead end.
+  const reviewBlockers = $derived(
+    [
+      nameError,
+      vcpusError,
+      ramError,
+      diskSizeError,
+      imageError,
+      applianceError,
+      ciError,
+      baseImageError,
+      baseImageTargetError,
+      cpuTopologyError,
+    ].filter(Boolean)
   );
 
   // Per-step error flags for the rail. Gated on `touched` so a step the
   // operator hasn't filled in yet isn't flagged red on arrival.
-  const stepImageHasError = $derived(Boolean(touched.image && (imageError || applianceError)));
+  const stepImageHasError = $derived(
+    Boolean(
+      touched.image &&
+      (imageError ||
+        applianceError ||
+        remoteIncusImageUnavailable ||
+        baseImageError ||
+        baseImageTargetError)
+    )
+  );
   const stepIdentityHasError = $derived(Boolean((touched.name && nameError) || ciError));
   const stepResourcesHasError = $derived(
     Boolean(
@@ -472,15 +689,44 @@
     )
   );
 
+  // The footer error of the CURRENT step only (Review shows every blocker):
+  // a step never shows the error of a step the operator has not reached
+  // (e.g. the Network step's error while typing the name).
   const primaryError = $derived.by(() => {
-    if (touched.name && nameError) return nameError;
-    if (touched.image && imageError) return imageError;
-    if (touched.image && applianceError) return applianceError;
-    if (touched.vcpus && vcpusError) return vcpusError;
-    if (touched.ramMB && ramError) return ramError;
-    if (touched.diskSize && diskSizeError) return diskSizeError;
-    if (cpuTopologyError) return cpuTopologyError;
-    if (ciError) return ciError;
+    const at = (...ids) => activeStepId === STEP_REVIEW || ids.includes(activeStepId);
+    if (at(STEP_IDENTITY) && touched.name && nameError) return nameError;
+    if (at(STEP_IMAGE) && touched.image && imageError) return imageError;
+    if (at(STEP_IMAGE) && touched.image && applianceError) return applianceError;
+    if (baseImageError) return baseImageError;
+    if (baseImageTargetError) return baseImageTargetError;
+    if (at(STEP_IMAGE) && remoteIncusImageUnavailable) {
+      return t('vmCreate.remoteIncusImageUnavailable', {
+        image: labelForImage(containerImage, INCUS_IMAGE_PRESETS),
+      });
+    }
+    if (at(STEP_RESOURCES) && touched.vcpus && vcpusError) return vcpusError;
+    if (at(STEP_RESOURCES) && touched.ramMB && ramError) return ramError;
+    if (at(STEP_RESOURCES) && touched.diskSize && diskSizeError) return diskSizeError;
+    if (at(STEP_RESOURCES) && cpuTopologyError) return cpuTopologyError;
+    if (at(STEP_IDENTITY) && ciError) return ciError;
+    // Target node problems: the node is chosen on the first step and its
+    // network on the Network step.
+    if (at(STEP_IMAGE, STEP_NETWORK) && isRemoteKvmTarget && accessBlocksCreate(remoteAccess)) {
+      return remoteAccess === 'changed'
+        ? t('remote.create.accessChanged')
+        : t('remote.create.accessNotReady');
+    }
+    if (at(STEP_NETWORK) && isRemoteKvmTarget && !loadingTargetInventory && !network) {
+      return t('remote.create.remoteNetworkRequired');
+    }
+    if (at(STEP_IMAGE) && isRemoteIncusTarget && !remoteIncusReady) {
+      if (targetInventoryError) {
+        return t('vmCreate.targetInventoryError', { error: targetInventoryError });
+      }
+      return loadingTargetInventory
+        ? t('vmCreate.loadingTargetInventory')
+        : t('vmCreate.targetIncusMissingResources');
+    }
     return '';
   });
 
@@ -520,8 +766,7 @@
   const STEP_NETWORK = 'step-network';
   const STEP_REVIEW = 'step-review';
 
-  // LXC delegates networking to its profiles, so that step is dropped
-  // entirely rather than shown empty.
+  // LXC uses a bridged NIC chosen here; the profile still supplies storage.
   const steps = $derived(
     [
       {
@@ -545,7 +790,7 @@
       {
         id: STEP_NETWORK,
         label: t('vmCreate.stepNetwork'),
-        when: !isContainer,
+        when: true,
         hasError: false,
       },
       { id: STEP_REVIEW, label: t('vmCreate.stepReview'), when: true, hasError: false },
@@ -564,9 +809,8 @@
   const isFirstStep = $derived(activeIndex === 0);
   const isLastStep = $derived(activeIndex === steps.length - 1);
 
-  // Toggling easy/advanced or the instance type can retire the step the
-  // operator is standing on (LXC has no network step). Fall back to the
-  // last surviving step instead of rendering nothing.
+  // Toggling easy/advanced can retire the step the operator is standing on.
+  // Fall back to the last surviving step instead of rendering nothing.
   $effect(() => {
     if (steps.length > 0 && !steps.some((s) => s.id === activeStepId)) {
       activeStepId = steps[steps.length - 1].id;
@@ -587,11 +831,20 @@
   // Blocking errors for the current step only. Advancing is gated on
   // these; the create button is still gated on the whole form.
   const currentStepBlocked = $derived.by(() => {
-    if (activeStepId === STEP_IMAGE) return Boolean(imageError || applianceError);
+    if (activeStepId === STEP_IMAGE) {
+      return Boolean(
+        imageError ||
+        applianceError ||
+        remoteIncusImageUnavailable ||
+        baseImageError ||
+        baseImageTargetError
+      );
+    }
     if (activeStepId === STEP_IDENTITY) return Boolean(nameError || ciError);
     if (activeStepId === STEP_RESOURCES) {
       return Boolean(vcpusError || ramError || diskSizeError || cpuTopologyError);
     }
+    if (activeStepId === STEP_REVIEW) return !isValid;
     return false;
   });
 
@@ -700,13 +953,16 @@
   const summaryRows = $derived.by(() => {
     const rows = [
       { key: 'name', label: t('common.name'), value: name || '—' },
+      { key: 'node', label: t('vmCreate.targetNode'), value: targetNodeName },
       {
         key: 'os',
         label: t('vmCreate.operatingSystem'),
         value: isContainer
           ? labelForImage(containerImage, combinedIncusImages) || '—'
           : isCloudInit
-            ? selectedAppliance?.name || '—'
+            ? baseImageID
+              ? baseImageName || baseImageID
+              : selectedAppliance?.name || '—'
             : summaryOs,
       },
       { key: 'vcpu', label: t('common.vcpu'), value: `${vcpus} vCPU` },
@@ -725,6 +981,13 @@
             : summaryDisk,
       },
     ];
+    if (baseImageID) {
+      rows.push({
+        key: 'base-image',
+        label: t('vmCreate.baseImageLabel'),
+        value: baseImageName || baseImageID,
+      });
+    }
     if (!isContainer) {
       rows.push({
         key: 'network',
@@ -736,7 +999,7 @@
       rows.push({
         key: 'cloudinit',
         label: t('vmCreate.cloudInitLabel'),
-        value: ciUser || (isContainer ? 'root' : '—'),
+        value: ciUser || (isContainer ? 'ubuntu' : '—'),
       });
     }
     return rows;
@@ -915,7 +1178,7 @@
         snippet_id: ciSnippetId || undefined,
         snippet_ids: ciSnippetIds.length > 0 ? ciSnippetIds : undefined,
         custom_user_data: ciCustomUserData || undefined,
-        user: ciUser || (isContainer ? 'root' : 'webkvm'),
+        user: ciUser || (isContainer ? 'ubuntu' : 'webkvm'),
         password: ciPassword || undefined,
         ssh_key: ciSSHKey || undefined,
         hostname: ciHostname || name || 'my-instance',
@@ -929,7 +1192,170 @@
     }
   }
 
+  function restoreLocalIncusInventory() {
+    if (!localIncusInventory) return;
+    pools = localIncusInventory.pools;
+    networks = localIncusInventory.networks;
+    incusProfiles = localIncusInventory.profiles;
+    rawIncusImages = localIncusInventory.images;
+    incusHostArch = localIncusInventory.hostArch;
+    incusEnabled = localIncusInventory.enabled;
+    network = preselectNetwork(networks, { allowIncus: isContainer });
+  }
+
+  async function changeTargetNode(event) {
+    node = event.currentTarget.value;
+    const requestID = ++targetInventoryRequest;
+    targetInventoryError = '';
+    if (isKvm) {
+      // KVM: local reloads this server's lists; a remote node loads ITS pools
+      // and networks (?node=) and must not inherit local ISO/disk choices.
+      remoteIncusInventory = null;
+      useExistingDisk = false;
+      existingDiskPool = '';
+      existingDiskName = '';
+      iso = '';
+      virtioISO = '';
+      const remote = node !== 'local';
+      loadingTargetInventory = true;
+      customBridge = '';
+      if (remote) {
+        pools = [];
+        networks = [];
+        network = '';
+      }
+      // Secondary disks/NICs reference pools and networks of the previous
+      // target: start them over for the new one.
+      extraDisks = [];
+      extraNics = [];
+      remoteIsosError = '';
+      remoteListAccessCode = '';
+      const [pp, nn, ii] = await Promise.allSettled([
+        api.listPools(remote ? node : undefined),
+        api.listNetworks(remote ? node : undefined),
+        // ISO images of the target: a remote node lists the ISO volumes of
+        // ITS OWN storage pools (?node=), never this server's.
+        api.listISOs(undefined, remote ? node : undefined),
+      ]);
+      if (requestID !== targetInventoryRequest) return;
+      if (remote) {
+        remoteListAccessCode =
+          [pp, nn, ii]
+            .map((r) => (r.status === 'rejected' ? r.reason?.code : ''))
+            .find((code) => SETUP_PROBLEM_CODES.includes(code)) || '';
+      }
+      if (pp.status === 'fulfilled') {
+        pools = Array.isArray(pp.value) ? pp.value : pp.value?.pools || [];
+      } else if (remote) {
+        targetInventoryError = pp.reason?.message || '';
+      }
+      if (nn.status === 'fulfilled') {
+        networks = Array.isArray(nn.value) ? nn.value : nn.value?.networks || [];
+      } else if (remote) {
+        targetInventoryError = nn.reason?.message || targetInventoryError;
+      }
+      if (ii.status === 'fulfilled') {
+        isos = Array.isArray(ii.value) ? ii.value : ii.value?.isos || [];
+      } else {
+        isos = [];
+        if (remote) remoteIsosError = ii.reason?.message || '';
+      }
+      // Disk pool of the target (its own pools, not this server's choice).
+      if (!vmPools.some((p) => p.name === storagePool)) {
+        const preferred = vmPools.find((p) => p.name === 'webkvm-disks');
+        storagePool = preferred ? preferred.name : vmPools[0]?.name || '';
+      }
+      existingDiskPool = storagePool;
+      existingVolumes = [];
+      loadExistingVolumes(existingDiskPool);
+      // A remote node never guesses its network: the operator picks it.
+      network = remote ? '' : preselectNetwork(networks);
+      loadingTargetInventory = false;
+      return;
+    }
+    if (node === 'local' || !isContainer) {
+      remoteIncusInventory = null;
+      loadingTargetInventory = false;
+      useExistingDisk = false;
+      existingDiskPool = '';
+      existingDiskName = '';
+      restoreLocalIncusInventory();
+      return;
+    }
+
+    const target = clusterNodes.find((candidate) => candidate.id === node);
+    if (target?.backend !== 'incus') {
+      remoteIncusInventory = null;
+      restoreLocalIncusInventory();
+      return;
+    }
+
+    remoteIncusInventory = { node_id: node, pools: [], networks: [], profiles: [], images: [] };
+    useExistingDisk = false;
+    existingDiskPool = '';
+    existingDiskName = '';
+    pools = [];
+    networks = [];
+    incusProfiles = [];
+    rawIncusImages = [];
+    incusHostArch = '';
+    containerStoragePool = '';
+    network = '';
+    profiles = [];
+    loadingTargetInventory = true;
+    try {
+      const inventory = await api.getNodeIncusInventory(node);
+      if (requestID !== targetInventoryRequest || node !== inventory.node_id) return;
+      remoteIncusInventory = inventory;
+      pools = inventory.pools || [];
+      networks = inventory.networks || [];
+      incusProfiles = inventory.profiles || [];
+      rawIncusImages = inventory.images || [];
+      incusHostArch = inventory.host_arch || '';
+      incusEnabled = true;
+      containerStoragePool =
+        pools.find((pool) => pool.name === 'webkvm-incus')?.name ||
+        containerPools(pools)[0]?.name ||
+        '';
+      network = networks[0]?.name || '';
+      profiles = incusProfiles.includes('default') ? ['default'] : incusProfiles.slice(0, 1);
+    } catch (e) {
+      if (requestID === targetInventoryRequest) {
+        targetInventoryError = e.message;
+      }
+    } finally {
+      if (requestID === targetInventoryRequest) loadingTargetInventory = false;
+    }
+  }
+
+  // Set once the wizard is left. Async loads that answer afterwards drop
+  // their result: writing state and then reading a $derived (vmPools,
+  // remoteKvmNode...) of a destroyed component is Svelte's `derived_inert`.
+  let destroyed = false;
+  onDestroy(() => {
+    destroyed = true;
+  });
+
+  function clearBaseImage() {
+    baseImageID = '';
+    baseImageName = '';
+    baseImageError = '';
+    if (instanceType === 'cloudinit') instanceType = 'vm';
+  }
+
   onMount(async () => {
+    const launchQuery = getRoute().query || {};
+    baseImageID = launchQuery.base_image || '';
+    if (launchQuery.name) name = launchQuery.name;
+    if (baseImageID) {
+      instanceType = 'cloudinit';
+      ciEnabled = true;
+      ciUser = 'ubuntu';
+      useExistingDisk = false;
+      diskFormat = 'qcow2';
+    }
+    const launchNetwork = launchQuery.network || '';
+    const launchISO = launchQuery.iso || '';
     const savedMode = safeStorage.getItem('webkvm.createWizardMode');
     if (savedMode === 'easy' || savedMode === 'advanced') {
       wizardMode = savedMode;
@@ -938,6 +1364,26 @@
     // Host capabilities gate the device-model pickers. Fire-and-forget
     // so a slow or failing probe never delays the form itself.
     loadCapabilities();
+    // Needed for the create-with-HA switch on a direct load of this page.
+    if (auth.isAdmin()) refreshClusterModule();
+    // Cluster nodes for the target-node selector (admin-only, fire-and-
+    // forget: remote creation is admin-gated on the backend too).
+    if (auth.isAdmin()) {
+      api
+        .getIncusClusterMembers()
+        .then((c) => (incusMembers = c?.members || []))
+        .catch(() => {});
+      api
+        .getClusterSSH()
+        .then((o) => (sshOverview = o))
+        .catch(() => {});
+      api
+        .listNodes()
+        .then((res) => {
+          clusterNodes = res?.nodes || res || [];
+        })
+        .catch(() => {});
+    }
     try {
       // Pools, networks and ISOs are the three inputs the form cannot
       // work without, so they must NOT be grouped with the optional
@@ -945,14 +1391,16 @@
       // sequence and leave the create form with no storage pool and no
       // network to choose from, and no message saying why — a dead-end
       // screen. allSettled keeps every panel independent.
-      const [p, n, i, g, appRes, snRes] = await Promise.allSettled([
+      const [p, n, i, g, appRes, snRes, baseRes] = await Promise.allSettled([
         api.listPools(),
         api.listNetworks(),
         api.listISOs(),
         api.listGroups(),
         api.listAppliances(),
         api.listCloudInitSnippets(),
+        baseImageID ? api.listBaseCloudImages() : Promise.resolve([]),
       ]);
+      if (destroyed) return;
       if (p.status === 'fulfilled') {
         pools = Array.isArray(p.value) ? p.value : p.value?.pools || [];
       } else {
@@ -965,6 +1413,9 @@
       }
       if (i.status === 'fulfilled') {
         isos = Array.isArray(i.value) ? i.value : i.value?.isos || [];
+        if (launchISO && isos.some((candidate) => candidate.path === launchISO)) {
+          iso = launchISO;
+        }
       } else {
         isos = [];
       }
@@ -972,6 +1423,16 @@
       if (appRes.status === 'fulfilled') appliances = appRes.value?.appliances || [];
       if (snRes.status === 'fulfilled') {
         availableSnippets = Array.isArray(snRes.value) ? snRes.value : [];
+      }
+      if (baseImageID) {
+        const baseImages =
+          baseRes.status === 'fulfilled' && Array.isArray(baseRes.value) ? baseRes.value : [];
+        const cached = baseImages.find((image) => image.id === baseImageID && image.is_cached);
+        if (cached) {
+          baseImageName = cached.name || cached.id;
+        } else {
+          baseImageError = t('vmCreate.baseImageMissing');
+        }
       }
       if (appliances.length > 0 && !selectedApplianceId) {
         selectedApplianceId = appliances[0].id;
@@ -982,13 +1443,16 @@
       // Pass `networks`, not `n`: with allSettled `n` is the
       // {status, value} wrapper, and calling .find() on it throws,
       // aborting onMount and blanking the whole form.
-      network = preselectNetwork(networks);
+      network = networks.some((candidate) => candidate.name === launchNetwork)
+        ? launchNetwork
+        : preselectNetwork(networks, { allowIncus: isContainer });
       // Fase 5: available Incus profiles and images for the container form
       try {
         const [pr, imgRes] = await Promise.all([
           api.listIncusProfiles().catch(() => ({ profiles: [] })),
           api.listIncusImages().catch(() => ({ images: [] })),
         ]);
+        if (destroyed) return;
         if (pr?.profiles?.length) incusProfiles = pr.profiles;
         if (imgRes && Array.isArray(imgRes.images) && imgRes.images.length > 0) {
           rawIncusImages = imgRes.images;
@@ -999,8 +1463,17 @@
         incusProfiles = [];
         rawIncusImages = [];
       }
+      localIncusInventory = {
+        pools: [...pools],
+        networks: [...networks],
+        profiles: [...incusProfiles],
+        images: [...rawIncusImages],
+        hostArch: incusHostArch,
+        enabled: incusEnabled,
+      };
       try {
         const me = await api.me();
+        if (destroyed) return;
         myAllowedPools = me?.allowed_pools || [];
         myAllowedNetworks = me?.allowed_networks || [];
         myQuota = me?.quota || null;
@@ -1009,10 +1482,11 @@
         myAllowedNetworks = [];
         myQuota = null;
       }
+      if (destroyed) return;
       // Re-run preselection scoped to what this user may actually use, so a
       // restricted user isn't left defaulted onto a disallowed bridge.
       if (myAllowedNetworks && myAllowedNetworks.length && !myAllowedNetworks.includes(network)) {
-        network = preselectNetwork(vmNetworks);
+        network = preselectNetwork(vmNetworks, { allowIncus: isContainer });
       }
       const diskPools = vmPools;
       const preferredDiskPool = diskPools.find((p) => p.name === 'webkvm-disks');
@@ -1039,7 +1513,9 @@
     }
     loadingVolumes = true;
     try {
-      const all = (await api.listVolumes(pool)) || [];
+      // A remote KVM target lists the volumes of ITS pool (?node=).
+      const all = (await api.listVolumes(pool, remoteKvmNode)) || [];
+      if (destroyed) return;
       // Internal qcow2 snapshots (e.g. "ubuntu-1.gnome") are
       // valid StorageVolume entries but must never be selected
       // as a primary disk for a new VM — they share the
@@ -1067,16 +1543,32 @@
     error = '';
     try {
       // 1. VM Cloud-Init Deployment
-      if (isCloudInit) {
+      if (isCloudInit && !baseImageID) {
         if (!selectedAppliance) {
           error = t('vmCreate.cloudApplianceRequired');
           loading = false;
           return;
         }
         if (!ciPassword) {
-          error = 'Password is required for cloud-init provisioning';
+          error = t('vmCreate.ciPasswordRequired');
           loading = false;
           return;
+        }
+        let deployNetworks = undefined;
+        if (ciIpMode === 'static' && ciStaticIP) {
+          deployNetworks = [
+            {
+              interface: 'eth0',
+              ipv4: ciStaticIP,
+              gateway4: ciGateway || undefined,
+              dns: ciDNS
+                ? ciDNS
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter(Boolean)
+                : undefined,
+            },
+          ];
         }
         const deployPayload = {
           name,
@@ -1092,6 +1584,7 @@
             password: ciPassword,
             ssh_key: ciSSHKey || undefined,
             hostname: ciHostname || name || selectedAppliance.id,
+            networks: deployNetworks,
             snippet_id: ciSnippetId || undefined,
             snippet_ids: ciSnippetIds.length > 0 ? ciSnippetIds : undefined,
             custom_user_data: ciCustomUserData || undefined,
@@ -1115,8 +1608,10 @@
       }
 
       // 2. Containers (LXC) / KVM creation
+      const lowRam = allowLowRam && ramMB < MIN_VM_RAM_MB ? { allow_low_ram: true } : {};
       const payload = isContainer
         ? {
+            ...lowRam,
             name,
             type: 'container',
             image: containerImage,
@@ -1132,6 +1627,7 @@
             autostart: startAtBoot,
           }
         : {
+            ...lowRam,
             name,
             vcpus,
             ram_mb: ramMB,
@@ -1163,7 +1659,7 @@
             virtio_iso: virtioISO || undefined,
             disk_cache_io: diskCacheIO,
             disk_discard: diskDiscard,
-            boot_order: bootOrder,
+            boot_order: effectiveBootOrder(bootOrder, iso),
             autostart: startAtBoot,
           };
       if (!isContainer) {
@@ -1179,7 +1675,18 @@
         payload.existing_disk_pool = existingDiskPool;
         payload.existing_disk_name = existingDiskName;
       }
-      if (ciEnabled || isCloudInit) {
+      if (!isContainer && isRemoteKvmTarget) {
+        // A remote node takes volume NAMES of its own pools, never paths.
+        Object.assign(payload, remoteMediaFields(isos, iso, virtioISO));
+      }
+      if (baseImageID && (isKvm || isCloudInit)) payload.base_image_id = baseImageID;
+      if (enableHA && nodeIsLocal && (!isCloudInit || baseImageID)) payload.ha = {};
+      if (targetMember) {
+        payload.target_member = targetMember;
+      } else if (node && node !== 'local') {
+        payload.node = node;
+      }
+      if ((ciEnabled && isContainer) || isCloudInit || baseImageID) {
         let networks = undefined;
         if (ciIpMode === 'static' && ciStaticIP) {
           networks = [
@@ -1197,7 +1704,7 @@
           ];
         }
         payload.cloud_init = {
-          user: ciUser || (isContainer ? 'root' : 'webkvm'),
+          user: ciUser || (isContainer ? 'ubuntu' : 'webkvm'),
           password: ciPassword || undefined,
           ssh_key: ciSSHKey || undefined,
           hostname: ciHostname || undefined,
@@ -1221,18 +1728,35 @@
       let result;
       try {
         result = await api.createVM(payload);
+        // Shown in the VM list right away, until a listing includes it
+        // (a federated listing of a remote node can take seconds).
+        if (result?.id || result?.name) {
+          addPendingVm({
+            id: result.id,
+            name: result.name || name,
+            node: result.node || (nodeIsLocal ? '' : targetNodeName),
+            node_id: result.node_id || '',
+            hypervisor: isContainer ? 'incus' : 'kvm',
+            type: isContainer ? 'container' : 'vm',
+            vcpus,
+            ram_mb: ramMB,
+          });
+        }
         updateTask(creationTaskId, {
           pct: 70,
-          message: 'Configurando redes y metadatos...',
+          message: t('vmCreate.configuringNetworkAndMetadata'),
         });
       } catch (err) {
-        finishTask(creationTaskId, 'error', err.message || 'Error al crear', 20);
+        finishTask(creationTaskId, 'error', err.message || t('vmCreate.createError'), 20);
         throw err;
       }
       if (result?.warning) {
         toast.warning(result.warning);
       }
-      if (result && result.id && selectedGroups.length > 0) {
+      if (result?.ha_warning) {
+        toast.warning(result.ha_warning);
+      }
+      if (result && result.id && selectedGroups.length > 0 && nodeIsLocal) {
         try {
           await api.updateVMMeta(result.id, { groups: selectedGroups });
         } catch (err) {
@@ -1244,17 +1768,27 @@
       // VmDetail. A failure here doesn't roll back the VM — it's
       // surfaced as a warning toast so the operator can retry from
       // the VM's Disks tab instead of losing the whole VM.
-      if (!isContainer && result && result.id && extraDisks.length > 0) {
+      if (
+        !isContainer &&
+        (nodeIsLocal || isRemoteKvmTarget) &&
+        result &&
+        result.id &&
+        extraDisks.length > 0
+      ) {
         let diskFailures = 0;
         for (const d of extraDisks) {
           try {
-            await api.createDisk(result.id, {
-              device: 'disk',
-              bus: d.bus,
-              size_gb: d.sizeGB,
-              pool: d.pool || undefined,
-              format: d.format,
-            });
+            await api.createDisk(
+              result.id,
+              {
+                device: 'disk',
+                bus: d.bus,
+                size_gb: d.sizeGB,
+                pool: d.pool || undefined,
+                format: d.format,
+              },
+              remoteKvmNode
+            );
           } catch (err) {
             diskFailures++;
             console.warn('Failed to attach extra disk:', err);
@@ -1268,15 +1802,25 @@
         }
       }
       // Secondary network interfaces: attached sequentially via createNetIface.
-      if (!isContainer && result && result.id && extraNics.length > 0) {
+      if (
+        !isContainer &&
+        (nodeIsLocal || isRemoteKvmTarget) &&
+        result &&
+        result.id &&
+        extraNics.length > 0
+      ) {
         let nicFailures = 0;
         for (const n of extraNics) {
           try {
-            await api.createNetIface(result.id, {
-              network: n.network,
-              model: n.model,
-              vlan_tag: n.vlanTag ? parseInt(n.vlanTag, 10) : undefined,
-            });
+            await api.createNetIface(
+              result.id,
+              {
+                network: n.network,
+                model: n.model,
+                vlan_tag: n.vlanTag ? parseInt(n.vlanTag, 10) : undefined,
+              },
+              remoteKvmNode
+            );
           } catch (err) {
             nicFailures++;
             console.warn('Failed to attach extra NIC:', err);
@@ -1292,9 +1836,9 @@
       if (result.password) {
         // LXC provisions root when no user is given (same default the
         // cloud-init preview uses), so never show an empty "User" field.
-        createdUsername = ciUser || (isContainer ? 'root' : '');
+        createdUsername = ciUser || (isContainer ? 'ubuntu' : '');
         createdPassword = result.password;
-        finishTask(creationTaskId, 'success', 'Instancia creada con credenciales generadas', 100);
+        finishTask(creationTaskId, 'success', t('vmCreate.createdWithCredentials'), 100);
         showPasswordModal = true;
       } else {
         finishTask(creationTaskId, 'success', `${entityLabel} creada correctamente`, 100);
@@ -1402,11 +1946,122 @@
             <InstanceTypePicker
               bind:value={instanceType}
               onselect={(kind) => {
-                if (kind !== 'cloudinit') return;
-                if (!ciEnabled) ciEnabled = true;
-                if (!ciUser) ciUser = 'webkvm';
+                if (kind === 'container' && baseImageID) clearBaseImage();
+                if (kind === 'cloudinit') {
+                  if (!ciEnabled) ciEnabled = true;
+                  if (!ciUser) ciUser = 'webkvm';
+                }
+                if (node !== 'local') {
+                  const compatible =
+                    kind === 'container'
+                      ? selectedTargetNode?.backend === 'incus'
+                      : kind === 'vm' && (selectedTargetNode?.backend || 'libvirt') === 'libvirt';
+                  if (!compatible) {
+                    node = 'local';
+                    remoteIncusInventory = null;
+                    targetInventoryError = '';
+                    restoreLocalIncusInventory();
+                  }
+                }
               }}
             />
+            {#if baseImageID}
+              <div data-testid="base-image-selection">
+                <Alert variant={baseImageError || baseImageTargetError ? 'error' : 'info'}>
+                  {#if baseImageError}
+                    {baseImageError}
+                  {:else if baseImageTargetError}
+                    {baseImageTargetError}
+                  {:else}
+                    {t('vmCreate.baseImageSelected', { name: baseImageName || baseImageID })}
+                  {/if}
+                </Alert>
+                <div class="mt-1">
+                  <Button size="sm" variant="outline" onclick={clearBaseImage}>
+                    {t('vmCreate.baseImageRemove')}
+                  </Button>
+                </div>
+              </div>
+            {/if}
+            {#if auth.isAdmin() && clusterModule.enabled && nodeIsLocal && (!isCloudInit || baseImageID)}
+              <SettingRow
+                label={t('vmCreate.createWithHA')}
+                helper={t('vmCreate.createWithHAHelper')}
+              >
+                <Switch bind:checked={enableHA} ariaLabel={t('vmCreate.createWithHA')} />
+              </SettingRow>
+            {/if}
+            {#if auth.isAdmin() && !isCloudInit && targetNodes.length > 1}
+              <SettingRow
+                label={t('vmCreate.targetNode')}
+                helper={isContainer
+                  ? t('vmCreate.targetIncusNodeHelper')
+                  : t('vmCreate.targetNodeHelper')}
+              >
+                <select
+                  bind:value={node}
+                  aria-label={t('vmCreate.targetNode')}
+                  class="input max-w-sm min-h-11"
+                  onchange={changeTargetNode}
+                  disabled={loadingData}
+                >
+                  {#each targetNodes as target (target.id)}
+                    <option value={target.id}>{target.name}</option>
+                  {/each}
+                </select>
+              </SettingRow>
+            {/if}
+            {#if isCloudInit && !baseImageID && auth.isAdmin() && clusterNodes.some((target) => target.enabled)}
+              <Alert variant="info">{t('vmCreate.applianceDeploymentLocalOnly')}</Alert>
+            {/if}
+            {#if isRemoteKvmTarget}
+              <Alert variant="info">
+                <ul class="list-disc pl-4 space-y-0.5" data-testid="remote-kvm-limits">
+                  <li>{t('remote.create.remoteMediaFromNode')}</li>
+                  <li>{t('remote.create.remoteNetworkRequired')}</li>
+                  <li>{t('remote.create.remoteNoCloudInit')}</li>
+                  <li>{t('remote.create.remoteNoContainers')}</li>
+                </ul>
+              </Alert>
+              {#if remoteAccess === 'unverified'}
+                <Alert variant="info">
+                  <p data-testid="remote-access-unverified">
+                    {t('remote.create.accessUnverified')}
+                  </p>
+                  <button
+                    type="button"
+                    class="mt-1 font-medium underline underline-offset-2 disabled:opacity-60"
+                    data-testid="remote-access-test-now"
+                    disabled={accessTesting}
+                    onclick={testRemoteAccessNow}
+                  >
+                    {t('clusterAccess.testNow')}
+                  </button>
+                </Alert>
+              {:else if remoteAccess !== 'ready'}
+                <Alert variant="warning">
+                  <p data-testid="remote-access-not-ready">
+                    {remoteAccess === 'changed'
+                      ? t('remote.create.accessChanged')
+                      : t('remote.create.accessNotReady')}
+                  </p>
+                  <button
+                    type="button"
+                    class="mt-1 font-medium underline underline-offset-2"
+                    onclick={() => navigate('/nodes', { query: { focus: 'access' } })}
+                  >
+                    {t('remote.create.openAccess')}
+                  </button>
+                </Alert>
+              {/if}
+            {/if}
+            {#if isRemoteIncusTarget && loadingTargetInventory}
+              <Alert variant="info">{t('vmCreate.loadingTargetInventory')}</Alert>
+            {:else if isRemoteIncusTarget && targetInventoryError}
+              <Alert variant="error"
+                >{t('vmCreate.targetInventoryError', { error: targetInventoryError })}</Alert
+              >
+            {/if}
             {#if isKvm}
               <!-- OS Presets for KVM -->
               <OsPresetPicker bind:value={selectedOsPreset} onselect={applyOsPreset} />
@@ -1491,8 +2146,15 @@
                     onselect={selectContainerImage}
                   />
                 {/if}
+                {#if remoteIncusImageUnavailable}
+                  <Alert variant="warning">
+                    {t('vmCreate.remoteIncusImageUnavailable', {
+                      image: labelForImage(containerImage, INCUS_IMAGE_PRESETS),
+                    })}
+                  </Alert>
+                {/if}
               </div>
-            {:else if isCloudInit}
+            {:else if isCloudInit && !baseImageID}
               <!-- Cloud-Init Template Catalog -->
               <div class="pt-5 mt-2 border-t border-border/60 space-y-4">
                 <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -1544,14 +2206,36 @@
                   </div>
                 </SettingRow>
               {/if}
-              <SettingRow label={t('vmCreate.isoOptional')} helper={t('vmCreate.isoHelper')}>
-                <select bind:value={iso} class="input max-w-xs">
-                  <option value="">{t('vmCreate.noneInstallLater')}</option>
-                  {#each isos as isoFile (isoFile.path)}
-                    <option value={isoFile.path}>{isoFile.name}</option>
-                  {/each}
-                </select>
-              </SettingRow>
+              {#if !baseImageID}
+                <SettingRow label={t('vmCreate.isoOptional')} helper={t('vmCreate.isoHelper')}>
+                  <select
+                    bind:value={iso}
+                    class="input max-w-xs"
+                    data-testid="iso-select"
+                    disabled={isRemoteKvmTarget && loadingTargetInventory}
+                  >
+                    <option value="">{t('vmCreate.noneInstallLater')}</option>
+                    {#each isos as isoFile (isoFile.path)}
+                      <option value={isoFile.path}
+                        >{isRemoteKvmTarget
+                          ? `${isoFile.name} (${isoFile.pool})`
+                          : isoFile.name}</option
+                      >
+                    {/each}
+                  </select>
+                </SettingRow>
+              {/if}
+              {#if isRemoteKvmTarget && !loadingTargetInventory}
+                {#if remoteIsosError}
+                  <Alert variant="warning" data-testid="remote-isos-error">
+                    {t('remote.create.remoteIsosError', { error: remoteIsosError })}
+                  </Alert>
+                {:else if isos.length === 0}
+                  <p class="text-xs text-muted-foreground" data-testid="remote-no-isos">
+                    {t('remote.create.remoteNoIsos')}
+                  </p>
+                {/if}
+              {/if}
             {/if}
           {:else if activeStepId === STEP_IDENTITY}
             <SettingRow
@@ -1563,12 +2247,13 @@
                 bind:value={name}
                 type="text"
                 placeholder="my-vm"
+                aria-label={t('common.name')}
                 class="max-w-sm tnum"
                 aria-invalid={touched.name && nameError ? 'true' : undefined}
                 onblur={() => (touched.name = true)}
               />
             </SettingRow>
-            {#if availableGroups.length > 0}
+            {#if availableGroups.length > 0 && nodeIsLocal}
               <SettingRow
                 label={t('vmCreate.groupsOptional')}
                 helper={t('vmCreate.groupAssignmentHelper')}
@@ -1599,7 +2284,7 @@
                 </div>
               </SettingRow>
             {/if}
-            {#if isCloudInit}
+            {#if isCloudInit || baseImageID}
               <!-- Prominent Cloud-Init Config Section -->
               <div class="space-y-4 pt-2">
                 <CloudInitFields
@@ -1674,6 +2359,9 @@
               </SettingRow>
             </div>
           {:else if activeStepId === STEP_RESOURCES}
+            {#if isRemoteKvmTarget && !loadingTargetInventory && remoteListAccessCode}
+              <RemoteListAccessAlert code={remoteListAccessCode} node={targetNodeName} />
+            {/if}
             <SettingRow
               label={t('common.vcpu')}
               helper={t('vmCreate.vcpusHelper')}
@@ -1693,6 +2381,7 @@
                     min="1"
                     max="64"
                     class="w-20 tnum"
+                    aria-label={t('common.vcpu')}
                     onblur={() => (touched.vcpus = true)}
                   />
                 </div>
@@ -1723,12 +2412,36 @@
                   <Input
                     type="number"
                     bind:value={ramMB}
-                    min="512"
+                    min={allowLowRam ? LOW_RAM_FLOOR_MB : MIN_VM_RAM_MB}
                     step="512"
                     class="w-24 tnum"
+                    aria-label={t('vmDetail.ramLabel')}
                     onblur={() => (touched.ramMB = true)}
                   />
                 </div>
+                {#if ramMB < MIN_VM_RAM_MB}
+                  <label
+                    class="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer select-none"
+                  >
+                    <input
+                      id="create-allow-low-ram"
+                      type="checkbox"
+                      bind:checked={allowLowRam}
+                      class="w-4 h-4 mt-0.5 rounded border-border"
+                    />
+                    <span>
+                      <span class="font-medium text-foreground"
+                        >{t('vmRam.allowLow', { min: MIN_VM_RAM_MB })}</span
+                      >
+                      <span class="block"
+                        >{t('vmRam.allowLowHelp', {
+                          min: MIN_VM_RAM_MB,
+                          floor: LOW_RAM_FLOOR_MB,
+                        })}</span
+                      >
+                    </span>
+                  </label>
+                {/if}
                 {#if ramCapacityPct != null}
                   <ProgressBar
                     value={ramCapacityPct}
@@ -1748,11 +2461,15 @@
                     max={ramMB}
                     step="256"
                     bind:value={minRamMB}
+                    onblur={() => (touched.ramMB = true)}
                     class="w-28 tnum"
+                    aria-label={t('vmDetail.minRamLabel')}
                   />
                   <span class="text-xs text-muted-foreground">
                     {minRamMB > 0
-                      ? `MB (${(minRamMB / 1024).toFixed(1)} GB)`
+                      ? minRamMB >= 1024
+                        ? `MB (${(minRamMB / 1024).toFixed(1)} GB)`
+                        : 'MB'
                       : t('vmDetail.minRamDynamic')}
                   </span>
                 </div>
@@ -1763,7 +2480,14 @@
                 helper={t('vmDetail.iothreadsHelper')}
               >
                 <div class="flex items-center gap-2">
-                  <Input type="number" min="0" max="16" bind:value={iothreads} class="w-24 tnum" />
+                  <Input
+                    type="number"
+                    min="0"
+                    max="16"
+                    bind:value={iothreads}
+                    class="w-24 tnum"
+                    aria-label={t('vmDetail.iothreadsLabel')}
+                  />
                   <span class="text-xs text-muted-foreground"
                     >{iothreads > 0
                       ? t('vmDetail.iothreadsDedicated')
@@ -1775,7 +2499,11 @@
             {#if isContainer}
               <!-- LXC: storage pool and root disk size -->
               <SettingRow label={t('common.pool')} helper={t('vmCreate.containerPoolHelper')}>
-                <select bind:value={containerStoragePool} class="input max-w-xs">
+                <select
+                  bind:value={containerStoragePool}
+                  aria-label={t('common.pool')}
+                  class="input max-w-xs"
+                >
                   {#if lxcPools.length === 0}
                     <option value="">{t('vmCreate.noContainerPools')}</option>
                   {:else}
@@ -1785,6 +2513,25 @@
                   {/if}
                 </select>
               </SettingRow>
+              {#if isRemoteIncusTarget}
+                <SettingRow
+                  label={t('vmCreate.targetIncusNetwork')}
+                  helper={t('vmCreate.targetIncusNetworkHelper')}
+                >
+                  <select
+                    bind:value={network}
+                    class="input max-w-xs min-h-11"
+                    disabled={loadingTargetInventory || networks.length === 0}
+                  >
+                    {#each networks as remoteNetwork (remoteNetwork.name)}
+                      <option value={remoteNetwork.name}>{remoteNetwork.name}</option>
+                    {/each}
+                  </select>
+                </SettingRow>
+                {#if !loadingTargetInventory && !targetInventoryError && (!lxcPools.length || !networks.length || !incusProfiles.length)}
+                  <Alert variant="warning">{t('vmCreate.targetIncusMissingResources')}</Alert>
+                {/if}
+              {/if}
               <SettingRow
                 label={t('vmCreate.lxcRootDisk')}
                 helper={t('vmCreate.lxcRootDiskHelper')}
@@ -1802,7 +2549,11 @@
             {:else if isCloudInit}
               <!-- Cloud-Init Storage Pool & Disk Size -->
               <SettingRow label={t('common.pool')} helper={t('vmCreate.storagePoolHelper')}>
-                <select bind:value={storagePool} class="input max-w-xs">
+                <select
+                  bind:value={storagePool}
+                  aria-label={t('common.pool')}
+                  class="input max-w-xs"
+                >
                   {#each vmPools as p (p.name)}
                     <option value={p.name}>{p.name}</option>
                   {/each}
@@ -1823,19 +2574,22 @@
                 />
               </SettingRow>
             {:else}
-              <SettingRow
-                label={t('vmCreate.useExistingDisk')}
-                helper={t('vmCreate.useExistingDiskHelper')}
-              >
-                <Switch
-                  bind:checked={useExistingDisk}
-                  ariaLabel={t('vmCreate.toggleExistingDisk')}
-                />
-              </SettingRow>
-              {#if useExistingDisk}
+              {#if !baseImageID && (nodeIsLocal || isRemoteKvmTarget)}
+                <SettingRow
+                  label={t('vmCreate.useExistingDisk')}
+                  helper={t('vmCreate.useExistingDiskHelper')}
+                >
+                  <Switch
+                    bind:checked={useExistingDisk}
+                    ariaLabel={t('vmCreate.toggleExistingDisk')}
+                  />
+                </SettingRow>
+              {/if}
+              {#if useExistingDisk && (nodeIsLocal || isRemoteKvmTarget)}
                 <SettingRow label={t('vmCreate.diskPool')} helper={t('vmCreate.diskPoolHelper')}>
                   <select
                     bind:value={existingDiskPool}
+                    aria-label={t('vmCreate.diskPool')}
                     onchange={() => loadExistingVolumes(existingDiskPool)}
                     class="input max-w-xs"
                   >
@@ -1868,7 +2622,11 @@
                 </SettingRow>
               {:else}
                 <SettingRow label={t('common.pool')} helper={t('vmCreate.storagePoolHelper')}>
-                  <select bind:value={storagePool} class="input max-w-xs">
+                  <select
+                    bind:value={storagePool}
+                    aria-label={t('common.pool')}
+                    class="input max-w-xs"
+                  >
                     {#each vmPools as p (p.name)}
                       <option value={p.name}>{p.name}</option>
                     {/each}
@@ -2091,14 +2849,14 @@
                 </SettingRow>
 
                 <SettingRow
-                  label="Consola Gráfica"
-                  helper="Selecciona los servidores de consola gráfica a habilitar (VNC, SPICE, ambos o ninguno)"
+                  label={t('vmCreate.graphicsServerLabel')}
+                  helper={t('vmCreate.graphicsServerHelper')}
                 >
                   <select bind:value={graphicsType} class="input max-w-xs">
-                    <option value="both">Ambas activas (noVNC + SPICE)</option>
-                    <option value="vnc">Solo noVNC (RFB estándar)</option>
-                    <option value="spice">Solo SPICE (Alto rendimiento / Web SPICE)</option>
-                    <option value="none">Desactivadas (Sin consola gráfica / Headless)</option>
+                    <option value="both">{t('vmCreate.graphicsBoth')}</option>
+                    <option value="vnc">{t('vmCreate.graphicsVNC')}</option>
+                    <option value="spice">{t('vmCreate.graphicsSPICE')}</option>
+                    <option value="none">{t('vmCreate.graphicsNone')}</option>
                   </select>
                 </SettingRow>
               </div>
@@ -2203,12 +2961,71 @@
           {:else if activeStepId === STEP_NETWORK}
             <!-- Primary Network (KVM) -->
             <SettingRow label={t('vmDetail.networkLabel')} helper={t('vmCreate.networkHelper')}>
-              <select bind:value={network} class="input max-w-xs">
-                {#each vmNetworks as net (net.name)}
-                  <option value={net.name}>{networkLabel(net)}</option>
-                {/each}
+              <select
+                bind:value={network}
+                aria-label={t('vmDetail.networkLabel')}
+                class="input max-w-xs"
+                onchange={() => (customBridge = '')}
+              >
+                {#if isRemoteKvmTarget && !network}
+                  <option value="">{t('vmCreate.remoteBridgeChoose')}</option>
+                {/if}
+                <!-- Host bridges (LAN) first, then libvirt NAT/isolated
+                     networks, each saying what the VM gets (8.30). A typed
+                     bridge (Advanced, below) is kept as its own option. -->
+                {#if netGroups.host.length}
+                  <optgroup label={t('vmCreate.netGroupHost')}>
+                    {#each netGroups.host as net (net.name)}
+                      <option value={net.name}>{networkOptionLabel(t, net)}</option>
+                    {/each}
+                  </optgroup>
+                {/if}
+                {#if netGroups.virtual.length}
+                  <optgroup label={t('vmCreate.netGroupVirtual')}>
+                    {#each netGroups.virtual as net (net.name)}
+                      <option value={net.name}>{networkOptionLabel(t, net)}</option>
+                    {/each}
+                  </optgroup>
+                {/if}
+                {#if network && customBridge && !vmNetworks.some((n) => n.name === network)}
+                  <option value={network}>{t('vmCreate.netOptTyped', { name: network })}</option>
+                {/if}
               </select>
             </SettingRow>
+            {#if isRemoteKvmTarget && !loadingTargetInventory && !remoteListAccessCode && vmNetworks.length > 0 && netGroups.host.length === 0}
+              <p class="text-xs text-muted-foreground" data-testid="remote-no-host-bridge">
+                {t('vmCreate.remoteNoHostBridge')}
+              </p>
+            {/if}
+            {#if isRemoteKvmTarget && !loadingTargetInventory}
+              {#if remoteListAccessCode}
+                <RemoteListAccessAlert code={remoteListAccessCode} node={targetNodeName} />
+              {:else if !isAdvanced && vmNetworks.length === 0}
+                <Alert variant="info" data-testid="remote-no-networks">
+                  {t('vmCreate.remoteNoNetworksEasy')}
+                </Alert>
+              {/if}
+              {#if isAdvanced}
+                <SettingRow
+                  label={t('vmCreate.remoteBridgeLabel')}
+                  helper={t('vmCreate.remoteBridgeHelper')}
+                  error={customBridgeError}
+                >
+                  <Input
+                    id="remote-bridge-name"
+                    data-testid="remote-bridge-name"
+                    aria-label={t('vmCreate.remoteBridgeLabel')}
+                    class="max-w-xs min-h-11 font-mono"
+                    maxlength={15}
+                    placeholder="vmbr0"
+                    autocomplete="off"
+                    spellcheck={false}
+                    bind:value={customBridge}
+                    oninput={onCustomBridgeInput}
+                  />
+                </SettingRow>
+              {/if}
+            {/if}
 
             {#if isAdvanced}
               <SettingRow label={t('vmDetail.adapter')} helper={t('vmCreate.adapterHelper')}>
@@ -2223,65 +3040,72 @@
                 </select>
               </SettingRow>
 
-              <!-- Secondary Network Interfaces -->
-              <div class="pt-3 mt-1 border-t border-border">
-                <div class="flex items-center justify-between mb-2">
-                  <div>
-                    <p class="text-sm font-medium">
-                      {t('vmCreate.extraNics')}
-                    </p>
-                    <p class="text-xs text-muted-foreground">
-                      {t('vmCreate.extraNicsHelper')}
-                    </p>
+              {#if nodeIsLocal || isRemoteKvmTarget}
+                <!-- Secondary network interfaces: follow-up calls, per node (?node=) when remote. -->
+                <div class="pt-3 mt-1 border-t border-border">
+                  <div class="flex items-center justify-between mb-2">
+                    <div>
+                      <p class="text-sm font-medium">
+                        {t('vmCreate.extraNics')}
+                      </p>
+                      <p class="text-xs text-muted-foreground">
+                        {t('vmCreate.extraNicsHelper')}
+                      </p>
+                    </div>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onclick={addExtraNic}
+                      class="cursor-pointer"
+                    >
+                      <Icon name="plus" size={12} class="mr-1" />
+                      {t('vmCreate.addExtraNic')}
+                    </Button>
                   </div>
-                  <Button size="xs" variant="outline" onclick={addExtraNic} class="cursor-pointer">
-                    <Icon name="plus" size={12} class="mr-1" />
-                    {t('vmCreate.addExtraNic')}
-                  </Button>
-                </div>
-                {#if extraNics.length > 0}
-                  <div class="space-y-2">
-                    {#each extraNics as n (n._id)}
-                      <div
-                        class="flex flex-wrap items-center gap-2 p-2.5 rounded-lg border border-border bg-muted/20"
-                      >
-                        <select bind:value={n.network} class="input !h-8 !text-xs max-w-[12rem]">
-                          {#each vmNetworks as net (net.name)}
-                            <option value={net.name}>{networkLabel(net)}</option>
-                          {/each}
-                        </select>
-                        {#if !isContainer}
-                          <select bind:value={n.model} class="input !h-8 !text-xs max-w-[9rem]">
-                            {#each networkModels as m (m.value)}
-                              <option value={m.value} disabled={!supports('network', m.value)}
-                                >{m.label}</option
-                              >
+                  {#if extraNics.length > 0}
+                    <div class="space-y-2">
+                      {#each extraNics as n (n._id)}
+                        <div
+                          class="flex flex-wrap items-center gap-2 p-2.5 rounded-lg border border-border bg-muted/20"
+                        >
+                          <select bind:value={n.network} class="input !h-8 !text-xs max-w-[12rem]">
+                            {#each vmNetworks as net (net.name)}
+                              <option value={net.name}>{networkLabel(net)}</option>
                             {/each}
                           </select>
-                        {/if}
-                        <div class="flex items-center gap-1">
-                          <span class="text-xs text-muted-foreground">VLAN:</span>
-                          <Input
-                            type="number"
-                            min="1"
-                            max="4094"
-                            bind:value={n.vlanTag}
-                            placeholder={t('common.optional')}
-                            class="w-20 !h-8 !text-xs tnum"
-                          />
+                          {#if !isContainer}
+                            <select bind:value={n.model} class="input !h-8 !text-xs max-w-[9rem]">
+                              {#each networkModels as m (m.value)}
+                                <option value={m.value} disabled={!supports('network', m.value)}
+                                  >{m.label}</option
+                                >
+                              {/each}
+                            </select>
+                          {/if}
+                          <div class="flex items-center gap-1">
+                            <span class="text-xs text-muted-foreground">VLAN:</span>
+                            <Input
+                              type="number"
+                              min="1"
+                              max="4094"
+                              bind:value={n.vlanTag}
+                              placeholder={t('common.optional')}
+                              class="w-20 !h-8 !text-xs tnum"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onclick={() => removeExtraNic(n._id)}
+                            class="ml-auto text-xs text-destructive hover:opacity-80 px-2 py-1 cursor-pointer"
+                          >
+                            {t('common.remove')}
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          onclick={() => removeExtraNic(n._id)}
-                          class="ml-auto text-xs text-destructive hover:opacity-80 px-2 py-1 cursor-pointer"
-                        >
-                          {t('common.remove')}
-                        </button>
-                      </div>
-                    {/each}
-                  </div>
-                {/if}
-              </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
               <SettingRow
                 label={t('vmCreate.audioDevice')}
                 helper={t('vmCreate.audioDeviceHelper')}
@@ -2302,16 +3126,18 @@
               <!-- Advanced Disk Settings (KVM) -->
               {#if isAdvanced}
                 {#if !useExistingDisk}
-                  <SettingRow
-                    label={t('vmCreate.diskFormat')}
-                    helper={t('vmCreate.diskFormatHelper')}
-                  >
-                    <select bind:value={diskFormat} class="input max-w-xs">
-                      {#each diskFormatOptions as o (o.value)}
-                        <option value={o.value}>{o.label}</option>
-                      {/each}
-                    </select>
-                  </SettingRow>
+                  {#if !baseImageID}
+                    <SettingRow
+                      label={t('vmCreate.diskFormat')}
+                      helper={t('vmCreate.diskFormatHelper')}
+                    >
+                      <select bind:value={diskFormat} class="input max-w-xs">
+                        {#each diskFormatOptions as o (o.value)}
+                          <option value={o.value}>{o.label}</option>
+                        {/each}
+                      </select>
+                    </SettingRow>
+                  {/if}
                 {/if}
                 <SettingRow label={t('vmDetail.busLabel')} helper={t('vmCreate.diskBusHelper')}>
                   <select bind:value={diskBus} class="input max-w-xs">
@@ -2341,7 +3167,12 @@
                     label={t('vmCreate.virtioDriversIso')}
                     helper={t('vmCreate.virtioDriversHelper')}
                   >
-                    <select bind:value={virtioISO} class="input max-w-xs">
+                    <select
+                      bind:value={virtioISO}
+                      class="input max-w-xs"
+                      data-testid="virtio-iso-select"
+                      disabled={isRemoteKvmTarget && loadingTargetInventory}
+                    >
                       <option value="">{t('common.none')}</option>
                       {#each isos as isoFile (isoFile.path)}
                         <option value={isoFile.path}>{isoFile.name}</option>
@@ -2350,69 +3181,83 @@
                   </SettingRow>
                 {/if}
 
-                <!-- Secondary disks -->
-                <div class="pt-3 mt-1 border-t border-border">
-                  <div class="flex items-center justify-between mb-2">
-                    <div>
-                      <p class="text-sm font-medium">{t('vmCreate.extraDisks')}</p>
-                      <p class="text-xs text-muted-foreground">{t('vmCreate.extraDisksHelper')}</p>
+                {#if nodeIsLocal || isRemoteKvmTarget}
+                  <!-- Secondary disks: follow-up calls, per node (?node=) when remote. -->
+                  <div class="pt-3 mt-1 border-t border-border">
+                    <div class="flex items-center justify-between mb-2">
+                      <div>
+                        <p class="text-sm font-medium">{t('vmCreate.extraDisks')}</p>
+                        <p class="text-xs text-muted-foreground">
+                          {t('vmCreate.extraDisksHelper')}
+                        </p>
+                      </div>
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onclick={addExtraDisk}
+                        class="cursor-pointer"
+                      >
+                        <Icon name="plus" size={12} class="mr-1" />
+                        {t('vmCreate.addExtraDisk')}
+                      </Button>
                     </div>
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      onclick={addExtraDisk}
-                      class="cursor-pointer"
-                    >
-                      <Icon name="plus" size={12} class="mr-1" />
-                      {t('vmCreate.addExtraDisk')}
-                    </Button>
-                  </div>
-                  {#if extraDisks.length > 0}
-                    <div class="space-y-2">
-                      {#each extraDisks as d (d._id)}
-                        <div
-                          class="flex flex-wrap items-center gap-2 p-2.5 rounded-lg border border-border bg-muted/20"
-                        >
-                          <Input
-                            type="number"
-                            min="1"
-                            bind:value={d.sizeGB}
-                            class="w-20 tnum"
-                            aria-label={t('vmCreate.diskSizeGb')}
-                          />
-                          <span class="text-xs text-muted-foreground">GB</span>
-                          <select bind:value={d.pool} class="input !h-8 !text-xs max-w-[10rem]">
-                            {#each vmPools as p (p.name)}
-                              <option value={p.name}>{p.name}</option>
-                            {/each}
-                          </select>
-                          <select bind:value={d.bus} class="input !h-8 !text-xs max-w-[8rem]">
-                            {#each diskBusOptions as o (o.value)}
-                              <option value={o.value} disabled={!supports('diskbus', o.value)}
-                                >{o.label}</option
-                              >
-                            {/each}
-                          </select>
-                          <select bind:value={d.format} class="input !h-8 !text-xs max-w-[7rem]">
-                            {#each diskFormatOptions as o (o.value)}
-                              <option value={o.value}>{o.label}</option>
-                            {/each}
-                          </select>
-                          <button
-                            type="button"
-                            onclick={() => removeExtraDisk(d._id)}
-                            class="ml-auto text-xs text-destructive hover:opacity-80 px-2 py-1 cursor-pointer"
+                    {#if extraDisks.length > 0}
+                      <div class="space-y-2">
+                        {#each extraDisks as d (d._id)}
+                          <div
+                            class="flex flex-wrap items-center gap-2 p-2.5 rounded-lg border border-border bg-muted/20"
                           >
-                            {t('common.remove')}
-                          </button>
-                        </div>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
+                            <Input
+                              type="number"
+                              min="1"
+                              bind:value={d.sizeGB}
+                              class="w-20 tnum"
+                              aria-label={t('vmCreate.diskSizeGb')}
+                            />
+                            <span class="text-xs text-muted-foreground">GB</span>
+                            <select bind:value={d.pool} class="input !h-8 !text-xs max-w-[10rem]">
+                              {#each vmPools as p (p.name)}
+                                <option value={p.name}>{p.name}</option>
+                              {/each}
+                            </select>
+                            <select bind:value={d.bus} class="input !h-8 !text-xs max-w-[8rem]">
+                              {#each diskBusOptions as o (o.value)}
+                                <option value={o.value} disabled={!supports('diskbus', o.value)}
+                                  >{o.label}</option
+                                >
+                              {/each}
+                            </select>
+                            <select bind:value={d.format} class="input !h-8 !text-xs max-w-[7rem]">
+                              {#each diskFormatOptions as o (o.value)}
+                                <option value={o.value}>{o.label}</option>
+                              {/each}
+                            </select>
+                            <button
+                              type="button"
+                              onclick={() => removeExtraDisk(d._id)}
+                              class="ml-auto text-xs text-destructive hover:opacity-80 px-2 py-1 cursor-pointer"
+                            >
+                              {t('common.remove')}
+                            </button>
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
               {/if}
             {/if}
           {:else}
+            {#if !isValid && reviewBlockers.length > 0}
+              <Alert variant="error">
+                <p class="font-medium">{t('vmCreate.reviewBlocked')}</p>
+                <ul class="list-disc pl-4 mt-1">
+                  {#each reviewBlockers as blocker, i (i)}
+                    <li>{blocker}</li>
+                  {/each}
+                </ul>
+              </Alert>
+            {/if}
             <VmReviewStep rows={summaryRows} {kindLabel} {kindTheme} {steps} onedit={goToStep} />
           {/if}
         </Card>

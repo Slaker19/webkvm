@@ -24,7 +24,7 @@
 
 <BlockCard bid="disks" title={t('vmDetail.disks')}>
   <div class="flex items-center justify-between mb-3">
-    <Button size="xs" variant="outline" onclick={onAddDisk}>+ Add Disk</Button>
+    <Button size="xs" variant="outline" onclick={onAddDisk}>+ {t('vmDetail.addDisk')}</Button>
   </div>
   {#if !vm?.disks || vm.disks.length === 0}
     <EmptyState compact icon="hardDrive" title={t('vmDetail.noDisks')} />

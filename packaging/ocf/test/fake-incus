@@ -1,0 +1,72 @@
+#!/bin/sh
+# Fake `incus` for the ocf:webkvm:incus harness. State lives in $FAKE_S, one
+# file per key (see run.sh `scn`). Every call is appended to $FAKE_S/calls.
+S="${FAKE_S:?}"
+g() { [ -f "$S/$1" ] && cat "$S/$1"; }
+echo "incus $*" >>"$S/calls"
+dec() { # dec KEY: true (and decrement) while the counter is > 0
+	n=$(g "$1")
+	[ "${n:-0}" -gt 0 ] || return 1
+	echo $((n - 1)) >"$S/$1"
+}
+[ "$(g daemon_down)" = "1" ] && { echo "Error: Get \"http://unix.socket/1.0\": dial unix: connection refused" >&2; exit 1; }
+has() { _w=$1; shift; for a in "$@"; do [ "$a" = "$_w" ] && return 0; done; return 1; }
+case "$1" in
+info)
+	printf 'config: {}\nenvironment:\n  server: incus\n  server_clustered: true\n  server_name: %s\n  server_version: "6.0"\n' "$(g me)"
+	;;
+list)
+	# Real incus (7.0.2): missing project -> rc 0, empty output.
+	[ "$(g project_exists)" = "0" ] && exit 0
+	[ "$(g exists)" = "0" ] && exit 0
+	echo "$(g status),$(g member)"
+	;;
+project)
+	[ "$(g project_exists)" = "0" ] && { echo "Error: Project not found" >&2; exit 1; }
+	echo "name: default"
+	;;
+cluster)
+	cat "$S/members"
+	;;
+config)
+	case "$2" in
+	show)
+		printf 'architecture: x86_64\nconfig:\n  boot.autostart: "%s"\ndevices:\n  eth0:\n    network: br0\n    pool: decoy\n    type: nic\n  root:\n    path: /\n    pool: %s\n    type: disk\nephemeral: false\nprofiles:\n- default\n' "$(g autostart)" "$(g pool)"
+		;;
+	get) g autostart ;;
+	esac
+	;;
+storage)
+	printf 'config: {}\ndescription: ""\nname: %s\ndriver: %s\nused_by: []\nstatus: Created\n' "$3" "$(g driver)"
+	;;
+move)
+	if dec move_fail_n; then
+		echo "Error: Failed to connect to source member: member is still online" >&2
+		exit 1
+	fi
+	t=""
+	while [ $# -gt 0 ]; do [ "$1" = "--target" ] && t=$2; shift; done
+	echo "$t" >"$S/member"
+	echo STOPPED >"$S/status"
+	;;
+start)
+	if dec start_err_n; then
+		echo "Error: Failed to start device \"root\": LINSTOR controller unreachable" >&2
+		exit 1
+	fi
+	[ "$(g start_hard_fail)" = "1" ] && { echo "Error: boom" >&2; exit 1; }
+	echo RUNNING >"$S/status"
+	;;
+stop)
+	if has --force "$@"; then
+		echo STOPPED >"$S/status"
+	elif [ "$(g graceful_fail)" = "1" ]; then
+		echo "Error: Failed shutting down instance, status is \"Running\": context deadline exceeded" >&2
+		exit 1
+	else
+		echo STOPPED >"$S/status"
+	fi
+	;;
+*) echo "fake incus: unsupported: $*" >&2; exit 2 ;;
+esac
+exit 0

@@ -29,7 +29,7 @@ import (
 // NetworkConfig specifies static IP assignment, default gateways and DNS servers for a NIC.
 type NetworkConfig struct {
 	Interface string   `json:"interface,omitempty"` // e.g. "eth0" or "enp1s0" (default: "eth0")
-	IPv4      string   `json:"ipv4,omitempty"`      // CIDR format, e.g. "192.168.1.50/24"
+	IPv4      string   `json:"ipv4,omitempty"`      // CIDR format, e.g. "192.168.50.50/24"
 	Gateway4  string   `json:"gateway4,omitempty"`  // IPv4 gateway, e.g. "192.168.1.1"
 	IPv6      string   `json:"ipv6,omitempty"`      // CIDR format, e.g. "2001:db8::50/64"
 	Gateway6  string   `json:"gateway6,omitempty"`  // IPv6 gateway
@@ -124,7 +124,7 @@ func (c Config) Validate() error {
 		if n.IPv4 != "" {
 			ip, _, err := net.ParseCIDR(n.IPv4)
 			if err != nil || ip.To4() == nil {
-				return fmt.Errorf("network [%d]: invalid ipv4 CIDR %q (e.g. 192.168.1.50/24)", i, n.IPv4)
+				return fmt.Errorf("network [%d]: invalid ipv4 CIDR %q (e.g. 192.168.50.50/24)", i, n.IPv4)
 			}
 		}
 		if n.Gateway4 != "" {

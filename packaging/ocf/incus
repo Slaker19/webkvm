@@ -1,0 +1,429 @@
+#!/bin/sh
+#
+# OCF resource agent: ocf:webkvm:incus
+#
+# Runs one Incus instance (container or VM) of a clustered Incus as a
+# Pacemaker resource. The instance MUST live on remote storage (LINSTOR or
+# Ceph pool) so any member can start it: a "move" is a cold stop + start on
+# the destination (no live migration in v1).
+#
+# Safety rules:
+#   * Every incus call is wrapped in `timeout N` (a hung dqlite must not hang
+#     the agent).
+#   * A RUNNING instance on another ONLINE member is never moved or started
+#     (split-brain protection): start fails, Pacemaker decides.
+#   * Pacemaker fences a dead node BEFORE starting the resource elsewhere, so
+#     the move retries only wait for Incus to notice the source is offline.
+#
+# Parameters: instance (required), project (default), stop_timeout (60),
+# move_wait (90).
+#
+: "${OCF_ROOT:=/usr/lib/ocf}"
+: "${OCF_FUNCTIONS_DIR:=${OCF_ROOT}/lib/heartbeat}"
+
+if [ -r "${OCF_FUNCTIONS_DIR}/ocf-shellfuncs" ]; then
+	# shellcheck disable=SC1091
+	. "${OCF_FUNCTIONS_DIR}/ocf-shellfuncs"
+fi
+
+# Standard OCF return codes (also provided by ocf-shellfuncs when present).
+: "${OCF_SUCCESS:=0}"
+: "${OCF_ERR_GENERIC:=1}"
+: "${OCF_ERR_ARGS:=2}"
+: "${OCF_ERR_UNIMPLEMENTED:=3}"
+: "${OCF_ERR_INSTALLED:=5}"
+: "${OCF_ERR_CONFIGURED:=6}"
+: "${OCF_NOT_RUNNING:=7}"
+
+if ! command -v ocf_log >/dev/null 2>&1; then
+	ocf_log() {
+		_lvl=$1
+		shift
+		echo "ocf:incus: ${_lvl}: $*" >&2
+	}
+fi
+if ! command -v ocf_exit_reason >/dev/null 2>&1; then
+	ocf_exit_reason() {
+		echo "ocf:incus: ERROR: $*" >&2
+	}
+fi
+if ! command -v ocf_is_probe >/dev/null 2>&1; then
+	ocf_is_probe() {
+		[ "${__OCF_ACTION:-}" = "monitor" ] && [ "${OCF_RESKEY_CRM_meta_interval:-0}" = "0" ]
+	}
+fi
+
+: "${__OCF_ACTION:=${1:-}}"
+
+I="${OCF_RESKEY_instance:-}"
+P="${OCF_RESKEY_project:-default}"
+STOP_TIMEOUT="${OCF_RESKEY_stop_timeout:-60}"
+MOVE_WAIT="${OCF_RESKEY_move_wait:-90}"
+TO_Q=8 # timeout (s) for each read-only incus query
+
+ME=""
+ST=""
+LOC=""
+
+incus_have() {
+	command -v incus >/dev/null 2>&1
+}
+
+# is_name VALUE: DNS-like label; rejects empty, newlines, leading dash.
+is_name() {
+	case "$1" in
+	'' | *'
+'*) return 1 ;;
+	esac
+	[ "${#1}" -le 63 ] || return 1
+	printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$'
+}
+
+is_uint() {
+	case "$1" in
+	'' | *[!0-9]*) return 1 ;;
+	esac
+	[ "$1" -gt 0 ]
+}
+
+# validate_params: cheap sanity checks done on every action (no incus call).
+validate_params() {
+	if ! is_name "$I"; then
+		ocf_exit_reason "parameter instance missing or invalid (must match ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\$)"
+		return "$OCF_ERR_CONFIGURED"
+	fi
+	if ! is_name "$P"; then
+		ocf_exit_reason "parameter project invalid"
+		return "$OCF_ERR_CONFIGURED"
+	fi
+	if ! is_uint "$STOP_TIMEOUT"; then
+		ocf_exit_reason "parameter stop_timeout must be a positive integer"
+		return "$OCF_ERR_CONFIGURED"
+	fi
+	if ! is_uint "$MOVE_WAIT"; then
+		ocf_exit_reason "parameter move_wait must be a positive integer"
+		return "$OCF_ERR_CONFIGURED"
+	fi
+	return "$OCF_SUCCESS"
+}
+
+now() {
+	date +%s
+}
+
+# get_me: sets ME to this cluster member's name. rc 1 = daemon unreachable.
+get_me() {
+	[ -n "$ME" ] && return 0
+	_out=$(timeout "$TO_Q" incus info 2>/dev/null) || return 1
+	ME=$(printf '%s\n' "$_out" | sed -n 's/^ *server_name: *//p' | head -n 1)
+	[ -n "$ME" ]
+}
+
+# get_state: sets ST (RUNNING|STOPPED|FROZEN|ERROR|...) and LOC (member).
+# rc: 0 ok, 2 daemon unreachable, 3 project missing, 4 instance missing.
+get_state() {
+	ST=""
+	LOC=""
+	get_me || return 2
+	_out=$(timeout "$TO_Q" incus list "^$I\$" --project "$P" -f csv -c sL 2>/dev/null) || return 2
+	if [ -z "$_out" ]; then
+		# `incus list` on a missing project returns rc 0 and no rows (seen on
+		# Incus 7.0): only `incus project show` tells a missing project apart
+		# from a missing instance.
+		timeout "$TO_Q" incus project show "$P" >/dev/null 2>&1
+		case $? in
+		0) return 4 ;;
+		124) return 2 ;;
+		*) return 3 ;;
+		esac
+	fi
+	_line=$(printf '%s\n' "$_out" | head -n 1)
+	ST=${_line%%,*}
+	LOC=""
+	case "$_line" in
+	*,*) LOC=${_line#*,} ;;
+	esac
+	# Single (non-clustered) server: empty location means "here".
+	[ -n "$LOC" ] || LOC="$ME"
+	return 0
+}
+
+# member_is_online MEMBER: 0 online, 1 offline/other, 2 unknown.
+member_is_online() {
+	_cl=$(timeout "$TO_Q" incus cluster list -f csv -c ns 2>/dev/null) || return 2
+	_ms=$(printf '%s\n' "$_cl" | while IFS=, read -r _n _s; do
+		[ "$_n" = "$1" ] && echo "$_s" && break
+	done)
+	[ -n "$_ms" ] || return 2
+	[ "$_ms" = "ONLINE" ]
+}
+
+incus_monitor() {
+	validate_params || return $?
+	incus_have || return "$OCF_ERR_INSTALLED"
+	get_state
+	case $? in
+	2)
+		if ocf_is_probe; then
+			ocf_log warn "incus daemon unreachable during probe"
+			return "$OCF_ERR_INSTALLED"
+		fi
+		ocf_exit_reason "incus daemon unreachable"
+		return "$OCF_ERR_GENERIC"
+		;;
+	3)
+		ocf_exit_reason "project $P does not exist"
+		return "$OCF_ERR_INSTALLED"
+		;;
+	4) return "$OCF_NOT_RUNNING" ;;
+	esac
+	if [ "$LOC" != "$ME" ]; then
+		# Running elsewhere, stopped elsewhere or ERROR because its member is
+		# offline: in every case it is not running on THIS node.
+		return "$OCF_NOT_RUNNING"
+	fi
+	case "$ST" in
+	RUNNING) return "$OCF_SUCCESS" ;;
+	STOPPED) return "$OCF_NOT_RUNNING" ;;
+	*)
+		ocf_exit_reason "instance $I in unexpected state $ST on $ME"
+		return "$OCF_ERR_GENERIC"
+		;;
+	esac
+}
+
+incus_start() {
+	validate_params || return $?
+	incus_have || return "$OCF_ERR_INSTALLED"
+	_tms="${OCF_RESKEY_CRM_meta_timeout:-300000}"
+	is_uint "$_tms" || _tms=300000
+	_t0=$(now)
+	_deadline=$((_t0 + _tms * 9 / 10000))
+	_move_since=""
+
+	while :; do
+		get_state
+		_rc=$?
+		case "$_rc" in
+		2)
+			ocf_log warn "incus daemon unreachable, retrying"
+			[ "$(now)" -ge "$_deadline" ] && return "$OCF_ERR_GENERIC"
+			sleep 5
+			continue
+			;;
+		3)
+			ocf_exit_reason "project $P does not exist"
+			return "$OCF_ERR_INSTALLED"
+			;;
+		4)
+			ocf_exit_reason "instance $I does not exist in project $P"
+			return "$OCF_ERR_INSTALLED"
+			;;
+		esac
+
+		if [ "$LOC" = "$ME" ]; then
+			case "$ST" in
+			RUNNING)
+				ocf_log info "instance $I running on $ME"
+				return "$OCF_SUCCESS"
+				;;
+			STOPPED)
+				_out=$(timeout 120 incus start "$I" --project "$P" 2>&1) || {
+					_lo=$(printf '%s' "$_out" | tr 'A-Z' 'a-z')
+					case "$_lo" in
+					*linstor* | *controller* | *drbd* | *ceph* | *rbd*)
+						ocf_log warn "incus start failed on storage error, retrying: $_out"
+						[ "$(now)" -ge "$_deadline" ] && return "$OCF_ERR_GENERIC"
+						sleep 5
+						continue
+						;;
+					*)
+						ocf_exit_reason "incus start failed: $_out"
+						return "$OCF_ERR_GENERIC"
+						;;
+					esac
+				}
+				# Re-read the state: loop returns 0 once RUNNING on ME.
+				[ "$(now)" -ge "$_deadline" ] && return "$OCF_ERR_GENERIC"
+				sleep 1
+				continue
+				;;
+			*)
+				ocf_exit_reason "instance $I in state $ST on $ME, refusing to start"
+				return "$OCF_ERR_GENERIC"
+				;;
+			esac
+		fi
+
+		# Instance lives on another member.
+		if [ "$ST" = "RUNNING" ]; then
+			ocf_exit_reason "instance $I running elsewhere (on $LOC): refusing to move a running instance"
+			return "$OCF_ERR_GENERIC"
+		fi
+		[ -n "$_move_since" ] || _move_since=$(now)
+		ocf_log info "moving $I from $LOC to $ME"
+		if _out=$(timeout 90 incus move "$I" --target "$ME" --project "$P" 2>&1); then
+			sleep 1
+			continue
+		fi
+		ocf_log warn "incus move failed: $_out"
+		if [ $(($(now) - _move_since)) -ge "$MOVE_WAIT" ]; then
+			ocf_exit_reason "could not move $I to $ME within ${MOVE_WAIT}s"
+			return "$OCF_ERR_GENERIC"
+		fi
+		[ "$(now)" -ge "$_deadline" ] && return "$OCF_ERR_GENERIC"
+		sleep 5
+	done
+}
+
+incus_stop() {
+	validate_params || return $?
+	incus_have || return "$OCF_ERR_INSTALLED"
+	get_state
+	case $? in
+	2)
+		ocf_exit_reason "incus daemon unreachable, cannot stop (node will be fenced)"
+		return "$OCF_ERR_GENERIC"
+		;;
+	3 | 4) return "$OCF_SUCCESS" ;;
+	esac
+	[ "$LOC" = "$ME" ] || return "$OCF_SUCCESS"
+	[ "$ST" = "STOPPED" ] && return "$OCF_SUCCESS"
+
+	_out=$(timeout $((STOP_TIMEOUT + 20)) incus stop "$I" --project "$P" --timeout "$STOP_TIMEOUT" 2>&1)
+	_rc=$?
+	if [ "$_rc" -ne 0 ]; then
+		get_state
+		if [ $? -eq 0 ] && [ "$ST" = "STOPPED" ]; then
+			return "$OCF_SUCCESS"
+		fi
+		ocf_log warn "graceful stop failed (rc=$_rc: $_out), forcing"
+		_out=$(timeout 60 incus stop "$I" --project "$P" --force 2>&1) ||
+			ocf_log warn "forced stop returned an error: $_out"
+	fi
+	get_state
+	case $? in
+	0) ;;
+	2)
+		ocf_exit_reason "incus daemon unreachable after stop"
+		return "$OCF_ERR_GENERIC"
+		;;
+	*) return "$OCF_SUCCESS" ;;
+	esac
+	if [ "$ST" = "STOPPED" ] || [ "$LOC" != "$ME" ]; then
+		return "$OCF_SUCCESS"
+	fi
+	ocf_exit_reason "instance $I still $ST after stop"
+	return "$OCF_ERR_GENERIC"
+}
+
+incus_validate() {
+	validate_params || return $?
+	incus_have || {
+		ocf_exit_reason "incus binary not found"
+		return "$OCF_ERR_INSTALLED"
+	}
+	if ocf_is_probe; then
+		return "$OCF_SUCCESS"
+	fi
+	get_state
+	case $? in
+	2)
+		ocf_exit_reason "incus daemon unreachable"
+		return "$OCF_ERR_GENERIC"
+		;;
+	3)
+		ocf_exit_reason "project $P does not exist"
+		return "$OCF_ERR_INSTALLED"
+		;;
+	4)
+		ocf_exit_reason "instance $I does not exist in project $P"
+		return "$OCF_ERR_INSTALLED"
+		;;
+	esac
+
+	# Root disk pool of the instance (profiles included): the "root" device
+	# under "devices:" of `incus config show --expanded`.
+	_cfg=$(timeout "$TO_Q" incus config show "$I" --project "$P" --expanded 2>/dev/null) || {
+		ocf_exit_reason "cannot read config of $I"
+		return "$OCF_ERR_GENERIC"
+	}
+	_pool=$(printf '%s\n' "$_cfg" | awk '
+		/^devices:/ { d = 1; next }
+		/^[^ ]/ { d = 0 }
+		d && /^  [^ ]/ { k = $1; sub(/:$/, "", k); cur = k }
+		d && cur == "root" && $1 == "pool:" { print $2; exit }')
+	if [ -z "$_pool" ] || ! printf '%s\n' "$_pool" | LC_ALL=C grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+		ocf_exit_reason "cannot determine root pool of $I"
+		return "$OCF_ERR_CONFIGURED"
+	fi
+	_driver=$(timeout "$TO_Q" incus storage show "$_pool" 2>/dev/null | sed -n 's/^driver: *//p' | head -n 1) || true
+	case "$_driver" in
+	linstor | ceph | cephfs) ;;
+	*)
+		ocf_exit_reason "root pool $_pool has driver '$_driver': must be remote (linstor, ceph or cephfs)"
+		return "$OCF_ERR_CONFIGURED"
+		;;
+	esac
+
+	_auto=$(timeout "$TO_Q" incus config get "$I" boot.autostart --project "$P" --expanded 2>/dev/null) || _auto=""
+	if [ "$_auto" = "true" ]; then
+		ocf_exit_reason "boot.autostart=true on $I: Pacemaker must be the only thing starting it"
+		return "$OCF_ERR_CONFIGURED"
+	fi
+	return "$OCF_SUCCESS"
+}
+
+incus_meta_data() {
+	cat <<'END'
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="incus" version="1.0">
+  <version>1.0</version>
+  <longdesc lang="en">Runs an Incus instance (container or VM) of a clustered Incus as a Pacemaker resource. The instance root disk must be on remote storage (linstor, ceph or cephfs pool). A move between nodes is a cold stop plus start; a running instance is never moved. boot.autostart must be false and cluster.healing_threshold 0.</longdesc>
+  <shortdesc lang="en">Incus instance on shared storage</shortdesc>
+  <parameters>
+    <parameter name="instance" unique="1" required="1">
+      <longdesc lang="en">Name of the Incus instance.</longdesc>
+      <shortdesc lang="en">Instance name</shortdesc>
+      <content type="string"/>
+    </parameter>
+    <parameter name="project" unique="0" required="0">
+      <longdesc lang="en">Incus project that contains the instance.</longdesc>
+      <shortdesc lang="en">Incus project</shortdesc>
+      <content type="string" default="default"/>
+    </parameter>
+    <parameter name="stop_timeout" unique="0" required="0">
+      <longdesc lang="en">Seconds to wait for a graceful stop before forcing it.</longdesc>
+      <shortdesc lang="en">Graceful stop timeout</shortdesc>
+      <content type="integer" default="60"/>
+    </parameter>
+    <parameter name="move_wait" unique="0" required="0">
+      <longdesc lang="en">Seconds start keeps retrying the cold move while Incus still sees the source member online.</longdesc>
+      <shortdesc lang="en">Move retry window</shortdesc>
+      <content type="integer" default="90"/>
+    </parameter>
+  </parameters>
+  <actions>
+    <action name="start" timeout="300s"/>
+    <action name="stop" timeout="120s"/>
+    <action name="monitor" timeout="30s" interval="30s"/>
+    <action name="validate-all" timeout="20s"/>
+    <action name="meta-data" timeout="5s"/>
+  </actions>
+</resource-agent>
+END
+}
+
+case "$1" in
+meta-data)
+	incus_meta_data
+	exit "$OCF_SUCCESS"
+	;;
+start) incus_start ;;
+stop) incus_stop ;;
+monitor) incus_monitor ;;
+validate-all) incus_validate ;;
+*) exit "$OCF_ERR_UNIMPLEMENTED" ;;
+esac
+exit $?

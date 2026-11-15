@@ -68,6 +68,13 @@ type Store struct {
 }
 
 // NewStore creates the store (does not touch disk).
+// ClusterProfilePath is where the cluster-wide default-deny profile lives.
+// It sits next to firewall.json in DATA_DIR so a DRBD failover keeps it, and
+// the CLI reads the same file on a node where it has been copied.
+func (s *Store) ClusterProfilePath() string {
+	return CanonicalClusterProfilePath()
+}
+
 func NewStore(dataDir string) *Store {
 	return &Store{
 		path: filepath.Join(dataDir, "firewall.json"),

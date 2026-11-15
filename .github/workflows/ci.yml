@@ -111,6 +111,9 @@ jobs:
       - name: Unit tests (utils, node env — no jsdom)
         run: npm test
 
+      - name: DOM component tests (happy-dom)
+        run: npm run test:dom
+
       - name: Build
         run: npm run build
 

@@ -249,6 +249,60 @@ func TestCloneDiskFile_Linked(t *testing.T) {
 	}
 }
 
+func TestCreateBaseImageOverlayResizesWithoutBreakingBackingLink(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not available in test environment")
+	}
+	dir := t.TempDir()
+	base := filepath.Join(dir, "base.qcow2")
+	overlay := filepath.Join(dir, "vm.qcow2")
+	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", base, "16M").CombinedOutput(); err != nil {
+		t.Fatalf("create base image: %v (%s)", err, out)
+	}
+
+	if err := createBaseImageOverlay(base, overlay, 32<<20); err != nil {
+		t.Fatalf("create overlay: %v", err)
+	}
+
+	out, err := exec.Command("qemu-img", "info", "--output=json", overlay).CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspect overlay: %v (%s)", err, out)
+	}
+	if !strings.Contains(string(out), `"virtual-size": 33554432`) {
+		t.Fatalf("overlay size = %s, want 32 MiB", out)
+	}
+	if !strings.Contains(string(out), `"backing-filename"`) || !strings.Contains(string(out), "base.qcow2") {
+		t.Fatalf("overlay must remain backed by the cached image: %s", out)
+	}
+}
+
+func TestCreateBaseImageOverlayRejectsShrinkAndExistingDestination(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not available in test environment")
+	}
+	dir := t.TempDir()
+	base := filepath.Join(dir, "base.qcow2")
+	overlay := filepath.Join(dir, "vm.qcow2")
+	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", base, "16M").CombinedOutput(); err != nil {
+		t.Fatalf("create base image: %v (%s)", err, out)
+	}
+	if err := createBaseImageOverlay(base, overlay, 8<<20); err == nil {
+		t.Fatal("smaller overlay size must be rejected")
+	}
+	if _, err := os.Stat(overlay); !os.IsNotExist(err) {
+		t.Fatalf("rejected request left an overlay behind: stat err=%v", err)
+	}
+	if err := os.WriteFile(overlay, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := createBaseImageOverlay(base, overlay, 32<<20); err == nil {
+		t.Fatal("existing destination must not be overwritten")
+	}
+	if got, err := os.ReadFile(overlay); err != nil || string(got) != "keep" {
+		t.Fatalf("existing destination changed: %q, err=%v", got, err)
+	}
+}
+
 // TestCloneDiskFile_LinkedIgnoredForRaw verifies that requesting a
 // linked clone on a raw disk is rejected: raw files cannot have
 // backing files, so we silently fall back to an independent copy
@@ -271,5 +325,61 @@ func TestCloneDiskFile_LinkedIgnoredForRaw(t *testing.T) {
 
 	if _, err := os.Stat(dst); err != nil {
 		t.Fatalf("clone file missing: %v", err)
+	}
+}
+
+// qemu-img truncates an existing destination without complaint; a leftover
+// disk must never be clobbered by a clone.
+func TestCloneDiskFile_RefusesExistingDestination(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not available in test environment")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.qcow2")
+	dst := filepath.Join(dir, "existing.qcow2")
+	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", src, "8M").CombinedOutput(); err != nil {
+		t.Fatalf("create source: %v (%s)", err, out)
+	}
+	if err := os.WriteFile(dst, []byte("keep-me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cloneDiskFile(src, dst, "qcow2", false); err == nil {
+		t.Fatal("clone onto an existing destination must be refused")
+	}
+	if err := cloneDiskFile(src, dst, "qcow2", true); err == nil {
+		t.Fatal("linked clone onto an existing destination must be refused")
+	}
+	if got, err := os.ReadFile(dst); err != nil || string(got) != "keep-me" {
+		t.Fatalf("existing destination changed: %q, err=%v", got, err)
+	}
+}
+
+// A cached base image must be standalone: chaining its backing file would
+// let a VM read whatever the parent disk points at.
+func TestCreateBaseImageOverlayRejectsChainedBackingFile(t *testing.T) {
+	if _, err := exec.LookPath("qemu-img"); err != nil {
+		t.Skip("qemu-img not available in test environment")
+	}
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "parent.qcow2")
+	child := filepath.Join(dir, "child.qcow2")
+	overlay := filepath.Join(dir, "vm.qcow2")
+	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", parent, "16M").CombinedOutput(); err != nil {
+		t.Fatalf("create parent: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", parent, child, "16M").CombinedOutput(); err != nil {
+		t.Fatalf("create child: %v (%s)", err, out)
+	}
+
+	err := createBaseImageOverlay(child, overlay, 32<<20)
+	if err == nil {
+		t.Fatal("a base image with its own backing file must be refused")
+	}
+	if !strings.Contains(err.Error(), "standalone qcow2 disk") {
+		t.Fatalf("error = %v, want the standalone-disk rejection", err)
+	}
+	if _, statErr := os.Stat(overlay); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected overlay left a file behind: %v", statErr)
 	}
 }

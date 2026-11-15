@@ -103,7 +103,7 @@ func TestLxdNetworkConfig(t *testing.T) {
 		"eth0": {"type": "nic", "nictype": "bridged", "parent": "vmbr0"},
 		"eth1": {"type": "nic", "nictype": "bridged", "parent": "vmbr0"},
 	}
-	nc := lxdNetworkConfig(devs)
+	nc := lxdNetworkConfig(devs, nil)
 	if !strings.Contains(nc, "eth0:") || !strings.Contains(nc, "eth1:") {
 		t.Errorf("network-config must declare eth0 and eth1:\n%s", nc)
 	}
@@ -112,7 +112,7 @@ func TestLxdNetworkConfig(t *testing.T) {
 	}
 	// After detaching eth1, only eth0 remains.
 	delete(devs, "eth1")
-	nc2 := lxdNetworkConfig(devs)
+	nc2 := lxdNetworkConfig(devs, nil)
 	if strings.Contains(nc2, "eth1:") || !strings.Contains(nc2, "eth0:") {
 		t.Errorf("after detach, network-config must only declare eth0:\n%s", nc2)
 	}
@@ -374,5 +374,20 @@ func TestLXDMetricsCollectorSampleOnceAndSink(t *testing.T) {
 	}
 	if len(sinkCalls) != 1 || sinkCalls[0] != "ct1" {
 		t.Errorf("sink calls = %v, want [ct1]", sinkCalls)
+	}
+}
+
+func TestLXDNetworkConfigKeepsStaticAddress(t *testing.T) {
+	devices := map[string]map[string]string{
+		"eth0": {"type": "nic", "nictype": "bridged", "parent": "incusbr0"},
+	}
+	nc := lxdNetworkConfig(devices, []models.CloudInitNetworkConfig{{
+		Interface: "eth0", IPv4: "192.168.50.50/24", Gateway4: "192.168.1.1",
+		DNS: []string{"1.1.1.1"},
+	}})
+	for _, want := range []string{"dhcp4: false", "addresses: [192.168.50.50/24]", "gateway4: 192.168.1.1", "addresses: [1.1.1.1]"} {
+		if !strings.Contains(nc, want) {
+			t.Fatalf("network config missing %q: %s", want, nc)
+		}
 	}
 }

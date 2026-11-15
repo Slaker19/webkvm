@@ -17,6 +17,7 @@
   let {
     value = $bindable(''),
     placeholder = t('common.search'),
+    ariaLabel = '',
     autofocus = false,
     debounce = 0, // ms; 0 = no debounce, calls onInput synchronously
     onInput = () => {},
@@ -66,6 +67,7 @@
     type="search"
     bind:value
     {placeholder}
+    aria-label={ariaLabel || placeholder}
     {autofocus}
     oninput={fire}
     class="pl-8 pr-8 [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-cancel-button]:hidden"

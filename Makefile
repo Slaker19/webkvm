@@ -136,6 +136,7 @@ dist: binary
 		scripts/webkvm.service \
 		scripts/Caddyfile scripts/generate-self-signed.sh \
 		scripts/install-caddy-systemd.sh scripts/install-webkvm.sh \
+		scripts/install-ha-stack.sh \
 		scripts/smoke.sh \
 		Makefile
 	@cd dist && sha256sum webkvm-$(VERSION)-linux_amd64 webkvm-cli-$(VERSION)-linux_amd64 webkvm-$(VERSION).tar.gz > SHA256SUMS

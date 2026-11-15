@@ -5,6 +5,9 @@
 // state-changing requests.
 import { SvelteURLSearchParams } from 'svelte/reactivity';
 import { isMediaRef } from '../utils/mediaRef.js';
+import { t } from '../i18n.svelte.js';
+import { localizedApiErrorMessage } from '../apiErrors.js';
+import { notifySessionCleared } from '../sessionHooks.js';
 const STATUS = { CHECKING: 'checking', IN: 'in', OUT: 'out' };
 
 let statusState = $state(STATUS.CHECKING);
@@ -38,6 +41,7 @@ async function redirectToLogin(reason) {
 }
 
 function clearSessionState() {
+  notifySessionCleared();
   userState = '';
   roleState = '';
   mustChangeState = false;
@@ -186,7 +190,37 @@ const UNSAFE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
 // password log the user out / show "session expired".
 // `skipAuthRedirect: true` is for /auth/logout, whose 401 just means the
 // cookie was already gone.
+function routeRemoteVMDetail(path) {
+  if (typeof window === 'undefined') return path;
+  const apiMatch = path.match(/^\/vms\/([^/?]+)/);
+  if (!apiMatch) return path;
+
+  const [routePath, routeQuery = ''] = window.location.hash.slice(1).split('?');
+  const routeMatch = routePath.match(/^\/vms\/([^/]+)$/);
+  if (!routeMatch || routeMatch[1] !== apiMatch[1]) return path;
+
+  const params = new URLSearchParams(routeQuery);
+  const node = params.get('node');
+  if (!node || node === 'local') return path;
+  // hv=kvm|incus disambiguates a name that exists as both a KVM node and an
+  // Incus member; the detail route carries it next to node.
+  const hv = params.get('hv');
+  const own = new URLSearchParams(path.split('?')[1] || '');
+  if (own.has('node')) {
+    // A call that already names the node but forgot hv: add the route's hv
+    // when it targets the same node (an Incus member's instance would
+    // otherwise take the libvirt/SSH path and answer 409 no_key).
+    if (own.get('node') === node && !own.has('hv') && (hv === 'kvm' || hv === 'incus')) {
+      return `${path}&hv=${hv}`;
+    }
+    return path;
+  }
+  const sel = `node=${encodeURIComponent(node)}${hv === 'kvm' || hv === 'incus' ? `&hv=${hv}` : ''}`;
+  return `${path}${path.includes('?') ? '&' : '?'}${sel}`;
+}
+
 async function request(path, opts = {}) {
+  path = routeRemoteVMDetail(path);
   const { credentialCheck = false, skipAuthRedirect = false, ...fetchOpts } = opts;
   const method = (fetchOpts.method || 'GET').toUpperCase();
   const headers = { 'Content-Type': 'application/json', ...fetchOpts.headers };
@@ -209,9 +243,9 @@ async function request(path, opts = {}) {
       typeof credentialCheck === 'function' ? credentialCheck(body) : credentialCheck;
     if (isCredential || skipAuthRedirect) {
       throw new ApiError(
-        body?.error || 'Unauthorized',
+        localizedApiErrorMessage(body, 'Unauthorized'),
         401,
-        isCredential ? 'invalid_credentials' : 'unauthorized',
+        body?.code || (isCredential ? 'invalid_credentials' : 'unauthorized'),
         body
       );
     }
@@ -243,7 +277,7 @@ async function request(path, opts = {}) {
     if (res.status === 429) {
       // surface Retry-After if present
       const retry = res.headers.get('Retry-After');
-      throw new ApiError(data.error || 'Too many requests', 429, 'rate_limited', {
+      throw new ApiError(localizedApiErrorMessage(data, 'Too many requests'), 429, 'rate_limited', {
         retryAfter: retry,
       });
     }
@@ -261,17 +295,70 @@ async function request(path, opts = {}) {
         auth.onUnauthorized('session_expired');
         throw new ApiError('Session expired', 403, 'unauthorized');
       }
-      throw new ApiError(data.error || 'Forbidden', 403, 'forbidden');
+      throw new ApiError(
+        localizedApiErrorMessage(data, 'Forbidden'),
+        403,
+        data.code || 'forbidden',
+        data
+      );
     }
     throw new ApiError(
-      data.message || data.error || `Request failed (${res.status})`,
+      localizedApiErrorMessage(data, data.message || `Request failed (${res.status})`),
       res.status,
-      'request_failed',
+      data.code || 'request_failed',
       data
     );
   }
   if (data?.csrf) csrfState = data.csrf;
   return data;
+}
+
+// nodeQuery appends the ?node= selector for a remote cluster node. Empty
+// or "local" (the VM's own "local" encoding) yields an empty string so the
+// URL stays clean for local instances.
+// Body for POST /modules/ha/preflight and /modules/ha/install. Accepts the
+// legacy bare boolean (LINSTOR flag) or an options object
+// { linstor, accept_experimental, fencing: ['sbd'|'pve'|'redfish'|'ipmi'] }.
+// Only meaningful, known keys are sent so an unchecked option never reaches
+// the backend as an explicit opt-in.
+const HA_FENCING_KINDS = ['sbd', 'pve', 'redfish', 'ipmi'];
+export function haModuleOptionsBody(opts) {
+  const o = opts !== null && typeof opts === 'object' ? opts : { linstor: !!opts };
+  const body = { linstor: !!o.linstor };
+  if (o.accept_experimental) body.accept_experimental = true;
+  if (Array.isArray(o.fencing)) {
+    const fencing = o.fencing.filter(
+      (k, i, all) => HA_FENCING_KINDS.includes(k) && all.indexOf(k) === i
+    );
+    if (fencing.length) body.fencing = fencing;
+  }
+  return JSON.stringify(body);
+}
+
+// `&node=…&hv=…` continuation (for URLs that already carry a query).
+function nodeParams(node, hv) {
+  return nodeQuery(node, hv).replace(/^\?/, '&');
+}
+
+// Plain node-id selector for list endpoints (pools, networks, bridges).
+function nodeSelector(node) {
+  return node && node !== 'local' ? `?node=${encodeURIComponent(node)}` : '';
+}
+
+function nodeQuery(node, hv) {
+  if (!node || node === 'local') return '';
+  return `?node=${encodeURIComponent(node)}${hv === 'kvm' || hv === 'incus' ? `&hv=${hv}` : ''}`;
+}
+
+// URL (path + query) of one HA workload: `/ha/workloads/kvm/name` or
+// `/ha/workloads/incus/name/<suffix>?project=p`. Extra query params (mode,
+// confirm) follow the project.
+function haWorkloadPath(kind, name, project, suffix = '', extra = {}) {
+  const params = new SvelteURLSearchParams();
+  if (kind === 'incus') params.set('project', project || 'default');
+  for (const [k, v] of Object.entries(extra)) params.set(k, v);
+  const qs = params.toString();
+  return `/ha/workloads/${encodeURIComponent(kind)}/${encodeURIComponent(name)}${suffix}${qs ? '?' + qs : ''}`;
 }
 
 export const api = {
@@ -341,40 +428,88 @@ export const api = {
     }),
 
   // --- VMs ---
-  listVMs: () => request('/vms'),
-  getVM: (id) => request(`/vms/${id}`),
+  // opts.scope === 'local': this server's instances only, without waiting
+  // for the remote nodes (the list renders them first, 8.30).
+  listVMs: (opts = {}) => request(opts?.scope === 'local' ? '/vms?scope=local' : '/vms'),
+  getVM: (id, node, hv) => request(`/vms/${id}${nodeQuery(node, hv)}`),
   listIncusProfiles: () => request('/vms/incus-profiles'),
   listIncusImages: () => request('/vms/incus-images'),
   createVM: (data) => request('/vms', { method: 'POST', body: JSON.stringify(data) }),
   updateVM: (id, data) => request(`/vms/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-  deleteVM: (id, withDisks = false) =>
-    request(`/vms/${id}${withDisks ? '?disks=true' : ''}`, { method: 'DELETE' }),
-  startVM: (id) => request(`/vms/${id}/start`, { method: 'POST' }),
-  shutdownVM: (id) => request(`/vms/${id}/shutdown`, { method: 'POST' }),
-  forceOffVM: (id) => request(`/vms/${id}/forceoff`, { method: 'POST' }),
-  rebootVM: (id) => request(`/vms/${id}/reboot`, { method: 'POST' }),
-  suspendVM: (id) => request(`/vms/${id}/suspend`, { method: 'POST' }),
+  deleteVM: (id, withDisks = false, node, hv) =>
+    request(`/vms/${id}${withDisks ? `?disks=true${nodeParams(node, hv)}` : nodeQuery(node, hv)}`, {
+      method: 'DELETE',
+    }),
+  startVM: (id, node, hv) => request(`/vms/${id}/start${nodeQuery(node, hv)}`, { method: 'POST' }),
+  shutdownVM: (id, node, hv) =>
+    request(`/vms/${id}/shutdown${nodeQuery(node, hv)}`, { method: 'POST' }),
+  forceOffVM: (id, node, hv) =>
+    request(`/vms/${id}/forceoff${nodeQuery(node, hv)}`, { method: 'POST' }),
+  rebootVM: (id, node, hv) =>
+    request(`/vms/${id}/reboot${nodeQuery(node, hv)}`, { method: 'POST' }),
+  suspendVM: (id, node, hv) =>
+    request(`/vms/${id}/suspend${nodeQuery(node, hv)}`, { method: 'POST' }),
   resetVMPassword: (id) => request(`/vms/${id}/reset-password`, { method: 'POST' }),
-  resumeVM: (id) => request(`/vms/${id}/resume`, { method: 'POST' }),
+  resumeVM: (id, node, hv) =>
+    request(`/vms/${id}/resume${nodeQuery(node, hv)}`, { method: 'POST' }),
+  // Per-workload "managed" flag (PUT …/managed?node=&hv=).
+  setVMManaged: (id, node, hv, managed) =>
+    request(`/vms/${encodeURIComponent(id)}/managed${nodeQuery(node, hv)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ managed: !!managed }),
+    }),
+  // Incus cluster: move an instance to another member.
+  moveVM: (id, targetMember, live = false, node, hv) =>
+    request(`/vms/${encodeURIComponent(id)}/move${nodeQuery(node, hv)}`, {
+      method: 'POST',
+      body: JSON.stringify({ target_member: targetMember, live: !!live }),
+    }),
+  evacuateIncusMember: (name, mode = '', force = false) =>
+    request(`/cluster/members/${encodeURIComponent(name)}/evacuate`, {
+      method: 'POST',
+      body: JSON.stringify({ ...(mode ? { mode } : {}), ...(force ? { force: true } : {}) }),
+    }),
+  restoreIncusMember: (name, force = false) =>
+    request(`/cluster/members/${encodeURIComponent(name)}/restore`, {
+      method: 'POST',
+      body: JSON.stringify(force ? { force: true } : {}),
+    }),
+  migrateVM: (id, sourceNode, destNode, live = false, sharedStorage = false) =>
+    request(`/vms/${id}/migrate${nodeQuery(sourceNode)}`, {
+      method: 'POST',
+      body: JSON.stringify({ node: destNode, live, shared_storage: sharedStorage }),
+    }),
   // Autostart toggles libvirtd's per-VM autostart flag (not the
   // host's "auto-start VMs at boot" master switch, which is
   // controlled separately by systemd/libvirtd config). The flag
   // is also returned as a field on the VM object so the UI can
   // initialize the switch without a second round-trip; this
   // setter is the only way to change it.
-  setVMAutostart: (id, enabled) =>
-    request(`/vms/${id}/autostart`, { method: 'POST', body: JSON.stringify({ enabled }) }),
-  listSnapshots: (vmId) => request(`/vms/${vmId}/snapshots`),
-  createSnapshot: (vmId, data) =>
-    request(`/vms/${vmId}/snapshots`, { method: 'POST', body: JSON.stringify(data) }),
-  deleteSnapshot: (vmId, sid) => request(`/vms/${vmId}/snapshots/${sid}`, { method: 'DELETE' }),
-  revertSnapshot: (vmId, sid) =>
-    request(`/vms/${vmId}/snapshots/${sid}/revert`, { method: 'POST' }),
+  setVMAutostart: (id, enabled, node, hv) =>
+    request(`/vms/${id}/autostart${nodeQuery(node, hv)}`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
+  // node/hv: owning node of the VM; hv=incus keeps an Incus member's
+  // instance on the Incus handlers (without it the backend takes the
+  // libvirt/SSH path for that node name).
+  listSnapshots: (vmId, node, hv) => request(`/vms/${vmId}/snapshots${nodeQuery(node, hv)}`),
+  createSnapshot: (vmId, data, node, hv) =>
+    request(`/vms/${vmId}/snapshots${nodeQuery(node, hv)}`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  deleteSnapshot: (vmId, sid, node, hv) =>
+    request(`/vms/${vmId}/snapshots/${sid}${nodeQuery(node, hv)}`, { method: 'DELETE' }),
+  revertSnapshot: (vmId, sid, node, hv) =>
+    request(`/vms/${vmId}/snapshots/${sid}/revert${nodeQuery(node, hv)}`, { method: 'POST' }),
   getVMFirewall: (vmId) => request(`/vms/${vmId}/firewall`),
   setVMFirewall: (vmId, data) =>
     request(`/vms/${vmId}/firewall`, { method: 'PUT', body: JSON.stringify(data) }),
-  makeVMTemplate: (vmId) => request(`/vms/${vmId}/make-template`, { method: 'POST' }),
-  unsetVMTemplate: (vmId) => request(`/vms/${vmId}/unset-template`, { method: 'POST' }),
+  makeVMTemplate: (vmId, node, hv) =>
+    request(`/vms/${vmId}/make-template${nodeQuery(node, hv)}`, { method: 'POST' }),
+  unsetVMTemplate: (vmId, node, hv) =>
+    request(`/vms/${vmId}/unset-template${nodeQuery(node, hv)}`, { method: 'POST' }),
   listTemplates: () => request('/templates'),
   instantiateTemplate: (id, data) =>
     request(`/templates/${id}/instantiate`, { method: 'POST', body: JSON.stringify(data) }),
@@ -395,12 +530,18 @@ export const api = {
   refreshHelperScripts: () => request('/helper-scripts/refresh', { method: 'POST' }),
   getHelperScriptProvision: (slug) =>
     request(`/helper-scripts/${encodeURIComponent(slug)}/provision`),
-  getConsoleTicket: (vmId) =>
-    request(`/vms/${encodeURIComponent(vmId)}/console-ticket`, { method: 'POST' }),
-  getVNCTicket: (vmId) =>
-    request(`/vms/${encodeURIComponent(vmId)}/vnc-ticket`, { method: 'POST' }),
-  createVNCTicket: (vmId) =>
-    request(`/vms/${encodeURIComponent(vmId)}/vnc-ticket`, { method: 'POST' }),
+  getConsoleTicket: (vmId, node, hv) =>
+    request(`/vms/${encodeURIComponent(vmId)}/console-ticket${nodeQuery(node, hv)}`, {
+      method: 'POST',
+    }),
+  getVNCTicket: (vmId, node, hv) =>
+    request(`/vms/${encodeURIComponent(vmId)}/vnc-ticket${nodeQuery(node, hv)}`, {
+      method: 'POST',
+    }),
+  createVNCTicket: (vmId, node, hv) =>
+    request(`/vms/${encodeURIComponent(vmId)}/vnc-ticket${nodeQuery(node, hv)}`, {
+      method: 'POST',
+    }),
   getHostTerminalTicket: () => request('/host/terminal-ticket', { method: 'POST' }),
   getEventsTicket: () => request('/events/ticket', { method: 'POST' }),
   getVMSchedule: (vmId) => request(`/vms/${vmId}/schedule`),
@@ -462,7 +603,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ path, deep }),
     }),
-  listPools: () => request('/storage/pools'),
+  listPools: (node) => request(`/storage/pools${nodeSelector(node)}`),
   createPool: (data) => request('/storage/pools', { method: 'POST', body: JSON.stringify(data) }),
   // browseRemote lists the subfolders of an NFS export or SMB share —
   // shared by the storage pool AND backup target forms (see
@@ -485,7 +626,11 @@ export const api = {
       body: JSON.stringify(data),
     }),
   deletePool: (name) => request(`/storage/pools/${name}`, { method: 'DELETE' }),
-  listVolumes: (pool) => request(`/storage/volumes?pool=${pool}`),
+  // node: optional remote libvirt node (admin-only, ?node=).
+  listVolumes: (pool, node) =>
+    request(
+      `/storage/volumes?pool=${encodeURIComponent(pool)}${nodeSelector(node).replace(/^\?/, '&')}`
+    ),
   createVolume: (data) =>
     request('/storage/volumes', { method: 'POST', body: JSON.stringify(data) }),
   resizeVolume: (pool, name, capacity) =>
@@ -502,7 +647,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  listISOs: (pool) => request(`/storage/isos${pool ? '?pool=' + encodeURIComponent(pool) : ''}`),
+  // node: optional remote libvirt node — lists the ISO volumes of ITS pools.
+  listISOs: (pool, node) => {
+    const q = [
+      pool ? 'pool=' + encodeURIComponent(pool) : '',
+      nodeSelector(node).replace(/^\?/, ''),
+    ]
+      .filter(Boolean)
+      .join('&');
+    return request(`/storage/isos${q ? '?' + q : ''}`);
+  },
   // pool is required: it goes in the path, and the ISO library's name
   // is the server's to decide (it was renamed ISOS -> webkvm-isos in
   // v2.5). A client-side default here would be a second source of
@@ -604,11 +758,15 @@ export const api = {
 
       const pct = Math.min(100, Math.max(0, Math.round(job.progress || 0)));
       if (tasksModule) {
-        let title = opts.title || job.name || 'Operación en segundo plano';
-        if (title.startsWith('clone:')) title = `Clonando VM: ${title.slice(6)}`;
-        else if (title.startsWith('batch-clone:')) title = `Clonado en lote: ${title.slice(12)}`;
-        else if (title.startsWith('snapshot:')) title = `Creando instantánea: ${title.slice(9)}`;
-        else if (title.startsWith('move ')) title = `Moviendo disco: ${title.slice(5)}`;
+        let title = opts.title || job.name || t('taskCenter.backgroundDefault');
+        if (title.startsWith('clone:')) title = t('taskCenter.cloningVM', { name: title.slice(6) });
+        else if (title.startsWith('batch-clone:')) {
+          title = t('taskCenter.batchCloning', { name: title.slice(12) });
+        } else if (title.startsWith('snapshot:')) {
+          title = t('taskCenter.creatingSnapshot', { name: title.slice(9) });
+        } else if (title.startsWith('move ')) {
+          title = t('taskCenter.movingDisk', { name: title.slice(5) });
+        }
 
         tasksModule.upsertTask({
           id: taskId,
@@ -622,20 +780,28 @@ export const api = {
 
       if (job.status === 'done' || job.status === 'completed') {
         if (tasksModule) {
-          tasksModule.finishTask(taskId, 'success', job.message || 'Completado con éxito', 100);
+          tasksModule.finishTask(
+            taskId,
+            'success',
+            job.message || t('taskCenter.successDefault'),
+            100
+          );
         }
         return job.result ?? job;
       }
       if (job.status === 'error') {
-        const errMsg = job.error || job.message || 'Job failed';
+        const errMsg = localizedApiErrorMessage(
+          { code: job.error_code, error: job.error || job.message },
+          'Job failed'
+        );
         if (tasksModule) {
           tasksModule.finishTask(taskId, 'error', errMsg, pct);
         }
-        throw new ApiError(errMsg, 500, 'job_error');
+        throw new ApiError(errMsg, 500, job.error_code || 'job_error');
       }
       if (Date.now() - started > timeout) {
         if (tasksModule) {
-          tasksModule.finishTask(taskId, 'error', 'Operación expiró por tiempo límite', pct);
+          tasksModule.finishTask(taskId, 'error', t('taskCenter.timeout'), pct);
         }
         throw new ApiError('Job timed out', 504, 'job_timeout');
       }
@@ -695,7 +861,7 @@ export const api = {
     request(`/users/${username}/revoke-sessions`, { method: 'POST' }),
 
   // --- networks ---
-  listNetworks: () => request('/networks'),
+  listNetworks: (node) => request(`/networks${nodeSelector(node)}`),
   createNetwork: (data) => request('/networks', { method: 'POST', body: JSON.stringify(data) }),
   updateNetwork: (id, data) =>
     request(`/networks/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
@@ -711,7 +877,7 @@ export const api = {
   // --- host ---
   getHostInfo: () => request('/host'),
   getHostStats: () => request('/host/stats'),
-  listHostInterfaces: () => request('/host/interfaces'),
+  listHostInterfaces: (node) => request(`/host/interfaces${nodeSelector(node)}`),
   configureHostInterface: (name, data) =>
     request(`/host/interfaces/${name}/configure`, { method: 'POST', body: JSON.stringify(data) }),
   createHostBond: (data) => request('/host/bonds', { method: 'POST', body: JSON.stringify(data) }),
@@ -726,7 +892,15 @@ export const api = {
     request(`/host/pci-devices/${encodeURIComponent(address)}/unbind-vfio`, { method: 'POST' }),
   getHostUpdates: () => request('/host/updates'),
   refreshHostUpdates: () => request('/host/updates/refresh', { method: 'POST' }),
-  upgradeHostUpdates: () => request('/host/updates/upgrade', { method: 'POST' }),
+  upgradeHostUpdates: (packages = []) =>
+    request('/host/updates/upgrade', {
+      method: 'POST',
+      body: packages?.length ? JSON.stringify({ packages }) : undefined,
+    }),
+  rebootHost: () => request('/host/reboot', { method: 'POST' }),
+  getHostUpdateSchedule: () => request('/host/updates/schedule'),
+  setHostUpdateSchedule: (cfg) =>
+    request('/host/updates/schedule', { method: 'PUT', body: JSON.stringify(cfg) }),
   getGuestInfo: (id) => request(`/vms/${id}/guest-info`),
   guestFSTrim: (id) => request(`/vms/${id}/guest/fstrim`, { method: 'POST' }),
   guestExec: (id, data) =>
@@ -797,27 +971,43 @@ export const api = {
     }),
 
   // --- graphics ---
-  getRDPUrl: (id) => `${BASE}/vms/${id}/rdp`,
-  getSPICEUrl: (id) => `${BASE}/vms/${id}/spice`,
+  getRDPUrl: (id, node, hv) => `${BASE}/vms/${id}/rdp${nodeQuery(node, hv)}`,
+  getSPICEUrl: (id, node, hv) => `${BASE}/vms/${id}/spice${nodeQuery(node, hv)}`,
+  // Console WebSockets for a VM that lives on another node: node/hv ride in
+  // the query next to the ticket (the legacy /console/{id} page does not
+  // forward them, so the SPA never uses it for remote VMs).
+  getVNCWsUrl: (id, ticket, node, hv) => {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}/api/vms/${encodeURIComponent(id)}/vnc?vt=${encodeURIComponent(ticket || '')}${nodeParams(node, hv)}`;
+  },
+  getSerialWsUrl: (id, ticket, node, hv) => {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}/api/vms/${encodeURIComponent(id)}/serial?ticket=${encodeURIComponent(ticket || '')}${nodeParams(node, hv)}`;
+  },
   getSPICEWsUrl: (id, ticket) => {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${location.host}/api/vms/${id}/spice-ws?vt=${encodeURIComponent(ticket || '')}`;
   },
 
   // --- disks ---
-  listDisks: (vmId) => request(`/vms/${vmId}/disks`),
-  createDisk: (vmId, data) =>
-    request(`/vms/${vmId}/disks`, { method: 'POST', body: JSON.stringify(data) }),
-  deleteDisk: (vmId, dev) => request(`/vms/${vmId}/disks/${dev}`, { method: 'DELETE' }),
+  listDisks: (vmId, node) => request(`/vms/${vmId}/disks${nodeQuery(node)}`),
+  // node: remote libvirt node of the VM (per-node route, ?node=&hv=kvm).
+  createDisk: (vmId, data, node) =>
+    request(`/vms/${vmId}/disks${nodeQuery(node, 'kvm')}`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  deleteDisk: (vmId, dev, node, hv) =>
+    request(`/vms/${vmId}/disks/${dev}${nodeQuery(node, hv)}`, { method: 'DELETE' }),
   updateDiskSource: (vmId, dev, source) =>
     request(`/vms/${vmId}/disks/${dev}`, { method: 'PUT', body: JSON.stringify({ source }) }),
-  resizeVmDisk: (vmId, dev, sizeGb) =>
-    request(`/vms/${vmId}/disks/${dev}/resize`, {
+  resizeVmDisk: (vmId, dev, sizeGb, node, hv) =>
+    request(`/vms/${vmId}/disks/${dev}/resize${nodeQuery(node, hv)}`, {
       method: 'POST',
       body: JSON.stringify({ size_gb: Number(sizeGb) }),
     }),
-  changeDiskBus: (vmId, dev, bus) =>
-    request(`/vms/${vmId}/disks/${dev}/bus`, {
+  changeDiskBus: (vmId, dev, bus, node, hv) =>
+    request(`/vms/${vmId}/disks/${dev}/bus${nodeQuery(node, hv)}`, {
       method: 'POST',
       body: JSON.stringify({ bus }),
     }),
@@ -843,23 +1033,31 @@ export const api = {
     request(`/vms/${vmId}/shared-folders/${encodeURIComponent(tag)}`, { method: 'DELETE' }),
 
   // --- net ifaces ---
-  listNetIfaces: (vmId) => request(`/vms/${vmId}/networks`),
-  createNetIface: (vmId, data) =>
-    request(`/vms/${vmId}/networks`, { method: 'POST', body: JSON.stringify(data) }),
-  updateNetIface: (vmId, mac, data) =>
-    request(`/vms/${vmId}/networks/${encodeURIComponent(mac)}`, {
+  listNetIfaces: (vmId, node) => request(`/vms/${vmId}/networks${nodeQuery(node)}`),
+  createNetIface: (vmId, data, node) =>
+    request(`/vms/${vmId}/networks${nodeQuery(node, 'kvm')}`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateNetIface: (vmId, mac, data, node, hv) =>
+    request(`/vms/${vmId}/networks/${encodeURIComponent(mac)}${nodeQuery(node, hv)}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
   checkVLANSupport: (network) =>
     request(`/vms/_/vlan-support?network=${encodeURIComponent(network)}`),
-  deleteNetIface: (vmId, mac) =>
-    request(`/vms/${vmId}/networks/${encodeURIComponent(mac)}`, { method: 'DELETE' }),
+  deleteNetIface: (vmId, mac, node, hv) =>
+    request(`/vms/${vmId}/networks/${encodeURIComponent(mac)}${nodeQuery(node, hv)}`, {
+      method: 'DELETE',
+    }),
 
   // --- meta + metrics + cover ---
-  getVMMeta: (vmId) => request(`/vms/${vmId}/meta`),
-  updateVMMeta: (vmId, data) =>
-    request(`/vms/${vmId}/meta`, { method: 'PUT', body: JSON.stringify(data) }),
+  getVMMeta: (vmId, node, hv) => request(`/vms/${vmId}/meta${nodeQuery(node, hv)}`),
+  updateVMMeta: (vmId, data, node, hv) =>
+    request(`/vms/${vmId}/meta${nodeQuery(node, hv)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   getVMMetrics: (vmId) => request(`/vms/${vmId}/metrics`),
 
   uploadCover: (vmId, file) => {
@@ -921,7 +1119,10 @@ export const api = {
   getCloudInitStatus: (vmId) => request(`/vms/${vmId}/cloudinit`),
   reapplyCloudInit: (vmId, data) =>
     request(`/vms/${vmId}/cloudinit`, { method: 'POST', body: JSON.stringify(data) }),
-  getVMLogs: (vmId, lines = 200) => request(`/vms/${vmId}/logs?lines=${lines}`),
+  getVMLogs: (vmId, lines = 200, node) =>
+    request(
+      `/vms/${vmId}/logs?lines=${lines}${node && node !== 'local' ? '&node=' + encodeURIComponent(node) : ''}`
+    ),
   exportVM: async (id, opts = {}) => {
     const params = new SvelteURLSearchParams();
     if (opts.format) params.set('format', opts.format);
@@ -1129,16 +1330,176 @@ export const api = {
   revokeToken: (id) => request(`/tokens/${id}/revoke`, { method: 'POST' }),
   deleteToken: (id) => request(`/tokens/${id}`, { method: 'DELETE' }),
 
-  // --- Nodes (libvirt hosts) ---
+  // --- Cluster nodes ---
   listNodes: () => request('/nodes'),
+  // Optional Cluster/HA module (never gated by the module flag: this is
+  // how the operator installs and enables it).
+  getHAModule: () => request('/modules/ha'),
+  // opts: { linstor, accept_experimental, fencing: ['sbd'|'pve'|'redfish'|'ipmi'] }.
+  // A bare boolean is still accepted as the LINSTOR flag.
+  preflightHAModule: (opts) =>
+    request('/modules/ha/preflight', {
+      method: 'POST',
+      body: haModuleOptionsBody(opts),
+    }),
+  installHAModule: (opts) =>
+    request('/modules/ha/install', {
+      method: 'POST',
+      body: haModuleOptionsBody(opts),
+    }),
+  getHAModuleCompat: () => request('/modules/ha/compat'),
+  verifyHAModule: () => request('/modules/ha/verify', { method: 'POST' }),
+  enableHAModule: () => request('/modules/ha/enable', { method: 'POST' }),
+  disableHAModule: () => request('/modules/ha/disable', { method: 'POST' }),
+  uninstallHAModule: (purge) =>
+    request('/modules/ha/uninstall', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true, purge: !!purge }),
+    }),
+  getHAReadiness: () => request('/ha/readiness'),
+  verifyFencePVE: () => request('/ha/fence-pve/verify', { method: 'POST' }),
+  // HA Phase 2: cluster creation wizard, fencing test, node maintenance.
+  haClusterPlan: (body) =>
+    request('/modules/ha/cluster/plan', { method: 'POST', body: JSON.stringify(body) }),
+  haClusterSetup: (body) =>
+    request('/modules/ha/cluster/setup', { method: 'POST', body: JSON.stringify(body) }),
+  haClusterStatus: () => request('/modules/ha/cluster/status'),
+  haFencingTest: (body) =>
+    request('/ha/fencing/test', { method: 'POST', body: JSON.stringify(body) }),
+  haFencingEvidence: () => request('/ha/fencing/evidence'),
+  haNodeStandby: (name) =>
+    request(`/ha/nodes/${encodeURIComponent(name)}/standby`, { method: 'POST' }),
+  haNodeUnstandby: (name) =>
+    request(`/ha/nodes/${encodeURIComponent(name)}/unstandby`, { method: 'POST' }),
+  getIncusClusterMembers: () => request('/cluster/members'),
+  getIncusHealing: () => request('/incus/healing'),
+  setIncusHealing: (thresholdSeconds) =>
+    request('/incus/healing', {
+      method: 'PUT',
+      body: JSON.stringify({ threshold_seconds: thresholdSeconds }),
+    }),
+  testNode: (uri, backend = 'libvirt', project = '', trustToken = '') =>
+    request('/nodes/test', {
+      method: 'POST',
+      body: JSON.stringify({ uri, backend, project, trust_token: trustToken }),
+    }),
+  getNodeIncusInventory: (id) => request(`/nodes/${encodeURIComponent(id)}/incus-inventory`),
+  getNodeDependencyInstaller: () => request('/nodes/install-script'),
+  installNodeDependencies: (uri, allowSystemUpgrade = false) =>
+    request('/nodes/install', {
+      method: 'POST',
+      body: JSON.stringify({ uri, allow_system_upgrade: allowSystemUpgrade }),
+    }),
   getNode: (id) => request(`/nodes/${id}`),
   pingNode: (id) => request(`/nodes/${id}/ping`, { method: 'POST' }),
   pingAllNodes: () => request('/nodes/ping-all', { method: 'POST' }),
   getClusterSummary: () => request('/nodes/summary'),
-  createNode: (name, uri) =>
-    request('/nodes', { method: 'POST', body: JSON.stringify({ name, uri }) }),
+  createNode: (name, uri, backend = 'libvirt', project = '', trustToken = '', uiUrl = '') =>
+    request('/nodes', {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        uri,
+        backend,
+        project,
+        trust_token: trustToken,
+        ...(uiUrl ? { ui_url: uiUrl } : {}),
+      }),
+    }),
   updateNode: (id, data) => request(`/nodes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteNode: (id) => request(`/nodes/${id}`, { method: 'DELETE' }),
+  // force=true skips the remote Incus certificate revoke that failed
+  // (backend answers 502 incus_revoke_failed without it). The client
+  // certificate may then remain on the remote server.
+  deleteNode: (id, { force = false } = {}) =>
+    request(`/nodes/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
+
+  // --- Managed cluster SSH (admin only). WebKVM never pushes the key to a
+  // node: the operator runs the authorize command there.
+  getClusterSSH: () => request('/cluster/ssh'),
+  generateClusterSSHKey: () =>
+    request('/cluster/ssh/key', { method: 'POST', body: JSON.stringify({ algorithm: 'ed25519' }) }),
+  startClusterSSHRotation: () => request('/cluster/ssh/rotate', { method: 'POST' }),
+  // force=true switches even though some node did not pass the test of the
+  // new key (ADVANCED only; the backend audits it).
+  commitClusterSSHRotation: ({ force = false } = {}) =>
+    request('/cluster/ssh/rotate/commit', {
+      method: 'POST',
+      ...(force ? { body: JSON.stringify({ force: true }) } : {}),
+    }),
+  // Tests the PENDING key against every enabled libvirt node without
+  // touching the active connections.
+  testClusterSSHRotation: () => request('/cluster/ssh/rotate/test', { method: 'POST' }),
+  rollbackClusterSSHRotation: () => request('/cluster/ssh/rotate/rollback', { method: 'POST' }),
+  abortClusterSSHRotation: () => request('/cluster/ssh/rotate/abort', { method: 'POST' }),
+  getNodeSSHAuthorize: (id) => request(`/nodes/${encodeURIComponent(id)}/ssh-authorize`),
+  captureNodeHostKey: (id) =>
+    request(`/nodes/${encodeURIComponent(id)}/ssh/hostkey`, { method: 'POST' }),
+  pinNodeHostKey: (id, fingerprint, replace = false) =>
+    request(`/nodes/${encodeURIComponent(id)}/ssh/pin`, {
+      method: 'POST',
+      body: JSON.stringify({ fingerprint, replace: !!replace }),
+    }),
+  testNodeSSH: (id) => request(`/nodes/${encodeURIComponent(id)}/ssh/test`, { method: 'POST' }),
+
+  // --- HA workloads (Cluster/HA module only; admin only). `kind` is
+  // kvm|incus; `project` is only sent for Incus.
+  listHAWorkloads: () => request('/ha/workloads'),
+  getHAWorkload: (kind, name, project) => request(haWorkloadPath(kind, name, project)),
+  enableHAWorkload: (kind, name, project, body = {}) =>
+    request(haWorkloadPath(kind, name, project, '/enable'), {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  // opts: { mode: stop|pause|forget, confirm, acceptUnrestorable }.
+  disableHAWorkload: (
+    kind,
+    name,
+    project,
+    { mode = 'stop', confirm = '', acceptUnrestorable = false } = {}
+  ) =>
+    request(
+      haWorkloadPath(kind, name, project, '', {
+        mode,
+        ...(confirm ? { confirm } : {}),
+        ...(acceptUnrestorable ? { accept_unrestorable: 'true' } : {}),
+      }),
+      { method: 'DELETE' }
+    ),
+  // Released KVM VMs (HA turned off with stop/forget): inventory + restore.
+  listReleasedVMs: () => request('/ha/released'),
+  // opts: { confirm (the VM name), start, node }.
+  restoreReleasedVM: (name, { confirm = '', start = false, node = '' } = {}) =>
+    request(`/ha/released/${encodeURIComponent(name)}/restore`, {
+      method: 'POST',
+      body: JSON.stringify({ confirm, start: !!start, ...(node ? { node } : {}) }),
+    }),
+  discardReleasedVM: (name, confirm) =>
+    request(
+      `/ha/released/${encodeURIComponent(name)}?confirm=${encodeURIComponent(confirm || '')}`,
+      { method: 'DELETE' }
+    ),
+  placeHAWorkload: (kind, name, project, body) =>
+    request(haWorkloadPath(kind, name, project, '/placement'), {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  moveHAWorkload: (kind, name, project, node) =>
+    request(haWorkloadPath(kind, name, project, '/move'), {
+      method: 'POST',
+      body: JSON.stringify({ node }),
+    }),
+  clearHAWorkloadFailcount: (kind, name, project) =>
+    request(haWorkloadPath(kind, name, project, '/clear-failcount'), {
+      method: 'POST',
+    }),
+  maintenanceHAWorkload: (kind, name, project, action, ttlSeconds) =>
+    request(haWorkloadPath(kind, name, project, '/maintenance'), {
+      method: 'POST',
+      body: JSON.stringify(ttlSeconds ? { action, ttl_s: ttlSeconds } : { action }),
+    }),
+  // body: { action: enable|disable, items: [{kind,name,project}], dry_run, mode } (max 50).
+  bulkHAWorkloads: (body) =>
+    request('/ha/workloads/bulk', { method: 'POST', body: JSON.stringify(body) }),
 
   // --- audit log (admin only) ---
   listAudit: ({ limit, offset, q, user, action } = {}) => {
@@ -1208,6 +1569,15 @@ export const api = {
   hostMetrics: () => request('/host/metrics'),
   importHostFirewall: (firewall) =>
     request('/firewall/host/import', { method: 'POST', body: JSON.stringify(firewall) }),
+  getClusterFirewall: () => request('/firewall/cluster'),
+  saveClusterFirewall: (profile) =>
+    request('/firewall/cluster', { method: 'PUT', body: JSON.stringify({ profile }) }),
+  previewClusterFirewall: (profile) =>
+    request('/firewall/cluster/preview', { method: 'POST', body: JSON.stringify({ profile }) }),
+  applyClusterFirewall: (profile) =>
+    request('/firewall/cluster/apply', { method: 'POST', body: JSON.stringify({ profile }) }),
+  confirmClusterFirewall: () => request('/firewall/cluster/confirm', { method: 'POST' }),
+  rollbackClusterFirewall: () => request('/firewall/cluster/rollback', { method: 'POST' }),
   exportHostFirewall: () => request('/firewall/host/export'),
   // restoreAsVM is the operator-friendly restore: it takes the
   // backup archive already on disk in the target's path and

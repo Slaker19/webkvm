@@ -36,6 +36,25 @@ afterEach(() => {
 const lastReason = () => nav.calls.at(-1)?.opts?.query?.reason ?? null;
 
 describe('401 handling', () => {
+  it('routes VM detail requests to the node in the current detail URL', async () => {
+    window.location.hash = '#/vms/vm-1?tab=history&node=arch';
+    let requestedURL = '';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url) => {
+        requestedURL = String(url);
+        return json(200, { logs: 'remote log' });
+      })
+    );
+
+    await api.getVMLogs('vm-1');
+    expect(requestedURL).toContain('/vms/vm-1/logs?lines=200&node=arch');
+
+    window.location.hash = '#/vms/another-vm?node=arch';
+    await api.getVMLogs('vm-1');
+    expect(requestedURL).not.toContain('node=arch');
+  });
+
   it('wrong password is an invalid-credentials error, not an expired session', async () => {
     vi.stubGlobal(
       'fetch',

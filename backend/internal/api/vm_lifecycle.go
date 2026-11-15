@@ -48,9 +48,36 @@ func humanizeStartError(err error) string {
 // compute.ErrNotImplemented → 501 (the hypervisor backend does not
 // support this operation, e.g. an LXD container before Fase 2), anything
 // else → 500. Keeps containers from surfacing confusing internal errors.
+// isNotFoundError recognizes a missing instance/pool/volume across the
+// libvirt, Incus and filesystem layers.
+func isNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, compute.ErrNotFound) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"domain not found", "no domain with matching", "instance not found",
+		"storage pool not found", "no storage pool with matching",
+		"volume not found", "no storage volume with matching",
+		"no such file or directory",
+	} {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Handler) vmActionErr(w http.ResponseWriter, err error, humanize func(error) string) {
 	if errors.Is(err, compute.ErrNotImplemented) {
 		jsonErr(w, http.StatusNotImplemented, err.Error())
+		return
+	}
+	if isNotFoundError(err) {
+		jsonErr(w, http.StatusNotFound, err.Error())
 		return
 	}
 	// State conflicts (start while running, force-off while stopped,
@@ -75,18 +102,30 @@ func (h *Handler) StartVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := h.checkStartQuota(id); err != nil {
-		jsonErr(w, http.StatusConflict, err.Error())
+	if h.rejectPacemakerManaged(w, r, id) {
 		return
 	}
-	if err := h.compute.StartDomain(id); err != nil {
+	node := r.URL.Query().Get("node")
+	op, release, err := h.operatorFor(node)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer release()
+	if isLocalNode(node) {
+		if err := h.checkStartQuota(id); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+	if err := op.StartDomain(id); err != nil {
 		h.vmActionErr(w, err, humanizeStartError)
 		return
 	}
 	// Re-apply the firewall so port forwards for this VM take effect
-	// once it boots and grabs its IP. Best-effort: a failure here is
-	// logged, never fatal to the start.
-	if h.fwMgr != nil {
+	// once it boots and grabs its IP. Local only (a remote node owns its
+	// own firewall). Best-effort: a failure here is logged, never fatal.
+	if isLocalNode(node) && h.fwMgr != nil {
 		if _, ferr := h.fwMgr.Apply(); ferr != nil {
 			h.logError("firewall_reapply_after_start_failed", ferr, id)
 		}
@@ -101,7 +140,16 @@ func (h *Handler) ShutdownVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := h.compute.ShutdownDomain(id); err != nil {
+	if h.rejectPacemakerManaged(w, r, id) {
+		return
+	}
+	op, release, err := h.operatorFor(r.URL.Query().Get("node"))
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer release()
+	if err := op.ShutdownDomain(id); err != nil {
 		h.vmActionErr(w, err, nil)
 		return
 	}
@@ -115,7 +163,16 @@ func (h *Handler) ForceOffVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := h.compute.ForceOffDomain(id); err != nil {
+	if h.rejectPacemakerManaged(w, r, id) {
+		return
+	}
+	op, release, err := h.operatorFor(r.URL.Query().Get("node"))
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer release()
+	if err := op.ForceOffDomain(id); err != nil {
 		if errors.Is(err, compute.ErrDomainNotRunning) {
 			h.audit.Log(auditFor(r, "vm.forceoff", id, map[string]interface{}{"note": "already stopped"}))
 			jsonResp(w, http.StatusOK, map[string]string{"status": "force off"})
@@ -134,11 +191,21 @@ func (h *Handler) RebootVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := h.compute.RebootDomain(id); err != nil {
+	if h.rejectPacemakerManaged(w, r, id) {
+		return
+	}
+	node := r.URL.Query().Get("node")
+	op, release, err := h.operatorFor(node)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer release()
+	if err := op.RebootDomain(id); err != nil {
 		h.vmActionErr(w, err, nil)
 		return
 	}
-	if h.fwMgr != nil {
+	if isLocalNode(node) && h.fwMgr != nil {
 		if _, ferr := h.fwMgr.Apply(); ferr != nil {
 			h.logError("firewall_reapply_after_reboot_failed", ferr, id)
 		}
@@ -153,7 +220,16 @@ func (h *Handler) SuspendVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := h.compute.SuspendDomain(id); err != nil {
+	if h.rejectPacemakerManaged(w, r, id) {
+		return
+	}
+	op, release, err := h.operatorFor(r.URL.Query().Get("node"))
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer release()
+	if err := op.SuspendDomain(id); err != nil {
 		h.vmActionErr(w, err, nil)
 		return
 	}
@@ -167,11 +243,23 @@ func (h *Handler) ResumeVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := h.checkStartQuota(id); err != nil {
-		jsonErr(w, http.StatusConflict, err.Error())
+	if h.rejectPacemakerManaged(w, r, id) {
 		return
 	}
-	if err := h.compute.ResumeDomain(id); err != nil {
+	node := r.URL.Query().Get("node")
+	op, release, err := h.operatorFor(node)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer release()
+	if isLocalNode(node) {
+		if err := h.checkStartQuota(id); err != nil {
+			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+	if err := op.ResumeDomain(id); err != nil {
 		h.vmActionErr(w, err, nil)
 		return
 	}
@@ -185,6 +273,10 @@ func (h *Handler) GetBootDevice(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, compute.ErrNotImplemented) {
 			jsonResp(w, http.StatusOK, map[string]string{"boot_device": ""})
+			return
+		}
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
 			return
 		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -202,7 +294,18 @@ func (h *Handler) GetVMLogs(w http.ResponseWriter, r *http.Request) {
 			lines = n
 		}
 	}
-	logs, err := h.compute.GetDomainLog(id, lines)
+	node := r.URL.Query().Get("node")
+	if !isLocalNode(node) && !h.isLocalTarget(node) {
+		h.remoteUnsupported(w, "hypervisor_logs_local_only")
+		return
+	}
+	op, release, err := h.operatorFor(node)
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer release()
+	logs, err := op.GetDomainLog(id, lines)
 	if err != nil {
 		h.vmActionErr(w, err, nil)
 		return
@@ -240,6 +343,10 @@ func (h *Handler) GetAutostart(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	enabled, err := h.compute.GetDomainAutostart(id)
 	if err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

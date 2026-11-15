@@ -29,7 +29,7 @@ La interfaz es una aplicación de página única con una barra lateral:
 | **Redes** | Redes NAT y bridge, bridges del host, firewall. |
 | **Backup** | Destinos, programaciones, trabajos, archivos y restauración. |
 | **Usuarios** | Cuentas, roles, grupos y tokens de API. |
-| **Estado** | Estado del backend, de libvirt y del host, y logs. |
+| **Estado** | Estado del backend, de libvirt y del host, gestión de actualizaciones y logs. |
 | **Ajustes** | Configuración del servidor (puerto, TLS, CORS, etc.). |
 
 ## 3. Máquinas virtuales
@@ -313,6 +313,24 @@ destino y el nombre de la VM; el despliegue se ejecuta como trabajo en segundo
 plano con progreso en vivo.
 
 ## 11. Logs y resolución de problemas
+
+### Actualización desde la aplicación (solo administradores)
+
+Los administradores pueden actualizar WebKVM directamente desde la interfaz web:
+
+1. Abre la pestaña **Estado** (`/#/status`).
+2. Cuando haya una actualización disponible, pulsa en **Actualizar** (**Update**).
+3. **Requisito**: El backend requiere `WEBKVM_ALLOW_UPDATE=1` en el entorno del servicio (configurado por defecto en instalaciones nativas de systemd).
+4. **Ejecución**: El actualizador se ejecuta en segundo plano (detached) y guarda los logs en `/var/log/webkvm/update.log`.
+5. **Modo**:
+   - **Modo `release`**: Se selecciona automáticamente cuando no se ejecuta desde un clon de git. Descarga `webkvm-<version>-linux_amd64` desde GitHub Releases y verifica `SHA256SUMS` antes de instalar.
+   - **Modo `source`**: Se selecciona automáticamente cuando se ejecuta desde un clon de git (`git pull --ff-only` + recompilación, requiriendo Go y Node.js en el host).
+6. **Reversión (rollback)**: El binario en uso se respalda en `/usr/local/bin/webkvm.previous`. Una comprobación de salud de 30 segundos prueba `/api/health`; si falla, el actualizador revierte automáticamente a `webkvm.previous`.
+7. **Verificación**: Comprueba la versión activa con `webkvm version` y consulta `curl -sk https://localhost:8080/api/health`.
+
+> [!WARNING]
+> - **Instalaciones en Docker**: NO utilices el botón de actualización dentro de Docker. Actualiza descargando la nueva imagen del contenedor (ver [DOCKER.es.md](DOCKER.es.md)).
+> - **Clústeres HA**: El botón solo actualiza el nodo que sirve el panel y reinicia su servicio local; NO lo uses como actualizador de todo el clúster. Coordina las actualizaciones nodo a nodo a través de Pacemaker (ver [HA-CLUSTER.es.md](runbooks/HA-CLUSTER.es.md)).
 
 ```bash
 systemctl status webkvm           # estado del servicio

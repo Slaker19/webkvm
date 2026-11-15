@@ -399,9 +399,15 @@ func (h *Handler) DeletePool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vols, err := h.compute.ListStorageVolumes(name)
-	if err != nil && !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "not active") {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
-		return
+	if err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
+		if !strings.Contains(err.Error(), "not active") {
+			jsonErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	var allAtts []models.VolumeAttachment
 	for _, v := range vols {

@@ -28,6 +28,10 @@ export const toast = {
 };
 
 function add(t) {
+  // The same message of the same type already on screen is not stacked a
+  // second time (8.29: "Settings updated" showed twice for one save).
+  const dup = _toasts.find((x) => x.type === t.type && x.message === t.message && !t.title);
+  if (dup && !dup.title) return dup.id;
   const id = nextId++;
   const full = {
     id,

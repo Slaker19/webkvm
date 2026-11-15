@@ -82,6 +82,9 @@ func (h *Handler) ListNetworks(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if nets == nil {
+		nets = []models.Network{}
+	}
 	jsonResp(w, http.StatusOK, nets)
 }
 

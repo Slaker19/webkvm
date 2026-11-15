@@ -329,7 +329,7 @@ func (h *Handler) ListHostDisks(w http.ResponseWriter, r *http.Request) {
 
 		// Check top-level mountpoints
 		for _, m := range dev.MountPoints {
-			if m == "/" || m == "/boot" || strings.HasPrefix(m, "/boot/") || m == "/etc" {
+			if isProtectedSystemMount(m) {
 				isSystem = true
 			}
 		}
@@ -346,7 +346,7 @@ func (h *Handler) ListHostDisks(w http.ResponseWriter, r *http.Request) {
 				partPaths = append(partPaths, child.Path)
 			}
 			for _, m := range child.MountPoints {
-				if m == "/" || m == "/boot" || strings.HasPrefix(m, "/boot/") || m == "/etc" {
+				if isProtectedSystemMount(m) {
 					isSystem = true
 				}
 			}
@@ -541,6 +541,13 @@ func (h *Handler) InitHostDiskDirectory(w http.ResponseWriter, r *http.Request) 
 	req.MountPoint = strings.TrimSpace(req.MountPoint)
 	req.Filesystem = strings.ToLower(strings.TrimSpace(req.Filesystem))
 
+	mode, err := normalizeDiskMode(req.Mode)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.Mode = mode
+
 	if !safeDiskPathRE.MatchString(req.DiskPath) {
 		jsonErr(w, http.StatusBadRequest, "invalid or unsafe disk path: "+req.DiskPath)
 		return
@@ -615,11 +622,27 @@ type initHostDiskOutput struct {
 	Subfolders    []string     `json:"subfolders"`
 }
 
-func (h *Handler) executeInitHostDisk(ctx context.Context, req models.InitHostDiskRequest) (*initHostDiskOutput, bool, error) {
-	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
-	if req.Mode != "format" && req.Mode != "mount" {
-		req.Mode = "format"
+// normalizeDiskMode defaults an omitted mode to "format" (the historical
+// behaviour) but rejects unknown values instead of silently formatting a
+// disk the caller may have asked to mount.
+func normalizeDiskMode(in string) (string, error) {
+	m := strings.ToLower(strings.TrimSpace(in))
+	switch m {
+	case "":
+		return "format", nil
+	case "format", "mount":
+		return m, nil
+	default:
+		return "", fmt.Errorf("invalid mode %q: use 'format' or 'mount'", in)
 	}
+}
+
+func (h *Handler) executeInitHostDisk(ctx context.Context, req models.InitHostDiskRequest) (*initHostDiskOutput, bool, error) {
+	mode, err := normalizeDiskMode(req.Mode)
+	if err != nil {
+		return nil, false, err
+	}
+	req.Mode = mode
 	if _, ok := filesystemByID(req.Filesystem); !ok {
 		req.Filesystem = ""
 	}
@@ -742,11 +765,16 @@ func (h *Handler) executeInitHostDisk(ctx context.Context, req models.InitHostDi
 	doAutomount := req.Automount == nil || *req.Automount
 
 	unitNameOut, err := exec.CommandContext(ctx, "systemd-escape", "--path", "--suffix=mount", req.MountPoint).Output()
-	if err == nil && len(unitNameOut) > 0 {
-		unitName := strings.TrimSpace(string(unitNameOut))
-		automountName := strings.TrimSuffix(unitName, ".mount") + ".automount"
+	if err != nil {
+		return nil, false, fmt.Errorf("build mount unit name: %w", err)
+	}
+	unitName := strings.TrimSpace(string(unitNameOut))
+	if unitName == "" {
+		return nil, false, fmt.Errorf("build mount unit name for %s: empty output", req.MountPoint)
+	}
+	automountName := strings.TrimSuffix(unitName, ".mount") + ".automount"
 
-		unitContent := fmt.Sprintf(`[Unit]
+	unitContent := fmt.Sprintf(`[Unit]
 Description=WebKVM Mount for %s (%s)
 After=local-fs.target
 DefaultDependencies=no
@@ -762,12 +790,14 @@ Options=%s
 WantedBy=local-fs.target
 `, req.VolumeName, req.MountPoint, deviceToMount, req.MountPoint, req.Filesystem, mountOpts)
 
-		unitPath := filepath.Join("/etc/systemd/system", unitName)
-		_ = os.WriteFile(unitPath, []byte(unitContent), 0644)
+	unitPath := filepath.Join("/etc/systemd/system", unitName)
+	if err := os.WriteFile(unitPath, []byte(unitContent), 0644); err != nil {
+		return nil, false, fmt.Errorf("write mount unit %s: %w", unitPath, err)
+	}
 
-		automountPath := filepath.Join("/etc/systemd/system", automountName)
-		if doAutomount {
-			automountContent := fmt.Sprintf(`[Unit]
+	automountPath := filepath.Join("/etc/systemd/system", automountName)
+	if doAutomount {
+		automountContent := fmt.Sprintf(`[Unit]
 Description=WebKVM Automount for %s (%s)
 After=local-fs.target
 StartLimitIntervalSec=0
@@ -779,25 +809,39 @@ TimeoutIdleSec=0
 [Install]
 WantedBy=local-fs.target
 `, req.VolumeName, req.MountPoint, req.MountPoint)
-			_ = os.WriteFile(automountPath, []byte(automountContent), 0644)
-		} else {
-			_ = os.Remove(automountPath)
+		if err := os.WriteFile(automountPath, []byte(automountContent), 0644); err != nil {
+			return nil, false, fmt.Errorf("write automount unit %s: %w", automountPath, err)
 		}
+	} else if err := os.Remove(automountPath); err != nil && !os.IsNotExist(err) {
+		return nil, false, fmt.Errorf("remove stale automount unit %s: %w", automountPath, err)
+	}
 
-		_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
+	if out, err := exec.CommandContext(ctx, "systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		return nil, false, fmt.Errorf("systemctl daemon-reload: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
 
-		if doAutomount {
-			_ = exec.CommandContext(ctx, "systemctl", "enable", automountName).Run()
-			_, _ = exec.CommandContext(ctx, "systemctl", "start", automountName).CombinedOutput()
-			_, _ = exec.CommandContext(ctx, "ls", req.MountPoint).CombinedOutput()
-		} else {
-			_ = exec.CommandContext(ctx, "systemctl", "enable", unitName).Run()
-			_, _ = exec.CommandContext(ctx, "systemctl", "start", unitName).CombinedOutput()
+	if doAutomount {
+		if out, err := exec.CommandContext(ctx, "systemctl", "enable", automountName).CombinedOutput(); err != nil {
+			return nil, false, fmt.Errorf("enable automount %s: %v (%s)", automountName, err, strings.TrimSpace(string(out)))
+		}
+		if out, err := exec.CommandContext(ctx, "systemctl", "start", automountName).CombinedOutput(); err != nil {
+			return nil, false, fmt.Errorf("start automount %s: %v (%s)", automountName, err, strings.TrimSpace(string(out)))
+		}
+		_, _ = exec.CommandContext(ctx, "ls", req.MountPoint).CombinedOutput()
+	} else {
+		if out, err := exec.CommandContext(ctx, "systemctl", "enable", unitName).CombinedOutput(); err != nil {
+			return nil, false, fmt.Errorf("enable mount %s: %v (%s)", unitName, err, strings.TrimSpace(string(out)))
+		}
+		if out, err := exec.CommandContext(ctx, "systemctl", "start", unitName).CombinedOutput(); err != nil {
+			return nil, false, fmt.Errorf("start mount %s: %v (%s)", unitName, err, strings.TrimSpace(string(out)))
 		}
 	}
 
+	var mountErr error
 	if !isMountpoint(req.MountPoint) {
-		_ = exec.CommandContext(ctx, "mount", targetDevice, req.MountPoint).Run()
+		if out, err := exec.CommandContext(ctx, "mount", targetDevice, req.MountPoint).CombinedOutput(); err != nil {
+			mountErr = fmt.Errorf("mount %s at %s: %v (%s)", targetDevice, req.MountPoint, err, strings.TrimSpace(string(out)))
+		}
 	}
 
 	targetDevice = filepath.Clean(targetDevice)
@@ -813,6 +857,9 @@ WantedBy=local-fs.target
 		}
 	}
 	if !mounted && !mountDeferred {
+		if mountErr != nil {
+			return nil, false, mountErr
+		}
 		return nil, false, fmt.Errorf("device %s could not be mounted at %s", targetDevice, req.MountPoint)
 	}
 
@@ -848,18 +895,26 @@ WantedBy=local-fs.target
 		}
 	}
 
-	if req.RegisterBackupTarget && h.backupStore != nil {
+	if req.RegisterBackupTarget {
+		if h.backupStore == nil {
+			return nil, false, errors.New("backup store is not available")
+		}
 		backupPath := filepath.Join(req.MountPoint, "backups")
-		if rel, rerr := filepath.Rel(req.MountPoint, backupPath); rerr == nil && !strings.HasPrefix(rel, "..") && rel != ".." {
-			if err := os.MkdirAll(backupPath, 0755); err == nil {
-				if !seen["backups"] {
-					createdSubfolders = append(createdSubfolders, backupPath)
-				}
-				_, _ = h.backupStore.CreateTargetOpts(
-					req.VolumeName+"-backups", backupPath,
-					backupstore.TargetLocal, "all", nil, backupstore.TargetOptions{},
-				)
-			}
+		rel, rerr := filepath.Rel(req.MountPoint, backupPath)
+		if rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
+			return nil, false, fmt.Errorf("backup path escapes mount point: %s", backupPath)
+		}
+		if err := os.MkdirAll(backupPath, 0755); err != nil {
+			return nil, false, fmt.Errorf("create backup directory %s: %w", backupPath, err)
+		}
+		if !seen["backups"] {
+			createdSubfolders = append(createdSubfolders, backupPath)
+		}
+		if _, err := h.backupStore.CreateTargetOpts(
+			req.VolumeName+"-backups", backupPath,
+			backupstore.TargetLocal, "all", nil, backupstore.TargetOptions{},
+		); err != nil {
+			return nil, false, fmt.Errorf("register backup target: %w", err)
 		}
 	}
 
@@ -1102,9 +1157,7 @@ func (h *Handler) assertNotSystemDisk(ctx context.Context, diskPath string) erro
 		return fmt.Errorf("%w: could not parse lsblk output, cannot verify disk is not the system disk: %v", errDiskProbeUnavailable, err)
 	}
 
-	isSystemMount := func(m string) bool {
-		return m == "/" || m == "/boot" || strings.HasPrefix(m, "/boot/") || m == "/etc"
-	}
+	isSystemMount := isProtectedSystemMount
 
 	var checkTree func(devs []lsblkDevice) error
 	checkTree = func(devs []lsblkDevice) error {
@@ -1136,7 +1189,7 @@ func (h *Handler) unmountDeviceAndChildren(ctx context.Context, devPath string) 
 	}
 	var unmounted []string
 	for _, m := range mounts {
-		if m == "" || m == "/" || m == "/boot" || strings.HasPrefix(m, "/boot/") || m == "/etc" || m == "/sys" || m == "/proc" || m == "/dev" {
+		if m == "" || isProtectedSystemMount(m) || m == "/sys" || m == "/proc" || m == "/dev" {
 			return nil, fmt.Errorf("refusing to unmount system mount point %s", m)
 		}
 		unitNameOut, _ := exec.CommandContext(ctx, "systemd-escape", "--path", "--suffix=mount", m).Output()
@@ -1171,6 +1224,23 @@ func (h *Handler) unmountDeviceAndChildren(ctx context.Context, devPath string) 
 
 // UnmountHostDisk unmounts a host disk, partition, or mount point.
 // Restricted to administrators.
+
+// isProtectedSystemMount refuses unmounting anything the host needs to keep
+// running. /var holds WebKVM state, pools and containers; /usr and /root
+// are just as fatal.
+func isProtectedSystemMount(m string) bool {
+	clean := filepath.Clean(m)
+	if !filepath.IsAbs(clean) {
+		return false
+	}
+	for _, p := range []string{"/", "/boot", "/etc", "/sys", "/proc", "/dev", "/usr", "/var", "/root"} {
+		if clean == p || strings.HasPrefix(clean, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Handler) UnmountHostDisk(w http.ResponseWriter, r *http.Request) {
 	var req models.UnmountHostDiskRequest
 	if err := decodeBody(r, &req); err != nil {
@@ -1197,7 +1267,7 @@ func (h *Handler) UnmountHostDisk(w http.ResponseWriter, r *http.Request) {
 		unmounted = append(unmounted, res...)
 	}
 	if mountPoint != "" {
-		if mountPoint == "/" || mountPoint == "/boot" || strings.HasPrefix(mountPoint, "/boot/") || mountPoint == "/etc" {
+		if isProtectedSystemMount(mountPoint) {
 			jsonErr(w, http.StatusForbidden, "refusing to unmount system mount point "+mountPoint)
 			return
 		}

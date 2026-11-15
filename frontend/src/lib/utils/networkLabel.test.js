@@ -74,15 +74,30 @@ describe('preselectNetwork', () => {
     expect(preselectNetwork(nets)).toBe('br0');
   });
 
-  it('never picks NAT or virtual bridges (virbr, lxdbr, docker, br-)', () => {
+  it('never picks NAT or virtual bridges (virbr, lxdbr, incusbr, docker, br-)', () => {
     const virtualOnly = [
       { name: 'default', bridge: 'virbr0', forward: 'nat' },
       { name: 'lxdbr0', bridge: 'lxdbr0' },
       { name: 'lxcbr0', bridge: 'lxcbr0' },
+      { name: 'incusbr0', bridge: 'incusbr0' },
       { name: 'docker0', bridge: 'docker0' },
       { name: 'br-custom', bridge: 'br-custom' },
     ];
     expect(preselectNetwork(virtualOnly)).toBe('');
+  });
+
+  it('preselects the Incus bridge only for containers that allow NAT', () => {
+    const nets = [{ name: 'incusbr0', bridge: 'incusbr0' }];
+    expect(preselectNetwork(nets, { allowIncus: true })).toBe('incusbr0');
+    expect(preselectNetwork(nets)).toBe('');
+  });
+
+  it('still prefers a physical bridge over an Incus bridge', () => {
+    const nets = [
+      { name: 'incusbr0', bridge: 'incusbr0' },
+      { name: 'vmbr0', bridge: 'vmbr0' },
+    ];
+    expect(preselectNetwork(nets, { allowIncus: true })).toBe('vmbr0');
   });
 
   it('picks physical bridge when physical bridge has non-standard name', () => {
@@ -96,5 +111,51 @@ describe('preselectNetwork', () => {
   it('skips invalid items in the array gracefully', () => {
     const nets = [null, undefined, {}, { name: 123 }, { name: 'vmbr0' }];
     expect(preselectNetwork(nets)).toBe('vmbr0');
+  });
+});
+
+// 8.29 #6 / 8.30: the wizard names host bridges and libvirt networks apart.
+describe('networkKind / networkGroups / networkOptionLabel', () => {
+  it('tells host bridges from libvirt NAT/isolated networks', async () => {
+    const { networkKind } = await import('./networkLabel.js');
+    expect(networkKind({ name: 'vmbr0', kind: 'direct', bridge: 'vmbr0' })).toBe('host');
+    expect(networkKind({ name: 'vmbr1', bridge: 'vmbr1' })).toBe('host');
+    expect(networkKind({ name: 'br0', forward: 'bridge' })).toBe('host');
+    expect(networkKind({ name: 'virbr0', kind: 'nat', bridge: 'virbr0' })).toBe('nat');
+    expect(networkKind({ name: 'virbr0' })).toBe('nat');
+    expect(networkKind({ name: 'iso1', kind: 'isolated' })).toBe('isolated');
+  });
+  it('names Incus bridges as Incus, not as libvirt networks', async () => {
+    const { networkKind } = await import('./networkLabel.js');
+    expect(networkKind({ name: 'incusbr0', kind: 'nat', bridge: 'incusbr0' })).toBe('incus');
+    expect(networkKind({ name: 'incusbr1' })).toBe('incus');
+    expect(networkKind({ name: 'lxdbr0' })).toBe('incus');
+  });
+  it('groups host bridges first', async () => {
+    const { networkGroups } = await import('./networkLabel.js');
+    const g = networkGroups([
+      { name: 'virbr0', kind: 'nat' },
+      { name: 'vmbr0', kind: 'direct' },
+      { name: 'iso1', kind: 'isolated' },
+    ]);
+    expect(g.host.map((n) => n.name)).toEqual(['vmbr0']);
+    expect(g.virtual.map((n) => n.name)).toEqual(['virbr0', 'iso1']);
+    expect(networkGroups(null)).toEqual({ host: [], virtual: [] });
+  });
+  it('labels say what the VM gets', async () => {
+    const { networkOptionLabel } = await import('./networkLabel.js');
+    const t = (k, v) => `${k}|${v.name}`;
+    expect(networkOptionLabel(t, { name: 'vmbr0', kind: 'direct' })).toBe(
+      'vmCreate.netOptHost|vmbr0'
+    );
+    expect(networkOptionLabel(t, { name: 'virbr0', kind: 'nat' })).toBe(
+      'vmCreate.netOptNat|virbr0'
+    );
+    expect(networkOptionLabel(t, { name: 'iso1', kind: 'isolated' })).toBe(
+      'vmCreate.netOptIsolated|iso1'
+    );
+    expect(networkOptionLabel(t, { name: 'incusbr0', kind: 'nat' })).toBe(
+      'vmCreate.netOptIncus|incusbr0'
+    );
   });
 });

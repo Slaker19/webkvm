@@ -2,14 +2,22 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"webkvm/internal/audit"
+	"webkvm/internal/notify"
 )
 
 func TestHostUpdatesEndpoints(t *testing.T) {
@@ -114,6 +122,156 @@ func TestHostUpgradeConcurrentGuard(t *testing.T) {
 	if recUpgrade2.Code != http.StatusConflict {
 		t.Fatalf("expected 409 conflict while refreshing, got %d", recUpgrade2.Code)
 	}
+}
+
+func TestPkgManagerCmd_WrapsInSystemdRun(t *testing.T) {
+	orig := systemdRunAvailable
+	systemdRunAvailable = func() bool { return true }
+	t.Cleanup(func() { systemdRunAvailable = orig })
+
+	cmd := pkgManagerCmd(context.Background(), "apt-get",
+		[]string{"DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"},
+		"-y", "dist-upgrade")
+
+	// argv[0] is systemd-run; the escaped namespace args come next, then "--",
+	// then the real package manager.
+	if got := cmd.Args[0]; got != "systemd-run" {
+		t.Fatalf("args[0] = %q, want systemd-run", got)
+	}
+	joined := strings.Join(cmd.Args, "\x00")
+	for _, want := range []string{"--pipe", "--collect", "--quiet",
+		"--setenv=DEBIAN_FRONTEND=noninteractive", "--setenv=LC_ALL=C",
+		"\x00--\x00", "apt-get", "-y", "dist-upgrade"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("args %q missing %q", joined, want)
+		}
+	}
+}
+
+func TestPkgManagerCmd_FallsBackToDirectChild(t *testing.T) {
+	orig := systemdRunAvailable
+	systemdRunAvailable = func() bool { return false }
+	t.Cleanup(func() { systemdRunAvailable = orig })
+
+	cmd := pkgManagerCmd(context.Background(), "dnf",
+		[]string{"LC_ALL=C"}, "-y", "upgrade")
+
+	if got := cmd.Args[0]; got != "dnf" {
+		t.Fatalf("args[0] = %q, want dnf", got)
+	}
+	if !slices.Contains(cmd.Env, "LC_ALL=C") {
+		t.Errorf("env %q missing LC_ALL=C", cmd.Env)
+	}
+}
+
+func TestHostUpgradeCode(t *testing.T) {
+	cases := []struct {
+		detail string
+		want   string
+	}{
+		{"unable to create '/etc/default/motd-news.dpkg-new': Read-only file system", errHostUpgradeROFS},
+		{"dpkg: error: unable to remove newly-extracted version: Read-only file system", errHostUpgradeROFS},
+		{"E: Sub-process /usr/bin/dpkg returned an error code (1)", errHostUpgradeFailed},
+		{"", errHostUpgradeFailed},
+	}
+	for _, c := range cases {
+		if got := hostUpgradeCode(c.detail); got != c.want {
+			t.Errorf("hostUpgradeCode(%q) = %q, want %q", c.detail, got, c.want)
+		}
+	}
+}
+
+func TestHostUpgradeErrCode(t *testing.T) {
+	e := &hostUpgradeErr{code: errHostUpgradeROFS, msg: "boom"}
+	if e.Error() != "boom" || e.Code() != errHostUpgradeROFS {
+		t.Errorf("unexpected coded error: %+v", e)
+	}
+	if codeOf(e) != errHostUpgradeROFS {
+		t.Errorf("codeOf(coded) = %q, want %q", codeOf(e), errHostUpgradeROFS)
+	}
+	if codeOf(fmt.Errorf("plain")) != "" {
+		t.Errorf("codeOf(plain error) should be empty")
+	}
+}
+
+func TestUpgradeCmd_FullVsSelective(t *testing.T) {
+	orig := systemdRunAvailable
+	systemdRunAvailable = func() bool { return false }
+	t.Cleanup(func() { systemdRunAvailable = orig })
+
+	// Full apt upgrade is dist-upgrade, never --only-upgrade.
+	cmd := upgradeCmd(context.Background(), PkgManagerAPT, nil)
+	if cmd.Args[0] != "apt-get" {
+		t.Fatalf("args[0] = %q, want apt-get", cmd.Args[0])
+	}
+	joined := strings.Join(cmd.Args, "\x00")
+	if !strings.Contains(joined, "dist-upgrade") || strings.Contains(joined, "--only-upgrade") {
+		t.Errorf("full apt args unexpected: %v", cmd.Args)
+	}
+
+	// Selective apt upgrade targets only the named packages.
+	cmd = upgradeCmd(context.Background(), PkgManagerAPT, []string{"base-files", "motd-news-config"})
+	joined = strings.Join(cmd.Args, "\x00")
+	for _, want := range []string{"install", "--only-upgrade", "base-files", "motd-news-config"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("selective apt args %v missing %q", cmd.Args, want)
+		}
+	}
+	if strings.Contains(joined, "dist-upgrade") {
+		t.Errorf("selective apt must not be dist-upgrade: %v", cmd.Args)
+	}
+
+	// dnf selective appends the package after "upgrade".
+	cmd = upgradeCmd(context.Background(), PkgManagerDNF, []string{"vim"})
+	if !strings.Contains(strings.Join(cmd.Args, "\x00"), "-y\x00upgrade\x00vim") {
+		t.Errorf("dnf selective args unexpected: %v", cmd.Args)
+	}
+
+	// pacman full uses -Syu; selective uses -S with the packages.
+	cmd = upgradeCmd(context.Background(), PkgManagerPacman, nil)
+	if !strings.Contains(strings.Join(cmd.Args, "\x00"), "-Syu") {
+		t.Errorf("pacman full args unexpected: %v", cmd.Args)
+	}
+	cmd = upgradeCmd(context.Background(), PkgManagerPacman, []string{"vim"})
+	if !strings.Contains(strings.Join(cmd.Args, "\x00"), "-S\x00--noconfirm\x00vim") {
+		t.Errorf("pacman selective args unexpected: %v", cmd.Args)
+	}
+}
+
+func TestSafePkgNameRE(t *testing.T) {
+	for _, ok := range []string{"base-files", "linux-image-generic", "motd-news-config", "a", "pkg+name~x"} {
+		if !safePkgNameRE.MatchString(ok) {
+			t.Errorf("%q should be a valid package name", ok)
+		}
+	}
+	for _, bad := range []string{"-y", "--force-yes", "pkg name", "pkg;rm", "", "/etc/passwd"} {
+		if safePkgNameRE.MatchString(bad) {
+			t.Errorf("%q should be rejected", bad)
+		}
+	}
+}
+
+func TestNotifyUpgrade(t *testing.T) {
+	n, err := notify.New(t.TempDir(), notify.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{notifier: n}
+
+	h.notifyUpgrade(PkgManagerAPT, nil)
+	ev := n.Events()
+	if len(ev) != 1 || ev[0].Level != "info" || ev[0].Subject != "Host upgrade completed" {
+		t.Fatalf("unexpected events after success: %+v", ev)
+	}
+
+	h.notifyUpgrade(PkgManagerAPT, errors.New("boom"))
+	ev = n.Events()
+	if len(ev) != 2 || ev[0].Level != "error" || !strings.Contains(ev[0].Subject, "failed") {
+		t.Fatalf("unexpected events after failure: %+v", ev)
+	}
+
+	// nil notifier (plain unit-test handler) is a no-op, never panics.
+	(&Handler{}).notifyUpgrade(PkgManagerAPT, nil)
 }
 
 func TestStdoutStderrMerge(t *testing.T) {

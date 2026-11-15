@@ -1,9 +1,9 @@
 # Maintainer: WebKVM <Slaker19@users.noreply.github.com>
 # webkvm-bin: precompiled upstream binary + systemd unit (no toolchain needed).
 # The -bin suffix follows AUR convention for repackaged upstream binaries.
-# Tag stays v0.0.1; pkgver uses underscore (hyphens are illegal in pkgver).
+# Tag stays v0.1.12; pkgver uses underscore (hyphens are illegal in pkgver).
 pkgname=webkvm-bin
-_pkgver=0.0.1
+_pkgver=0.1.12
 pkgver=${_pkgver}
 pkgrel=1
 pkgdesc="Native libvirt+QEMU/KVM manager — Go backend with embedded Svelte UI (precompiled)"
@@ -21,9 +21,9 @@ provides=('webkvm')
 conflicts=('webkvm')
 backup=('etc/default/webkvm')
 install=webkvm-bin.install
-source=("https://github.com/Slaker19/webkvm/releases/download/v0.0.1/webkvm-0.0.1.tar.gz")
-# Published release tarball hash goes here (updpkgsums after `make dist`
-# from the tagged tree, or when the release is cut):
+source=("https://github.com/Slaker19/webkvm/releases/download/v0.1.12/webkvm-0.1.12.tar.gz")
+# Replace SKIP with the v0.1.12 tarball SHA-256 after the release is cut
+# (updpkgsums, or take it from SHA256SUMS in the GitHub release).
 sha256sums=('SKIP')
 
 package() {
@@ -33,6 +33,8 @@ package() {
   # Packaged units live in /usr/lib on Arch (not /etc like the .deb).
   install -Dm0644 scripts/webkvm.service "${pkgdir}/usr/lib/systemd/system/webkvm.service"
   install -Dm0644 packaging/nfpm/webkvm.default "${pkgdir}/etc/default/webkvm"
+  # OCF agent ocf:webkvm:incus (inert until a Pacemaker resource uses it).
+  install -Dm755 packaging/ocf/incus "${pkgdir}/usr/lib/ocf/resource.d/webkvm/incus"
   install -Dm0644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
   install -Dm0644 CHANGELOG.md "${pkgdir}/usr/share/doc/${pkgname}/CHANGELOG.md"
 }

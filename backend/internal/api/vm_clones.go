@@ -2,7 +2,6 @@ package api
 
 import (
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 
@@ -24,14 +23,34 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// The disk copy happens before libvirt rejects a duplicate name, so a
+	// taken target would be left without its disk. Fail before any I/O.
+	if exists, derr := h.compute.DomainExists(req.Name); derr != nil {
+		jsonErr(w, http.StatusServiceUnavailable, "cannot verify clone target: "+derr.Error())
+		return
+	} else if exists {
+		jsonErr(w, http.StatusConflict, "a VM named "+req.Name+" already exists")
+		return
+	}
+	src, serr := h.compute.GetDomain(id)
+	if serr != nil {
+		jsonErr(w, http.StatusServiceUnavailable, "cannot verify clone source: "+serr.Error())
+		return
+	}
+	isContainer := isContainerVM(src)
+	if isContainer && req.Linked {
+		jsonErr(w, http.StatusBadRequest, "linked clones are only available for KVM VMs")
+		return
+	}
 	// The clone's disks must land in a pool that holds disks. A clone of
-	// a container is routed to Incus, which owns its own pools, so only
-	// the KVM side is constrained here.
-	if src, serr := h.compute.GetDomain(id); serr != nil || !isContainerVM(src) {
-		if err := h.assertPoolPurpose(req.Pool, compute.PoolPurposeDisk); err != nil {
-			jsonErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	// an Incus instance needs its own container pool.
+	poolPurpose := compute.PoolPurposeDisk
+	if isContainer {
+		poolPurpose = compute.PoolPurposeContainer
+	}
+	if err := h.assertPoolPurpose(req.Pool, poolPurpose); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	// Quota: a clone counts against the source VM's owner (an admin
 	// cloning their own infra stays exempt). All checks stay synchronous
@@ -42,15 +61,6 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 		if o := h.ownerOf(id); o != "" {
 			owner = o
 		}
-		// Estimate the clone's size from the source before cloning.
-		src, err := h.compute.GetDomain(id)
-		if err != nil {
-			// M-04: fail closed — a failed lookup used to skip quota/ACL
-			// entirely and let the clone through.
-			slog.Error("clone_quota_check_failed", "err", err, "src", id)
-			jsonErr(w, http.StatusServiceUnavailable, "cannot verify quota: "+err.Error())
-			return
-		}
 		diskGB := vmTotalDiskGB(src)
 		if err := h.checkQuota(owner, 1, int64(src.VCPUs), src.RAMMB, diskGB); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
@@ -58,7 +68,19 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 		}
 		clonePool := req.Pool
 		if clonePool == "" {
-			clonePool = h.defaultPool()
+			if isContainer {
+				clonePool = vmRootPool(src)
+				if clonePool == "" {
+					jsonErr(w, http.StatusServiceUnavailable, "cannot resolve the Incus source root pool")
+					return
+				}
+			} else {
+				clonePool = h.defaultPool()
+			}
+		}
+		if err := h.assertPoolPurpose(clonePool, poolPurpose); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		u, uerr := h.userStore.Get(owner)
 		if uerr != nil {
@@ -79,6 +101,7 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}
+		req.Pool = clonePool
 	}
 	job := submitJob(jobOwner(r), "clone:"+req.Name, func() (any, error) {
 		vm, err := h.compute.CloneDomain(id, req)
@@ -97,6 +120,15 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 		return vm, nil
 	})
 	jsonResp(w, http.StatusAccepted, map[string]string{"job": job.ID})
+}
+
+func vmRootPool(vm models.VM) string {
+	for _, disk := range vm.Disks {
+		if disk.Pool != "" && (disk.Target == "root" || disk.Target == "/") {
+			return disk.Pool
+		}
+	}
+	return ""
 }
 
 // BatchCloneVM initiates parallel or batch cloning of a source VM into N replicas.
@@ -131,13 +163,27 @@ func (h *Handler) BatchCloneVM(w http.ResponseWriter, r *http.Request) {
 		req.Start = 1
 	}
 
+	src, serr := h.compute.GetDomain(id)
+	if serr != nil {
+		jsonErr(w, http.StatusServiceUnavailable, "cannot verify clone source: "+serr.Error())
+		return
+	}
+	isContainer := isContainerVM(src)
+	if isContainer && req.Linked {
+		jsonErr(w, http.StatusBadRequest, "linked clones are only available for KVM VMs")
+		return
+	}
+	poolPurpose := compute.PoolPurposeDisk
+	if isContainer {
+		poolPurpose = compute.PoolPurposeContainer
+	}
+	if err := h.assertPoolPurpose(req.Pool, poolPurpose); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	owner, role, ip := audit.FromRequest(r)
 	if role != models.RoleAdmin {
-		src, err := h.compute.GetDomain(id)
-		if err != nil {
-			jsonErr(w, http.StatusServiceUnavailable, "cannot verify quota: "+err.Error())
-			return
-		}
 		u, uerr := h.userStore.Get(owner)
 		if uerr != nil {
 			jsonErr(w, http.StatusUnauthorized, "user not found")
@@ -145,7 +191,15 @@ func (h *Handler) BatchCloneVM(w http.ResponseWriter, r *http.Request) {
 		}
 		clonePool := req.Pool
 		if clonePool == "" {
-			clonePool = h.defaultPool()
+			if isContainer {
+				clonePool = vmRootPool(src)
+				if clonePool == "" {
+					jsonErr(w, http.StatusServiceUnavailable, "cannot resolve the Incus source root pool")
+					return
+				}
+			} else {
+				clonePool = h.defaultPool()
+			}
 		}
 		if err := assertPoolAllowed(u, clonePool); err != nil {
 			jsonErr(w, http.StatusForbidden, err.Error())
@@ -157,10 +211,11 @@ func (h *Handler) BatchCloneVM(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if err := h.assertPoolPurpose(clonePool, compute.PoolPurposeDisk); err != nil {
+		if err := h.assertPoolPurpose(clonePool, poolPurpose); err != nil {
 			jsonErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		req.Pool = clonePool
 
 		diskGB := vmTotalDiskGB(src)
 		totalDisk := diskGB * int64(req.Count)
@@ -170,6 +225,26 @@ func (h *Handler) BatchCloneVM(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := h.checkDiskQuota(owner, map[string]int64{clonePool: totalDisk}); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+
+	// The disks are cloned before libvirt rejects a duplicate name, so a
+	// taken target mid-batch would leave an orphaned copy behind. Check
+	// every generated name up front.
+	for i := 0; i < req.Count; i++ {
+		instanceName := fmt.Sprintf("%s-%02d", req.BaseName, req.Start+i)
+		if err := validateVMName(instanceName); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		exists, derr := h.compute.DomainExists(instanceName)
+		if derr != nil {
+			jsonErr(w, http.StatusServiceUnavailable, "cannot verify clone target: "+derr.Error())
+			return
+		}
+		if exists {
+			jsonErr(w, http.StatusConflict, "a VM named "+instanceName+" already exists")
 			return
 		}
 	}

@@ -33,6 +33,11 @@ import (
 	"time"
 )
 
+// maskedSecret is what Snapshot returns for a populated FieldSecret. SetMany
+// treats it as "unchanged" so an editor round-trip cannot overwrite the real
+// value with the mask.
+const maskedSecret = "********"
+
 // FieldType is the wire type the editor uses to render the right input.
 type FieldType string
 
@@ -291,7 +296,7 @@ func (s *Store) Snapshot() map[string]interface{} {
 		}
 		if f.Type == FieldSecret {
 			if str, ok := v.(string); ok && str != "" {
-				out[f.Key] = "********"
+				out[f.Key] = maskedSecret
 			} else {
 				out[f.Key] = ""
 			}
@@ -346,6 +351,15 @@ func (s *Store) SetMany(in Set) (applied []string, failed map[string]string, err
 		if errStr := validateValue(f, v); errStr != "" {
 			failed[k] = errStr
 			continue
+		}
+		// A secret is returned masked. When the editor submits the mask
+		// unchanged (the operator edited another field in the same form),
+		// keep the stored value instead of persisting "********".
+		if f.Type == FieldSecret {
+			if masked, ok := v.(string); ok && masked == maskedSecret {
+				applied = append(applied, k)
+				continue
+			}
 		}
 		s.values[k] = coerce(f, v)
 		applied = append(applied, k)

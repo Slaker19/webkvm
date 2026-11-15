@@ -45,10 +45,10 @@ type cacheEntry struct {
 }
 
 var (
-	cacheMu sync.RWMutex
-	cache   = make(map[string]cacheEntry)
-	runner  sysutil.CommandRunner = sysutil.DefaultRunner
-	checkAvailable = func() bool {
+	cacheMu        sync.RWMutex
+	cache                                = make(map[string]cacheEntry)
+	runner         sysutil.CommandRunner = sysutil.DefaultRunner
+	checkAvailable                       = func() bool {
 		_, err := exec.LookPath("smartctl")
 		return err == nil
 	}

@@ -5,13 +5,16 @@
   import { Label } from '$lib/components/ui/label';
   import Spinner from '$lib/components/Spinner.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import Alert from '$lib/components/Alert.svelte';
   import { t } from '$lib/i18n.svelte.js';
+  import { deployablePools } from '$lib/purpose.js';
 
   let {
     open = $bindable(false),
     templates = [],
     netOptions = [],
     poolOptions = [],
+    hasRemoteNodes = false,
     saving = false,
     onInstantiate = () => {},
   } = $props();
@@ -27,6 +30,11 @@
   let ciPassword = $state('');
   let ciKey = $state('');
   let ciHostname = $state('');
+  const selectedTemplate = $derived(templates.find((template) => template.id === templateId));
+  const isIncusTemplate = $derived(selectedTemplate?.hypervisor === 'incus');
+  const eligiblePools = $derived(
+    deployablePools(poolOptions, isIncusTemplate ? 'container' : 'vm')
+  );
 
   $effect(() => {
     if (open) {
@@ -42,6 +50,14 @@
       ciKey = '';
       ciHostname = '';
     }
+  });
+
+  $effect(() => {
+    if (isIncusTemplate) {
+      linked = false;
+      ci = false;
+    }
+    if (pool && !eligiblePools.some((candidate) => candidate.name === pool)) pool = '';
   });
 
   function handleSubmit() {
@@ -67,6 +83,9 @@
       <Dialog.Title>{t('vms.instantiateTitle')}</Dialog.Title>
       <Dialog.Description>{t('vms.instantiateDesc')}</Dialog.Description>
     </Dialog.Header>
+    {#if hasRemoteNodes}
+      <Alert variant="info">{t('vms.instantiateLocalOnly')}</Alert>
+    {/if}
     <div class="space-y-3">
       {#if templates.length === 0}
         <div class="text-center py-6">
@@ -85,7 +104,9 @@
           <select id="inst-template-comp" bind:value={templateId} class="input w-full">
             {#each templates as tmpl (tmpl.id)}
               <option value={tmpl.id}
-                >{tmpl.alias || tmpl.name} ({tmpl.vcpus} vCPU · {tmpl.ram_mb} MB)</option
+                >{tmpl.alias || tmpl.name}{tmpl.hypervisor === 'incus'
+                  ? ` (${t('vms.templateKindIncus')})`
+                  : ` (${tmpl.vcpus} vCPU · ${tmpl.ram_mb} MB)`}</option
               >
             {/each}
           </select>
@@ -94,21 +115,25 @@
           <Label for="inst-name-comp">{t('vms.newVmName')}</Label>
           <Input id="inst-name-comp" bind:value={name} placeholder="my-vm" />
         </div>
-        <div class="space-y-1.5">
-          <Label for="inst-net-comp">{t('vmDetail.networkLabel')}</Label>
-          <select id="inst-net-comp" bind:value={net} class="input w-full">
-            {#each netOptions as n (n.name)}
-              <option value={n.name}>{n.name} {n.bridge ? `(${n.bridge})` : ''}</option>
-            {/each}
-          </select>
-        </div>
+        {#if !isIncusTemplate}
+          <div class="space-y-1.5">
+            <Label for="inst-net-comp">{t('vmDetail.networkLabel')}</Label>
+            <select id="inst-net-comp" bind:value={net} class="input w-full">
+              {#each netOptions as n (n.name)}
+                <option value={n.name}>{n.name} {n.bridge ? `(${n.bridge})` : ''}</option>
+              {/each}
+            </select>
+          </div>
+        {:else}
+          <p class="text-xs text-muted-foreground">{t('vms.incusTemplateCloneInfo')}</p>
+        {/if}
 
-        {#if poolOptions.length > 1}
+        {#if eligiblePools.length > 1}
           <div class="space-y-1.5">
             <Label for="inst-pool-comp">{t('vms.poolLabel')}</Label>
             <select id="inst-pool-comp" bind:value={pool} class="input w-full">
               <option value="">{t('vms.poolDefault')}</option>
-              {#each poolOptions as p (p.name)}
+              {#each eligiblePools as p (p.name)}
                 <option value={p.name}>{p.name}</option>
               {/each}
             </select>
@@ -121,83 +146,87 @@
           </div>
         {/if}
 
-        <div class="space-y-1.5">
-          <Label>{t('vms.cloneModeLabel')}</Label>
-          <div class="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onclick={() => (linked = false)}
-              class="flex flex-col items-start gap-0.5 p-2.5 rounded-lg border text-left transition-colors {!linked
-                ? 'border-accent bg-accent/10'
-                : 'border-border hover:bg-muted/30'}"
-            >
-              <span class="flex items-center gap-1.5 font-semibold text-xs">
-                <Icon
-                  name="copy"
-                  size={13}
-                  class={!linked ? 'text-accent' : 'text-muted-foreground'}
-                />
-                {t('vms.cloneFull')}
-              </span>
-              <span class="text-[10px] text-muted-foreground">{t('vms.cloneFullDesc')}</span>
-            </button>
-            <button
-              type="button"
-              onclick={() => (linked = true)}
-              class="flex flex-col items-start gap-0.5 p-2.5 rounded-lg border text-left transition-colors {linked
-                ? 'border-accent bg-accent/10'
-                : 'border-border hover:bg-muted/30'}"
-            >
-              <span class="flex items-center gap-1.5 font-semibold text-xs">
-                <Icon
-                  name="zap"
-                  size={13}
-                  class={linked ? 'text-accent' : 'text-muted-foreground'}
-                />
-                {t('vms.cloneLinked')}
-              </span>
-              <span class="text-[10px] text-muted-foreground">{t('vms.cloneLinkedDesc')}</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="pt-2 border-t border-border">
-          <label class="flex items-center gap-2 cursor-pointer select-none">
-            <input type="checkbox" bind:checked={ci} class="w-4 h-4 rounded border-border" />
-            <span class="text-sm font-medium">{t('vmCreate.cloudInitEnable')}</span>
-          </label>
-        </div>
-
-        {#if ci}
-          <div class="space-y-2.5 pl-2 border-l-2 border-accent/40">
-            <div>
-              <Label for="inst-ci-user-comp">{t('vmCreate.cloudInitUser')}</Label>
-              <Input id="inst-ci-user-comp" bind:value={ciUser} placeholder="webkvm" />
+        {#if !isIncusTemplate}
+          <div class="space-y-1.5">
+            <Label>{t('vms.cloneModeLabel')}</Label>
+            <div class="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onclick={() => (linked = false)}
+                class="flex flex-col items-start gap-0.5 p-2.5 rounded-lg border text-left transition-colors {!linked
+                  ? 'border-accent bg-accent/10'
+                  : 'border-border hover:bg-muted/30'}"
+              >
+                <span class="flex items-center gap-1.5 font-semibold text-xs">
+                  <Icon
+                    name="copy"
+                    size={13}
+                    class={!linked ? 'text-accent' : 'text-muted-foreground'}
+                  />
+                  {t('vms.cloneFull')}
+                </span>
+                <span class="text-[10px] text-muted-foreground">{t('vms.cloneFullDesc')}</span>
+              </button>
+              <button
+                type="button"
+                onclick={() => (linked = true)}
+                class="flex flex-col items-start gap-0.5 p-2.5 rounded-lg border text-left transition-colors {linked
+                  ? 'border-accent bg-accent/10'
+                  : 'border-border hover:bg-muted/30'}"
+              >
+                <span class="flex items-center gap-1.5 font-semibold text-xs">
+                  <Icon
+                    name="zap"
+                    size={13}
+                    class={linked ? 'text-accent' : 'text-muted-foreground'}
+                  />
+                  {t('vms.cloneLinked')}
+                </span>
+                <span class="text-[10px] text-muted-foreground">{t('vms.cloneLinkedDesc')}</span>
+              </button>
             </div>
-            <div>
-              <Label for="inst-ci-pass-comp">{t('passwordModal.password')}</Label>
-              <div class="relative">
-                <Input
-                  id="inst-ci-pass-comp"
-                  type={showPass ? 'text' : 'password'}
-                  bind:value={ciPassword}
-                  placeholder="••••••••"
-                  class="pr-10"
-                />
-                <button
-                  type="button"
-                  onclick={() => (showPass = !showPass)}
-                  class="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground"
-                >
-                  <Icon name={showPass ? 'eyeOff' : 'eye'} size={14} />
-                </button>
+          </div>
+        {/if}
+
+        {#if !isIncusTemplate}
+          <div class="pt-2 border-t border-border">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" bind:checked={ci} class="w-4 h-4 rounded border-border" />
+              <span class="text-sm font-medium">{t('vmCreate.cloudInitEnable')}</span>
+            </label>
+          </div>
+
+          {#if ci}
+            <div class="space-y-2.5 pl-2 border-l-2 border-accent/40">
+              <div>
+                <Label for="inst-ci-user-comp">{t('vmCreate.cloudInitUser')}</Label>
+                <Input id="inst-ci-user-comp" bind:value={ciUser} placeholder="webkvm" />
+              </div>
+              <div>
+                <Label for="inst-ci-pass-comp">{t('passwordModal.password')}</Label>
+                <div class="relative">
+                  <Input
+                    id="inst-ci-pass-comp"
+                    type={showPass ? 'text' : 'password'}
+                    bind:value={ciPassword}
+                    placeholder="••••••••"
+                    class="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onclick={() => (showPass = !showPass)}
+                    class="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground"
+                  >
+                    <Icon name={showPass ? 'eyeOff' : 'eye'} size={14} />
+                  </button>
+                </div>
+              </div>
+              <div>
+                <Label for="inst-ci-key-comp">{t('vmCreate.cloudInitSSHKey')}</Label>
+                <Input id="inst-ci-key-comp" bind:value={ciKey} placeholder="ssh-ed25519 AAAA..." />
               </div>
             </div>
-            <div>
-              <Label for="inst-ci-key-comp">{t('vmCreate.cloudInitSSHKey')}</Label>
-              <Input id="inst-ci-key-comp" bind:value={ciKey} placeholder="ssh-ed25519 AAAA..." />
-            </div>
-          </div>
+          {/if}
         {/if}
       {/if}
     </div>

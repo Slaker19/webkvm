@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 
 	"webkvm/internal/audit"
@@ -19,6 +18,10 @@ func (h *Handler) MakeVMTemplate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	vm, err := h.compute.GetDomain(id)
 	if err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -47,6 +50,10 @@ func (h *Handler) UnsetVMTemplate(w http.ResponseWriter, r *http.Request) {
 	// Sharing only makes sense for templates: clear it too, so a VM that
 	// is later re-templated does not silently come back shared.
 	if _, err := h.compute.UpdateVMMeta(id, models.VMMetaUpdate{Template: &f, Shared: &f}); err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -116,6 +123,13 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if exists, derr := h.compute.DomainExists(req.Name); derr != nil {
+		jsonErr(w, http.StatusServiceUnavailable, "cannot verify clone target: "+derr.Error())
+		return
+	} else if exists {
+		jsonErr(w, http.StatusConflict, "a VM named "+req.Name+" already exists")
+		return
+	}
 
 	// The source must be a template.
 	meta, err := h.compute.GetVMMeta(id)
@@ -146,11 +160,33 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusForbidden, err.Error())
 		return
 	}
+	sourceVM, err := h.compute.GetDomain(id)
+	if err != nil {
+		jsonErr(w, http.StatusServiceUnavailable, "cannot read template source: "+err.Error())
+		return
+	}
+	if sourceVM.State != models.VMStateShutoff {
+		jsonErr(w, http.StatusConflict, "template source must be stopped before it can be instantiated")
+		return
+	}
+	isContainer := isContainerVM(sourceVM)
+	if isContainer && req.Linked {
+		jsonErr(w, http.StatusBadRequest, "linked clones are only available for KVM templates")
+		return
+	}
+	if isContainer && req.CloudInit != nil {
+		jsonErr(w, http.StatusBadRequest, "cloud-init provisioning is not supported when cloning an Incus template")
+		return
+	}
 
 	// Instantiating produces a working VM, not another golden image, so
 	// its disks belong in a disk pool — not in the template shelf, the
 	// ISO library or an Incus pool.
-	if err := h.assertPoolPurpose(req.Pool, compute.PoolPurposeDisk); err != nil {
+	poolPurpose := compute.PoolPurposeDisk
+	if isContainer {
+		poolPurpose = compute.PoolPurposeContainer
+	}
+	if err := h.assertPoolPurpose(req.Pool, poolPurpose); err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -166,15 +202,7 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 		if o == "" {
 			o = meta.OwnerID
 		}
-		src, serr := h.compute.GetDomain(id)
-		if serr != nil {
-			// M-04: fail closed — previously a failing GetDomain silently
-			// skipped quota/ACL enforcement and allowed the clone anyway.
-			slog.Error("instantiate_template_quota_check_failed", "err", serr, "tpl", id)
-			jsonErr(w, http.StatusServiceUnavailable, "cannot verify quota: "+serr.Error())
-			return
-		}
-		diskGB := vmTotalDiskGB(src)
+		diskGB := vmTotalDiskGB(sourceVM)
 		u, uerr := h.userStore.Get(o)
 		if uerr != nil {
 			jsonErr(w, http.StatusUnauthorized, "user not found")
@@ -182,7 +210,19 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 		}
 		tplPool := req.Pool
 		if tplPool == "" {
-			tplPool = h.defaultPool()
+			if isContainer {
+				tplPool = vmRootPool(sourceVM)
+				if tplPool == "" {
+					jsonErr(w, http.StatusServiceUnavailable, "cannot resolve the Incus template root pool")
+					return
+				}
+			} else {
+				tplPool = h.defaultPool()
+			}
+		}
+		if err := h.assertPoolPurpose(tplPool, poolPurpose); err != nil {
+			jsonErr(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		if err := assertPoolAllowed(u, tplPool); err != nil {
 			jsonErr(w, http.StatusForbidden, err.Error())
@@ -194,7 +234,7 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if err := h.checkQuota(o, 1, int64(src.VCPUs), src.RAMMB, diskGB); err != nil {
+		if err := h.checkQuota(o, 1, int64(sourceVM.VCPUs), sourceVM.RAMMB, diskGB); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -205,6 +245,7 @@ func (h *Handler) InstantiateTemplate(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}
+		req.Pool = tplPool
 	}
 
 	// Drop snippet references the caller may not read before any

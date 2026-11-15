@@ -6,6 +6,7 @@ import (
 
 	"webkvm/internal/audit"
 	"webkvm/internal/auth"
+	"webkvm/internal/logging"
 	"webkvm/internal/models"
 )
 
@@ -22,7 +23,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check perimeter jail before attempting authentication
-	_, _, ip := audit.FromRequest(r)
+	ip, _ := logging.ClientIPInfo(r)
 	if h.jail != nil && h.jail.IsBanned(ip) {
 		jsonErr(w, http.StatusForbidden, "IP address temporarily banned due to excessive failed attempts")
 		return
@@ -37,15 +38,15 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	u, ok := h.userStore.Validate(req.Username, req.Password)
 	if !ok {
 		h.loginLimiter.RecordFailure(r, req.Username)
-		_, _, ip := audit.FromRequest(r)
+		clientIP, fromHeader := logging.ClientIPInfo(r)
 		if h.jail != nil {
-			h.jail.RecordFailure(ip, "failed login for "+req.Username)
+			h.jail.RecordFailureClient(clientIP, fromHeader, "failed login for "+req.Username)
 		}
 		h.audit.Log(audit.Entry{
 			// User carries the asserted identity so the user filter
 			// finds this account's failed logins (it may not exist).
 			User:   req.Username,
-			Action: "auth.login_failed", Resource: req.Username, IP: ip,
+			Action: "auth.login_failed", Resource: req.Username, IP: clientIP,
 			Error: "invalid credentials",
 		})
 		jsonErr(w, http.StatusUnauthorized, "invalid credentials")
@@ -149,7 +150,7 @@ func (h *Handler) Login2FA(w http.ResponseWriter, r *http.Request) {
 				User: username, Action: "auth.2fa_failed", Resource: username, IP: ip,
 				Error: "invalid 2fa verification code",
 			})
-			jsonErr(w, http.StatusUnauthorized, "código de verificación 2FA inválido")
+			jsonErrCode(w, http.StatusUnauthorized, "invalid_2fa_code", "código de verificación 2FA inválido")
 			return
 		}
 	}
@@ -243,12 +244,12 @@ func (h *Handler) Enable2FA(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, ok := h.userStore.Validate(username, req.Password); !ok {
-			jsonErr(w, http.StatusUnauthorized, "contraseña incorrecta")
+			jsonErrCode(w, http.StatusUnauthorized, "invalid_password", "contraseña incorrecta")
 			return
 		}
 	}
 	if !auth.ValidateTOTP(req.Secret, req.Code) {
-		jsonErr(w, http.StatusBadRequest, "código de verificación incorrecto, asegúrate de que la hora de tu dispositivo esté sincronizada")
+		jsonErrCode(w, http.StatusBadRequest, "invalid_totp_code", "código de verificación incorrecto, asegúrate de que la hora de tu dispositivo esté sincronizada")
 		return
 	}
 
@@ -278,7 +279,7 @@ func (h *Handler) Disable2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := h.userStore.Validate(username, req.Password); !ok {
-		jsonErr(w, http.StatusUnauthorized, "contraseña incorrecta")
+		jsonErrCode(w, http.StatusUnauthorized, "invalid_password", "contraseña incorrecta")
 		return
 	}
 

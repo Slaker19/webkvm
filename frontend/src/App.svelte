@@ -133,7 +133,7 @@
 
   // Manage SSE connection lifecycle based on auth state
   $effect(() => {
-    if (auth.isLoggedIn) {
+    if (auth.isLoggedIn && !auth.mustChangePassword) {
       events.connect();
     } else {
       events.disconnect();
@@ -218,7 +218,7 @@
           {:else if !PageComponent}
             <div class="flex items-center justify-center py-24"><Spinner size="lg" /></div>
           {:else if route.name === 'vm-detail'}
-            <PageComponent vmId={route.params.id} />
+            <PageComponent vmId={route.params.id} node={route.query.node} hv={route.query.hv} />
           {:else}
             <PageComponent />
           {/if}

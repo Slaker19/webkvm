@@ -38,6 +38,16 @@ func (h *Handler) mediaScope(r *http.Request) models.MediaScope {
 	return models.MediaScope{AllowedPools: set, CanNesting: canNest}
 }
 
+// evalSymlinks resolves symlinks on THIS host's filesystem. A remote node's
+// paths are never looked up locally (a same-named local path would answer for
+// the wrong machine): they are compared lexically.
+func (h *Handler) evalSymlinks(p string) (string, error) {
+	if h.isRemote() {
+		return "", errors.New("remote path")
+	}
+	return filepath.EvalSymlinks(p)
+}
+
 // poolNameOfPath returns the pool whose directory contains path (symlinks
 // resolved on both sides).
 func (h *Handler) poolNameOfPath(path string) (string, bool) {
@@ -48,7 +58,7 @@ func (h *Handler) poolNameOfPath(path string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if real, rerr := filepath.EvalSymlinks(resolved); rerr == nil {
+	if real, rerr := h.evalSymlinks(resolved); rerr == nil {
 		resolved = real
 	}
 	pools, err := h.compute.ListStoragePools()
@@ -60,7 +70,7 @@ func (h *Handler) poolNameOfPath(path string) (string, bool) {
 			continue
 		}
 		base := filepath.Clean(p.Path)
-		if realBase, berr := filepath.EvalSymlinks(base); berr == nil {
+		if realBase, berr := h.evalSymlinks(base); berr == nil {
 			base = filepath.Clean(realBase)
 		}
 		rel, rerr := filepath.Rel(base, resolved)
@@ -83,8 +93,12 @@ func (h *Handler) validateDiskSourceForCaller(r *http.Request, path string) erro
 	if err != nil {
 		return err
 	}
-	if _, err := fsutil.ResolveRegular(safePath); err != nil {
-		return fmt.Errorf("source path %q is not a usable regular file", path)
+	// On a remote node the file is not on this host: it cannot be stat'ed
+	// here, and the remote libvirt rejects what is not usable.
+	if !h.isRemote() {
+		if _, err := fsutil.ResolveRegular(safePath); err != nil {
+			return fmt.Errorf("source path %q is not a usable regular file", path)
+		}
 	}
 	if _, role, _ := audit.FromRequest(r); role != models.RoleAdmin {
 		pool, ok := h.poolNameOfPath(safePath)
@@ -163,9 +177,12 @@ func (e errSourceAttached) Error() string { return e.msg }
 // VM other than vmID: two writers on one qcow2/raw is silent corruption (and,
 // for non-admins, a way to read another tenant's disk). Used by both
 // CreateDisk and UpdateDisk so they cannot diverge.
-func (h *Handler) checkSourceNotAttachedElsewhere(vmID, source string) error {
+func (h *Handler) checkSourceNotAttachedElsewhere(vmID, source string, force bool) error {
 	pool, vol, ok := h.resolveVolumeFromSource(source)
 	if !ok {
+		if h.isRemote() && !force {
+			return errSourceAttached{"cannot verify that this disk is not attached to another VM on the remote node; retry with force to attach it anyway"}
+		}
 		return nil
 	}
 	atts, err := h.compute.FindVolumeAttachments(pool, vol)

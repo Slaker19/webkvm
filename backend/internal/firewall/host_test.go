@@ -18,7 +18,7 @@ func testHostManager(t *testing.T, dir string, rules HostFirewall) (*Manager, *H
 			t.Fatal(err)
 		}
 	}
-	m := NewManager(s, func(id string) string { return "192.168.1.50" }, 8080, slog.Default())
+	m := NewManager(s, func(id string) string { return "192.168.50.50" }, 8080, slog.Default())
 	m.SetHostStore(hs)
 	// Keep rollback tests fast.
 	m.RollbackDeadline(150 * time.Millisecond)
@@ -83,7 +83,7 @@ func TestValidateHostFirewall_RejectsMalformed(t *testing.T) {
 	// Valid ones pass.
 	if err := ValidateHostFirewall(HostFirewall{
 		Input:    []HostInputRule{{ID: "a", Proto: "both", Port: 8085, Action: "drop", Src: "10.0.0.0/8"}},
-		Forwards: []HostForwardRule{{ID: "f", Proto: "tcp", HostPort: 80, GuestIP: "192.168.1.50", GuestPort: 8080}},
+		Forwards: []HostForwardRule{{ID: "f", Proto: "tcp", HostPort: 80, GuestIP: "192.168.50.50", GuestPort: 8080}},
 	}, 8080); err != nil {
 		t.Fatalf("valid ruleset rejected: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestValidateHostFirewall_RejectsForwardOnProtectedPort(t *testing.T) {
 	// traffic in prerouting — refuse it like input drops.
 	for _, port := range []int{22} {
 		fw := HostFirewall{
-			Forwards: []HostForwardRule{{ID: "f", Proto: "tcp", HostPort: port, GuestIP: "192.168.1.50", GuestPort: 22}},
+			Forwards: []HostForwardRule{{ID: "f", Proto: "tcp", HostPort: port, GuestIP: "192.168.50.50", GuestPort: 22}},
 		}
 		if err := ValidateHostFirewall(fw, 8080); err == nil {
 			t.Errorf("expected rejection for forward on protected port %d", port)
@@ -103,8 +103,8 @@ func TestValidateHostFirewall_RejectsForwardOnProtectedPort(t *testing.T) {
 	// ...unless disabled, and a non-rail port stays fine.
 	ok := HostFirewall{
 		Forwards: []HostForwardRule{
-			{ID: "off", Proto: "tcp", HostPort: 22, GuestIP: "192.168.1.50", GuestPort: 22, Disabled: true},
-			{ID: "on", Proto: "tcp", HostPort: 2222, GuestIP: "192.168.1.50", GuestPort: 22},
+			{ID: "off", Proto: "tcp", HostPort: 22, GuestIP: "192.168.50.50", GuestPort: 22, Disabled: true},
+			{ID: "on", Proto: "tcp", HostPort: 2222, GuestIP: "192.168.50.50", GuestPort: 22},
 		},
 	}
 	if err := ValidateHostFirewall(ok, 8080); err != nil {
@@ -140,11 +140,11 @@ func TestBuildRuleset_SkipsDisabled(t *testing.T) {
 			{ID: "off", Proto: "tcp", Port: 9090, Action: "allow", Disabled: true},
 		},
 		Forwards: []Forward{
-			{ID: "f-on", Proto: "tcp", HostPort: 8081, GuestPort: 81, TargetIP: "192.168.1.50"},
-			{ID: "f-off", Proto: "tcp", HostPort: 9091, GuestPort: 91, TargetIP: "192.168.1.50", Disabled: true},
+			{ID: "f-on", Proto: "tcp", HostPort: 8081, GuestPort: 81, TargetIP: "192.168.50.50"},
+			{ID: "f-off", Proto: "tcp", HostPort: 9091, GuestPort: 91, TargetIP: "192.168.50.50", Disabled: true},
 		},
 	})
-	m := NewManager(s, func(id string) string { return "192.168.1.50" }, 8080, nil)
+	m := NewManager(s, func(id string) string { return "192.168.50.50" }, 8080, nil)
 	hs := NewHostStore(dir)
 	m.SetHostStore(hs)
 	if err := hs.Set(HostFirewall{

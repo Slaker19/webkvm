@@ -53,7 +53,11 @@ SyslogIdentifier=webkvm
 # Note: NoNewPrivileges and RestrictSUIDSGID are false to allow PAM /bin/login
 # to authenticate and drop privileges to the logged-in system user.
 NoNewPrivileges=false
-ProtectSystem=full
+# Off on purpose: the optional Cluster/HA module runs apt/dnf/pacman from
+# this service and must write /usr. With ProtectSystem=full those installs
+# failed with "Read-only file system". A drop-in may re-enable it when the
+# module is not used.
+ProtectSystem=off
 ProtectHome=false
 # Uploads use TMPDIR=/var/tmp and the app only needs its own files there.
 PrivateTmp=true

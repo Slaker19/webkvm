@@ -89,14 +89,19 @@ var (
 	// map it to HTTP 501 Not Implemented.
 	ErrNotImplemented = errors.New("this operation is not supported by the current hypervisor backend")
 
+	// ErrNotFound is returned when an instance does not exist on any
+	// backend. Handlers map it to a generic 404 instead of echoing the
+	// hypervisor's internal error (SEG-6).
+	ErrNotFound = errors.New("instance not found")
+
 	// ErrForbidden is returned when a request asks for something the caller's
 	// role does not allow (privileged containers, non-default profiles...).
 	// Handlers map it to 403.
 	ErrForbidden = errors.New("forbidden")
-	// ErrNoPhysicalBridge is the fatal error surfaced when the host has no
-	// physical Linux bridge (vmbr0/br0 attached to a physical NIC). WebKVM
-	// requires shared Layer-2 (Proxmox-style): KVM and Incus must land on
-	// the real LAN, never on an intermediate NAT/virtual bridge.
+	// ErrNoPhysicalBridge is returned when the host has no physical Linux
+	// bridge for automatic network selection. An explicitly named existing
+	// Linux bridge (including NAT) is accepted; only the empty/default path
+	// insists on shared Layer-2.
 	ErrNoPhysicalBridge = errors.New("no physical bridge found on host; please configure a Linux bridge (vmbr0 or br0) attached to your physical NIC")
 	// ErrNetworkInUse is returned when a bridge still has a live
 	// VM/container interface attached — the caller must detach it (or
@@ -117,6 +122,22 @@ var (
 	// names a volume that does not exist. Handlers map it to HTTP 404,
 	// not 500.
 	ErrVolumeNotFound = errors.New("storage volume not found")
+
+	// ErrNotClustered is returned by cluster operations when the Incus
+	// daemon is not a cluster member.
+	ErrNotClustered = errors.New("incus is not clustered")
+	// ErrMemberNotFound is returned when a named cluster member does not
+	// exist. Handlers map it to 404 (or 400 for a create target).
+	ErrMemberNotFound = errors.New("cluster member not found")
+	// ErrMemberOffline is returned when an operation needs an online
+	// cluster member and the named one is not. Handlers map it to 409.
+	ErrMemberOffline = errors.New("cluster member is offline")
+	// ErrNeedsStop is returned when moving a running instance without
+	// live migration: it must be stopped first. Handlers map it to 409.
+	ErrNeedsStop = errors.New("the instance must be stopped to move it without live migration")
+	// ErrSameMember is returned when a move targets the member that
+	// already hosts the instance. Handlers map it to 400/409.
+	ErrSameMember = errors.New("the instance already runs on that cluster member")
 )
 
 // ExportBackupOptions controls a backup export stream.
@@ -549,4 +570,39 @@ func InferPoolPurpose(name string) string {
 		return inferPoolPurpose(name)
 	}
 	return PoolPurposeDisk
+}
+
+// MemberInfo is the read-only view of one Incus cluster member. It
+// contains no credentials.
+type MemberInfo struct {
+	Name          string   `json:"name"`
+	URL           string   `json:"url"`
+	Status        string   `json:"status"`
+	Message       string   `json:"message"`
+	Roles         []string `json:"roles"`
+	Database      bool     `json:"database"`
+	Architecture  string   `json:"architecture"`
+	FailureDomain string   `json:"failure_domain"`
+	Description   string   `json:"description"`
+}
+
+// ClusterBackend is an OPTIONAL extension of Backend implemented by
+// backends that sit on a cluster (the Incus adapter). It is deliberately
+// not part of Backend so KVM and test doubles keep compiling. Callers
+// discover it with a type assertion, or through Combined.Cluster().
+type ClusterBackend interface {
+	// ClusterMembers lists the cluster members (empty when not clustered).
+	ClusterMembers() ([]MemberInfo, error)
+	// MoveInstance moves instance id to targetMember. live requests live
+	// migration (containers need CRIU/stateful support); without it a
+	// running instance is refused with ErrNeedsStop. Moving to the member
+	// that already hosts it returns ErrSameMember.
+	MoveInstance(ctx context.Context, id string, targetMember string, live bool) error
+	// EvacuateMember evacuates a member; mode is "" (cluster default),
+	// "stop", "migrate", "live-migrate"... as accepted by Incus.
+	EvacuateMember(ctx context.Context, name string, mode string) error
+	// RestoreMember restores a previously evacuated member.
+	RestoreMember(ctx context.Context, name string) error
+	// InstanceLocation returns the member currently hosting instance id.
+	InstanceLocation(id string) (string, error)
 }

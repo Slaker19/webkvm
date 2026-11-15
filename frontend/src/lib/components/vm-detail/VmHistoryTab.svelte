@@ -142,11 +142,11 @@
   {#snippet headerActions()}
     <div class="flex items-center gap-1.5">
       <select bind:value={vmLogsLines} onchange={loadVMLogs} class="input !h-7 !text-xs !py-0 w-24">
-        <option value={50}>50 líneas</option>
-        <option value={100}>100 líneas</option>
-        <option value={200}>200 líneas</option>
-        <option value={500}>500 líneas</option>
-        <option value={1000}>1000 líneas</option>
+        <option value={50}>{t('vmDetail.lineCount', { count: 50 })}</option>
+        <option value={100}>{t('vmDetail.lineCount', { count: 100 })}</option>
+        <option value={200}>{t('vmDetail.lineCount', { count: 200 })}</option>
+        <option value={500}>{t('vmDetail.lineCount', { count: 500 })}</option>
+        <option value={1000}>{t('vmDetail.lineCount', { count: 1000 })}</option>
       </select>
       <Button
         variant="outline"

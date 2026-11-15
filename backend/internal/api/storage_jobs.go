@@ -54,6 +54,34 @@ func updateJob(id string, progress float64, status string, text string) {
 	updateJobFull(id, progress, status, text, 0, 0, 0, 0)
 }
 
+// updateJobError records a failed job together with a stable error code.
+func updateJobError(id, code, text string) {
+	updateJobErrorAtProgress(id, code, text, -1)
+}
+
+func updateJobErrorAtProgress(id, code, text string, progress float64) {
+	jobsMu.Lock()
+	defer jobsMu.Unlock()
+	if j, ok := isoJobs[id]; ok {
+		j.Status = "error"
+		j.Error = text
+		j.ErrorCode = code
+		if progress >= 0 {
+			j.Progress = progress
+		}
+		j.UpdatedAt = time.Now().Unix()
+	}
+}
+
+// codeOf returns the error's machine-readable code if it carries one.
+func codeOf(err error) string {
+	type coder interface{ Code() string }
+	if ce, ok := err.(coder); ok && ce.Code() != "" {
+		return ce.Code()
+	}
+	return ""
+}
+
 func updateJobFull(id string, progress float64, status string, text string, bytesDone, bytesTotal, speedBps, etaSeconds int64) {
 	jobsMu.Lock()
 	defer jobsMu.Unlock()

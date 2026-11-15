@@ -6,8 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
+
+	"webkvm/internal/config"
 
 	"libvirt.org/go/libvirt"
 )
@@ -53,7 +57,84 @@ func (c *Connector) defineDomain(xmlStr string, pol DomainPolicy) (*libvirt.Doma
 		}
 		xmlStr = clean
 	}
+	xmlStr = ensureNoAppArmorLabel(xmlStr, c.shouldDisableAppArmor())
 	return c.conn.DomainDefineXML(xmlStr)
+}
+
+// AppArmorActive reports whether the kernel exposes AppArmor securityfs.
+// On SELinux hosts this is false, so the AppArmor workaround never disables
+// SELinux labeling.
+func AppArmorActive() bool {
+	_, err := os.Stat("/sys/kernel/security/apparmor")
+	return err == nil
+}
+
+// ensureDomainAppArmorLabel redefines an INACTIVE domain with the AppArmor
+// workaround when it was created before the workaround existed. This is what
+// makes an in-place update from the UI seamless: the next start, revert or
+// snapshot delete migrates the persistent XML. Running domains are left
+// alone; live snapshot operations already work and the label is applied on
+// the next start.
+//
+// It returns the (possibly new) domain, whether the caller must free the old
+// one, and an error. The caller owns both objects.
+func (c *Connector) ensureDomainAppArmorLabel(dom *libvirt.Domain) (*libvirt.Domain, bool, error) {
+	if !c.shouldDisableAppArmor() {
+		return dom, false, nil
+	}
+	if active, err := dom.IsActive(); err != nil || active {
+		return dom, false, nil
+	}
+	xmlDesc, err := dom.GetXMLDesc(0)
+	if err != nil {
+		return dom, false, err
+	}
+	updated := ensureNoAppArmorLabel(xmlDesc, true)
+	if updated == xmlDesc {
+		return dom, false, nil
+	}
+	newDom, err := c.defineDomain(updated, TrustedDomain)
+	if err != nil {
+		return dom, false, fmt.Errorf("add AppArmor label: %w", err)
+	}
+	name, _ := dom.GetName()
+	slog.Default().Info("apparmor_label_disabled", "domain", name)
+	return newDom, true, nil
+}
+
+func (c *Connector) shouldDisableAppArmor() bool {
+	return disableAppArmorFor(c.cfg, AppArmorActive())
+}
+
+func disableAppArmorFor(cfg *config.Config, appArmorActive bool) bool {
+	if !appArmorActive {
+		return false
+	}
+	if cfg == nil {
+		return true
+	}
+	return cfg.DisableAppArmor
+}
+
+// ensureNoAppArmorLabel disables libvirt's AppArmor profile for WebKVM
+// domains. AppArmor marks external snapshot backing files read-only
+// ("deny ... w"), which makes offline snapshot delete/commit fail with
+// EACCES until libvirt ships the upstream fix. QEMU still runs as the
+// unprivileged libvirt-qemu user with DAC and seccomp.
+func ensureNoAppArmorLabel(xmlStr string, disable bool) string {
+	if !disable || strings.Contains(xmlStr, "<seclabel") {
+		return xmlStr
+	}
+	start := strings.Index(xmlStr, "<domain")
+	if start < 0 {
+		return xmlStr
+	}
+	end := strings.Index(xmlStr[start:], ">")
+	if end < 0 {
+		return xmlStr
+	}
+	end += start
+	return xmlStr[:end+1] + "\n  <seclabel type='none' model='apparmor'/>" + xmlStr[end+1:]
 }
 
 // ---------------------------------------------------------------------------

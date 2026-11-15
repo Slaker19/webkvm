@@ -33,7 +33,7 @@ ss -ltnp | grep -E '8080|443'
 
 ### UI Dashboard
 
-- **Status**: version, backend state, available updates.
+- **Status**: version, backend state, available updates, and in-app update trigger.
 - **Settings**: bind address, port, logging, backups, certificates.
 - **Alerts** (when the notifier is enabled): VM downtime, low disk space,
   backup failures.
@@ -126,7 +126,8 @@ place for debugging), `WEBKVM_URL=https://localhost:8080` (adds a health check).
 ## 9. Upgrading
 
 See [UPGRADE-ROLLBACK.md](UPGRADE-ROLLBACK.md): back up first, verify the
-checksum, then reinstall with the tarball's binary
+checksum, then upgrade either via the in-app updater in the UI (**Status** tab
+`/#/status` → **Update**) or by reinstalling with the verified release binary or tarball
 (`sudo WEBKVM_BINARY=backend/webkvm bash packaging/standalone/install.sh --yes`,
 which runs a health check and rolls back automatically), and validate.
 
@@ -135,8 +136,8 @@ which runs a health check and rolls back automatically), and validate.
 ## 10. Cutting a Release (maintainers only)
 
 ```bash
-git tag v0.0.1 && git push origin v0.0.1
-# GitHub Actions builds and publishes dist/webkvm-<tag>.tar.gz + SHA256SUMS
+git tag -a v0.1.12 -m "WebKVM v0.1.12" && git push origin main --follow-tags
+# GitHub Actions publishes webkvm-0.1.12.tar.gz + SHA256SUMS
 # Local alternative:
 make release                      # local artifacts only
 make release RELEASE_PUBLISH=1    # also publishes with gh

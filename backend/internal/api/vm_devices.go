@@ -16,6 +16,7 @@ import (
 	"webkvm/internal/audit"
 	"webkvm/internal/compute"
 	"webkvm/internal/diskprobe"
+	"webkvm/internal/libvirt"
 	"webkvm/internal/models"
 	"webkvm/internal/zvol"
 )
@@ -53,7 +54,13 @@ func normalizeAttachDiskRequest(req *models.AttachDiskRequest) error {
 
 func (h *Handler) ListDisks(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vm, err := h.compute.GetDomain(id)
+	op, release, err := h.operatorFor(r.URL.Query().Get("node"))
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer release()
+	vm, err := op.GetDomain(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
@@ -73,6 +80,20 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Scope = h.mediaScope(r)
+	if h.isRemote() {
+		// ZFS volumes and install media resolve against THIS host's
+		// filesystem; only new blank disks and existing pool images are
+		// served on a remote node.
+		if req.ZVol != "" || req.Device == "cdrom" {
+			h.remoteUnsupported(w, "zvol_and_media_attach_local_only")
+			return
+		}
+		if req.Source != "" && !req.Force {
+			jsonErrCode(w, http.StatusConflict, "remote_probe_unavailable",
+				"existing disk images on a remote node cannot be inspected for data; pass force=true to attach it anyway")
+			return
+		}
+	}
 	if req.ZVol != "" {
 		_, role, _ := audit.FromRequest(r)
 		if role != models.RoleAdmin {
@@ -123,7 +144,7 @@ func (h *Handler) CreateDisk(w http.ResponseWriter, r *http.Request) {
 		// streams into the same qcow2/raw file — silent, inescapable
 		// data corruption. Refuse unless the only existing attachment is
 		// this same VM (idempotent re-attach).
-		if err := h.checkSourceNotAttachedElsewhere(id, req.Source); err != nil {
+		if err := h.checkSourceNotAttachedElsewhere(id, req.Source, req.Force); err != nil {
 			jsonErr(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -245,6 +266,10 @@ func (h *Handler) DeleteDisk(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	dev := chi.URLParam(r, "dev")
 	if err := h.compute.DetachDisk(id, dev); err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -257,6 +282,7 @@ func (h *Handler) UpdateDisk(w http.ResponseWriter, r *http.Request) {
 	dev := chi.URLParam(r, "dev")
 	var req struct {
 		Source string `json:"source"`
+		Force  bool   `json:"force,omitempty"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
@@ -268,7 +294,7 @@ func (h *Handler) UpdateDisk(w http.ResponseWriter, r *http.Request) {
 	}
 	// Same attachment guard as CreateDisk: swapping a disk's source must
 	// not let the caller grab an image that belongs to another VM.
-	if err := h.checkSourceNotAttachedElsewhere(id, req.Source); err != nil {
+	if err := h.checkSourceNotAttachedElsewhere(id, req.Source, req.Force); err != nil {
 		jsonErr(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -304,6 +330,36 @@ func (h *Handler) ChangeDiskBus(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit.Log(auditFor(r, "vm.disk_bus_change", id, map[string]interface{}{"dev": dev, "bus": req.Bus}))
 	jsonResp(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// resizeRemoteDisk resizes a disk of a remote node. A running domain grows
+// online through libvirt (BlockResize). A stopped one is resized through the
+// storage volume of its pool: the connector's qemu-img path would run on THIS
+// host against a remote path.
+func (h *Handler) resizeRemoteDisk(ctx context.Context, id, dev string, sizeGB int64) (int64, error) {
+	vm, err := h.compute.GetDomain(id)
+	if err != nil {
+		return 0, err
+	}
+	if vm.State == models.VMStateRunning || vm.State == models.VMStatePaused {
+		return h.compute.ResizeDomainDisk(ctx, id, dev, sizeGB)
+	}
+	for _, d := range vm.Disks {
+		if d.Target != dev {
+			continue
+		}
+		if d.Pool == "" || d.Source == "" || d.Type == "block" {
+			return 0, errors.New("this disk is not a pool volume; its size cannot be changed from here")
+		}
+		if sizeGB < d.SizeGB {
+			return 0, errors.New("shrinking a disk is not supported")
+		}
+		if err := h.compute.ResizeStorageVolume(d.Pool, filepath.Base(d.Source), sizeGB); err != nil {
+			return 0, err
+		}
+		return sizeGB * 1024 * 1024 * 1024, nil
+	}
+	return 0, fmt.Errorf("disk %q not found on the instance", dev)
 }
 
 // ResizeDomainDisk grows the underlying file of a VM disk.
@@ -354,7 +410,13 @@ func (h *Handler) ResizeDomainDisk(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	newBytes, err := h.compute.ResizeDomainDisk(r.Context(), id, dev, req.SizeGB)
+	var newBytes int64
+	var err error
+	if h.isRemote() {
+		newBytes, err = h.resizeRemoteDisk(r.Context(), id, dev, req.SizeGB)
+	} else {
+		newBytes, err = h.compute.ResizeDomainDisk(r.Context(), id, dev, req.SizeGB)
+	}
 	if err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -372,7 +434,13 @@ func (h *Handler) ResizeDomainDisk(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ListNetIfaces(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	vm, err := h.compute.GetDomain(id)
+	op, release, err := h.operatorFor(r.URL.Query().Get("node"))
+	if err != nil {
+		jsonErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer release()
+	vm, err := op.GetDomain(id)
 	if err != nil {
 		jsonErr(w, http.StatusNotFound, err.Error())
 		return
@@ -393,6 +461,10 @@ func (h *Handler) CreateNetIface(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.VLANTag != nil && (*req.VLANTag < 1 || *req.VLANTag > 4094) {
 		jsonErr(w, http.StatusBadRequest, "vlan_tag must be between 1 and 4094")
+		return
+	}
+	if h.isRemote() && !libvirt.ValidRemoteBridgeName(req.Network) {
+		jsonErrCode(w, http.StatusBadRequest, "invalid_bridge", "the bridge name must be 1-15 characters of letters, digits, '.', '_' or '-' (for example vmbr0)")
 		return
 	}
 	if owner, role, _ := audit.FromRequest(r); role != models.RoleAdmin {
@@ -422,6 +494,10 @@ func (h *Handler) DeleteNetIface(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.compute.DetachNetworkIface(id, mac); err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

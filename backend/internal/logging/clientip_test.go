@@ -1,6 +1,8 @@
 package logging
 
 import (
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -162,4 +164,17 @@ func TrustProxyAt(t *testing.T, env string) bool {
 		t.Setenv("WEBKVM_TRUST_PROXY", env)
 	}
 	return TrustProxy()
+}
+
+func TestClientIPInfoUsesResolverHook(t *testing.T) {
+	SetClientIPResolver(func(*http.Request) (net.IP, bool) {
+		return net.ParseIP("203.0.113.9"), true
+	})
+	defer SetClientIPResolver(nil)
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "192.168.1.8:443"
+	ip, fromHeader := ClientIPInfo(req)
+	if ip != "203.0.113.9" || !fromHeader {
+		t.Fatalf("ClientIPInfo = (%q,%v), want (203.0.113.9,true)", ip, fromHeader)
+	}
 }

@@ -1,7 +1,7 @@
 // @ts-check
 import { defineConfig, devices } from '@playwright/test';
 
-const baseURL = process.env.WEBKVM_BASE_URL || 'https://192.168.1.40:8080';
+const baseURL = process.env.WEBKVM_BASE_URL || 'https://192.168.50.40:8080';
 
 /**
  * Smoke suite against a live WebKVM instance.

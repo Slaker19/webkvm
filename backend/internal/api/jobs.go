@@ -39,7 +39,7 @@ func submitJob(owner, name string, fn func() (any, error)) *models.DownloadJob {
 		result, err := fn()
 		if err != nil {
 			slog.Warn("job_failed", "job", job.ID, "name", name, "err", err)
-			updateJob(job.ID, 0, "error", err.Error())
+			updateJobError(job.ID, codeOf(err), err.Error())
 			return
 		}
 		jobsMu.Lock()
@@ -90,7 +90,7 @@ func submitJobWithPool(owner, name, pool string, fn func(progress func(pct float
 		result, err := fn(progress)
 		if err != nil {
 			slog.Warn("job_failed", "job", job.ID, "name", name, "err", err)
-			updateJob(job.ID, 0, "error", err.Error())
+			updateJobError(job.ID, codeOf(err), err.Error())
 			return
 		}
 		jobsMu.Lock()

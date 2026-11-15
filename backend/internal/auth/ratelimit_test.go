@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -296,5 +299,138 @@ func TestLoginRateLimiter_RecordSuccessNoopForTrusted(t *testing.T) {
 	ok, _ := rl.Allow(trustedReq, "alice")
 	if !ok {
 		t.Error("loopback should still be allowed after a no-op success")
+	}
+}
+
+type testTrustedSettings struct {
+	trustProxy bool
+	cidrs      []string
+}
+
+func (s testTrustedSettings) GetBool(string) bool     { return s.trustProxy }
+func (s testTrustedSettings) GetList(string) []string { return s.cidrs }
+
+// Multi-node: NPM connects from 192.168.1.8 and forwards the real client in
+// X-Forwarded-For. The resolver must return the client, not the proxy.
+func TestResolveClientIPUsesSettingsAndXFF(t *testing.T) {
+	settings := testTrustedSettings{
+		trustProxy: true,
+		cidrs:      []string{"192.168.1.8/32"},
+	}
+	r := httptest.NewRequest("POST", "/api/auth/login", nil)
+	r.RemoteAddr = "192.168.1.8:443"
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	ip, fromHeader := ResolveClientIP(r, settings)
+	if ip == nil || ip.String() != "203.0.113.9" || !fromHeader {
+		t.Fatalf("ResolveClientIP = (%v,%v), want (203.0.113.9,true)", ip, fromHeader)
+	}
+}
+
+func TestRateLimiterLockoutPersistsImmediately(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ratelimit.json")
+	rl := NewLoginRateLimiter()
+	if err := rl.EnablePersistence(path); err != nil {
+		t.Fatal(err)
+	}
+	r := newReq("203.0.113.9:5555", "alice")
+	for i := 0; i < 5; i++ {
+		rl.RecordFailure(r, "alice")
+	}
+	if ok, _ := rl.Allow(r, "alice"); ok {
+		t.Fatal("expected the in-process lockout")
+	}
+
+	// No Flush: a lockout bypasses the coalescing window on purpose.
+	rl2 := NewLoginRateLimiter()
+	if err := rl2.EnablePersistence(path); err != nil {
+		t.Fatal(err)
+	}
+	ok, retry := rl2.Allow(r, "alice")
+	if ok {
+		t.Fatal("lockout did not survive a restart")
+	}
+	if retry <= 0 {
+		t.Fatalf("retry-after = %v, want > 0", retry)
+	}
+}
+
+func TestRateLimiterCountersSurviveRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ratelimit.json")
+	rl := NewLoginRateLimiter()
+	if err := rl.EnablePersistence(path); err != nil {
+		t.Fatal(err)
+	}
+	r := newReq("203.0.113.10:5555", "bob")
+	for i := 0; i < 3; i++ {
+		rl.RecordFailure(r, "bob")
+	}
+	if err := rl.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	rl2 := NewLoginRateLimiter()
+	if err := rl2.EnablePersistence(path); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := rl2.Allow(r, "bob"); !ok {
+		t.Fatal("3 restored failures must not lock out yet")
+	}
+	for i := 0; i < 2; i++ {
+		rl2.RecordFailure(r, "bob")
+	}
+	if ok, _ := rl2.Allow(r, "bob"); ok {
+		t.Fatal("counter did not survive the restart (expected 5 total)")
+	}
+}
+
+func TestRateLimiterDropsStaleCountersOnLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ratelimit.json")
+	now := time.Now()
+	f := rateLimitFile{Version: 1, Buckets: []rateLimitEntry{
+		// Window long gone: drop it.
+		{Key: "198.51.100.1|bob", Failures: 4, FirstFail: now.Add(-time.Hour)},
+		// Active lockout outlives the counting window: keep it.
+		{Key: "198.51.100.2|bob", Failures: 5, FirstFail: now.Add(-time.Hour), LockedTill: now.Add(10 * time.Minute)},
+	}}
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rl := NewLoginRateLimiter()
+	if err := rl.EnablePersistence(path); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := rl.Allow(newReq("198.51.100.1:1234", "bob"), "bob"); !ok {
+		t.Fatal("stale counter must be dropped on load")
+	}
+	if ok, _ := rl.Allow(newReq("198.51.100.2:1234", "bob"), "bob"); ok {
+		t.Fatal("active lockout must be restored on load")
+	}
+}
+
+func TestRateLimiterPersistIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ratelimit.json")
+	rl := NewLoginRateLimiter()
+	if err := rl.EnablePersistence(path); err != nil {
+		t.Fatal(err)
+	}
+	r := newReq("203.0.113.11:5555", "carol")
+	rl.RecordFailure(r, "carol")
+	for i := 0; i < 4; i++ {
+		rl.RecordFailure(r, "carol")
+	}
+	if _, err := os.Stat(path + ".tmp"); err == nil {
+		t.Fatal("temp file must not be left behind after the rename")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("ratelimit.json mode = %o, want 600", perm)
 	}
 }

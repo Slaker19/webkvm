@@ -16,13 +16,16 @@ import (
 	"webkvm/internal/configstore"
 	"webkvm/internal/events"
 	"webkvm/internal/firewall"
+	"webkvm/internal/hainstall"
 	"webkvm/internal/helperscripts"
+	"webkvm/internal/hostsched"
 	"webkvm/internal/libvirt"
 	"webkvm/internal/metrics"
 	"webkvm/internal/models"
 	"webkvm/internal/netguard"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
+	"webkvm/internal/sysutil"
 	"webkvm/internal/tokens"
 	"webkvm/internal/user"
 	"webkvm/internal/vmsched"
@@ -55,6 +58,8 @@ func NewRouter(
 	fwMgr *firewall.Manager,
 	vmSchedStore *vmsched.Store,
 	vmScheduler *vmsched.Scheduler,
+	hostSchedStore *hostsched.Store,
+	hostScheduler *hostsched.Scheduler,
 	metricHist *metrics.TimeSeriesStore,
 	alerter *metrics.AlertEngine,
 	incusMetrics *incus.MetricsCollector,
@@ -114,6 +119,13 @@ func NewRouter(
 
 	snippetsStore, _ := cloudinit.NewSnippetStore(cfg.DataDir)
 
+	var clusterFW *firewall.ClusterManager
+	if fwStore != nil {
+		if manager, err := firewall.NewClusterManager(fwStore.ClusterProfilePath(), nil); err == nil {
+			clusterFW = manager
+		}
+	}
+
 	h := &Handler{
 		lv:            lv,
 		compute:       compute,
@@ -132,19 +144,31 @@ func NewRouter(
 		settings:      settings,
 		tokens:        tokensStore,
 		nodes:         nodesReg,
+		sshKeys:       nodes.SharedSSHKeyStore(cfg.DataDir),
+		libvirtPool:   libvirt.DefaultPool(),
 		backupStore:   backupStore,
 		backupRunner:  backupRunner,
 		notifier:      notifier,
 		fwStore:       fwStore,
 		fwMgr:         fwMgr,
+		clusterFW:     clusterFW,
+		haInstall:     hainstall.New(cfg.DataDir, sysutil.DefaultRunner),
 		vmSchedStore:  vmSchedStore,
 		vmScheduler:   vmScheduler,
+		hostSched:     hostSchedStore,
+		hostScheduler: hostScheduler,
 		snippets:      snippetsStore,
 		metricHist:    metricHist,
 		alerter:       alerter,
 		incusMetrics:  incusMetrics,
 		webauthn:      auth.NewWebAuthnManager(cfg),
+		workloads:     newWorkloadStore(cfg.DataDir),
 		StartedAt:     time.Now(),
+	}
+
+	// Wire the scheduled-upgrade callback now that the Handler exists.
+	if hostScheduler != nil {
+		hostScheduler.SetRun(h.runScheduledUpgrade)
 	}
 
 	h.EnsureMediaDirs()
@@ -165,6 +189,7 @@ func NewRouter(
 		// above, so there is nothing here to protect.
 		r.Get("/api/branding", h.GetBranding)
 	})
+	h.mountIncusCluster(r)
 	r.Get("/api/health", h.Health)
 	r.Get("/metrics", h.PrometheusMetrics)
 	r.Get("/api/metrics/prometheus", h.PrometheusMetrics)
@@ -260,148 +285,8 @@ func NewRouter(
 			// ACL / Ownership gate: a caller must be admin, recorded owner,
 			// or have matching AllowedGroups / AllowedTags.
 			r.Use(h.requireVMOwnership)
-			r.Get("/", h.GetVM)
-			r.Group(func(r chi.Router) {
-				r.Use(auth.RequireAtLeast("operator"))
-				r.Patch("/", h.UpdateVM)
-				r.Delete("/", h.DeleteVM)
-				r.Post("/start", h.StartVM)
-				r.Post("/shutdown", h.ShutdownVM)
-				r.Post("/forceoff", h.ForceOffVM)
-				r.Post("/reboot", h.RebootVM)
-				r.Post("/suspend", h.SuspendVM)
-				r.Post("/resume", h.ResumeVM)
-
-				r.Post("/disks", h.CreateDisk)
-				r.Put("/disks/{dev}", h.UpdateDisk)
-				r.Delete("/disks/{dev}", h.DeleteDisk)
-				r.Post("/disks/{dev}/resize", h.ResizeDomainDisk)
-				r.Post("/disks/{dev}/bus", h.ChangeDiskBus)
-
-				r.Post("/networks", h.CreateNetIface)
-				r.Patch("/networks/{mac}", h.UpdateNetIface)
-				r.Delete("/networks/{mac}", h.DeleteNetIface)
-
-				r.Put("/meta", h.UpdateVMMeta)
-				r.Post("/cover", h.UploadCover)
-				r.Delete("/cover", h.DeleteCover)
-
-				r.Get("/cloudinit", h.GetCloudInitStatus)
-				r.Post("/cloudinit", h.ReapplyCloudInit)
-				r.Get("/logs", h.GetVMLogs)
-
-				r.Post("/clone", h.CloneVM)
-				r.Post("/batch-clone", h.BatchCloneVM)
-				// Relocating an instance's storage to another pool.
-				// Same permission level as a clone: both copy the whole
-				// disk, neither can reach outside the caller's pools.
-				r.Post("/move-storage", h.MoveVMStorage)
-				r.Post("/boot", h.SetBootDevice)
-				r.Post("/autostart", h.SetAutostart)
-
-				r.Post("/snapshots", h.CreateSnapshot)
-				r.Delete("/snapshots/{sid}", h.DeleteSnapshot)
-				r.Post("/snapshots/{sid}/revert", h.RevertSnapshot)
-
-				// Per-VM backups. The admin /api/backup/* surface stays
-				// admin-only because it exposes fleet-wide destinations
-				// and their credentials; these three operate on this one
-				// VM, with the run scope pinned server-side.
-				r.Group(func(r chi.Router) {
-					r.Use(h.requireCapability("backups"))
-					r.Get("/backup/targets", h.ListVMBackupTargets)
-					r.Post("/backup", h.BackupVMNow)
-					r.Get("/backup/jobs", h.ListVMBackupJobs)
-				})
-
-				r.Put("/firewall", h.SetVMFirewall)
-				r.Post("/make-template", h.MakeVMTemplate)
-				r.Post("/unset-template", h.UnsetVMTemplate)
-
-				r.Get("/schedule", h.GetVMSchedule)
-				r.Put("/schedule", h.SetVMSchedule)
-				r.With(h.requireCapability("control_power")).Post("/power/{action}", h.PowerVMNow)
-				r.Post("/reset-password", h.ResetVMPassword)
-				r.Post("/guest/fstrim", h.VMGuestFSTrim)
-				r.Post("/guest/exec", h.VMGuestExec)
-				r.Post("/guest/freeze", h.VMGuestFSFreeze)
-				r.Get("/guest/freeze-status", h.VMGuestFSFreezeStatus)
-				r.Post("/guest/sync-time", h.VMGuestSyncTime)
-
-				// Exporting streams every byte of the VM's disks. That is
-				// a data-exfiltration path rather than a console one, so
-				// it is gated on its own capability instead of riding on
-				// 'console'.
-				r.With(h.requireCapability("export")).Get("/export", h.ExportVM)
-			})
-
-			// Console access sits OUTSIDE the operator role gate on
-			// purpose. A viewer is read-only, but console is the one
-			// capability that can be granted to them explicitly — the
-			// support technician who must see a screen without being
-			// able to change anything. Nesting this group inside
-			// RequireAtLeast("operator") made that grant unreachable:
-			// the role gate answered 403 before requireCapability ever
-			// ran, so "viewer + console" was silently impossible.
-			//
-			// Ownership is still enforced: requireVMOwnership is applied
-			// by the parent route, and requireCapability("console")
-			// denies anyone whose console flag is off, operator included.
-			r.Group(func(r chi.Router) {
-				r.Use(h.requireCapability("console"))
-				r.Get("/graphics", h.GetGraphics)
-				r.Get("/vnc", h.VNCProxy)
-				r.Get("/spice-ws", h.SPICEProxy)
-				r.Get("/serial", h.SerialProxy)
-				r.Post("/console-ticket", h.VMConsoleTicket)
-				r.Post("/vnc-ticket", h.VNCTicket)
-				r.Get("/rdp", h.DownloadRDP)
-				r.Get("/spice", h.DownloadSPICE)
-				r.Post("/clipboard", h.SetClipboard)
-			})
-
-			// USB device passthrough: admin only.
-			r.Group(func(r chi.Router) {
-				r.Use(auth.RequireRole(modelsRoleAdmin()))
-				r.Post("/usb", h.AttachUSBDevice)
-				r.Delete("/usb/{vendorId}/{productId}", h.DetachUSBDevice)
-			})
-
-			// PCI device passthrough: admin only, VM must be shut off
-			// (enforced in the libvirt layer).
-			r.Group(func(r chi.Router) {
-				r.Use(auth.RequireRole(modelsRoleAdmin()))
-				r.Post("/pci", h.AttachPCIDevice)
-				r.Delete("/pci/{address}", h.DetachPCIDevice)
-			})
-
-			// 9p shared folders: admin only, VM must be shut off.
-			r.Group(func(r chi.Router) {
-				r.Use(auth.RequireRole(modelsRoleAdmin()))
-				r.Post("/shared-folders", h.AttachSharedFolder)
-				r.Delete("/shared-folders/{tag}", h.DetachSharedFolder)
-			})
-
-			// Read-only metadata for everyone authenticated (viewer
-			// dashboards etc.) — no console access, no raw disk export.
-			r.Get("/firewall", h.GetVMFirewall)
-			r.Get("/disks", h.ListDisks)
-			r.Get("/disks/{dev}/probe", h.ProbeDisk)
-			r.Get("/networks", h.ListNetIfaces)
-			r.Get("/vlan-support", h.CheckVLANSupport)
-			r.Get("/meta", h.GetVMMeta)
-			r.Get("/metrics", h.GetVMMetrics)
-			r.Get("/metrics/history", h.GetVMMetricsHistory)
-			r.Get("/guest-info", h.GetGuestInfo)
-			r.Get("/alerts", h.GetVMAlerterRules)
-			// V13-C-04: alert rules for a VM are admin-editable.
-			r.Group(func(r chi.Router) {
-				r.Use(auth.RequireRole(modelsRoleAdmin()))
-				r.Put("/alerts", h.SetVMAlerterRules)
-			})
-			r.Get("/boot", h.GetBootDevice)
-			r.Get("/autostart", h.GetAutostart)
-			r.Get("/snapshots", h.ListSnapshots)
+			r.Use(h.nodeDispatch)
+			h.mountVMRoutes(r, modeLocal)
 		})
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAtLeast("operator"))
@@ -459,7 +344,7 @@ func NewRouter(
 	r.Route("/api/images", func(r chi.Router) {
 		r.Get("/containers", h.ListContainerImages)
 		r.Get("/cloud-base", h.ListBaseCloudImages)
-		r.Get("/isos", h.ListISOs)
+		r.Get("/isos", h.withNodeSelector(func(x *Handler) http.HandlerFunc { return x.ListISOs }))
 		// Where Incus caches container images. Readable by anyone who
 		// can see the images; changing it is a daemon-wide setting and
 		// stays admin-only below.
@@ -493,10 +378,10 @@ func NewRouter(
 	})
 
 	r.Route("/api/storage", func(r chi.Router) {
-		r.Get("/pools", h.ListPools)
+		r.Get("/pools", h.withNodeSelector(func(x *Handler) http.HandlerFunc { return x.ListPools }))
 		r.Get("/pools/breakdown", h.GetStorageBreakdown)
-		r.Get("/volumes", h.ListVolumes)
-		r.Get("/isos", h.ListISOs)
+		r.Get("/volumes", h.withNodeSelector(func(x *Handler) http.HandlerFunc { return x.ListVolumes }))
+		r.Get("/isos", h.withNodeSelector(func(x *Handler) http.HandlerFunc { return x.ListISOs }))
 		r.Get("/jobs/{id}", h.GetDownloadJob)
 
 		r.Group(func(r chi.Router) {
@@ -536,7 +421,7 @@ func NewRouter(
 	})
 
 	r.Route("/api/networks", func(r chi.Router) {
-		r.Get("/", h.ListNetworks)
+		r.Get("/", h.withNodeSelector(func(x *Handler) http.HandlerFunc { return x.ListNetworks }))
 		r.Get("/{id}/leases", h.ListNetworkLeases)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAtLeast("operator"))
@@ -558,7 +443,7 @@ func NewRouter(
 		r.Get("/", h.GetHostInfo)
 		r.Get("/stats", h.GetHostStats)
 		r.Get("/metrics", h.GetHostMetrics)
-		r.Get("/interfaces", h.ListHostInterfaces)
+		r.Get("/interfaces", h.listNodeLocalOnly(h.ListHostInterfaces))
 		r.Get("/disks", h.ListHostDisks)
 		r.Get("/disks/filesystems", h.ListFilesystems)
 		// Broken systemd automount units shadowing a directory. Read-only
@@ -602,6 +487,9 @@ func NewRouter(
 			r.Get("/updates", h.GetHostUpdates)
 			r.Post("/updates/refresh", h.RefreshHostUpdates)
 			r.Post("/updates/upgrade", h.UpgradeHostUpdates)
+			r.Get("/updates/schedule", h.GetHostUpdateSchedule)
+			r.Put("/updates/schedule", h.SetHostUpdateSchedule)
+			r.Post("/reboot", h.RebootHost)
 		})
 	})
 
@@ -708,6 +596,10 @@ func NewRouter(
 		r.Get("/", h.ListNodes)
 		r.Get("/summary", h.GetClusterSummary)
 		r.Post("/ping-all", h.PingAllNodes)
+		r.Post("/test", h.TestNodeConnection)
+		r.Get("/install-script", h.GetNodeDependencyInstaller)
+		r.Post("/install", h.InstallNodeDependencies)
+		r.Get("/{id}/incus-inventory", h.GetNodeIncusInventory)
 		r.Get("/{id}", h.GetNode)
 		r.Post("/{id}/ping", h.PingNode)
 		r.Group(func(r chi.Router) {
@@ -715,6 +607,54 @@ func NewRouter(
 			r.Put("/{id}", h.UpdateNode)
 			r.Delete("/{id}", h.DeleteNode)
 		})
+	})
+	h.mountClusterSSH(r)
+
+	// Cluster/HA is an optional module: when modules.cluster_ha is off these
+	// routes answer 404 module_not_installed and never touch pcs/pacemaker.
+	// The module installer itself is always reachable: it is how an operator
+	// turns the optional feature on in the first place.
+	r.Route("/api/modules/ha", func(r chi.Router) {
+		r.Use(auth.RequireRole(modelsRoleAdmin()))
+		r.Get("/", h.GetHAModule)
+		r.Get("/compat", h.GetHACompat)
+		r.Post("/preflight", h.PreflightHAModule)
+		r.Post("/install", h.InstallHAModule)
+		r.Post("/verify", h.VerifyHAModule)
+		r.Post("/enable", h.EnableHAModule)
+		r.Post("/disable", h.DisableHAModule)
+		r.Post("/uninstall", h.UninstallHAModule)
+		// Cluster formation: needs the packages, not the cluster_ha flag.
+		r.Route("/cluster", func(r chi.Router) {
+			r.Use(h.requireHAPackages)
+			r.Post("/plan", h.PlanHACluster)
+			r.Post("/setup", h.SetupHACluster)
+			r.Get("/status", h.GetHAClusterStatus)
+		})
+	})
+
+	r.Route("/api/ha", func(r chi.Router) {
+		r.Use(h.requireClusterHA)
+		r.Use(auth.RequireRole(modelsRoleAdmin()))
+		r.Get("/readiness", h.GetHAReadiness)
+		r.Post("/fence-pve/verify", h.VerifyFencePVE)
+		r.Get("/vm-migration", h.GetHAVMMigration)
+		r.Post("/fencing/test", h.TestHAFencing)
+		r.Get("/fencing/evidence", h.GetHAFencingEvidence)
+		r.Post("/nodes/{name}/standby", h.StandbyHANode)
+		r.Post("/nodes/{name}/unstandby", h.UnstandbyHANode)
+		h.mountHAWorkloads(r)
+	})
+
+	r.Route("/api/cluster", func(r chi.Router) {
+		r.Use(auth.RequireRole(modelsRoleAdmin()))
+		r.Get("/members", h.GetIncusClusterMembers)
+	})
+
+	r.Route("/api/incus", func(r chi.Router) {
+		r.Use(auth.RequireRole(modelsRoleAdmin()))
+		r.Get("/healing", h.GetIncusHealing)
+		r.Put("/healing", h.UpdateIncusHealing)
 	})
 
 	// Backup v2: targets, schedules, jobs, files.
@@ -766,6 +706,17 @@ func NewRouter(
 		r.Use(auth.RequireRole(modelsRoleAdmin()))
 		r.Get("/api/backup/jobs", h.ListBackupJobs)
 	})
+	r.Route("/api/firewall/cluster", func(r chi.Router) {
+		r.Use(h.requireClusterHA)
+		r.Use(auth.RequireRole(modelsRoleAdmin()))
+		r.Get("/", h.GetClusterFirewall)
+		r.Post("/preview", h.PreviewClusterFirewall)
+		r.Put("/", h.SaveClusterFirewall)
+		r.Post("/apply", h.ApplyClusterFirewall)
+		r.Post("/confirm", h.ConfirmClusterFirewall)
+		r.Post("/rollback", h.RollbackClusterFirewall)
+	})
+
 	r.Route("/api/firewall/host", func(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireRole(modelsRoleAdmin()))

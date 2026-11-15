@@ -197,3 +197,23 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+func TestInitWithFile_CreatesMissingParentDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logs", "nested", "backend.log")
+	InitWithFile("text", "info", path)
+	t.Cleanup(func() {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	})
+	slog.Info("created_dir")
+
+	st, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("parent dir not created: %v", err)
+	}
+	if st.Mode().Perm() != 0o750 {
+		t.Fatalf("dir mode = %v, want 0750", st.Mode().Perm())
+	}
+	if got := readFile(t, path); !strings.Contains(got, "created_dir") {
+		t.Fatalf("log line missing: %q", got)
+	}
+}

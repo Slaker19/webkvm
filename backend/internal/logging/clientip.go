@@ -120,14 +120,39 @@ func ResolveClientIP(peer net.IP, xff string, trustProxy bool, isTrusted func(ne
 // audit logger (for the IP field on entries) so they always agree. Don't
 // call r.Header.Get("X-Forwarded-For") directly.
 func ClientIP(r *http.Request) string {
+	ip, _ := ClientIPInfo(r)
+	return ip
+}
+
+// clientIPHook, when set, resolves the client IP from the live settings
+// (server.trust_proxy + server.trusted_cidrs) instead of the env vars.
+// main wires it at startup so the audit log, request log and jail agree
+// with the rate limiter (SEG-2).
+var clientIPHook func(*http.Request) (net.IP, bool)
+
+// SetClientIPResolver installs the settings-aware resolver. Pass nil to
+// restore the env-var behaviour (used by tests).
+func SetClientIPResolver(fn func(*http.Request) (net.IP, bool)) {
+	clientIPHook = fn
+}
+
+// ClientIPInfo returns the resolved client IP and whether it came from
+// X-Forwarded-For. Callers that ban must not apply packet filters to a
+// header-derived address: the packet source is the proxy, not the client.
+func ClientIPInfo(r *http.Request) (string, bool) {
+	if clientIPHook != nil {
+		if ip, fromHeader := clientIPHook(r); ip != nil {
+			return ip.String(), fromHeader
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
 	peer := net.ParseIP(host)
-	ip, _ := ResolveClientIP(peer, r.Header.Get("X-Forwarded-For"), TrustProxy(), isTrustedProxySource)
+	ip, fromHeader := ResolveClientIP(peer, r.Header.Get("X-Forwarded-For"), TrustProxy(), isTrustedProxySource)
 	if ip == nil {
-		return host
+		return host, false
 	}
-	return ip.String()
+	return ip.String(), fromHeader
 }

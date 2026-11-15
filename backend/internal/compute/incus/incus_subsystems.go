@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,16 +32,121 @@ import (
 // --- Snapshots ---
 
 func (b *IncusBackend) ListSnapshots(domainID string) ([]models.Snapshot, error) {
-	return nil, compute.ErrNotImplemented
+	if b.client == nil {
+		return nil, compute.ErrNotImplemented
+	}
+	snaps, err := b.client.GetInstanceSnapshots(domainID)
+	if err != nil {
+		return nil, mapLXErr(err)
+	}
+	out := make([]models.Snapshot, 0, len(snaps))
+	for i := range snaps {
+		out = append(out, snapshotToModel(&snaps[i]))
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreationTime < out[j].CreationTime })
+	return out, nil
 }
+
+var snapshotNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
+
+// shortSnapshotName strips the "<instance>/" prefix some Incus versions keep.
+func shortSnapshotName(name string) string {
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		return name[i+1:]
+	}
+	return name
+}
+
+func snapshotToModel(s *api.InstanceSnapshot) models.Snapshot {
+	name := shortSnapshotName(s.Name)
+	return models.Snapshot{
+		ID:              name,
+		Name:            name,
+		Description:     s.Description,
+		CreatedAt:       s.CreatedAt.UTC().Format(time.RFC3339),
+		CreationTime:    s.CreatedAt.Unix(),
+		HasMemory:       s.Stateful,
+		SizeAtSnapBytes: s.Size,
+	}
+}
+
 func (b *IncusBackend) CreateSnapshot(domainID string, req models.CreateSnapshotRequest) (models.Snapshot, error) {
-	return models.Snapshot{}, compute.ErrNotImplemented
+	if b.client == nil {
+		return models.Snapshot{}, compute.ErrNotImplemented
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = fmt.Sprintf("snap-%d", time.Now().Unix())
+	}
+	if !snapshotNameRe.MatchString(name) {
+		return models.Snapshot{}, fmt.Errorf("invalid snapshot name %q", name)
+	}
+	inst, _, err := b.client.GetInstance(domainID)
+	if err != nil {
+		return models.Snapshot{}, mapLXErr(err)
+	}
+	if req.Memory && !strings.EqualFold(inst.Status, "Running") {
+		return models.Snapshot{}, compute.ErrMemorySnapshotRequiresRunning
+	}
+	op, err := b.client.CreateInstanceSnapshot(domainID, api.InstanceSnapshotsPost{Name: name, Stateful: req.Memory})
+	if err != nil {
+		return models.Snapshot{}, mapLXErr(err)
+	}
+	if err := waitOperationLong(op); err != nil {
+		return models.Snapshot{}, err
+	}
+	snap, _, err := b.client.GetInstanceSnapshot(domainID, name)
+	if err != nil {
+		return models.Snapshot{}, mapLXErr(err)
+	}
+	m := snapshotToModel(snap)
+	if m.Description == "" {
+		m.Description = req.Description
+	}
+	return m, nil
 }
+
+// DeleteSnapshot removes a snapshot and returns the size it occupied.
 func (b *IncusBackend) DeleteSnapshot(domainID, snapID string) (int64, error) {
-	return 0, compute.ErrNotImplemented
+	if b.client == nil {
+		return 0, compute.ErrNotImplemented
+	}
+	snap, _, err := b.client.GetInstanceSnapshot(domainID, snapID)
+	if err != nil {
+		return 0, snapshotErr(err)
+	}
+	op, err := b.client.DeleteInstanceSnapshot(domainID, snapID)
+	if err != nil {
+		return 0, snapshotErr(err)
+	}
+	if err := waitOperationLong(op); err != nil {
+		return 0, err
+	}
+	return snap.Size, nil
 }
+
+// RevertSnapshot restores the instance to the snapshot (Incus restore is
+// an instance update carrying the snapshot name).
 func (b *IncusBackend) RevertSnapshot(domainID, snapID string) error {
-	return compute.ErrNotImplemented
+	if b.client == nil {
+		return compute.ErrNotImplemented
+	}
+	snap, _, err := b.client.GetInstanceSnapshot(domainID, snapID)
+	if err != nil {
+		return snapshotErr(err)
+	}
+	op, err := b.client.UpdateInstance(domainID, api.InstancePut{Restore: snapID, Stateful: snap.Stateful}, "")
+	if err != nil {
+		return mapLXErr(err)
+	}
+	return waitOperationLong(op)
+}
+
+func snapshotErr(err error) error {
+	if isNotFound(err) {
+		return errors.Join(compute.ErrNotFound, err)
+	}
+	return mapLXErr(err)
 }
 func (b *IncusBackend) ExportSnapshots(domainID string) ([]backupstore.SnapshotBackup, error) {
 	return nil, compute.ErrNotImplemented
@@ -590,6 +697,7 @@ func (b *IncusBackend) ImportOVA(ovaPath, newName, poolName string) (string, str
 
 func (b *IncusBackend) Capabilities() compute.Capabilities {
 	return compute.Capabilities{
+		SupportsSnapshots:     b.client != nil,
 		SupportsSerialConsole: true,
 	}
 }

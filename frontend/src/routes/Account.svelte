@@ -285,7 +285,7 @@
             },
           });
         } catch (qrErr) {
-          console.error('Error generando código QR:', qrErr);
+          console.error('Failed to generate 2FA QR code:', qrErr);
         } finally {
           generatingQr = false;
         }

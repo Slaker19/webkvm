@@ -36,7 +36,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Ubuntu 26.04 (Resolute)",
 			Category:    "popular",
 			Distro:      "ubuntu",
-			Description: "Ubuntu 26.04 Resolute LTS (desarrollo / compilación más reciente).",
+			Description: "Ubuntu 26.04 Resolute LTS, latest development build.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "26.04",
 			RecVCPUs:    2,
@@ -56,7 +56,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Ubuntu 24.04 LTS (Noble)",
 			Category:    "popular",
 			Distro:      "ubuntu",
-			Description: "LTS más reciente de Ubuntu con soporte oficial hasta 2029.",
+			Description: "Current Ubuntu LTS, with official support through 2029.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "LTS",
 			RecVCPUs:    2,
@@ -68,7 +68,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Ubuntu 22.04 LTS (Jammy)",
 			Category:    "popular",
 			Distro:      "ubuntu",
-			Description: "Versión LTS clásica y ampliamente compatible para producción.",
+			Description: "Classic, broadly compatible LTS release for production.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "LTS",
 			RecVCPUs:    2,
@@ -80,7 +80,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Debian 14 (Forky)",
 			Category:    "dev",
 			Distro:      "debian",
-			Description: "Siguiente generación de Debian 14 con paquetería de última hornada.",
+			Description: "Next-generation Debian 14 with recent packages.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Debian 14",
 			RecVCPUs:    2,
@@ -92,7 +92,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Debian 13 (Trixie)",
 			Category:    "popular",
 			Distro:      "debian",
-			Description: "Siguiente generación de Debian con paquetería moderna.",
+			Description: "Next-generation Debian with updated packages.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Testing",
 			RecVCPUs:    2,
@@ -104,7 +104,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Debian 12 (Bookworm)",
 			Category:    "popular",
 			Distro:      "debian",
-			Description: "Debian estable, ideal para servidores ligeros y bases de datos.",
+			Description: "Stable Debian, ideal for lightweight servers and databases.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Estable",
 			RecVCPUs:    2,
@@ -116,7 +116,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Debian 11 (Bullseye)",
 			Category:    "popular",
 			Distro:      "debian",
-			Description: "Debian oldstable optimizada para servicios heredados.",
+			Description: "Oldstable Debian for legacy services.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Oldstable",
 			RecVCPUs:    1,
@@ -128,7 +128,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Debian Sid (Unstable)",
 			Category:    "dev",
 			Distro:      "debian",
-			Description: "Rama inestable de Debian para desarrolladores y bleeding-edge.",
+			Description: "Unstable Debian branch for development and cutting-edge packages.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Unstable",
 			RecVCPUs:    2,
@@ -141,7 +141,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Alpine Linux 3.24",
 			Category:    "minimal",
 			Distro:      "alpine",
-			Description: "Alpine Linux versión más reciente.",
+			Description: "Latest Alpine Linux release.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "3.24",
 			RecVCPUs:    1,
@@ -153,7 +153,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Alpine Linux 3.23",
 			Category:    "minimal",
 			Distro:      "alpine",
-			Description: "Alpine Linux versión reciente estable.",
+			Description: "Recent stable Alpine Linux release.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "3.23",
 			RecVCPUs:    1,
@@ -165,7 +165,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Alpine Linux 3.22",
 			Category:    "minimal",
 			Distro:      "alpine",
-			Description: "Alpine Linux versión estable.",
+			Description: "Stable Alpine Linux release.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "3.22",
 			RecVCPUs:    1,
@@ -177,7 +177,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Alpine Linux 3.21",
 			Category:    "minimal",
 			Distro:      "alpine",
-			Description: "Ultraligera basada en musl y BusyBox (~5MB). Máximo rendimiento y bajo consumo.",
+			Description: "Very small musl and BusyBox based image for low resource use.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "5 MB",
 			RecVCPUs:    1,
@@ -189,7 +189,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Alpine Linux 3.20",
 			Category:    "minimal",
 			Distro:      "alpine",
-			Description: "Versión estable consolidada de Alpine Linux.",
+			Description: "Established stable Alpine Linux release.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "5 MB",
 			RecVCPUs:    1,
@@ -201,7 +201,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Alpine Linux Edge",
 			Category:    "minimal",
 			Distro:      "alpine",
-			Description: "Rama rolling de vanguardia para pruebas de paquetes y bleeding-edge.",
+			Description: "Alpine rolling branch for package testing and newer software.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Edge",
 			RecVCPUs:    1,
@@ -213,7 +213,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Void Linux (glibc)",
 			Category:    "minimal",
 			Distro:      "void",
-			Description: "Distribución independiente ligera con gestor XBPS y runit.",
+			Description: "Independent lightweight distribution using XBPS and runit.",
 			Arch:        "x86_64",
 			Badge:       "Lightweight",
 			RecVCPUs:    1,
@@ -225,7 +225,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Void Linux (musl)",
 			Category:    "minimal",
 			Distro:      "void",
-			Description: "Variante ultra compacta de Void Linux compilada contra musl libc.",
+			Description: "Ultra-compact Void Linux variant built against musl libc.",
 			Arch:        "x86_64",
 			Badge:       "musl",
 			RecVCPUs:    1,
@@ -237,7 +237,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "OpenWrt 25.12",
 			Category:    "minimal",
 			Distro:      "openwrt",
-			Description: "Sistema operativo embebido ultraligero para redes y servicios.",
+			Description: "Ultra-light embedded operating system for networking and services.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Router",
 			RecVCPUs:    1,
@@ -249,7 +249,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "OpenWrt 23.05",
 			Category:    "minimal",
 			Distro:      "openwrt",
-			Description: "Sistema operativo embebido ultraligero ideal para enrutamiento y micro-servicios.",
+			Description: "Ultra-light embedded operating system for routing and micro-services.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Router",
 			RecVCPUs:    1,
@@ -261,7 +261,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Devuan 5 (Daedalus)",
 			Category:    "minimal",
 			Distro:      "devuan",
-			Description: "Bifurcación de Debian sin systemd (usa SysVinit / OpenRC / runit).",
+			Description: "Debian fork without systemd, using SysVinit, OpenRC or runit.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "No-systemd",
 			RecVCPUs:    1,
@@ -275,7 +275,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Rocky Linux 10",
 			Category:    "enterprise",
 			Distro:      "rocky",
-			Description: "Siguiente generación compatible con Red Hat Enterprise Linux 10.",
+			Description: "Next-generation distribution compatible with Red Hat Enterprise Linux 10.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "RHEL 10",
 			RecVCPUs:    2,
@@ -287,7 +287,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Rocky Linux 9 (images:)",
 			Category:    "enterprise",
 			Distro:      "rocky",
-			Description: "100% compatible binario con Red Hat Enterprise Linux 9 desde remote images:.",
+			Description: "100% binary compatible with Red Hat Enterprise Linux 9, from the images: remote.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Enterprise",
 			RecVCPUs:    2,
@@ -299,7 +299,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Rocky Linux 8",
 			Category:    "enterprise",
 			Distro:      "rocky",
-			Description: "Versión empresarial con compatibilidad RHEL 8.",
+			Description: "Enterprise distribution compatible with RHEL 8.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Enterprise",
 			RecVCPUs:    2,
@@ -311,7 +311,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "AlmaLinux 9 (images:)",
 			Category:    "enterprise",
 			Distro:      "almalinux",
-			Description: "Enterprise Linux comunitaria compatible 1:1 con RHEL 9.",
+			Description: "Community Enterprise Linux, 1:1 compatible with RHEL 9.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Enterprise",
 			RecVCPUs:    2,
@@ -323,7 +323,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "AlmaLinux 8",
 			Category:    "enterprise",
 			Distro:      "almalinux",
-			Description: "Enterprise Linux comunitaria compatible 1:1 con RHEL 8.",
+			Description: "Community Enterprise Linux, 1:1 compatible with RHEL 8.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Enterprise",
 			RecVCPUs:    2,
@@ -335,7 +335,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "CentOS Stream 10",
 			Category:    "enterprise",
 			Distro:      "centos",
-			Description: "Rama upstream más reciente de desarrollo para RHEL 10.",
+			Description: "Latest upstream development branch for RHEL 10.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Stream 10",
 			RecVCPUs:    2,
@@ -347,7 +347,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "CentOS Stream 9",
 			Category:    "enterprise",
 			Distro:      "centos",
-			Description: "Rama de desarrollo upstream de Red Hat Enterprise Linux 9.",
+			Description: "Upstream development branch for Red Hat Enterprise Linux 9.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Upstream",
 			RecVCPUs:    2,
@@ -359,7 +359,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Oracle Linux 10",
 			Category:    "enterprise",
 			Distro:      "oracle",
-			Description: "Siguiente generación Enterprise optimizada para bases de datos.",
+			Description: "Next-generation Enterprise Linux, optimized for databases.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Oracle 10",
 			RecVCPUs:    2,
@@ -371,7 +371,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Oracle Linux 9",
 			Category:    "enterprise",
 			Distro:      "oracle",
-			Description: "Distribución Enterprise optimizada para bases de datos y cargas pesadas.",
+			Description: "Enterprise distribution for databases and demanding workloads.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Enterprise",
 			RecVCPUs:    2,
@@ -383,7 +383,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Amazon Linux 2023",
 			Category:    "enterprise",
 			Distro:      "amazon",
-			Description: "Distribución orientada a la nube de AWS optimizada para contenedores.",
+			Description: "AWS-oriented distribution optimized for cloud workloads.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Cloud",
 			RecVCPUs:    2,
@@ -395,7 +395,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "openSUSE 16.0",
 			Category:    "enterprise",
 			Distro:      "opensuse",
-			Description: "Siguiente generación de openSUSE Leap.",
+			Description: "Next generation of openSUSE Leap.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Leap 16",
 			RecVCPUs:    2,
@@ -407,7 +407,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "openSUSE Leap 15.6",
 			Category:    "enterprise",
 			Distro:      "opensuse",
-			Description: "Distribución estable orientada a servidores empresariales con YaST.",
+			Description: "Stable enterprise server distribution with YaST.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Leap",
 			RecVCPUs:    2,
@@ -421,7 +421,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Arch Linux",
 			Category:    "dev",
 			Distro:      "arch",
-			Description: "Distribución Rolling Release siempre al día con pacman.",
+			Description: "Rolling release with recent kernels and libraries.",
 			Arch:        "x86_64",
 			Badge:       "Rolling",
 			RecVCPUs:    2,
@@ -433,7 +433,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Fedora 44 (Rawhide/Next)",
 			Category:    "dev",
 			Distro:      "fedora",
-			Description: "Siguiente generación de Fedora con las tecnologías más punteras.",
+			Description: "Next-generation Fedora with recent technologies.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Fedora 44",
 			RecVCPUs:    2,
@@ -445,7 +445,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Fedora 43",
 			Category:    "dev",
 			Distro:      "fedora",
-			Description: "Versión de vanguardia de Fedora con paquetería actualizada.",
+			Description: "Current Fedora release with updated packages.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Fedora 43",
 			RecVCPUs:    2,
@@ -457,7 +457,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Fedora 41",
 			Category:    "dev",
 			Distro:      "fedora",
-			Description: "Última versión estable de Fedora con las últimas novedades de GNU/Linux.",
+			Description: "Fast-moving Linux ecosystem technologies.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Latest",
 			RecVCPUs:    2,
@@ -469,7 +469,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Fedora 40",
 			Category:    "dev",
 			Distro:      "fedora",
-			Description: "Versión probada y estable de Fedora para desarrollo.",
+			Description: "Stable Fedora for development and servers.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Stable",
 			RecVCPUs:    2,
@@ -481,7 +481,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Kali Linux",
 			Category:    "dev",
 			Distro:      "kali",
-			Description: "Distribución especializada en auditoría de seguridad y pentesting.",
+			Description: "Distribution for security auditing and penetration testing.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "SecTools",
 			RecVCPUs:    2,
@@ -493,7 +493,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "NixOS 26.05",
 			Category:    "dev",
 			Distro:      "nixos",
-			Description: "Distribución declarativa y reproducible basada en el gestor de paquetes Nix.",
+			Description: "Declarative, reproducible Linux distribution using Nix.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Declarative",
 			RecVCPUs:    2,
@@ -505,7 +505,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "openSUSE Tumbleweed",
 			Category:    "dev",
 			Distro:      "opensuse",
-			Description: "Rolling release con pruebas automáticas openQA de openSUSE.",
+			Description: "Stable rolling release with Zypper and Btrfs snapshots.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Rolling",
 			RecVCPUs:    2,
@@ -517,7 +517,7 @@ func defaultIncusCatalog() []models.IncusImageItem {
 			Label:       "Gentoo Linux",
 			Category:    "dev",
 			Distro:      "gentoo",
-			Description: "Distribución source-based meta altamente optimizable con Portage.",
+			Description: "Highly customizable source-based distribution using Portage.",
 			Arch:        "x86_64 / arm64",
 			Badge:       "Source",
 			RecVCPUs:    4,
@@ -536,6 +536,10 @@ type simplestreamsIndex struct {
 
 type simplestreamsCache struct {
 	sync.RWMutex
+	entries map[string]simplestreamsCacheEntry
+}
+
+type simplestreamsCacheEntry struct {
 	lastFetched time.Time
 	items       []models.IncusImageItem
 }
@@ -546,10 +550,18 @@ var ssCache simplestreamsCache
 // dynamically with in-memory caching (6h TTL) and a fast 3-second timeout.
 // If offline or if an error occurs, it falls back seamlessly to defaultIncusCatalog().
 func fetchDynamicSimplestreamsImages() []models.IncusImageItem {
+	arch, err := simplestreamsArchitecture(runtime.GOARCH)
+	if err != nil {
+		return defaultIncusCatalog()
+	}
+	return fetchDynamicSimplestreamsImagesForArch(arch)
+}
+
+func fetchDynamicSimplestreamsImagesForArch(targetArch string) []models.IncusImageItem {
 	ssCache.RLock()
-	if time.Since(ssCache.lastFetched) < 6*time.Hour && len(ssCache.items) > 0 {
-		cached := make([]models.IncusImageItem, len(ssCache.items))
-		copy(cached, ssCache.items)
+	entry, ok := ssCache.entries[targetArch]
+	if ok && time.Since(entry.lastFetched) < 6*time.Hour && len(entry.items) > 0 {
+		cached := append([]models.IncusImageItem(nil), entry.items...)
 		ssCache.RUnlock()
 		return cached
 	}
@@ -582,14 +594,16 @@ func fetchDynamicSimplestreamsImages() []models.IncusImageItem {
 		return defaultIncusCatalog()
 	}
 
-	items := parseSimplestreamsProducts(imgNode.Products)
+	items := parseSimplestreamsProductsForArch(imgNode.Products, targetArch)
 	if len(items) == 0 {
 		return defaultIncusCatalog()
 	}
 
 	ssCache.Lock()
-	ssCache.lastFetched = time.Now()
-	ssCache.items = items
+	if ssCache.entries == nil {
+		ssCache.entries = make(map[string]simplestreamsCacheEntry)
+	}
+	ssCache.entries[targetArch] = simplestreamsCacheEntry{lastFetched: time.Now(), items: items}
 	ssCache.Unlock()
 
 	res := make([]models.IncusImageItem, len(items))
@@ -598,10 +612,14 @@ func fetchDynamicSimplestreamsImages() []models.IncusImageItem {
 }
 
 func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
-	targetArch := "amd64"
-	if runtime.GOARCH == "arm64" {
-		targetArch = "arm64"
+	targetArch, err := simplestreamsArchitecture(runtime.GOARCH)
+	if err != nil {
+		return nil
 	}
+	return parseSimplestreamsProductsForArch(products, targetArch)
+}
+
+func parseSimplestreamsProductsForArch(products []string, targetArch string) []models.IncusImageItem {
 
 	type key struct {
 		distro  string
@@ -700,24 +718,24 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			case "resolute":
 				item.Label = "Ubuntu 26.04 (Resolute)"
 				item.Badge = "26.04"
-				item.Description = "Ubuntu 26.04 Resolute LTS (desarrollo / compilación más reciente)."
+				item.Description = "Ubuntu 26.04 Resolute LTS (development / latest build)."
 			case "noble":
 				item.Label = "Ubuntu 24.04 LTS (Noble)"
 				item.Badge = "LTS"
-				item.Description = "LTS más reciente de Ubuntu con soporte oficial hasta 2029."
+				item.Description = "Current Ubuntu LTS, with official support through 2029."
 			case "jammy":
 				item.Label = "Ubuntu 22.04 LTS (Jammy)"
 				item.Badge = "LTS"
-				item.Description = "Versión LTS clásica y ampliamente compatible para producción."
+				item.Description = "Classic, broadly compatible LTS release for production."
 			case "oracular":
 				item.Label = "Ubuntu 24.10 (Oracular)"
 				item.Badge = "Interim"
 				item.Category = "dev"
-				item.Description = "Versión de ciclo corto con los paquetes y kernels más recientes."
+				item.Description = "Short-cycle release with the latest packages and kernels."
 			default:
 				item.Label = fmt.Sprintf("Ubuntu %s", titleCase(r))
 				item.Badge = "Ubuntu"
-				item.Description = fmt.Sprintf("Plantilla Ubuntu %s desde images:.", r)
+				item.Description = fmt.Sprintf("Ubuntu %s template from images:.", r)
 			}
 
 		case "debian":
@@ -729,32 +747,32 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 				item.Label = "Debian 14 (Forky)"
 				item.Category = "dev"
 				item.Badge = "Debian 14"
-				item.Description = "Siguiente generación de Debian 14 con paquetería de última hornada."
+				item.Description = "Next-generation Debian 14 with recent packages."
 			case "trixie":
 				item.Label = "Debian 13 (Trixie)"
 				item.Category = "popular"
 				item.Badge = "Testing"
-				item.Description = "Siguiente generación de Debian con paquetería moderna."
+				item.Description = "Next-generation Debian with updated packages."
 			case "bookworm":
 				item.Label = "Debian 12 (Bookworm)"
 				item.Category = "popular"
 				item.Badge = "Estable"
-				item.Description = "Debian estable, ideal para servidores ligeros y bases de datos."
+				item.Description = "Stable Debian, ideal for lightweight servers and databases."
 			case "bullseye":
 				item.Label = "Debian 11 (Bullseye)"
 				item.Category = "popular"
 				item.Badge = "Oldstable"
-				item.Description = "Debian oldstable optimizada para servicios heredados."
+				item.Description = "Oldstable Debian for legacy services."
 			case "sid":
 				item.Label = "Debian Sid (Unstable)"
 				item.Category = "dev"
 				item.Badge = "Unstable"
-				item.Description = "Rama inestable de Debian para desarrolladores y bleeding-edge."
+				item.Description = "Unstable Debian branch for development and cutting-edge packages."
 			default:
 				item.Label = fmt.Sprintf("Debian %s", titleCase(r))
 				item.Category = "popular"
 				item.Badge = "Debian"
-				item.Description = fmt.Sprintf("Plantilla Debian %s.", r)
+				item.Description = fmt.Sprintf("Debian %s template.", r)
 			}
 
 		case "alpine":
@@ -765,7 +783,7 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			if r == "edge" {
 				item.Badge = "Rolling"
 			}
-			item.Description = fmt.Sprintf("Alpine Linux distribución ultraligera y segura basada en musl y BusyBox (v%s).", r)
+			item.Description = fmt.Sprintf("Ultra-light, security-minded Alpine Linux based on musl and BusyBox (v%s).", r)
 			item.RecVCPUs = 1
 			item.RecRAMMB = 512
 			item.RecDiskGB = 5
@@ -773,7 +791,7 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 		case "fedora":
 			item.Distro = "fedora"
 			item.Label = fmt.Sprintf("Fedora %s", r)
-			item.Description = fmt.Sprintf("Distribución Fedora %s orientada a desarrollo y servidores modernos.", r)
+			item.Description = fmt.Sprintf("Fedora %s for development and modern servers.", r)
 			switch r {
 			case "44":
 				item.Category = "dev"
@@ -798,14 +816,14 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			item.Category = "enterprise"
 			item.Label = fmt.Sprintf("Rocky Linux %s", r)
 			item.Badge = fmt.Sprintf("RHEL %s", r)
-			item.Description = fmt.Sprintf("100%% compatible binario con Red Hat Enterprise Linux %s.", r)
+			item.Description = fmt.Sprintf("100%% binary compatible with Red Hat Enterprise Linux %s.", r)
 
 		case "almalinux":
 			item.Distro = "almalinux"
 			item.Category = "enterprise"
 			item.Label = fmt.Sprintf("AlmaLinux %s", r)
 			item.Badge = fmt.Sprintf("Enterprise %s", r)
-			item.Description = fmt.Sprintf("Distribución empresarial con soporte comunitario y compatibilidad binaria RHEL %s.", r)
+			item.Description = fmt.Sprintf("Community-supported enterprise distribution, binary compatible with RHEL %s.", r)
 
 		case "archlinux":
 			item.Distro = "arch"
@@ -813,7 +831,7 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			item.Ref = "images:archlinux"
 			item.Label = "Arch Linux"
 			item.Badge = "Rolling"
-			item.Description = "Distribución Rolling Release siempre al día con pacman."
+			item.Description = "Always up-to-date rolling release using pacman."
 			item.RecDiskGB = 15
 
 		case "kali":
@@ -822,14 +840,14 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			item.Ref = "images:kali"
 			item.Label = "Kali Linux"
 			item.Badge = "SecTools"
-			item.Description = "Distribución especializada en auditoría de seguridad y pentesting."
+			item.Description = "Distribution for security auditing and penetration testing."
 
 		case "nixos":
 			item.Distro = "nixos"
 			item.Category = "dev"
 			item.Label = fmt.Sprintf("NixOS %s", r)
 			item.Badge = "Declarative"
-			item.Description = "Distribución declarativa y reproducible basada en el gestor de paquetes Nix."
+			item.Description = "Declarative, reproducible Linux distribution using Nix."
 
 		case "opensuse":
 			item.Distro = "opensuse"
@@ -837,12 +855,12 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 				item.Category = "dev"
 				item.Label = "openSUSE Tumbleweed"
 				item.Badge = "Rolling"
-				item.Description = "Rolling release con pruebas automáticas openQA de openSUSE."
+				item.Description = "Rolling release tested automatically with openSUSE openQA."
 			} else {
 				item.Category = "enterprise"
 				item.Label = fmt.Sprintf("openSUSE Leap %s", r)
 				item.Badge = "Leap"
-				item.Description = "Distribución estable orientada a servidores empresariales con YaST."
+				item.Description = "Stable enterprise server distribution with YaST."
 			}
 
 		case "openwrt":
@@ -850,7 +868,7 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			item.Category = "minimal"
 			item.Label = fmt.Sprintf("OpenWrt %s", r)
 			item.Badge = "Router"
-			item.Description = "Sistema operativo embebido ultraligero ideal para enrutamiento y micro-servicios."
+			item.Description = "Ultra-light embedded operating system for routing and micro-services."
 			item.RecVCPUs = 1
 			item.RecRAMMB = 256
 			item.RecDiskGB = 2
@@ -861,7 +879,7 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			item.Ref = "images:voidlinux"
 			item.Label = "Void Linux"
 			item.Badge = "runit"
-			item.Description = "Distribución independiente minimalista con gestor de paquetes xbps e init runit."
+			item.Description = "Independent minimal distribution using the xbps package manager and runit init."
 			item.RecVCPUs = 1
 			item.RecRAMMB = 512
 			item.RecDiskGB = 10
@@ -871,7 +889,7 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			item.Category = "minimal"
 			item.Label = fmt.Sprintf("BusyBox %s", r)
 			item.Badge = "Tiny"
-			item.Description = "Entorno mínimo autocontenido con utilidades estándar UNIX en un único binario."
+			item.Description = "Minimal self-contained environment with standard UNIX utilities in a single binary."
 			item.RecVCPUs = 1
 			item.RecRAMMB = 128
 			item.RecDiskGB = 1
@@ -882,7 +900,7 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			item.Ref = "images:gentoo"
 			item.Label = "Gentoo Linux"
 			item.Badge = "Source"
-			item.Description = "Distribución source-based meta altamente optimizable con Portage."
+			item.Description = "Highly customizable source-based distribution using Portage."
 			item.RecVCPUs = 4
 			item.RecRAMMB = 4096
 			item.RecDiskGB = 30
@@ -892,7 +910,7 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			item.Category = "enterprise"
 			item.Label = fmt.Sprintf("Oracle Linux %s", r)
 			item.Badge = "UEK"
-			item.Description = fmt.Sprintf("Oracle Linux %s con Unbreakable Enterprise Kernel.", r)
+			item.Description = fmt.Sprintf("Oracle Linux %s with the Unbreakable Enterprise Kernel.", r)
 
 		case "centos":
 			// r is the lower-cased release key (e.g. "10-stream"); strip
@@ -903,14 +921,14 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			item.Category = "enterprise"
 			item.Label = fmt.Sprintf("CentOS Stream %s", ver)
 			item.Badge = "Stream"
-			item.Description = fmt.Sprintf("Rama previa y de desarrollo continuo para RHEL %s.", ver)
+			item.Description = fmt.Sprintf("Continuous upstream development branch for RHEL %s.", ver)
 
 		case "devuan":
 			item.Distro = "devuan"
 			item.Category = "minimal"
 			item.Label = fmt.Sprintf("Devuan %s", titleCase(r))
 			item.Badge = "No-systemd"
-			item.Description = "Bifurcación de Debian sin systemd (SysVinit / OpenRC)."
+			item.Description = "Debian fork without systemd (SysVinit / OpenRC)."
 			item.RecVCPUs = 1
 			item.RecRAMMB = 1024
 			item.RecDiskGB = 10
@@ -920,34 +938,45 @@ func parseSimplestreamsProducts(products []string) []models.IncusImageItem {
 			item.Category = "popular"
 			item.Label = fmt.Sprintf("Linux Mint %s", titleCase(r))
 			item.Badge = "Mint"
-			item.Description = fmt.Sprintf("Distribución de escritorio/servidor Linux Mint %s.", titleCase(r))
+			item.Description = fmt.Sprintf("Linux Mint %s desktop/server distribution.", titleCase(r))
 
 		case "freebsd":
 			item.Distro = "freebsd"
 			item.Category = "community"
 			item.Label = fmt.Sprintf("FreeBSD %s", r)
 			item.Badge = "FreeBSD"
-			item.Description = fmt.Sprintf("Sistema operativo Unix avanzado FreeBSD %s.", r)
+			item.Description = fmt.Sprintf("FreeBSD %s, an advanced Unix-like operating system.", r)
 
 		case "netbsd":
 			item.Distro = "netbsd"
 			item.Category = "community"
 			item.Label = fmt.Sprintf("NetBSD %s", r)
 			item.Badge = "NetBSD"
-			item.Description = fmt.Sprintf("Sistema operativo tipo Unix altamente portable NetBSD %s.", r)
+			item.Description = fmt.Sprintf("NetBSD %s, a highly portable Unix-like operating system.", r)
 
 		default:
 			item.Distro = d
 			item.Category = "community"
 			item.Label = fmt.Sprintf("%s %s", titleCase(d), r)
 			item.Badge = "Community"
-			item.Description = fmt.Sprintf("Plantilla %s %s desde el catálogo oficial images:.", titleCase(d), r)
+			item.Description = fmt.Sprintf("%s %s template from the official images: catalog.", titleCase(d), r)
 		}
 
 		out = append(out, item)
 	}
 
 	return out
+}
+
+func simplestreamsArchitecture(arch string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "amd64", "x86_64":
+		return "amd64", nil
+	case "arm64", "aarch64":
+		return "arm64", nil
+	default:
+		return "", fmt.Errorf("unsupported Incus image architecture %q", arch)
+	}
 }
 
 // titleCaser replaces strings.Title (deprecated, SA1019) with the
@@ -1159,10 +1188,24 @@ func (b *IncusBackend) PullIncusImage(ref string) error {
 
 // ListIncusImages returns available official and locally cached Incus images.
 func (b *IncusBackend) ListIncusImages() ([]models.IncusImageItem, error) {
-	catalog := fetchDynamicSimplestreamsImages()
 	if b.client == nil {
-		return catalog, nil
+		return fetchDynamicSimplestreamsImages(), nil
 	}
+	targetArch, err := simplestreamsArchitecture(runtime.GOARCH)
+	if err != nil {
+		return nil, err
+	}
+	if b.socketPath == "" {
+		server, _, err := b.client.GetServer()
+		if err != nil {
+			return nil, fmt.Errorf("read remote Incus architecture: %w", err)
+		}
+		targetArch, err = simplestreamsArchitecture(server.Environment.KernelArchitecture)
+		if err != nil {
+			return nil, err
+		}
+	}
+	catalog := fetchDynamicSimplestreamsImagesForArch(targetArch)
 
 	// Query cached images from Incus daemon
 	localImages, err := b.client.GetImages()
@@ -1310,4 +1353,3 @@ func mergeLocalImages(catalog []models.IncusImageItem, localImages []api.Image) 
 
 	return catalog
 }
-

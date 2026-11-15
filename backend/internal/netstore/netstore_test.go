@@ -73,7 +73,7 @@ func TestNetstore_SaveGetDeleteAll(t *testing.T) {
 		CIDR:      "192.168.1.100/24",
 		Gateway:   "192.168.1.1",
 		DNS:       []string{"1.1.1.1", "1.0.0.1"},
-		MovedIPv4: "192.168.1.50/24",
+		MovedIPv4: "192.168.50.50/24",
 		CreatedAt: time.Now(),
 	}
 	if err := store.Save(rec2); err != nil {

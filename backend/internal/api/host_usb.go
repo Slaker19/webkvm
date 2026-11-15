@@ -48,6 +48,10 @@ func (h *Handler) DetachUSBDevice(w http.ResponseWriter, r *http.Request) {
 	vendorID := chi.URLParam(r, "vendorId")
 	productID := chi.URLParam(r, "productId")
 	if err := h.compute.DetachUSBDevice(id, vendorID, productID); err != nil {
+		if isNotFoundError(err) {
+			jsonErr(w, http.StatusNotFound, err.Error())
+			return
+		}
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

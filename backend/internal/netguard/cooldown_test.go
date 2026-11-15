@@ -24,7 +24,7 @@ func TestCooldown_TripsAfterThreshold(t *testing.T) {
 		t.Fatal("not blocked after tripping")
 	}
 	// Other peers must be unaffected.
-	if c.Blocked("192.168.1.50") {
+	if c.Blocked("192.168.50.50") {
 		t.Error("an unrelated IP was blocked")
 	}
 }

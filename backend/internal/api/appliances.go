@@ -257,6 +257,7 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name      string                   `json:"name"`
 		Type      string                   `json:"type"` // "container" (LXC helper app) or "vm" (KVM)
+		Node      string                   `json:"node,omitempty"`
 		Network   string                   `json:"network"`
 		Pool      string                   `json:"pool"`
 		VCPUs     int                      `json:"vcpus,omitempty"`
@@ -281,6 +282,11 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if req.Node != "" && req.Node != "local" && !h.isLocalTarget(req.Node) {
+		jsonErrCode(w, http.StatusNotImplemented, "appliance_remote_unsupported",
+			"app deployments run through this WebKVM host; remote node placement is not supported")
 		return
 	}
 	if req.VCPUs > 0 {
@@ -1011,7 +1017,7 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 	if owner != "" {
 		if rerr := h.recheckDiskQuota(owner, poolName, poolFileName); rerr != nil {
 			removePoolImage("quota re-check failed after disk materialization")
-			updateJob(jobID, 99, "error", "Cuota excedida tras la materialización del disco. Recursos limpiados por seguridad.")
+			updateJobErrorAtProgress(jobID, "quota_exceeded_after_materialization", "Cuota excedida tras la materialización del disco. Recursos limpiados por seguridad.", 99)
 			if h.audit != nil {
 				h.audit.Log(audit.Entry{Time: time.Now().UTC().Format(time.RFC3339), User: owner,
 					Action: "appliance.deploy_quota_rollback", Resource: poolFileName,

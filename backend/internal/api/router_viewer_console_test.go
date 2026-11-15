@@ -80,7 +80,7 @@ func liveRouter(t *testing.T, username, role string, perms *models.UserPermissio
 		&config.Config{DataDir: dir},
 		nil, &viewerBackend{owner: username}, authMgr, nil, nil, nil, us, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil,
 	)
 	return r, token
 }

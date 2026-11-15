@@ -1739,7 +1739,7 @@ func TestRunSuffixFromFilenameWithDashes(t *testing.T) {
 		want string
 	}{
 		{
-			name: "webkvm-alvin-nas-node-20260929T120000.000000000Z-a1b2c3d4e5f6-my-vm.tar.zst",
+			name: "webkvm-operator-nas-node-20260929T120000.000000000Z-a1b2c3d4e5f6-my-vm.tar.zst",
 			want: "20260929T120000.000000000Z-a1b2c3d4e5f6",
 		},
 		{

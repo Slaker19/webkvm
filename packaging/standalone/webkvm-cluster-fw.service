@@ -1,0 +1,15 @@
+[Unit]
+Description=WebKVM cluster-wide firewall profile sync (Pacemaker clone)
+Documentation=https://github.com/Slaker19/webkvm
+ConditionPathExists=/etc/webkvm/cluster-firewall.json
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/webkvm-cli firewall cluster sync
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -16,6 +16,7 @@ Comprehensive answers to common architectural, technical, operational, and troub
 6. [WebGL Terminal & Consoles](#6-webgl-terminal--consoles)
 7. [Security & Access Control](#7-security--access-control)
 8. [Troubleshooting & Diagnostics](#8-troubleshooting--diagnostics)
+9. [Updates & Maintenance](#9-updates--maintenance)
 
 ---
 
@@ -142,3 +143,23 @@ Or remove `/opt/webkvm/users.json` and restart the service to re-generate initia
 1. Check KVM hardware acceleration: `ls -l /dev/kvm` (permissions should be `crw-rw---- root kvm`).
 2. Verify available RAM: `free -h`.
 3. Inspect backend logs: `journalctl -u webkvm -n 50 --no-pager`.
+
+---
+
+## 9. Updates & Maintenance
+
+### Can I update WebKVM directly from the web interface?
+Yes. Administrators can update WebKVM by opening the **Status** tab (`/#/status`) and clicking **Update**.
+- The backend requires `WEBKVM_ALLOW_UPDATE=1` in the service environment (enabled by default in native installs).
+- The updater runs detached and writes logs to `/var/log/webkvm/update.log`.
+- **Release mode** is selected automatically when `REPO_DIR` is not a git repository: it downloads the latest GitHub release binary (`webkvm-<version>-linux_amd64`) and validates `SHA256SUMS` before replacing `/usr/local/bin/webkvm`.
+- **Source mode** is selected when running from a git checkout: it executes `git pull --ff-only` and rebuilds the frontend and backend.
+- The previous binary is backed up to `/usr/local/bin/webkvm.previous`. A 30-second health check tests `/api/health`; if it fails, the updater automatically rolls back to `webkvm.previous`.
+- Verify the active version after updating with `webkvm version` and `curl -sk https://localhost:8080/api/health`.
+
+### Can I use the in-app updater in Docker or an HA cluster?
+- **Docker**: **No.** Docker container filesystems are immutable/ephemeral; update Docker installations by pulling the new image and recreating the container (`docker compose pull && docker compose up -d`). See [docs/DOCKER.md](DOCKER.md).
+- **HA clusters**: **No.** In an HA cluster managed by Pacemaker, the in-app update button only updates the local node serving the panel and restarts its local service; it is not a cluster-wide updater and can race Pacemaker resources. Update cluster nodes individually through Pacemaker. See [docs/runbooks/HA-CLUSTER.md](runbooks/HA-CLUSTER.md).
+
+### Do I need to manually edit VM XML definitions for AppArmor after upgrading?
+No. WebKVM applies `<seclabel type='none' model='apparmor'/>` to domains to bypass libvirt's read-only snapshot-backing deny rule. Existing virtual machines are migrated **lazily** on their next start, revert, or snapshot deletion—no manual XML editing is required. If you want to enforce AppArmor confinement, set `WEBKVM_DISABLE_APPARMOR=0`. SELinux is unaffected. See [SECURITY.md](../SECURITY.md).

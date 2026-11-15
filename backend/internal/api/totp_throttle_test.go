@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -113,6 +114,13 @@ func TestEnable2FA_RequiresPasswordIfAlreadyEnabled(t *testing.T) {
 	h.Enable2FA(rr2, req2)
 	if rr2.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 Unauthorized for wrong password, got %d", rr2.Code)
+	}
+	var errorBody map[string]string
+	if err := json.Unmarshal(rr2.Body.Bytes(), &errorBody); err != nil {
+		t.Fatalf("decode invalid-password response: %v", err)
+	}
+	if errorBody["code"] != "invalid_password" {
+		t.Fatalf("invalid-password code = %q, want invalid_password", errorBody["code"])
 	}
 
 	// 3. Attempt with correct password -> should succeed 200 OK

@@ -13,6 +13,7 @@ Operational runbooks for system administrators. The goal is to ensure that every
 | [DISASTER-RECOVERY.md](DISASTER-RECOVERY.md) | Host loss, corrupted datadir, libvirt recovery |
 | [SECURITY-MODEL.md](SECURITY-MODEL.md) | System security architecture and auditing |
 | [OPS-DAILY.md](OPS-DAILY.md) | Day-2 operations: health, logs, audit trails, jobs, backups |
+| [RELEASING.md](../RELEASING.md) | Maintainer release checklist, tag, assets and AUR |
 
 ## Golden Rules (Apply to all runbooks)
 
@@ -22,6 +23,7 @@ Operational runbooks for system administrators. The goal is to ensure that every
 4. The binary is precompiled and self-contained: **no** Go or Node.js toolchains are needed on production servers.
 5. Always verify the downloaded artifact checksum against `SHA256SUMS` before installation.
 6. Shell scripts in this repository run with `-euo pipefail`; if an error occurs, inspect the output rather than suppressing it.
+7. The in-app Update button is for native single-node installs. In an HA cluster, update every node through Pacemaker ([HA-CLUSTER.md](HA-CLUSTER.md#1211-updating-webkvm-in-an-ha-cluster)); Docker installs pull the new image instead.
 
 ## Key Files and Paths
 

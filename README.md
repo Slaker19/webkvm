@@ -85,6 +85,28 @@ curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/instal
 ```
 *(See [docs/DOCKER.md](docs/DOCKER.md) for custom volume mounts and security privileges).*
 
+### Arch Linux (AUR)
+
+```bash
+yay -S webkvm-bin
+```
+
+The AUR package repackages the official release archive and keeps updates under pacman. It installs WebKVM only: clustering (Incus, LINSTOR, Pacemaker, Corosync, SBD) is modular and not included. See the [HA runbook](docs/runbooks/HA-CLUSTER.md) and `scripts/install-ha-stack.sh`.
+
+### Distribution support
+
+WebKVM runs on Debian/Ubuntu, the Fedora/RHEL family and Arch Linux.
+
+**HA/clustering is validated on Ubuntu LTS only.** Arch and Fedora are community-supported and experimental for clustering: packages, versions and rolling updates can break the stack. Clusters must be homogeneous (one distribution, one Incus version); mixing distributions is not supported. Use Arch/Fedora as managed standalone nodes unless you accept the risk.
+
+### Official Release Assets
+
+Official releases (tagged `v0.1.12`) publish standalone prebuilt binaries (`webkvm-0.1.12-linux_amd64`, `webkvm-cli-0.1.12-linux_amd64`), native package formats (`.deb`, `.rpm`), the full source tarball, and verifiable `SHA256SUMS`.
+
+### Updating WebKVM
+
+Native systemd installs update from **Status → Update** (`/#/status`). The updater verifies `SHA256SUMS`, keeps `/usr/local/bin/webkvm.previous`, health-checks the new binary and rolls back automatically. Docker installs must pull the new image instead. In an HA cluster the button updates only the node serving the panel; update every node through Pacemaker. See [Upgrade & Rollback](docs/runbooks/UPGRADE-ROLLBACK.md) and the [release checklist](docs/RELEASING.md).
+
 ---
 
 ## Key Capabilities
@@ -116,6 +138,7 @@ curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/instal
 - **Ephemeral Single-Use Tickets**: WebSockets authenticate using 30-second single-use RAM tickets. No long-lived JWTs are ever leaked in query strings.
 - **Anti-SSRF Safe Dialer**: Remote image downloads validate and block private/loopback/link-local IPv4 and IPv6 address ranges with strict redirect re-validation.
 - **Firewall Safe-Apply**: Host firewall changes include an automated 30-second rollback timer to prevent accidental lockouts.
+- **AppArmor Snapshot Compatibility**: On AppArmor hosts, WebKVM-defined domains disable the AppArmor label by default (QEMU still runs as the unprivileged `libvirt-qemu` user with DAC and seccomp) to avoid libvirt's read-only snapshot-backing deny rule. Existing VMs are migrated lazily on the next start, revert, or snapshot delete without requiring manual XML edits. Set `WEBKVM_DISABLE_APPARMOR=0` to keep AppArmor confinement; SELinux is unaffected. See [SECURITY.md](SECURITY.md).
 
 ### 7. Native Kernel Software RAID & Storage Pools
 - **Instant Discovery**: Native kernel sysfs parsing (`/sys/block/md*/md`) without subprocess overhead.
@@ -134,6 +157,7 @@ curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/instal
 ### 10. Host Operating System Updates
 - **Multi-Distribution Support**: Integrated package updates for APT (Debian/Ubuntu), DNF (RHEL/Fedora), and Pacman (Arch).
 - **Security Visibility**: Security advisory badges, category filtering (Security, Regular, Held), and pending reboot detection.
+- **In-App WebKVM Updater**: Administrators can trigger one-click WebKVM updates directly from the Status page (`/#/status`). The backend verifies release binary `webkvm-<version>-linux_amd64` against `SHA256SUMS`, backs up `/usr/local/bin/webkvm.previous`, and performs an automated health check with auto-rollback on failure (see [UPGRADE-ROLLBACK.md](docs/runbooks/UPGRADE-ROLLBACK.md)).
 
 ---
 
@@ -179,6 +203,7 @@ webkvm-cli --json vms list | jq '.[] | select(.state=="running") | .name'
 | [**Architecture Deep Dive (ARCHITECTURE.md)**](docs/ARCHITECTURE.md) | Internal architecture: CGO libvirt bindings, Incus driver, and embedded Svelte 5 engine. |
 | [**Docker Deployment (DOCKER.md)**](docs/DOCKER.md) | Running the same binary as a container: host prerequisites, bind mounts, and the self-update exception. |
 | [**Operational Runbooks**](docs/runbooks/RUNBOOKS.md) | Daily operations, upgrade/rollback, disaster recovery, and the security model. |
+| [**Release Process (RELEASING.md)**](docs/RELEASING.md) | Maintainer checklist for tags, assets, AUR and the in-app updater. |
 | [**Security Policy (SECURITY.md)**](SECURITY.md) | Threat model, SSRF protection, RBAC roles, and vulnerability disclosure. |
 
 ---

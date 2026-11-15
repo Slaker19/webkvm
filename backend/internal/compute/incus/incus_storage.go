@@ -18,6 +18,13 @@ import (
 
 // --- Storage / pools / volumes / ISO ---
 
+func (b *IncusBackend) localDeviceID(path string) uint64 {
+	if b.socketPath == "" {
+		return 0
+	}
+	return fsutil.DeviceID(path)
+}
+
 func (b *IncusBackend) ListStoragePools() ([]models.StoragePool, error) {
 	if b.client == nil {
 		return nil, compute.ErrNotImplemented
@@ -48,7 +55,7 @@ func (b *IncusBackend) ListStoragePools() ([]models.StoragePool, error) {
 			sp.Allocated = int64(res.Space.Used)
 			sp.Available = int64(res.Space.Total - res.Space.Used)
 		}
-		sp.DeviceID = fsutil.DeviceID(sp.Path)
+		sp.DeviceID = b.localDeviceID(sp.Path)
 		result = append(result, sp)
 	}
 	return result, nil
@@ -95,7 +102,7 @@ func (b *IncusBackend) CreateStoragePool(ctx context.Context, req models.CreateP
 			Purpose:  compute.PoolPurposeContainer,
 			State:    "active",
 			Path:     req.Path,
-			DeviceID: fsutil.DeviceID(req.Path),
+			DeviceID: b.localDeviceID(req.Path),
 		}, nil
 	}
 
@@ -119,7 +126,7 @@ func (b *IncusBackend) CreateStoragePool(ctx context.Context, req models.CreateP
 		sp.Allocated = int64(res.Space.Used)
 		sp.Available = int64(res.Space.Total - res.Space.Used)
 	}
-	sp.DeviceID = fsutil.DeviceID(sp.Path)
+	sp.DeviceID = b.localDeviceID(sp.Path)
 	return sp, nil
 }
 func (b *IncusBackend) UpdateStoragePool(ctx context.Context, name string, req models.UpdatePoolRequest) (models.StoragePool, error) {
@@ -510,4 +517,3 @@ func (b *IncusBackend) RefreshCIFSSecretIfNeeded(ctx context.Context, poolName s
 }
 
 // --- Networking ---
-

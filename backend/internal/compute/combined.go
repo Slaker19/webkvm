@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,6 +46,16 @@ func NewCombined(primary, secondary Backend) *Combined {
 // used by status/platform reporting to query the engine version
 // without adding a ServerInfo() method to the Backend interface itself.
 func (c *Combined) Secondary() Backend { return c.secondary }
+
+// Cluster returns the secondary's cluster capabilities when it has them
+// (Incus). The bool is false for KVM-only setups or non-cluster secondaries.
+func (c *Combined) Cluster() (ClusterBackend, bool) {
+	if c == nil || c.secondary == nil {
+		return nil, false
+	}
+	cb, ok := c.secondary.(ClusterBackend)
+	return cb, ok
+}
 
 // remember caches which backend owns an instance.
 func (c *Combined) remember(id string, b Backend) {
@@ -106,6 +117,9 @@ func (c *Combined) GetDomain(id string) (models.VM, error) {
 		return vm, nil
 	}
 	if c.secondary == nil {
+		if isNotFound(err) {
+			return models.VM{}, errors.Join(ErrNotFound, err)
+		}
 		return vm, err
 	}
 	extra, lerr := c.secondary.GetDomain(id)
@@ -113,7 +127,24 @@ func (c *Combined) GetDomain(id string) (models.VM, error) {
 		c.remember(id, c.secondary)
 		return extra, nil
 	}
+	if isNotFound(err) || isNotFound(lerr) {
+		return models.VM{}, errors.Join(ErrNotFound, err, lerr)
+	}
 	return vm, err
+}
+
+// isNotFound reports whether a backend error means "no such instance".
+// Both libvirt ("Domain not found") and Incus ("Instance not found") use
+// this wording; a real outage keeps its original 500 instead of becoming a
+// misleading 404.
+func isNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "no such") ||
+		strings.Contains(msg, "does not exist")
 }
 
 // --- Instance-scoped operations: routed to the owning backend ---

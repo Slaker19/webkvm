@@ -174,7 +174,7 @@ func TestAlertmanagerWebhookNoSecretIsLoopbackOnly(t *testing.T) {
 	}{
 		{"loopback v4", "127.0.0.1:5000", "", http.StatusOK},
 		{"loopback v6", "[::1]:5000", "", http.StatusOK},
-		{"lan peer", "192.168.1.50:5000", "", http.StatusForbidden},
+		{"lan peer", "192.168.50.50:5000", "", http.StatusForbidden},
 		{"loopback proxy forwarding a remote", "127.0.0.1:5000", "203.0.113.9", http.StatusForbidden},
 		{"loopback with spoofed xff", "127.0.0.1:5000", "127.0.0.1", http.StatusForbidden},
 	}

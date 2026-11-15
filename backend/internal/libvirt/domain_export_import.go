@@ -3,6 +3,7 @@ package libvirt
 import (
 	"archive/tar"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"webkvm/internal/backupstore"
 	"webkvm/internal/imgsafe"
 	"webkvm/internal/models"
+	"webkvm/internal/sysutil"
 )
 
 // CloneDomain duplicates a domain into a new one named req.Name. The
@@ -159,6 +161,14 @@ func cloneDiskFile(srcPath, dstPath, format string, linked bool) error {
 	if strings.Contains(srcPath, "..") || strings.Contains(dstPath, "..") {
 		return fmt.Errorf("invalid disk path: traversal not allowed")
 	}
+	// qemu-img truncates an existing destination without complaining, so a
+	// leftover disk (deleted VM, failed clone, unmanaged volume) would be
+	// silently destroyed before the domain define fails on the name.
+	if _, err := os.Lstat(dstPath); err == nil {
+		return fmt.Errorf("destination disk %q already exists", filepath.Base(dstPath))
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("check destination disk: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
@@ -166,6 +176,7 @@ func cloneDiskFile(srcPath, dstPath, format string, linked bool) error {
 		cmd := exec.CommandContext(ctx, "qemu-img", "create",
 			"-f", "qcow2", "-F", "qcow2", "-b", srcPath, dstPath)
 		if out, err := cmd.CombinedOutput(); err != nil {
+			_ = os.Remove(dstPath)
 			return fmt.Errorf("qemu-img create (linked): %w (%s)", err, strings.TrimSpace(string(out)))
 		}
 		return nil
@@ -175,6 +186,52 @@ func cloneDiskFile(srcPath, dstPath, format string, linked bool) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.Remove(dstPath)
 		return fmt.Errorf("qemu-img convert: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// createBaseImageOverlay creates a VM disk backed by a cached qcow2 image.
+func createBaseImageOverlay(backingPath, dstPath string, sizeBytes uint64) error {
+	if !filepath.IsAbs(backingPath) || !filepath.IsAbs(dstPath) ||
+		strings.Contains(backingPath, "..") || strings.Contains(dstPath, "..") {
+		return fmt.Errorf("invalid base image or destination path")
+	}
+	if _, err := os.Lstat(dstPath); err == nil {
+		return fmt.Errorf("destination disk already exists")
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("check destination disk: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	infoJSON, err := sysutil.DefaultRunner.Run(ctx, "qemu-img", "info", "--output=json", backingPath)
+	if err != nil {
+		return fmt.Errorf("inspect base image: %w (%s)", err, strings.TrimSpace(string(infoJSON)))
+	}
+	var info struct {
+		Format      string `json:"format"`
+		VirtualSize uint64 `json:"virtual-size"`
+		BackingFile string `json:"backing-filename"`
+	}
+	if err := json.Unmarshal(infoJSON, &info); err != nil || info.Format != "qcow2" || info.VirtualSize == 0 || info.BackingFile != "" {
+		return fmt.Errorf("base image must be a standalone qcow2 disk")
+	}
+	if sizeBytes > 0 && sizeBytes < info.VirtualSize {
+		return fmt.Errorf("requested disk is smaller than the base image virtual size")
+	}
+
+	out, err := sysutil.DefaultRunner.Run(ctx, "qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", backingPath, dstPath)
+	if err != nil {
+		_ = os.Remove(dstPath)
+		return fmt.Errorf("create copy-on-write disk: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	cleanup := func() { _ = os.Remove(dstPath) }
+	if sizeBytes > info.VirtualSize {
+		out, err = sysutil.DefaultRunner.Run(ctx, "qemu-img", "resize", dstPath, fmt.Sprintf("%d", sizeBytes))
+		if err != nil {
+			cleanup()
+			return fmt.Errorf("resize copy-on-write disk: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
 	}
 	return nil
 }
@@ -1081,4 +1138,3 @@ func writeTarEntry(tw *tar.Writer, name string, data []byte, mode int64) error {
 	}
 	return nil
 }
-

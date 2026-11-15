@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { api } from '$lib/stores/auth.svelte.js';
   import { tasks } from '$lib/stores/tasks.svelte.js';
   import { toast } from '$lib/components/ui/toast';
@@ -18,6 +19,19 @@
   let search = $state('');
   let selectedCategory = $state('all');
   let currentJobId = $state(null);
+  // A plain Set inside $state is not proxied by Svelte 5, so add/delete
+  // never reached `selectedCount`. SvelteSet is the reactive variant.
+  const selectedPackages = new SvelteSet();
+  let showConfirmSelected = $state(false);
+  let showConfirmReboot = $state(false);
+  let rebooting = $state(false);
+
+  const selectedCount = $derived(selectedPackages.size);
+
+  function togglePackage(name) {
+    if (selectedPackages.has(name)) selectedPackages.delete(name);
+    else selectedPackages.add(name);
+  }
 
   // Active task tracked in global tasks store
   const activeUpgradeTask = $derived(
@@ -41,6 +55,7 @@
 
   onMount(() => {
     loadUpdates();
+    loadSchedule();
   });
 
   async function refreshRepositories() {
@@ -55,11 +70,12 @@
     }
   }
 
-  async function startUpgrade() {
+  async function startUpgrade(packages = []) {
     showConfirmUpgrade = false;
+    showConfirmSelected = false;
     upgrading = true;
     try {
-      const job = await api.upgradeHostUpdates();
+      const job = await api.upgradeHostUpdates(packages);
       currentJobId = job.id;
       toast.info(t('hostUpdates.upgradeStarted'));
 
@@ -69,6 +85,7 @@
         timeout: 35 * 60 * 1000,
       });
       toast.success(t('hostUpdates.upgradeDone'));
+      selectedPackages.clear();
       await loadUpdates();
     } catch (e) {
       toast.error(t('hostUpdates.upgradeFailed', { error: e.message }));
@@ -76,6 +93,46 @@
     } finally {
       upgrading = false;
       currentJobId = null;
+    }
+  }
+
+  function startSelectedUpgrade() {
+    startUpgrade([...selectedPackages]);
+  }
+
+  async function rebootHost() {
+    showConfirmReboot = false;
+    rebooting = true;
+    try {
+      await api.rebootHost();
+      toast.info(t('hostUpdates.rebootStarted'));
+    } catch (e) {
+      toast.error(t('hostUpdates.rebootFailed', { error: e.message }));
+    } finally {
+      rebooting = false;
+    }
+  }
+
+  let schedule = $state(null);
+  let scheduleSaving = $state(false);
+
+  async function loadSchedule() {
+    try {
+      schedule = await api.getHostUpdateSchedule();
+    } catch {
+      schedule = null;
+    }
+  }
+
+  async function saveSchedule() {
+    scheduleSaving = true;
+    try {
+      schedule = await api.setHostUpdateSchedule(schedule);
+      toast.success(t('hostUpdates.scheduleSaved'));
+    } catch (e) {
+      toast.error(t('hostUpdates.scheduleError', { error: e.message }));
+    } finally {
+      scheduleSaving = false;
     }
   }
 
@@ -158,7 +215,7 @@
       class="rounded-xl border border-warning/40 bg-warning/10 p-4 flex items-start gap-3 text-warning-foreground"
     >
       <Icon name="alertTriangle" size={20} class="text-warning shrink-0 mt-0.5" />
-      <div class="space-y-1">
+      <div class="space-y-1 flex-1 min-w-0">
         <h4 class="font-semibold text-sm text-foreground">
           {t('hostUpdates.rebootRequiredTitle')}
         </h4>
@@ -171,6 +228,20 @@
           </p>
         {/if}
       </div>
+      <Button
+        variant="outline"
+        size="sm"
+        onclick={() => (showConfirmReboot = true)}
+        disabled={rebooting}
+        class="gap-1.5 text-xs shrink-0"
+      >
+        {#if rebooting}
+          <Spinner size="xs" />
+        {:else}
+          <Icon name="refreshCw" size={13} />
+        {/if}
+        {t('hostUpdates.rebootButton')}
+      </Button>
     </div>
   {/if}
 
@@ -243,6 +314,19 @@
             {t('hostUpdates.upgradeAll')}
           {/if}
         </Button>
+
+        {#if selectedCount > 0}
+          <Button
+            variant="default"
+            size="sm"
+            onclick={() => (showConfirmSelected = true)}
+            disabled={loading || refreshing || upgrading || summary?.upgrade_running}
+            class="gap-1.5 text-xs font-medium"
+          >
+            <Icon name="download" size={13} />
+            {t('hostUpdates.upgradeSelected', { count: selectedCount })}
+          </Button>
+        {/if}
       </div>
     </div>
 
@@ -295,6 +379,51 @@
       </div>
     </div>
   </div>
+
+  <!-- Update schedule -->
+  {#if schedule}
+    <div class="rounded-xl border border-border bg-card/60 p-4 space-y-3">
+      <div class="flex items-center gap-2">
+        <Icon name="clock" size={16} class="text-accent shrink-0" />
+        <h3 class="font-semibold text-foreground text-sm">{t('hostUpdates.scheduleTitle')}</h3>
+      </div>
+      <div class="flex items-center gap-3 flex-wrap">
+        <label class="flex items-center gap-2 text-xs">
+          <input type="checkbox" class="accent-primary" bind:checked={schedule.enabled} />
+          {t('hostUpdates.scheduleEnabled')}
+        </label>
+        <Input
+          bind:value={schedule.upgrade_cron}
+          placeholder="0 3 * * 0"
+          disabled={!schedule.enabled}
+          class="text-xs h-9 w-44 font-mono"
+        />
+        <label class="flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            class="accent-primary"
+            bind:checked={schedule.reboot_after}
+            disabled={!schedule.enabled}
+          />
+          {t('hostUpdates.scheduleRebootAfter')}
+        </label>
+        <Button
+          variant="default"
+          size="sm"
+          onclick={saveSchedule}
+          disabled={scheduleSaving}
+          class="text-xs gap-1.5"
+        >
+          {#if scheduleSaving}
+            <Spinner size="xs" />
+          {:else}
+            <Icon name="save" size={13} />
+          {/if}
+          {t('hostUpdates.scheduleSave')}
+        </Button>
+      </div>
+    </div>
+  {/if}
 
   <!-- Search and category tabs -->
   <div class="space-y-3">
@@ -385,6 +514,7 @@
             class="bg-muted/40 text-muted-foreground border-b border-border/60 uppercase text-[10px]"
           >
             <tr>
+              <th class="px-4 py-2.5 w-8"></th>
               <th class="px-4 py-2.5 font-semibold">{t('hostUpdates.colPackage')}</th>
               <th class="px-4 py-2.5 font-semibold">{t('hostUpdates.colCurrent')}</th>
               <th class="px-4 py-2.5 font-semibold">{t('hostUpdates.colNew')}</th>
@@ -394,6 +524,15 @@
           <tbody class="divide-y divide-border/60">
             {#each filteredPackages as pkg (pkg.package)}
               <tr class="hover:bg-muted/20 transition-colors">
+                <td class="px-4 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    class="accent-primary cursor-pointer"
+                    checked={selectedPackages.has(pkg.package)}
+                    onchange={() => togglePackage(pkg.package)}
+                    aria-label={pkg.package}
+                  />
+                </td>
                 <td class="px-4 py-3 font-medium text-foreground">
                   <div class="flex items-center gap-2 flex-wrap">
                     <span class="font-mono">{pkg.package}</span>
@@ -445,6 +584,31 @@
   message={t('hostUpdates.confirmMessage', { count: summary?.total || 0 })}
   confirmLabel={t('hostUpdates.confirmButton')}
   variant="default"
-  onConfirm={startUpgrade}
+  onConfirm={() => startUpgrade()}
   onCancel={() => (showConfirmUpgrade = false)}
+/>
+
+<!-- Confirm selected packages upgrade dialog -->
+<ConfirmDialog
+  bind:open={showConfirmSelected}
+  title={t('hostUpdates.confirmSelectedTitle')}
+  message={t('hostUpdates.confirmSelectedMessage', {
+    count: selectedCount,
+    pkgs: [...selectedPackages].join(', '),
+  })}
+  confirmLabel={t('hostUpdates.confirmButton')}
+  variant="default"
+  onConfirm={startSelectedUpgrade}
+  onCancel={() => (showConfirmSelected = false)}
+/>
+
+<!-- Confirm reboot dialog -->
+<ConfirmDialog
+  bind:open={showConfirmReboot}
+  title={t('hostUpdates.rebootConfirmTitle')}
+  message={t('hostUpdates.rebootConfirmMessage')}
+  confirmLabel={t('hostUpdates.rebootConfirmButton')}
+  variant="destructive"
+  onConfirm={rebootHost}
+  onCancel={() => (showConfirmReboot = false)}
 />

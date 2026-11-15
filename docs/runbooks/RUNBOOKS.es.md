@@ -16,6 +16,7 @@ explícitos.
 | [DISASTER-RECOVERY.es.md](DISASTER-RECOVERY.es.md) | Pérdida del host, del datadir, corrupción de libvirt |
 | [SECURITY-MODEL.es.md](SECURITY-MODEL.es.md) | Entender qué protege el sistema y cómo auditar |
 | [OPS-DAILY.es.md](OPS-DAILY.es.md) | Tareas diarias: health, logs, auditoría, jobs, backups |
+| [RELEASING.es.md](../RELEASING.es.md) | Checklist de release para mantenedores, tag, assets y AUR |
 
 ## Reglas de oro (aplican a todos los runbooks)
 
@@ -31,6 +32,10 @@ explícitos.
    instalarlo.
 6. Los scripts del repo tienen modo `-euo pipefail`; si ves un error,
    no lo "suprimas" — léelo.
+7. El botón Actualizar de la UI es para instalaciones nativas de un solo nodo.
+   En un clúster HA actualiza todos los nodos a través de Pacemaker
+   ([HA-CLUSTER.es.md](HA-CLUSTER.es.md#1211-actualizar-webkvm-en-un-clúster-ha));
+   las instalaciones Docker descargan la imagen nueva.
 
 ## Estado y localización de ficheros clave
 

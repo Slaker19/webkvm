@@ -42,6 +42,9 @@ func NewPoolPurposeStore(dataDir string) *PoolPurposeStore {
 }
 
 func (s *PoolPurposeStore) Load() error {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, err := os.ReadFile(s.path)
@@ -63,6 +66,9 @@ func (s *PoolPurposeStore) Load() error {
 // container, backup and template pools would all silently turn into
 // disk pools and vanish from their sections of the UI.
 func (s *PoolPurposeStore) Save() error {
+	if s == nil {
+		return nil
+	}
 	s.mu.RLock()
 	b, err := json.MarshalIndent(s.data, "", "  ")
 	s.mu.RUnlock()
@@ -111,6 +117,9 @@ func (s *PoolPurposeStore) Save() error {
 }
 
 func (s *PoolPurposeStore) Get(name string) string {
+	if s == nil {
+		return ""
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if p, ok := s.data[name]; ok {
@@ -120,6 +129,9 @@ func (s *PoolPurposeStore) Get(name string) string {
 }
 
 func (s *PoolPurposeStore) Set(name, purpose string) error {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	s.data[name] = purpose
 	s.mu.Unlock()
@@ -131,6 +143,9 @@ func (s *PoolPurposeStore) Set(name, purpose string) error {
 // rewritten only when an entry was actually removed (avoids bumping
 // mtime on every save).
 func (s *PoolPurposeStore) Delete(name string) error {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	if _, ok := s.data[name]; !ok {
 		s.mu.Unlock()

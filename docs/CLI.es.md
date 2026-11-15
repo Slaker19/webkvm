@@ -67,6 +67,15 @@ webkvm-cli logout
 | `webkvm-cli status` | Comprobación de salud (`GET /api/health`): imprime `status`, `data_dir` y si libvirt responde. |
 | `webkvm-cli info` | Resumen del host (`GET /api/host`): CPU, memoria, hipervisor y capacidades. |
 | `webkvm-cli restart` | Pide al backend que se reinicie (`POST /api/system/restart`). Solo administradores. |
+| `webkvm-cli settings reboot` | Reinicia toda la máquina anfitriona (`POST /api/host/reboot`). Solo administradores. |
+
+## Actualizaciones del Host (`updates`)
+
+| Comando | Qué hace |
+|---------|----------|
+| `webkvm-cli updates list` | Lista las actualizaciones disponibles (total, seguridad, reinicio pendiente). |
+| `webkvm-cli updates refresh` | Refresca los repositorios de paquetes (`POST /api/host/updates/refresh`). |
+| `webkvm-cli updates upgrade [pkg...]` | Actualiza todos los paquetes, o solo los indicados (`POST /api/host/updates/upgrade`). |
 
 ---
 

@@ -103,14 +103,18 @@
     --tertiary-foreground: #a1a1aa;
 
     /* Accent (indigo) — buttons, links, focus rings ONLY */
-    --accent: #6366f1;
+    --accent: #5b5ef0;
     --accent-foreground: #ffffff;
     --accent-hover: #818cf8;
+    /* Accent as TEXT/outline-on-dark: the button fill #5b5ef0 is only 3.5:1
+       on the dark surfaces, so text uses the lighter hover shade (>= 5.4:1
+       on every surface and tint); light theme uses the accent itself. */
+    --accent-text: var(--accent-hover);
     --accent-subtle: rgba(99, 102, 241, 0.1);
     --accent-subtle-hover: rgba(99, 102, 241, 0.15);
 
     /* Primary — alias of accent, consumed by shadcn Button default variant */
-    --primary: #6366f1;
+    --primary: #5b5ef0;
     --primary-foreground: #ffffff;
 
     /* Borders */
@@ -126,16 +130,16 @@
     --status-crashed: #ef4444;
 
     --success: #22c55e;
-    --success-foreground: #ffffff;
+    --success-foreground: #0a0a0c;
     --success-subtle: rgba(34, 197, 94, 0.1);
     --warning: #f59e0b;
-    --warning-foreground: #ffffff;
+    --warning-foreground: #0a0a0c;
     --warning-subtle: rgba(245, 158, 11, 0.1);
-    --info: #3b82f6;
-    --info-foreground: #ffffff;
+    --info: #60a5fa;
+    --info-foreground: #0a0a0c;
     --info-subtle: rgba(59, 130, 246, 0.1);
-    --destructive: #ef4444;
-    --destructive-foreground: #ffffff;
+    --destructive: #f87171;
+    --destructive-foreground: #0a0a0c;
     --destructive-subtle: rgba(239, 68, 68, 0.1);
 
     /* Radius */
@@ -144,7 +148,7 @@
     /* Text */
     --text-primary: #f4f4f5;
     --text-secondary: #a1a1aa;
-    --text-muted: #52525b;
+    --text-muted: #8b8b94;
   }
 
   /* OLED Black Theme (True Pitch Black) */
@@ -187,17 +191,32 @@
     --surface-hover: #f1f5f9;
     --surface-active: #e2e8f0;
     --muted: #f1f5f9;
-    --muted-foreground: #64748b;
+    --muted-foreground: #475569;
     --secondary: #f1f5f9;
     --secondary-foreground: #0f172a;
     --tertiary: #e2e8f0;
-    --tertiary-foreground: #64748b;
+    --tertiary-foreground: #475569;
     --border: #e2e8f0;
     --border-hover: #cbd5e1;
     --input: #e2e8f0;
     --text-primary: #0f172a;
     --text-secondary: #64748b;
-    --text-muted: #94a3b8;
+    --text-muted: #64748b;
+
+    /* Status/primary tokens darkened for WCAG AA (>= 4.5:1) text on the
+       light surfaces and on their own 10-15% tinted backgrounds. */
+    --accent: #4f46e5;
+    --accent-text: var(--accent);
+    --primary: #4f46e5;
+    --ring: #4f46e5;
+    --success: #166534;
+    --success-foreground: #ffffff;
+    --warning: #92400e;
+    --warning-foreground: #ffffff;
+    --info: #1d4ed8;
+    --info-foreground: #ffffff;
+    --destructive: #b91c1c;
+    --destructive-foreground: #ffffff;
   }
 
   /* Accent Color Variants */
@@ -249,6 +268,34 @@
     --accent-subtle-hover: rgba(244, 63, 94, 0.15);
     --primary: #f43f5e;
     --ring: #f43f5e;
+  }
+
+  /* Light theme accent variants: darker shades so white button text keeps
+     >= 4.5:1. */
+  :root:not(.dark)[data-accent='emerald'] {
+    --accent: #047857;
+    --primary: #047857;
+    --ring: #047857;
+  }
+  :root:not(.dark)[data-accent='blue'] {
+    --accent: #2563eb;
+    --primary: #2563eb;
+    --ring: #2563eb;
+  }
+  :root:not(.dark)[data-accent='violet'] {
+    --accent: #6d28d9;
+    --primary: #6d28d9;
+    --ring: #6d28d9;
+  }
+  :root:not(.dark)[data-accent='amber'] {
+    --accent: #b45309;
+    --primary: #b45309;
+    --ring: #b45309;
+  }
+  :root:not(.dark)[data-accent='rose'] {
+    --accent: #be123c;
+    --primary: #be123c;
+    --ring: #be123c;
   }
 
   body {
@@ -318,6 +365,21 @@
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--border) var(--background);
+  }
+}
+
+/* Accent used as text colour (350+ places): see --accent-text above. Declared
+   after Tailwind's own utilities in the same layer, so it replaces the
+   generated `text-accent`/`text-primary` colour (variants such as
+   hover:text-accent-hover keep their higher specificity); backgrounds and
+   borders keep using --accent. */
+@layer utilities {
+  .text-accent,
+  .hover\:text-accent:hover,
+  .group:hover .group-hover\:text-accent,
+  .text-primary,
+  .hover\:text-primary:hover {
+    color: var(--accent-text);
   }
 }
 

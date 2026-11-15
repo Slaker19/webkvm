@@ -1,0 +1,80 @@
+#!/bin/sh
+#
+# OCF resource agent: ocf:webkvm:webkvm
+#
+# Runs the WebKVM control plane (systemd unit webkvm.service) as a Pacemaker
+# resource. The unit must stay disabled: Pacemaker is the only thing that
+# starts or stops it.
+#
+: "${OCF_ROOT:=/usr/lib/ocf}"
+
+if [ -r "${OCF_ROOT}/lib/heartbeat/ocf-shellfuncs" ]; then
+	# shellcheck disable=SC1091
+	. "${OCF_ROOT}/lib/heartbeat/ocf-shellfuncs"
+fi
+
+# Standard OCF return codes (also provided by ocf-shellfuncs when present).
+OCF_SUCCESS=0
+OCF_ERR_GENERIC=1
+OCF_ERR_UNIMPLEMENTED=3
+OCF_ERR_INSTALLED=5
+OCF_NOT_RUNNING=7
+
+UNIT=webkvm
+
+webkvm_start() {
+	webkvm_monitor
+	[ $? -eq "$OCF_SUCCESS" ] && return "$OCF_SUCCESS"
+	systemctl start "$UNIT" || return "$OCF_ERR_GENERIC"
+	sleep 2
+	systemctl is-active --quiet "$UNIT" || return "$OCF_ERR_GENERIC"
+	return "$OCF_SUCCESS"
+}
+
+webkvm_stop() {
+	systemctl stop "$UNIT" || return "$OCF_ERR_GENERIC"
+	return "$OCF_SUCCESS"
+}
+
+webkvm_monitor() {
+	if systemctl is-active --quiet "$UNIT"; then
+		return "$OCF_SUCCESS"
+	fi
+	return "$OCF_NOT_RUNNING"
+}
+
+webkvm_validate() {
+	command -v systemctl >/dev/null 2>&1 || return "$OCF_ERR_INSTALLED"
+	systemctl cat "${UNIT}.service" >/dev/null 2>&1 || return "$OCF_ERR_INSTALLED"
+	return "$OCF_SUCCESS"
+}
+
+webkvm_meta_data() {
+	cat <<'END'
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="webkvm" version="1.0">
+  <version>1.0</version>
+  <longdesc lang="en">Runs the WebKVM control plane (systemd unit webkvm.service) as a cluster resource.</longdesc>
+  <shortdesc lang="en">WebKVM control plane</shortdesc>
+  <parameters/>
+  <actions>
+    <action name="start" timeout="90s"/>
+    <action name="stop" timeout="60s"/>
+    <action name="monitor" timeout="20s" interval="20s"/>
+    <action name="meta-data" timeout="5s"/>
+    <action name="validate-all" timeout="20s"/>
+  </actions>
+</resource-agent>
+END
+}
+
+case "$1" in
+start) webkvm_start ;;
+stop) webkvm_stop ;;
+monitor) webkvm_monitor ;;
+meta-data) webkvm_meta_data ;;
+validate-all) webkvm_validate ;;
+*) exit "$OCF_ERR_UNIMPLEMENTED" ;;
+esac
+exit $?
