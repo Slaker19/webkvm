@@ -10,6 +10,21 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
 _Nada todavía._
 
+## [0.1.12-fix02] — 2026-11-16
+
+Seguimiento de empaquetado y mantenimiento. El comportamiento de la aplicación no cambia.
+
+### Corregido
+
+- **Verificación del `.deb`**: el paquete se publica como `webkvm_0.1.12.fix02_amd64.deb` y `SHA256SUMS` coincide con el nombre del asset. GitHub convierte `~` en `.` al subirlo, lo que rompía `sha256sum -c` en v0.1.12-fix01.
+- **Orden de los paquetes nativos**: Debian genera `0.1.12.fix02` y RPM `0.1.12-1.fix02`, así que actualizan sobre `0.1.12`; las versiones anteriores `~fix01` / `0.fix01` ordenaban por debajo.
+- **i18n pendiente de la issue #11**: las etiquetas de modelo de audio de la VM y el texto de la tarea de despliegue usan `t()`; la detección de contraseña incorrecta usa el código estable `invalid_password` en vez de una cadena en español. El barrido completo sigue en la issue #11.
+- **Dependencias Go**: `go.opentelemetry.io/otel*` actualizado a `v1.47.0` (PR #13 de Dependabot); no hay aviso de seguridad implicado.
+
+### Añadido
+
+- **Notas de release** de esta versión publicadas desde `docs/releases/0.1.12-fix02.md`.
+
 ## [0.1.12-fix01] — 2026-11-16
 
 Seguimiento de seguridad y empaquetado. El comportamiento de la aplicación no cambia.
@@ -462,6 +477,7 @@ virtualización Linux.
 
 [0.1.11]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.11
 [0.1.12]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12
+[0.1.12-fix02]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12-fix02
 [0.1.12-fix01]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12-fix01
 [0.1.10]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.10
 [0.1.4]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.4

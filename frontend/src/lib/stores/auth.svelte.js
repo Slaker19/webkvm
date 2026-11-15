@@ -388,7 +388,7 @@ export const api = {
       // This route sits behind the session middleware, so a 401 can also
       // be a genuinely expired session; only the handler's wrong-password
       // answer is a form error.
-      credentialCheck: (body) => body?.error === 'contraseña incorrecta',
+      credentialCheck: (body) => body?.code === 'invalid_password',
     }),
 
   // --- WebAuthn / Passkeys ---

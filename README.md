@@ -101,7 +101,7 @@ WebKVM runs on Debian/Ubuntu, the Fedora/RHEL family and Arch Linux.
 
 ### Official Release Assets
 
-Official releases (tagged `v0.1.12-fix01`) publish standalone prebuilt binaries (`webkvm-0.1.12-fix01-linux_amd64`, `webkvm-cli-0.1.12-fix01-linux_amd64`), native package formats (`.deb`, `.rpm`), the full source tarball, and verifiable `SHA256SUMS`.
+Official releases (tagged `v0.1.12-fix02`) publish standalone prebuilt binaries (`webkvm-0.1.12-fix02-linux_amd64`, `webkvm-cli-0.1.12-fix02-linux_amd64`), native package formats (`.deb`, `.rpm`), the full source tarball, and verifiable `SHA256SUMS`.
 
 ### Updating WebKVM
 

@@ -290,13 +290,13 @@ sudo webkvm-update            # modo release (descarga el binario verificado)
 sudo webkvm-update --source   # modo source (recompila el repositorio local)
 
 # O reejecutando el instalador con un binario descargado:
-sudo WEBKVM_BINARY=/ruta/a/webkvm-0.1.12-fix01-linux_amd64 bash packaging/standalone/install.sh --yes
+sudo WEBKVM_BINARY=/ruta/a/webkvm-0.1.12-fix02-linux_amd64 bash packaging/standalone/install.sh --yes
 ```
 
-Los artefactos oficiales de la release **v0.1.12-fix01** se publican en GitHub Releases:
-- `webkvm-0.1.12-fix01-linux_amd64` (binario del servidor independiente)
-- `webkvm-cli-0.1.12-fix01-linux_amd64` (binario de CLI independiente)
-- `webkvm-0.1.12-fix01.tar.gz` (código fuente y binario empaquetado)
+Los artefactos oficiales de la release **v0.1.12-fix02** se publican en GitHub Releases:
+- `webkvm-0.1.12-fix02-linux_amd64` (binario del servidor independiente)
+- `webkvm-cli-0.1.12-fix02-linux_amd64` (binario de CLI independiente)
+- `webkvm-0.1.12-fix02.tar.gz` (código fuente y binario empaquetado)
 - Paquetes para distribuciones `.deb` (Debian/Ubuntu) y `.rpm` (RHEL/Fedora)
 - `SHA256SUMS` (sumas de verificación criptográfica)
 

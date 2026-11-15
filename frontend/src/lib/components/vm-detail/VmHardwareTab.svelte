@@ -134,12 +134,12 @@
     { value: 'pcnet', label: 'pcnet (AMD, legacy)' },
   ];
 
-  const audioModels = [
-    { value: 'none', label: 'Sin audio (Desactivado)' },
-    { value: 'ich9', label: 'Intel ICH9 HD Audio (Recomendado)' },
-    { value: 'ac97', label: 'AC97 Audio (Legacy)' },
+  const audioModels = $derived([
+    { value: 'none', label: t('vmCreate.audioModelNone') },
+    { value: 'ich9', label: t('vmCreate.audioModelIch9') },
+    { value: 'ac97', label: t('vmCreate.audioModelAc97') },
     { value: 'es1370', label: 'Ensoniq ES1370' },
-  ];
+  ]);
 
   const bootOrderOptions = $derived([
     { value: 'disk', label: t('vmCreate.bootOrderDisk') },

@@ -2,7 +2,7 @@
 
 [**English**](RELEASING.md) • [**Español**](RELEASING.es.md)
 
-Checklist para mantenedores. El objetivo actual es **`v0.1.12-fix01`**; los workflows
+Checklist para mantenedores. El objetivo actual es **`v0.1.12-fix02`**; los workflows
 de release y Docker se disparan con tags `v*`.
 
 > Los comandos de abajo son documentación. No ejecutes el commit, el tag ni el
@@ -55,10 +55,10 @@ git diff --check
 
 ## 3. Versión y changelog
 
-Todo debe decir `0.1.12-fix01` (el tag de git conserva la `v`):
+Todo debe decir `0.1.12-fix02` (el tag de git conserva la `v`):
 
-- `CHANGELOG.md` / `CHANGELOG.es.md` — sección `[0.1.12-fix01]`, fechada y con los
-  arreglos de snapshots/AppArmor, 404, MAC y VMs pausadas.
+- `CHANGELOG.md` / `CHANGELOG.es.md` — sección `[0.1.12-fix02]`, fechada y con los
+  arreglos de nombres/orden de paquetes nativos, i18n y dependencias.
 - `frontend/package.json` y `package-lock.json`.
 - `packaging/arch/PKGBUILD` (`_pkgver`, URL de origen).
 - Ejemplos de README/docs que muestren una versión de release.
@@ -81,20 +81,20 @@ git diff --cached --stat
 El índice no debe contener artefactos internos ignorados. Commit de release:
 
 ```bash
-git commit -m "chore(release): v0.1.12-fix01"
-git tag -a v0.1.12-fix01 -m "WebKVM v0.1.12-fix01"
+git commit -m "chore(release): v0.1.12-fix02"
+git tag -a v0.1.12-fix02 -m "WebKVM v0.1.12-fix02"
 git push origin main --follow-tags
 ```
 
 ## 5. Release de GitHub y assets
 
-Al empujar el tag `v0.1.12-fix01`, `.github/workflows/release.yml` genera:
+Al empujar el tag `v0.1.12-fix02`, `.github/workflows/release.yml` genera:
 
-- `webkvm-0.1.12-fix01-linux_amd64`
-- `webkvm-cli-0.1.12-fix01-linux_amd64`
-- `webkvm-0.1.12-fix01.tar.gz`
-- `webkvm_0.1.12-fix01_amd64.deb`
-- `webkvm-0.1.12-fix01-1.x86_64.rpm`
+- `webkvm-0.1.12-fix02-linux_amd64`
+- `webkvm-cli-0.1.12-fix02-linux_amd64`
+- `webkvm-0.1.12-fix02.tar.gz`
+- `webkvm_0.1.12.fix02_amd64.deb`
+- `webkvm-0.1.12-1.fix02.x86_64.rpm`
 - `SHA256SUMS`
 
 Marca la release como **latest**. El updater de la UI e `install.sh` leen
@@ -105,12 +105,12 @@ Marca la release como **latest**. El updater de la UI e `install.sh` leen
 En una instalación nativa 0.1.11:
 
 1. Abre `/#/status` como admin; la tarjeta de actualización debe ofrecer
-   `v0.1.12-fix01`.
+   `v0.1.12-fix02`.
 2. Ejecuta la actualización. El modo release descarga
-   `webkvm-0.1.12-fix01-linux_amd64`, verifica su entrada en `SHA256SUMS`, conserva
+   `webkvm-0.1.12-fix02-linux_amd64`, verifica su entrada en `SHA256SUMS`, conserva
    `webkvm.previous`, reinicia el servicio y hace health check. El modo source
    hace pull y recompila.
-3. Confirma que `webkvm version` dice `0.1.12-fix01` y que `/api/health` responde OK.
+3. Confirma que `webkvm version` dice `0.1.12-fix02` y que `/api/health` responde OK.
 4. Arranca o borra un snapshot de una VM existente: la etiqueta AppArmor se
    añade de forma perezosa; no hay que editar el XML a mano.
 5. Prueba el rollback con `webkvm.previous` (o `make rollback`) y confirma que
@@ -127,7 +127,7 @@ Cuando exista la release de GitHub:
 updpkgsums
 ```
 
-Sustituye `sha256sums=('SKIP')` por el SHA-256 de `webkvm-0.1.12-fix01.tar.gz` de
+Sustituye `sha256sums=('SKIP')` por el SHA-256 de `webkvm-0.1.12-fix02.tar.gz` de
 `SHA256SUMS` y publica el paquete AUR por separado. No publiques un paquete con
 `SKIP` como checksum.
 

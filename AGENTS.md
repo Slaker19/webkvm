@@ -1,7 +1,7 @@
 # WebKVM — Contexto para desarrollo (AGENTS)
 
 > Documento vivo para agentes y humanos.
-> Rama `main` en `v0.1.12-fix01` (release en preparación).
+> Rama `main` en `v0.1.12-fix02` (release en preparación).
 
 ## 1. Qué es
 
@@ -18,7 +18,7 @@ Binario único Go ~14 MB, ~15 MB RAM en idle. Gestiona **QEMU/KVM + Incus/LXC** 
 
 ```
 webkvm/
-  backend/           Go (module webkvm, go 1.26.9). 433 .go, ~117k líneas (~76k sin tests)
+  backend/           Go (module webkvm, go 1.26.11). 433 .go, ~117k líneas (~76k sin tests)
     cmd/server/      main.go (1123L) + tls.go — único binario prod
     cmd/cli/         main.go (2007L) — webkvm-cli
     cmd/migrate-disk-names/  one-shot renombrado discos
@@ -143,7 +143,7 @@ When working on UI/UX components, visual design, transitions, or animations:
 
 ## Releases and updates
 
-- Release checklist: `docs/RELEASING.md` (ES: `docs/RELEASING.es.md`). Tag format: `v0.1.12-fix01`; release/Docker workflows trigger on `v*`.
+- Release checklist: `docs/RELEASING.md` (ES: `docs/RELEASING.es.md`). Tag format: `v0.1.12-fix02`; release/Docker workflows trigger on `v*`.
 - Native installs update from `/#/status`. The backend requires `WEBKVM_ALLOW_UPDATE=1`, verifies `SHA256SUMS`, keeps `webkvm.previous` and health-checks with rollback. Docker pulls a new image instead.
 - The UI button updates only the node serving the panel. HA clusters must update every node through Pacemaker; see `docs/runbooks/HA-CLUSTER.md` section 12.11.
 - After an in-place update, existing VMs receive the AppArmor workaround lazily on the next start, revert or snapshot delete; `WEBKVM_DISABLE_APPARMOR=0` keeps AppArmor.

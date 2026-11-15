@@ -136,8 +136,8 @@ which runs a health check and rolls back automatically), and validate.
 ## 10. Cutting a Release (maintainers only)
 
 ```bash
-git tag -a v0.1.12-fix01 -m "WebKVM v0.1.12-fix01" && git push origin main --follow-tags
-# GitHub Actions publishes webkvm-0.1.12-fix01.tar.gz + SHA256SUMS
+git tag -a v0.1.12-fix02 -m "WebKVM v0.1.12-fix02" && git push origin main --follow-tags
+# GitHub Actions publishes webkvm-0.1.12-fix02.tar.gz + SHA256SUMS
 # Local alternative:
 make release                      # local artifacts only
 make release RELEASE_PUBLISH=1    # also publishes with gh

@@ -335,9 +335,9 @@
         upsertTask({
           id: 'async:' + deployJobId,
           kind: 'general',
-          title: `Desplegando App: ${deployModalApp.name} (${deployName})`,
+          title: t('vms.deployingAppliance', { name: deployModalApp.name }),
           pct: 10,
-          message: 'Descargando y preparando plantilla...',
+          message: t('vms.deployDownloading'),
           status: 'running',
         });
       }

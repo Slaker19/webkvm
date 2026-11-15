@@ -32,15 +32,15 @@ registros de auditoría**.
 
 4. **Descarga el artefacto y verifica su checksum**:
 
-   Artefactos oficiales de la release **v0.1.12-fix01** (tag `v0.1.12-fix01`):
-   - `webkvm-0.1.12-fix01-linux_amd64` (binario del servidor independiente)
-   - `webkvm-cli-0.1.12-fix01-linux_amd64` (binario de CLI independiente)
-   - `webkvm-0.1.12-fix01.tar.gz` (tarball de fuentes y precompilados)
+   Artefactos oficiales de la release **v0.1.12-fix02** (tag `v0.1.12-fix02`):
+   - `webkvm-0.1.12-fix02-linux_amd64` (binario del servidor independiente)
+   - `webkvm-cli-0.1.12-fix02-linux_amd64` (binario de CLI independiente)
+   - `webkvm-0.1.12-fix02.tar.gz` (tarball de fuentes y precompilados)
    - Paquetes `.deb` (Debian/Ubuntu) y `.rpm` (RHEL/Fedora)
    - `SHA256SUMS` (sumas de verificación criptográfica)
 
    ```bash
-   VERSION=v0.1.12-fix01
+   VERSION=v0.1.12-fix02
    curl -fsSL -o /tmp/webkvm-$VERSION.tar.gz \
      https://github.com/Slaker19/webkvm/releases/download/$VERSION/webkvm-$VERSION.tar.gz
    curl -fsSL -o /tmp/SHA256SUMS \
@@ -197,7 +197,7 @@ make uninstall
 
 ## Exit criteria
 
-- [ ] `webkvm version` muestra la versión objetivo (ej. `0.1.12-fix01`).
+- [ ] `webkvm version` muestra la versión objetivo (ej. `0.1.12-fix02`).
 - [ ] `systemctl is-active webkvm` = `active`.
 - [ ] `/api/health` responde `ok`.
 - [ ] `audit.log` intacto y creciendo.

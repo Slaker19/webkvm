@@ -110,10 +110,21 @@ jobs:
           # builds 0.0.0 packages, which is how earlier prereleases first
           # shipped misversioned native packages.
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.3
-          VERSION_DEB="$(echo "$VERSION" | tr '-' '~')" \
+          # Native version mapping. A "-fixNN" hotfix must sort ABOVE the
+          # base release, and the filename must survive GitHub's asset
+          # sanitization ("~" becomes ".") or SHA256SUMS verification
+          # fails. deb: 0.1.12.fix02  rpm: 0.1.12-1.fix02.
+          if [[ "$VERSION" == *-fix* ]]; then
+            VERSION_DEB="${VERSION//-/.}"
+            VERSION_RPM_RELEASE="1.${VERSION#*-}"
+          else
+            VERSION_DEB="${VERSION//-/.}"
+            VERSION_RPM_RELEASE="$(echo "$VERSION" | grep -q -- '-' && echo "0.${VERSION#*-}" || echo 1)"
+          fi
+          VERSION_RPM="${VERSION%%-*}"
+          VERSION_DEB="$VERSION_DEB" \
             nfpm package --config packaging/nfpm.deb.yaml --packager deb --target dist/
-          VERSION_RPM="$(echo "$VERSION" | sed 's/-.*//')" \
-          VERSION_RPM_RELEASE="$(echo "$VERSION" | grep -q -- '-' && echo "$VERSION" | sed 's/^[^-]*-/0./' || echo 1)" \
+          VERSION_RPM="$VERSION_RPM" VERSION_RPM_RELEASE="$VERSION_RPM_RELEASE" \
             nfpm package --config packaging/nfpm.rpm.yaml --packager rpm --target dist/
           # NOTE: the .deb sorts as webkvm_* (underscore); the glob must cover both.
           (cd dist && sha256sum webkvm-* webkvm_* > SHA256SUMS)
@@ -123,8 +134,8 @@ jobs:
           # Fail closed: never publish a 0.0.0/dev native package (wrong
           # env names to nfpm silently produce those).
           # Debian filename convention is name_VERSION_arch (underscores).
-          DEB_EXPECTED="webkvm_$(echo "$VERSION" | tr '-' '~')_amd64.deb"
-          RPM_EXPECTED="webkvm-$(echo "$VERSION" | sed 's/-.*//')-$(echo "$VERSION" | grep -q -- '-' && echo "$VERSION" | sed 's/^[^-]*-/0./' || echo 1).x86_64.rpm"
+          DEB_EXPECTED="webkvm_${VERSION_DEB}_amd64.deb"
+          RPM_EXPECTED="webkvm-${VERSION_RPM}-${VERSION_RPM_RELEASE}.x86_64.rpm"
           test -f "dist/$DEB_EXPECTED" || { echo "missing $DEB_EXPECTED:"; ls dist/; exit 1; }
           test -f "dist/$RPM_EXPECTED" || { echo "missing $RPM_EXPECTED:"; ls dist/; exit 1; }
           test -f "dist/webkvm-$VERSION-linux_amd64" || { echo "missing raw binary"; exit 1; }
