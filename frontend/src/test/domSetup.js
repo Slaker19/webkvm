@@ -62,3 +62,12 @@ if (typeof window !== 'undefined') {
     }
   });
 }
+
+// bits-ui's body-scroll-lock schedules a 24 ms cleanup timer when the last
+// dialog unmounts. If a test file finishes before it fires, happy-dom tears
+// the document down first and the timer throws ReferenceError. Drain it while
+// the DOM still exists so the suite is deterministic on CI.
+import { afterAll } from 'vitest';
+afterAll(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 80));
+});
