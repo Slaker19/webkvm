@@ -38,7 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Go matching host architecture (amd64 / arm64)
 RUN ARCH=$(dpkg --print-architecture) && \
-    curl -fsSL "https://go.dev/dl/go1.26.0.linux-${ARCH}.tar.gz" | tar -C /usr/local -xz
+    curl -fsSL "https://go.dev/dl/go1.26.11.linux-${ARCH}.tar.gz" | tar -C /usr/local -xz
 ENV PATH="/usr/local/go/bin:${PATH}"
 
 WORKDIR /src/backend
@@ -52,7 +52,7 @@ COPY backend/ ./
 # Copy compiled frontend assets from Stage 1 into backend embedded FS
 COPY --from=frontend-builder /src/frontend/dist ./internal/frontend/dist
 
-ARG VERSION=0.1.12
+ARG VERSION=0.1.12-fix01
 RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/webkvm ./cmd/server && \
     CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /out/webkvm-cli ./cmd/cli
 

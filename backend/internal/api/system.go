@@ -1082,7 +1082,31 @@ func isNewer(latest, current string) bool {
 			return false
 		}
 	}
-	return false
+	// Same numeric version: a "-fixNN" suffix is a post-release fix and
+	// must be offered to users running the base version.
+	return fixLevel(latest) > fixLevel(current)
+}
+
+// fixLevel extracts NN from a "-fixNN" suffix (1 for a bare "-fix").
+// Other pre-release suffixes are treated as 0.
+func fixLevel(v string) int {
+	v = strings.ToLower(strings.TrimPrefix(v, "v"))
+	i := strings.LastIndex(v, "-fix")
+	if i < 0 {
+		return 0
+	}
+	n, seen := 0, false
+	for _, c := range v[i+4:] {
+		if c < '0' || c > '9' {
+			break
+		}
+		seen = true
+		n = n*10 + int(c-'0')
+	}
+	if !seen {
+		return 1
+	}
+	return n
 }
 
 func parseSemver(v string) [3]int {

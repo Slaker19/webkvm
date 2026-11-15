@@ -1,0 +1,73 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go, javascript-typescript]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.11'
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - if: matrix.language == 'go'
+        name: Install libvirt dev headers
+        run: sudo apt-get update && sudo apt-get install -y libvirt-dev pkg-config
+
+      - if: matrix.language == 'go'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - if: matrix.language == 'go'
+        name: Build frontend for the Go embed
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+          rm -rf ../backend/internal/frontend/dist
+          cp -r dist ../backend/internal/frontend/dist
+
+      - if: matrix.language == 'go'
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          build-mode: manual
+
+      - if: matrix.language == 'javascript-typescript'
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - if: matrix.language == 'go'
+        name: Build Go code
+        run: cd backend && CGO_ENABLED=1 go build ./...
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}

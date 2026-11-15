@@ -934,13 +934,13 @@ disabled, so announce a maintenance window):
    sudo mv /usr/local/bin/webkvm.new /usr/local/bin/webkvm
    sudo install -m 0755 packaging/standalone/update.sh /usr/local/bin/webkvm-update
    ```
-   Or use the raw asset `webkvm-0.1.12-linux_amd64` with the same `install`/`mv`.
+   Or use the raw asset `webkvm-0.1.12-fix01-linux_amd64` with the same `install`/`mv`.
 4. Re-enable the resource and verify:
    ```bash
    sudo pcs resource enable webkvm-app --wait
    sudo pcs resource restart webkvm-app
    curl -kfsS https://<VIP>:8080/api/health
-   webkvm version        # 0.1.12
+   webkvm version        # 0.1.12-fix01
    ```
    Repeat `webkvm version` on each node.
 5. AppArmor: existing VMs are migrated on the next WebKVM-managed start, revert

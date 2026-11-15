@@ -117,8 +117,8 @@ con health check y rollback automático), y valida.
 ## 10. Release (solo mantenedores)
 
 ```bash
-git tag -a v0.1.12 -m "WebKVM v0.1.12" && git push origin main --follow-tags
-# GitHub Actions publica webkvm-0.1.12.tar.gz + SHA256SUMS
+git tag -a v0.1.12-fix01 -m "WebKVM v0.1.12-fix01" && git push origin main --follow-tags
+# GitHub Actions publica webkvm-0.1.12-fix01.tar.gz + SHA256SUMS
 # Alternativa local:
 make release                      # artefactos locales
 make release RELEASE_PUBLISH=1    # además publica con gh

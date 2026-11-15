@@ -10,6 +10,23 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
 _Nada todavía._
 
+## [0.1.12-fix01] — 2026-11-16
+
+Seguimiento de seguridad y empaquetado. El comportamiento de la aplicación no cambia.
+
+### Corregido
+
+- **Go 1.26.11**: recompilado con la corrección de `GO-2026-6859` (caída del servidor HTTP/1 por una carrera en `MaxBytesReader`). CI fija 1.26.11; el binario de v0.1.12 ya se compiló con ella.
+- **`golang.org/x/crypto`**: actualizado a `v0.58.1-0.20261009181718-2f1f834330b2`, resolviendo `GO-2026-5932` (openpgp sin mantenimiento). WebKVM no llama a ese paquete.
+- **Actualizador**: `isNewer` entiende el sufijo `-fixNN`, así que `0.1.12-fix01` se ofrece sobre `0.1.12`. Los binarios 0.1.12 antiguos necesitan un `sudo webkvm-update` manual.
+- **CI/CD**: los jobs de release fijan Go 1.26.11; el builder Docker descarga Go 1.26.11.
+
+### Añadido
+
+- **CodeQL** para Go y JavaScript/TypeScript, con build manual de Go y subida SARIF.
+- **Notas de release** publicadas desde `docs/releases/<version>.md`.
+- **Tests** para la comparación `-fixNN` del actualizador.
+
 ## [0.1.12] — 2026-11-15
 
 ### Añadido
@@ -445,6 +462,7 @@ virtualización Linux.
 
 [0.1.11]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.11
 [0.1.12]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12
+[0.1.12-fix01]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12-fix01
 [0.1.10]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.10
 [0.1.4]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.4
 [0.1.3]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.3

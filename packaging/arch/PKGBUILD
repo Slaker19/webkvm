@@ -1,9 +1,9 @@
 # Maintainer: WebKVM <Slaker19@users.noreply.github.com>
 # webkvm-bin: precompiled upstream binary + systemd unit (no toolchain needed).
 # The -bin suffix follows AUR convention for repackaged upstream binaries.
-# Tag stays v0.1.12; pkgver uses underscore (hyphens are illegal in pkgver).
+# Tag stays v0.1.12-fix01; pkgver uses underscore (hyphens are illegal in pkgver).
 pkgname=webkvm-bin
-_pkgver=0.1.12
+_pkgver=0.1.12_fix01
 pkgver=${_pkgver}
 pkgrel=1
 pkgdesc="Native libvirt+QEMU/KVM manager — Go backend with embedded Svelte UI (precompiled)"
@@ -21,8 +21,8 @@ provides=('webkvm')
 conflicts=('webkvm')
 backup=('etc/default/webkvm')
 install=webkvm-bin.install
-source=("https://github.com/Slaker19/webkvm/releases/download/v0.1.12/webkvm-0.1.12.tar.gz")
-# Replace SKIP with the v0.1.12 tarball SHA-256 after the release is cut
+source=("https://github.com/Slaker19/webkvm/releases/download/v0.1.12-fix01/webkvm-0.1.12-fix01.tar.gz")
+# Replace SKIP with the v0.1.12-fix01 tarball SHA-256 after the release is cut
 # (updpkgsums, or take it from SHA256SUMS in the GitHub release).
 sha256sums=('SKIP')
 

@@ -19,7 +19,7 @@ permissions:
   contents: write
 
 env:
-  GO_VERSION: "1.26"
+  GO_VERSION: "1.26.11"
   NODE_VERSION: "24"
 
 jobs:
@@ -143,7 +143,12 @@ jobs:
             echo "release $TAG already exists — replacing it"
             gh release delete "$TAG" --yes
           fi
+          NOTES="Checksums in SHA256SUMS. Full changelog: https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md"
+          NOTES_FILE="docs/releases/${TAG#v}.md"
+          if [[ -f "$NOTES_FILE" ]]; then
+            NOTES=$(cat "$NOTES_FILE")
+          fi
           gh release create "$TAG" dist/* \
             --title "WebKVM $TAG" \
-            --notes "Checksums in SHA256SUMS. Full changelog: https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md" \
+            --notes "$NOTES" \
             --verify-tag
