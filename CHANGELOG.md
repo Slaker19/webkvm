@@ -23,7 +23,7 @@ Security and packaging follow-up. Application behaviour is unchanged.
 
 ### Added
 
-- **CodeQL** workflow for Go and JavaScript/TypeScript, with manual Go build and SARIF upload.
+- **Code scanning**: GitHub default setup covers Go and JavaScript/TypeScript; an advanced CodeQL workflow was removed because it conflicts with default setup.
 - **Release notes** published from `docs/releases/<version>.md`.
 - **Tests** for the `-fixNN` updater comparison.
 

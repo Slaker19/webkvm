@@ -23,7 +23,7 @@ Seguimiento de seguridad y empaquetado. El comportamiento de la aplicación no c
 
 ### Añadido
 
-- **CodeQL** para Go y JavaScript/TypeScript, con build manual de Go y subida SARIF.
+- **Code scanning**: la configuración por defecto de GitHub cubre Go y JavaScript/TypeScript; se retiró un workflow CodeQL avanzado porque entra en conflicto con ella.
 - **Notas de release** publicadas desde `docs/releases/<version>.md`.
 - **Tests** para la comparación `-fixNN` del actualizador.
 
