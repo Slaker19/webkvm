@@ -66,8 +66,21 @@ jobs:
 
       - name: go test (with race detector + coverage)
         run: |
-          go test -race -coverprofile=coverage.out -covermode=atomic ./...
-          go tool cover -func=coverage.out | tail -1
+          set +e
+          go test -race -coverprofile=coverage.out -covermode=atomic ./... > go-test.log 2>&1
+          status=$?
+          cat go-test.log
+          if [ "$status" -ne 0 ]; then
+            # Surface failing packages/tests as annotations; job logs need
+            # owner auth to download, annotations are public.
+            grep -E '^(--- FAIL:|FAIL[[:space:]]|panic:|fatal error:)' go-test.log | while IFS= read -r line; do
+              echo "::error title=go test::$line"
+            done
+          fi
+          exit "$status"
+      - name: Coverage summary
+        if: success()
+        run: go tool cover -func=coverage.out | tail -1
 
       - name: Upload coverage
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
