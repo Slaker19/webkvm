@@ -8,7 +8,9 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
 ## [Unreleased]
 
-_Nada todavía._
+### Cambiado
+
+- **Dirección de escucha por defecto**: las instalaciones nuevas escuchan en `0.0.0.0`, así la UI es accesible desde la LAN sin editar `config.json`. Sin TLS, el backend cae a `127.0.0.1` salvo que se defina `WEBKVM_ALLOW_INSECURE_HTTP=1`; detrás de un proxy TLS, configura `server.bind_addr` como `127.0.0.1`.
 
 ## [0.1.12-fix02] — 2026-11-16
 

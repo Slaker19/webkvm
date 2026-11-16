@@ -215,7 +215,7 @@ func main() {
 	})
 
 	// Apply server.bind_addr / server.port from the settings store. NOTE:
-	// the store always answers (its schema defaults are 127.0.0.1 and 8080),
+	// the store always answers (its schema defaults are 0.0.0.0 and 8080),
 	// so these values WIN over the BIND_ADDR and PORT environment variables,
 	// even on the very first start; the env vars only matter when the store
 	// returns nothing. Change the address/port in Settings (or config.json),
@@ -256,10 +256,19 @@ func main() {
 	// so the installer (or the Settings page) can persist it and the
 	// backend picks it up on the next restart.
 	tlsConfig, tlsMode := configureTLS(settingsStore, cfg.DataDir, logger)
-	if tlsConfig == nil && !isLoopbackBind(cfg.BindAddr) {
-		logger.Warn("insecure_listener",
-			"bind_addr", cfg.BindAddr,
-			"msg", "listening on a non-loopback address without TLS: passwords and session cookies travel in clear text; enable server.tls_cert/tls_key or put a TLS reverse proxy in front")
+	if tlsConfig == nil {
+		allowInsecure := os.Getenv("WEBKVM_ALLOW_INSECURE_HTTP") == "1"
+		if effective := effectiveBindAddr(cfg.BindAddr, false, allowInsecure); effective != cfg.BindAddr {
+			logger.Error("insecure_listener_refused",
+				"bind_addr", cfg.BindAddr,
+				"fallback", effective,
+				"msg", "refusing a plaintext listener on a non-loopback address; set WEBKVM_ALLOW_INSECURE_HTTP=1 to override in a lab")
+			cfg.BindAddr = effective
+		} else if !isLoopbackBind(cfg.BindAddr) {
+			logger.Warn("insecure_listener",
+				"bind_addr", cfg.BindAddr,
+				"msg", "listening on a non-loopback address without TLS: passwords and session cookies travel in clear text; enable server.tls_cert/tls_key or put a TLS reverse proxy in front")
+		}
 	}
 
 	// Also re-apply the log level from the store so the operator's
@@ -1235,6 +1244,16 @@ func parseCIDRList(items []string) []*net.IPNet {
 		}
 	}
 	return out
+}
+
+// effectiveBindAddr refuses a plaintext non-loopback listener unless the
+// operator explicitly opted into it. TLS-fronted installs and loopback keep
+// the requested address.
+func effectiveBindAddr(bind string, tlsEnabled, allowInsecure bool) string {
+	if tlsEnabled || allowInsecure || isLoopbackBind(bind) {
+		return bind
+	}
+	return "127.0.0.1"
 }
 
 // isLoopbackBind reports whether a listen host is loopback-only. An empty

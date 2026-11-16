@@ -422,7 +422,8 @@ Tres planos:
 | Variable | Por defecto | Notas |
 |----------|-------------|-------|
 | `PORT` | `8080` | Puerto HTTP/HTTPS del backend. |
-| `BIND_ADDR` | `127.0.0.1` → `0.0.0.0` en instalaciones nuevas | Persiste como `server.bind_addr` en `config.json`. |
+| `BIND_ADDR` | `0.0.0.0` | Persiste como `server.bind_addr`. Sin TLS, el servidor cae a `127.0.0.1` salvo que uses `WEBKVM_ALLOW_INSECURE_HTTP=1`. |
+| `WEBKVM_ALLOW_INSECURE_HTTP` | sin definir | Permite escuchar sin TLS en una interfaz de red (solo lab). |
 | `LIBVIRT_URI` | `qemu:///system` | URI de libvirt. |
 | `DATA_DIR` | `/opt/webkvm` | Directorio de datos persistentes. |
 | `JWT_SECRET` | autogenerado | Se guarda en `{DATA_DIR}/jwt.key` (0600); los secretos débiles se rechazan. |

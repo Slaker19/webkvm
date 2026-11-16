@@ -164,7 +164,7 @@ without understanding that.
 |---|---|---|
 | `DATA_DIR` | `/opt/webkvm` | Where state/certs/pools live. Keep in sync with the volume mount above. |
 | `LIBVIRT_URI` | `qemu:///system` | libvirt connection URI (talks to the host over the mounted socket). |
-| `BIND_ADDR` | `0.0.0.0` | Listen address inside the container (with `network_mode: host` this is the host's own interface). |
+| `BIND_ADDR` | `0.0.0.0` | Listen address inside the container (with `network_mode: host` this is the host's own interface). Without TLS the backend falls back to `127.0.0.1` unless `WEBKVM_ALLOW_INSECURE_HTTP=1`. |
 | `PORT` | `8080` | Listen port. |
 
 ## The one deliberate exception: self-update

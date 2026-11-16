@@ -24,10 +24,10 @@ func DefaultSchema() Schema {
 			Key:         "server.bind_addr",
 			Section:     "Server",
 			Label:       "Bind address",
-			Description: "Address the backend listens on. Use 127.0.0.1 in HTTPS-fronted installs so only the reverse proxy can reach the API. Restart required to apply.",
+			Description: "Address the backend listens on. 0.0.0.0 exposes it on every interface; use 127.0.0.1 behind a TLS reverse proxy. Without TLS the server falls back to 127.0.0.1 unless WEBKVM_ALLOW_INSECURE_HTTP=1. Restart required to apply.",
 			Type:        FieldString,
-			Default:     "127.0.0.1",
-			Placeholder: "127.0.0.1",
+			Default:     "0.0.0.0",
+			Placeholder: "0.0.0.0",
 		},
 		{
 			Key:         "server.port",

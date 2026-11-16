@@ -8,7 +8,9 @@ Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+
+- **Default bind address**: fresh installs listen on `0.0.0.0` so the UI is reachable on the LAN without editing `config.json`. When TLS is off, the backend falls back to `127.0.0.1` unless `WEBKVM_ALLOW_INSECURE_HTTP=1` is set; behind a TLS reverse proxy, set `server.bind_addr` to `127.0.0.1`.
 
 ## [0.1.12-fix02] — 2026-11-16
 

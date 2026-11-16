@@ -161,12 +161,11 @@ func Load() (*Config, error) {
 
 	return &Config{
 		Port: envIntFrom("PORT", 8080, dotenv),
-		// BindAddr defaults to 127.0.0.1 (loopback) — external clients
-		// reach the backend through Caddy (which terminates TLS). The
-		// Caddyfile points at 127.0.0.1:PORT, so the backend never
-		// needs to be exposed. Operators that run without a reverse
-		// proxy can override with BIND_ADDR=0.0.0.0.
-		BindAddr:   envStrFrom("BIND_ADDR", "127.0.0.1", dotenv),
+		// BindAddr defaults to 0.0.0.0 so a fresh install is reachable on
+		// the LAN. With TLS off, the server falls back to 127.0.0.1 at
+		// startup unless WEBKVM_ALLOW_INSECURE_HTTP=1 is set. Behind a TLS
+		// reverse proxy, set BIND_ADDR=127.0.0.1 explicitly.
+		BindAddr:   envStrFrom("BIND_ADDR", "0.0.0.0", dotenv),
 		LibvirtURI: envStrFrom("LIBVIRT_URI", "qemu:///system", dotenv),
 		JWTSecret:  secret,
 		DataDir:    dataDir,

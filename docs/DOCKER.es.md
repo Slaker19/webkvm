@@ -170,7 +170,7 @@ este contenedor a operadores en los que no confíes sin entender esto.
 |---|---|---|
 | `DATA_DIR` | `/opt/webkvm` | Dónde viven el estado, los certificados y los pools. Mantenlo sincronizado con el montaje de arriba. |
 | `LIBVIRT_URI` | `qemu:///system` | URI de conexión de libvirt (habla con el host por el socket montado). |
-| `BIND_ADDR` | `0.0.0.0` | Dirección de escucha dentro del contenedor (con `network_mode: host` es la propia interfaz del host). |
+| `BIND_ADDR` | `0.0.0.0` | Dirección de escucha dentro del contenedor (con `network_mode: host` es la propia interfaz del host). Sin TLS, el backend cae a `127.0.0.1` salvo que uses `WEBKVM_ALLOW_INSECURE_HTTP=1`. |
 | `PORT` | `8080` | Puerto de escucha. |
 
 ## La única excepción deliberada: la autoactualización

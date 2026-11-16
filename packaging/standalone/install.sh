@@ -544,9 +544,10 @@ install_incus() {
 prompt_settings() {
   echo ""
   confirm DEFAULT_PORT "Backend HTTP/HTTPS port" "8080"
-  # Loopback by default (new installs only): front it with a TLS reverse
-  # proxy, an SSH tunnel, or choose 0.0.0.0 / a LAN IP here on purpose.
-  confirm DEFAULT_BIND "Bind address (127.0.0.1 = local only; 0.0.0.0 = all interfaces)" "127.0.0.1"
+  # All interfaces by default: the installer enables HTTPS by default, and
+  # the backend refuses a plaintext non-loopback listener unless the
+  # operator sets WEBKVM_ALLOW_INSECURE_HTTP=1.
+  confirm DEFAULT_BIND "Bind address (127.0.0.1 = local only; 0.0.0.0 = all interfaces)" "0.0.0.0"
   # Pregunta clara: SSL (IP o dominio) vs solo IP (HTTP). Cubre el caso
   prompt_select HTTPS "How do you want to access WebKVM?" "no|IP only (plain HTTP)" "yes|With SSL — self-signed certificate (works for IP and domain names, recommended)" "yes"
   if [[ "${HTTPS}" == "yes" ]]; then

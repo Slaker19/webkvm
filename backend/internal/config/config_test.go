@@ -125,8 +125,8 @@ func TestLoadNoDotEnvFile(t *testing.T) {
 	if cfg.Port != 8080 {
 		t.Errorf("default Port: want 8080, got %d", cfg.Port)
 	}
-	if cfg.BindAddr != "127.0.0.1" {
-		t.Errorf("default BindAddr: want 127.0.0.1, got %q", cfg.BindAddr)
+	if cfg.BindAddr != "0.0.0.0" {
+		t.Errorf("default BindAddr: want 0.0.0.0, got %q", cfg.BindAddr)
 	}
 }
 
@@ -188,8 +188,8 @@ func TestLoadMissingFieldsDotEnv(t *testing.T) {
 	if cfg.Port != 8080 {
 		t.Errorf("Port: want 8080, got %d", cfg.Port)
 	}
-	if cfg.BindAddr != "127.0.0.1" {
-		t.Errorf("BindAddr: want 127.0.0.1, got %q", cfg.BindAddr)
+	if cfg.BindAddr != "0.0.0.0" {
+		t.Errorf("BindAddr: want 0.0.0.0, got %q", cfg.BindAddr)
 	}
 }
 
