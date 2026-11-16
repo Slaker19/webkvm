@@ -602,6 +602,10 @@ func NewRouter(
 		r.Get("/{id}/incus-inventory", h.GetNodeIncusInventory)
 		r.Get("/{id}", h.GetNode)
 		r.Post("/{id}/ping", h.PingNode)
+		r.Post("/{id}/drain", h.DrainNode)
+		r.Post("/{id}/undrain", h.UndrainNode)
+		r.Get("/{id}/drain-plan", h.GetNodeDrainPlan)
+		r.Post("/{id}/evacuate", h.EvacuateNode)
 		r.Group(func(r chi.Router) {
 			r.Post("/", h.CreateNode)
 			r.Put("/{id}", h.UpdateNode)

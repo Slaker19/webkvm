@@ -618,6 +618,9 @@ func (h *Handler) CreateVM(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if h.rejectDrainingPlacement(w, req.Node) {
+		return
+	}
 	if err := validateVMName(req.Name); err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return

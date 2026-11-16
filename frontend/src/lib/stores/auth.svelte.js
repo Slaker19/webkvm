@@ -1392,6 +1392,16 @@ export const api = {
     }),
   getNode: (id) => request(`/nodes/${id}`),
   pingNode: (id) => request(`/nodes/${id}/ping`, { method: 'POST' }),
+  setNodeDraining: (id, draining) =>
+    request(`/nodes/${encodeURIComponent(id)}/${draining ? 'drain' : 'undrain'}`, {
+      method: 'POST',
+    }),
+  getNodeDrainPlan: (id) => request(`/nodes/${encodeURIComponent(id)}/drain-plan`),
+  evacuateNode: (id, body) =>
+    request(`/nodes/${encodeURIComponent(id)}/evacuate`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   pingAllNodes: () => request('/nodes/ping-all', { method: 'POST' }),
   getClusterSummary: () => request('/nodes/summary'),
   createNode: (name, uri, backend = 'libvirt', project = '', trustToken = '', uiUrl = '') =>

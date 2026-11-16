@@ -284,6 +284,9 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
+	if h.rejectDrainingPlacement(w, "") {
+		return
+	}
 	if req.Node != "" && req.Node != "local" && !h.isLocalTarget(req.Node) {
 		jsonErrCode(w, http.StatusNotImplemented, "appliance_remote_unsupported",
 			"app deployments run through this WebKVM host; remote node placement is not supported")

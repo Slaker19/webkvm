@@ -117,15 +117,21 @@ type Node struct {
 	// UIURL is the operator-facing address of the node's own WebKVM on the
 	// real (reachable) network, as scheme://host[:port]. Optional: the URI
 	// host is often a private cluster address the operator cannot reach.
-	UIURL             string    `json:"ui_url,omitempty"`
-	Backend           Backend   `json:"backend,omitempty"`
-	Project           string    `json:"project,omitempty"`
-	CredentialID      string    `json:"credential_id,omitempty"`
-	ServerFingerprint string    `json:"server_fingerprint,omitempty"`
-	Type              NodeType  `json:"type"`
-	Enabled           bool      `json:"enabled"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	UIURL             string   `json:"ui_url,omitempty"`
+	Backend           Backend  `json:"backend,omitempty"`
+	Project           string   `json:"project,omitempty"`
+	CredentialID      string   `json:"credential_id,omitempty"`
+	ServerFingerprint string   `json:"server_fingerprint,omitempty"`
+	Type              NodeType `json:"type"`
+	Enabled           bool     `json:"enabled"`
+	// Draining marks a node that must not receive new workloads while its
+	// VMs are evacuated for maintenance. Existing VMs keep running until
+	// the operator migrates them.
+	Draining   bool       `json:"draining,omitempty"`
+	DrainSince *time.Time `json:"drain_since,omitempty"`
+	DrainBy    string     `json:"drain_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 
 	// Dynamic health & telemetry fields (kept in memory, updated by prober)
 	Status        string     `json:"status"` // "online", "offline", "degraded", "unknown"
@@ -331,7 +337,13 @@ func (r *Registry) ensureLocal(uri string) {
 			// the name persisted in the shared DATA_DIR: after a Pacemaker
 			// failover nodes.json still carries the old node's hostname.
 			if n.Name != name {
+				// The shared DATA_DIR follows the control plane; a drain
+				// flag belongs to the host that was drained, not to the
+				// node that inherited the local entry after a failover.
 				n.Name = name
+				n.Draining = false
+				n.DrainSince = nil
+				n.DrainBy = ""
 				changed = true
 			}
 			if n.Status == "" {
@@ -570,6 +582,34 @@ func (r *Registry) UpdateWithUI(id, name, uri string, uiURL *string, enabled *bo
 		return Node{}, err
 	}
 	return *n, nil
+}
+
+// SetDraining toggles the maintenance flag. Draining does not stop or
+// migrate anything by itself; it blocks new placements and is cleared by
+// SetDraining(id, false, "").
+func (r *Registry) SetDraining(id string, draining bool, by string) (Node, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.nodes[id]
+	if !ok {
+		return Node{}, ErrNotFound
+	}
+	n.Draining = draining
+	if draining {
+		now := time.Now().UTC()
+		n.DrainSince = &now
+		n.DrainBy = by
+	} else {
+		n.DrainSince = nil
+		n.DrainBy = ""
+	}
+	n.UpdatedAt = time.Now().UTC()
+	if err := r.save(); err != nil {
+		return Node{}, err
+	}
+	c := *n
+	c.IsSelf = r.selfIdentityLocked().selfCandidate(n)
+	return c, nil
 }
 
 // Delete removes a node. The local node cannot be deleted.

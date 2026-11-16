@@ -277,6 +277,10 @@ func (h *Handler) MigrateVM(w http.ResponseWriter, r *http.Request) {
 		jsonErrCode(w, http.StatusBadRequest, "same_node", "source and destination nodes are the same")
 		return
 	}
+	if dstNode.Draining {
+		jsonErrCode(w, http.StatusConflict, "target_draining", "destination node is draining")
+		return
+	}
 	if h.libvirtPool == nil {
 		jsonErrCode(w, http.StatusServiceUnavailable, "pool_unavailable", "remote libvirt connections are not initialized")
 		return

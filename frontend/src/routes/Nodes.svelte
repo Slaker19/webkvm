@@ -9,6 +9,7 @@
   import Spinner from '$lib/components/Spinner.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+  import * as Dialog from '$lib/components/ui/dialog';
   import HaNodeOps from '$lib/components/HaNodeOps.svelte';
   import HaDrbdRepair from '$lib/components/HaDrbdRepair.svelte';
   import ClusterModuleCard from '$lib/components/ClusterModuleCard.svelte';
@@ -107,6 +108,14 @@
   let healingBlockers = $state([]);
   let healingConfirmOpen = $state(false);
   let forceDeleteOpen = $state(false);
+  let drainOpen = $state(false);
+  let drainNode = $state(null);
+  let drainPlan = $state(null);
+  let drainTarget = $state('');
+  let drainShared = $state(false);
+  let drainLoading = $state(false);
+  let drainBusy = $state(false);
+  let drainError = $state('');
   let pveFenceVerifying = $state(false);
   let pveFenceResult = $state(null);
 
@@ -352,6 +361,113 @@
       toast.error(t('nodes.pingError', { name: n.name, error: e.message }));
     } finally {
       pingingNode[n.id] = false;
+    }
+  }
+
+  function drainReasonLabel(reason) {
+    const map = {
+      pacemaker_managed: 'nodes.drainReasonPacemaker',
+      incus_instance: 'nodes.drainReasonIncus',
+      gpu_passthrough: 'nodes.drainReasonGPU',
+      stale_listing: 'nodes.drainReasonStale',
+      requires_shared_storage: 'nodes.drainReasonShared',
+    };
+    return map[reason] ? t(map[reason]) : reason;
+  }
+
+  function drainActionLabel(action) {
+    return action === 'offline_shared_storage'
+      ? t('nodes.drainActionOffline')
+      : t('nodes.drainActionLive');
+  }
+
+  async function openDrain(n) {
+    if (n.backend === 'incus') {
+      toast.error(t('nodes.drainUnsupported'));
+      return;
+    }
+    drainNode = n;
+    drainPlan = null;
+    drainTarget = '';
+    drainShared = false;
+    drainError = '';
+    drainOpen = true;
+    await refreshDrainPlan();
+  }
+
+  async function refreshDrainPlan() {
+    if (!drainNode) return;
+    drainLoading = true;
+    drainError = '';
+    try {
+      const plan = await api.getNodeDrainPlan(drainNode.id);
+      drainPlan = plan;
+      if (!plan.targets?.some((target) => target.id === drainTarget)) {
+        drainTarget = plan.targets?.[0]?.id || '';
+      }
+    } catch (e) {
+      drainError = e.message;
+    } finally {
+      drainLoading = false;
+    }
+  }
+
+  async function startDrain() {
+    if (!drainNode) return;
+    drainBusy = true;
+    drainError = '';
+    try {
+      drainNode = await api.setNodeDraining(drainNode.id, true);
+      nodes = nodes.map((n) => (n.id === drainNode.id ? drainNode : n));
+      toast.success(t('nodes.drainStarted'));
+      await refreshDrainPlan();
+    } catch (e) {
+      drainError = e.message;
+    } finally {
+      drainBusy = false;
+    }
+  }
+
+  async function stopDrain() {
+    if (!drainNode) return;
+    drainBusy = true;
+    drainError = '';
+    try {
+      drainNode = await api.setNodeDraining(drainNode.id, false);
+      nodes = nodes.map((n) => (n.id === drainNode.id ? drainNode : n));
+      toast.success(t('nodes.drainStopped'));
+      drainOpen = false;
+    } catch (e) {
+      drainError = e.message;
+    } finally {
+      drainBusy = false;
+    }
+  }
+
+  async function runEvacuate() {
+    if (!drainNode || !drainTarget) {
+      drainError = t('nodes.drainTargetRequired');
+      return;
+    }
+    drainBusy = true;
+    drainError = '';
+    try {
+      const res = await api.evacuateNode(drainNode.id, {
+        target: drainTarget,
+        shared_storage: drainShared,
+      });
+      const failed = res.failed?.length || 0;
+      if (failed > 0) {
+        toast.warning(t('nodes.drainFailed', { count: failed }));
+      } else {
+        toast.success(t('nodes.drainDone'));
+      }
+      await refreshDrainPlan();
+      await load({ background: true });
+    } catch (e) {
+      drainError = e.message;
+    } finally {
+      drainBusy = false;
     }
   }
 
@@ -2043,6 +2159,17 @@
                       {n.enabled ? t('common.enabled') : t('common.disabled')}
                     </button>
 
+                    {#if n.draining}
+                      <span
+                        class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-warning/10 text-warning"
+                        title={t('nodes.drainDesc')}
+                        data-testid="node-draining-{n.id}"
+                      >
+                        <span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
+                        {t('nodes.drainBadge')}
+                      </span>
+                    {/if}
+
                     {#if health === 'no_access'}
                       <span
                         class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-info/10 text-info"
@@ -2331,6 +2458,19 @@
                     {t('nodes.pingBtn')}
                   </Button>
 
+                  {#if auth.isAdmin() && n.backend !== 'incus'}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      class="!h-9 min-h-9 !text-[11px] !px-2 gap-1"
+                      onclick={() => openDrain(n)}
+                      aria-label={t('nodes.drainTitle', { name: n.name })}
+                    >
+                      <Icon name="pause" size={11} />
+                      {t('nodes.drainBtn')}
+                    </Button>
+                  {/if}
+
                   {#if n.type !== 'local' && n.backend !== 'incus'}
                     {@const consoleUrl = getWebConsoleURL(n)}
                     {#if consoleUrl}
@@ -2531,3 +2671,103 @@
   loading={savingHealing}
   onConfirm={saveIncusHealing}
 />
+
+<Dialog.Root
+  bind:open={drainOpen}
+  onOpenChange={(v) => {
+    if (!v) {
+      drainNode = null;
+      drainPlan = null;
+      drainError = '';
+    }
+  }}
+>
+  <Dialog.Content class="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+    <Dialog.Header>
+      <Dialog.Title>{t('nodes.drainTitle', { name: drainNode?.name || '' })}</Dialog.Title>
+      <Dialog.Description>{t('nodes.drainDesc')}</Dialog.Description>
+    </Dialog.Header>
+
+    {#if drainNode?.backend === 'incus'}
+      <Alert variant="warning">{t('nodes.drainUnsupported')}</Alert>
+    {:else if drainLoading}
+      <div class="flex justify-center py-10"><Spinner size="lg" /></div>
+    {:else}
+      {#if drainError}
+        <Alert variant="error">{drainError}</Alert>
+      {/if}
+
+      {#if !drainNode?.draining}
+        <div class="pt-2">
+          <Button onclick={startDrain} disabled={drainBusy}>
+            {#if drainBusy}<Spinner size="sm" color="text-white" />{/if}
+            {t('nodes.drainStart')}
+          </Button>
+        </div>
+      {:else}
+        <div class="space-y-4 pt-2">
+          <div class="space-y-1">
+            <label class="text-xs font-medium text-foreground" for="drain-target"
+              >{t('nodes.drainTarget')}</label
+            >
+            <select id="drain-target" bind:value={drainTarget} class="input w-full">
+              {#each drainPlan?.targets || [] as target (target.id)}
+                <option value={target.id}>{target.name} ({target.status || 'unknown'})</option>
+              {/each}
+            </select>
+            {#if !(drainPlan?.targets || []).length}
+              <p class="text-xs text-warning">{t('nodes.drainNoTargets')}</p>
+            {/if}
+          </div>
+
+          <label class="flex items-center gap-2 text-xs text-foreground">
+            <input type="checkbox" bind:checked={drainShared} />
+            {t('nodes.drainShared')}
+          </label>
+
+          <div class="space-y-2">
+            <h3 class="text-xs font-semibold text-foreground">{t('nodes.drainPlan')}</h3>
+            {#if drainPlan?.vms?.length}
+              <ul class="divide-y divide-border rounded border border-border">
+                {#each drainPlan.vms as vm (vm.id)}
+                  <li class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs">
+                    <span class="font-medium text-foreground">{vm.name}</span>
+                    <span class="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+                      <span class="text-muted-foreground">{vm.state}</span>
+                      {#if vm.migratable}
+                        <span class="text-success">{t('nodes.drainMigratable')}</span>
+                        <span class="text-muted-foreground">{drainActionLabel(vm.action)}</span>
+                        {#if vm.reason === 'requires_shared_storage'}
+                          <span class="text-warning">{drainReasonLabel(vm.reason)}</span>
+                        {/if}
+                      {:else}
+                        <span class="text-warning">{t('nodes.drainSkipped')}</span>
+                        <span class="text-muted-foreground">{drainReasonLabel(vm.reason)}</span>
+                      {/if}
+                    </span>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="text-xs text-muted-foreground">{t('nodes.drainNoVMs')}</p>
+            {/if}
+          </div>
+
+          <div class="flex flex-wrap gap-2">
+            <Button onclick={runEvacuate} disabled={drainBusy || !drainTarget}>
+              {#if drainBusy}<Spinner size="sm" color="text-white" />{/if}
+              {t('nodes.drainEvacuate')}
+            </Button>
+            <Button variant="outline" onclick={stopDrain} disabled={drainBusy}>
+              {t('nodes.drainStop')}
+            </Button>
+          </div>
+        </div>
+      {/if}
+    {/if}
+
+    <Dialog.Footer>
+      <Button variant="outline" onclick={() => (drainOpen = false)}>{t('common.close')}</Button>
+    </Dialog.Footer>
+  </Dialog.Content>
+</Dialog.Root>

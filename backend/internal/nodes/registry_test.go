@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -357,5 +358,44 @@ func TestProbeAllStaleHonorsTTL(t *testing.T) {
 	r.ProbeAllStale(time.Second)
 	if probes != 2 {
 		t.Fatalf("local probes = %d, want 2 after the TTL expired", probes)
+	}
+}
+
+func TestRegistrySetDrainingPersists(t *testing.T) {
+	dir := t.TempDir()
+	r, err := New(dir, "qemu:///system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := r.Create("drain-target", "qemu+ssh://root@10.0.0.9/system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.SetDraining(n.ID, true, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Draining || got.DrainSince == nil || got.DrainBy != "admin" {
+		t.Fatalf("drain state = %+v", got)
+	}
+
+	reloaded, err := New(dir, "qemu:///system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, ok := reloaded.Get(n.ID)
+	if !ok || !persisted.Draining || persisted.DrainBy != "admin" || persisted.DrainSince == nil {
+		t.Fatalf("persisted drain state = %+v (ok=%v)", persisted, ok)
+	}
+
+	cleared, err := reloaded.SetDraining(n.ID, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Draining || cleared.DrainSince != nil || cleared.DrainBy != "" {
+		t.Fatalf("cleared drain state = %+v", cleared)
+	}
+	if _, err := reloaded.SetDraining("missing", true, "admin"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing node error = %v, want ErrNotFound", err)
 	}
 }

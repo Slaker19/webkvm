@@ -19,6 +19,9 @@ func (h *Handler) CloneVM(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if h.rejectDrainingPlacement(w, "") {
+		return
+	}
 	if err := validateVMName(req.Name); err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -145,6 +148,9 @@ func (h *Handler) BatchCloneVM(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeBody(r, &req); err != nil {
 		jsonErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if h.rejectDrainingPlacement(w, "") {
 		return
 	}
 	if req.BaseName == "" && req.Prefix != "" {
