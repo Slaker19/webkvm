@@ -51,6 +51,7 @@
     Plus,
     Trash2,
     Ban,
+    Bell,
     Sun,
     Moon,
     Lock,
@@ -68,6 +69,7 @@
   } from '@lucide/svelte';
   import * as webauthnJson from '@github/webauthn-json';
   import LanguageSelector from '$lib/components/LanguageSelector.svelte';
+  import { push } from '$lib/stores/push.svelte.js';
 
   let me = $state(null);
   let loading = $state(true);
@@ -79,6 +81,7 @@
       isWebAuthnSupported = true;
     }
     load();
+    push.refresh();
   });
 
   let oldPassword = $state('');
@@ -983,6 +986,48 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <div class="mt-6 rounded-2xl border border-border bg-card p-5 sm:p-6 shadow-sm">
+        <div class="flex items-center gap-2.5 mb-2">
+          <div class="p-2 rounded-xl bg-accent/10 text-accent">
+            <Bell class="w-4 h-4" />
+          </div>
+          <div>
+            <h3 class="text-base font-semibold tracking-tight">{t('account.pushTitle')}</h3>
+            <p class="text-xs text-muted-foreground mt-0.5">{t('account.pushDesc')}</p>
+          </div>
+        </div>
+        {#if !push.supported}
+          <p class="text-xs text-warning mt-3">{t('account.pushUnsupported')}</p>
+        {:else}
+          {#if push.error}
+            <p class="text-xs text-destructive mt-3">{t('account.pushError')}: {push.error}</p>
+          {/if}
+          <div class="flex flex-wrap items-center gap-2 mt-3">
+            {#if push.subscribed}
+              <span class="text-xs text-success">{t('account.pushEnabled')}</span>
+              <Button size="sm" variant="outline" onclick={() => push.test()} disabled={push.busy}>
+                {t('account.pushTest')}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onclick={() => push.disable()}
+                disabled={push.busy}
+              >
+                {t('account.pushDisable')}
+              </Button>
+            {:else}
+              <Button size="sm" onclick={() => push.enable()} disabled={push.busy}>
+                {t('account.pushEnable')}
+              </Button>
+            {/if}
+          </div>
+          {#if push.permission === 'denied'}
+            <p class="text-xs text-destructive mt-2">{t('account.pushBlocked')}</p>
+          {/if}
+        {/if}
       </div>
     {/if}
 

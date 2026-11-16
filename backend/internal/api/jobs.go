@@ -49,6 +49,7 @@ func submitJob(owner, name string, fn func() (any, error)) *models.DownloadJob {
 			j.UpdatedAt = time.Now().Unix()
 		}
 		jobsMu.Unlock()
+		notifyJobDone(owner, name, "done", "")
 	}()
 	return &initial
 }
@@ -102,6 +103,7 @@ func submitJobWithPool(owner, name, pool string, fn func(progress func(pct float
 			j.UpdatedAt = time.Now().Unix()
 		}
 		jobsMu.Unlock()
+		notifyJobDone(owner, name, "done", "")
 	}()
 	return &initial
 }

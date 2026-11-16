@@ -1392,6 +1392,13 @@ export const api = {
     }),
   getNode: (id) => request(`/nodes/${id}`),
   pingNode: (id) => request(`/nodes/${id}/ping`, { method: 'POST' }),
+  getWebPushKey: () => request('/push/vapid-key'),
+  subscribeWebPush: (sub) =>
+    request('/push/subscribe', { method: 'POST', body: JSON.stringify(sub) }),
+  unsubscribeWebPush: (endpoint) =>
+    request('/push/subscribe', { method: 'DELETE', body: JSON.stringify({ endpoint }) }),
+  testWebPush: (locale) =>
+    request('/push/test', { method: 'POST', body: JSON.stringify({ locale }) }),
   setNodeDraining: (id, draining) =>
     request(`/nodes/${encodeURIComponent(id)}/${draining ? 'drain' : 'undrain'}`, {
       method: 'POST',

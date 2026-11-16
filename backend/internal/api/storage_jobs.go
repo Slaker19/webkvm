@@ -17,7 +17,30 @@ import (
 var (
 	isoJobs = make(map[string]*models.DownloadJob)
 	jobsMu  sync.RWMutex
+
+	jobNotifierMu sync.RWMutex
+	jobNotifier   func(owner, name, status, detail string)
 )
+
+// SetJobNotifier wires terminal-state notifications (browser push, etc.).
+// It is set once at startup; nil disables notifications.
+func SetJobNotifier(fn func(owner, name, status, detail string)) {
+	jobNotifierMu.Lock()
+	jobNotifier = fn
+	jobNotifierMu.Unlock()
+}
+
+func notifyJobDone(owner, name, status, detail string) {
+	if owner == "" {
+		return
+	}
+	jobNotifierMu.RLock()
+	fn := jobNotifier
+	jobNotifierMu.RUnlock()
+	if fn != nil {
+		fn(owner, name, status, detail)
+	}
+}
 
 // Job GC policy: finished jobs (completed/error) older than
 // jobTTL are purged by a dedicated goroutine every jobSweepInterval.
@@ -60,9 +83,11 @@ func updateJobError(id, code, text string) {
 }
 
 func updateJobErrorAtProgress(id, code, text string, progress float64) {
+	var owner, name string
+	notify := false
 	jobsMu.Lock()
-	defer jobsMu.Unlock()
 	if j, ok := isoJobs[id]; ok {
+		wasTerminal := j.Status == "completed" || j.Status == "done" || j.Status == "error"
 		j.Status = "error"
 		j.Error = text
 		j.ErrorCode = code
@@ -70,6 +95,12 @@ func updateJobErrorAtProgress(id, code, text string, progress float64) {
 			j.Progress = progress
 		}
 		j.UpdatedAt = time.Now().Unix()
+		notify = !wasTerminal
+		owner, name = j.Owner, j.Name
+	}
+	jobsMu.Unlock()
+	if notify {
+		notifyJobDone(owner, name, "error", text)
 	}
 }
 
@@ -83,9 +114,11 @@ func codeOf(err error) string {
 }
 
 func updateJobFull(id string, progress float64, status string, text string, bytesDone, bytesTotal, speedBps, etaSeconds int64) {
+	var owner, name string
+	notify := false
 	jobsMu.Lock()
-	defer jobsMu.Unlock()
 	if j, ok := isoJobs[id]; ok {
+		wasTerminal := j.Status == "completed" || j.Status == "done" || j.Status == "error"
 		j.Progress = progress
 		j.Status = status
 		if status == "error" {
@@ -107,6 +140,13 @@ func updateJobFull(id string, progress float64, status string, text string, byte
 		if etaSeconds >= 0 {
 			j.ETASeconds = etaSeconds
 		}
+		terminal := status == "completed" || status == "done" || status == "error"
+		notify = terminal && !wasTerminal
+		owner, name = j.Owner, j.Name
+	}
+	jobsMu.Unlock()
+	if notify {
+		notifyJobDone(owner, name, status, text)
 	}
 }
 

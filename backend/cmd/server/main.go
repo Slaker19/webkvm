@@ -41,6 +41,7 @@ import (
 	"webkvm/internal/tokens"
 	"webkvm/internal/user"
 	"webkvm/internal/vmsched"
+	"webkvm/internal/webpush"
 	"webkvm/internal/zvol"
 )
 
@@ -981,6 +982,13 @@ func main() {
 		backupRunner.SetAlertFunc(func(level, subject, msg string) {
 			notifier.Record(level, subject, msg)
 		})
+	}
+
+	if wp, err := webpush.New(cfg.DataDir); err != nil {
+		logger.Warn("webpush_init_failed", "err", err)
+	} else {
+		api.SetWebPushManager(wp)
+		api.SetJobNotifier(wp.NotifyJob)
 	}
 
 	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, jail, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, hostSchedStore, hostScheduler, metricHist, alerter, incusMetrics)

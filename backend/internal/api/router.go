@@ -563,6 +563,16 @@ func NewRouter(
 		})
 	})
 
+	// Browser push subscriptions are per authenticated user. The VAPID
+	// public key is public by design; subscription mutations only touch
+	// the caller's own endpoints.
+	r.Route("/api/push", func(r chi.Router) {
+		r.Get("/vapid-key", h.GetWebPushKey)
+		r.Post("/subscribe", h.SubscribeWebPush)
+		r.Delete("/subscribe", h.UnsubscribeWebPush)
+		r.Post("/test", h.TestWebPush)
+	})
+
 	// Cloud-Init Studio & Snippets.
 	r.Route("/api/cloudinit", func(r chi.Router) {
 		r.Use(auth.RequireAtLeast("viewer"))
