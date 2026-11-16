@@ -99,7 +99,7 @@ WebKVM funciona en Debian/Ubuntu, la familia Fedora/RHEL y Arch Linux.
 
 ### Artefactos de la release oficial
 
-Las releases oficiales (con tag `v0.1.12-fix02`) publican binarios precompilados independientes (`webkvm-0.1.12-fix02-linux_amd64`, `webkvm-cli-0.1.12-fix02-linux_amd64`), formatos de paquete nativos (`.deb`, `.rpm`), el tarball de fuentes completo y sumas de verificación `SHA256SUMS`.
+Las releases oficiales (con tag `v0.1.13`) publican binarios precompilados independientes (`webkvm-0.1.13-linux_amd64`, `webkvm-cli-0.1.13-linux_amd64`), formatos de paquete nativos (`.deb`, `.rpm`), el tarball de fuentes completo y sumas de verificación `SHA256SUMS`.
 
 ### Actualizar WebKVM
 

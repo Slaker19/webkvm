@@ -962,13 +962,13 @@ recurso está deshabilitado, así que anuncia una ventana de mantenimiento):
    sudo mv /usr/local/bin/webkvm.new /usr/local/bin/webkvm
    sudo install -m 0755 packaging/standalone/update.sh /usr/local/bin/webkvm-update
    ```
-   O usa el asset directo `webkvm-0.1.12-fix02-linux_amd64` con el mismo `install`/`mv`.
+   O usa el asset directo `webkvm-0.1.13-linux_amd64` con el mismo `install`/`mv`.
 4. Reactiva el recurso y verifica:
    ```bash
    sudo pcs resource enable webkvm-app --wait
    sudo pcs resource restart webkvm-app
    curl -kfsS https://<VIP>:8080/api/health
-   webkvm version        # 0.1.12-fix02
+   webkvm version        # 0.1.13
    ```
    Repite `webkvm version` en cada nodo.
 5. AppArmor: las VMs existentes se migran en el siguiente arranque, revert o

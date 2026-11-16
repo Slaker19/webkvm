@@ -1,7 +1,7 @@
 # WebKVM — Contexto para desarrollo (AGENTS)
 
 > Documento vivo para agentes y humanos.
-> Rama `main` en `v0.1.12-fix02` (release publicada).
+> Rama `main` en `v0.1.13` (release en preparación).
 
 ## 1. Qué es
 
@@ -143,7 +143,7 @@ When working on UI/UX components, visual design, transitions, or animations:
 
 ## Releases and updates
 
-- Release checklist: `docs/RELEASING.md` (ES: `docs/RELEASING.es.md`). Tag format: `v0.1.12-fix02`; release/Docker workflows trigger on `v*`.
+- Release checklist: `docs/RELEASING.md` (ES: `docs/RELEASING.es.md`). Tag format: `v0.1.13`; release/Docker workflows trigger on `v*`.
 - Native installs update from `/#/status`. The backend requires `WEBKVM_ALLOW_UPDATE=1`, verifies `SHA256SUMS`, keeps `webkvm.previous` and health-checks with rollback. Docker pulls a new image instead.
 - The UI button updates only the node serving the panel. HA clusters must update every node through Pacemaker; see `docs/runbooks/HA-CLUSTER.md` section 12.11.
 - After an in-place update, existing VMs receive the AppArmor workaround lazily on the next start, revert or snapshot delete; `WEBKVM_DISABLE_APPARMOR=0` keeps AppArmor.

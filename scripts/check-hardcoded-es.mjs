@@ -56,10 +56,58 @@ function suspicious(value) {
 }
 
 function stripComments(text) {
-  return text
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^\s*\/\/.*$/gm, '');
+  const out = [];
+  let inHtmlComment = false;
+  let inBlockComment = false;
+  for (const original of text.split('\n')) {
+    let line = original;
+    if (inHtmlComment) {
+      const end = line.indexOf('-->');
+      if (end === -1) {
+        out.push('');
+        continue;
+      }
+      line = line.slice(end + 3);
+      inHtmlComment = false;
+    }
+    if (inBlockComment) {
+      const end = line.indexOf('*/');
+      if (end === -1) {
+        out.push('');
+        continue;
+      }
+      line = line.slice(end + 2);
+      inBlockComment = false;
+    }
+    for (;;) {
+      const start = line.indexOf('<!--');
+      if (start === -1) break;
+      const end = line.indexOf('-->', start + 4);
+      if (end === -1) {
+        line = line.slice(0, start);
+        inHtmlComment = true;
+        break;
+      }
+      line = line.slice(0, start) + line.slice(end + 3);
+    }
+    for (;;) {
+      const start = line.indexOf('/*');
+      if (start === -1) break;
+      const end = line.indexOf('*/', start + 2);
+      if (end === -1) {
+        line = line.slice(0, start);
+        inBlockComment = true;
+        break;
+      }
+      line = line.slice(0, start) + line.slice(end + 2);
+    }
+    if (line.trim().startsWith('//')) {
+      out.push('');
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
 }
 
 function scanFile(file) {
@@ -78,14 +126,29 @@ function scanFile(file) {
     }
   }
   if (file.endsWith('.svelte')) {
-    const withoutCode = text
-      .replace(/<script[\s\S]*?<\/script>/g, '')
-      .replace(/<style[\s\S]*?<\/style>/g, '');
-    const lines2 = withoutCode.split('\n');
-    for (let i = 0; i < lines2.length; i++) {
+    let inScript = false;
+    let inStyle = false;
+    for (let i = 0; i < lines.length; i++) {
+      const lower = lines[i].toLowerCase();
+      if (inScript) {
+        if (lower.includes('</script>')) inScript = false;
+        continue;
+      }
+      if (inStyle) {
+        if (lower.includes('</style>')) inStyle = false;
+        continue;
+      }
+      if (lower.includes('<script')) {
+        if (!lower.includes('</script>')) inScript = true;
+        continue;
+      }
+      if (lower.includes('<style')) {
+        if (!lower.includes('</style>')) inStyle = true;
+        continue;
+      }
       RAW_TEXT_RE.lastIndex = 0;
       let m;
-      while ((m = RAW_TEXT_RE.exec(lines2[i])) !== null) {
+      while ((m = RAW_TEXT_RE.exec(lines[i])) !== null) {
         const value = m[1].trim();
         if (suspicious(value)) hits.push({ line: i + 1, value });
       }

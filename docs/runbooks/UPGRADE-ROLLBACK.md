@@ -28,15 +28,15 @@ Purpose: Upgrade WebKVM safely and reliably, and roll back to the previous versi
 
 4. **Download the release and verify checksums:**
 
-   Official release assets for **v0.1.12-fix02** (tag `v0.1.12-fix02`):
-   - `webkvm-0.1.12-fix02-linux_amd64` (standalone server binary)
-   - `webkvm-cli-0.1.12-fix02-linux_amd64` (standalone CLI binary)
-   - `webkvm-0.1.12-fix02.tar.gz` (tarball archive)
+   Official release assets for **v0.1.13** (tag `v0.1.13`):
+   - `webkvm-0.1.13-linux_amd64` (standalone server binary)
+   - `webkvm-cli-0.1.13-linux_amd64` (standalone CLI binary)
+   - `webkvm-0.1.13.tar.gz` (tarball archive)
    - Debian `.deb` and RPM `.rpm` packages
    - `SHA256SUMS` (checksum verification file)
 
    ```bash
-   VERSION=v0.1.12-fix02
+   VERSION=v0.1.13
    curl -fsSL -o /tmp/webkvm-$VERSION.tar.gz \
      https://github.com/Slaker19/webkvm/releases/download/$VERSION/webkvm-$VERSION.tar.gz
    curl -fsSL -o /tmp/SHA256SUMS \
@@ -194,7 +194,7 @@ make uninstall
 
 ## Exit Criteria
 
-- [ ] `webkvm version` reports the target version (e.g. `0.1.12-fix02`).
+- [ ] `webkvm version` reports the target version (e.g. `0.1.13`).
 - [ ] `systemctl is-active webkvm` = `active`.
 - [ ] `/api/health` answers `ok`.
 - [ ] `audit.log` is intact and still growing.

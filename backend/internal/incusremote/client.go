@@ -302,9 +302,12 @@ func fetchServerCertificate(ctx context.Context, endpoint string) ([]byte, strin
 	defer conn.Close()
 
 	tlsConn := tls.Client(conn, &tls.Config{
-		ServerName:         u.Hostname(),
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: true, // The one-time trust token pins this certificate before credentials are sent.
+		ServerName: u.Hostname(),
+		MinVersion: tls.VersionTLS12,
+		// codeql[go/disabled-certificate-check] Trust-on-first-use: the
+		// one-time Incus trust token pins this certificate before any
+		// credentials are sent.
+		InsecureSkipVerify: true,
 	})
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		return nil, "", fmt.Errorf("TLS handshake with Incus endpoint: %w", err)

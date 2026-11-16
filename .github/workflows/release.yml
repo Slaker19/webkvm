@@ -113,7 +113,7 @@ jobs:
           # Native version mapping. A "-fixNN" hotfix must sort ABOVE the
           # base release, and the filename must survive GitHub's asset
           # sanitization ("~" becomes ".") or SHA256SUMS verification
-          # fails. deb: 0.1.12.fix02  rpm: 0.1.12-1.fix02.
+          # fails. deb: 0.1.13  rpm: 0.1.13-1.
           if [[ "$VERSION" == *-fix* ]]; then
             VERSION_DEB="${VERSION//-/.}"
             VERSION_RPM_RELEASE="1.${VERSION#*-}"

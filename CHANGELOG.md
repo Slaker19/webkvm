@@ -6,12 +6,29 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
-## [Unreleased]
+## [0.1.13] — 2026-11-16
+
+Feature release: maintenance-safe node drain, browser push, and optional OIDC SSO.
+
+### Added
+
+- **Node drain and evacuation**: admins can mark a libvirt node as draining, block new placements, inspect a per-VM evacuation plan, and migrate migratable instances to a chosen node. Pacemaker-managed, Incus, GPU-passthrough and stale entries are skipped with a reason.
+- **Browser push notifications**: VAPID-backed Web Push subscriptions per user, a service worker, a test notification and terminal job alerts. Opt-in from Account; no subscription means no notifications.
+- **OIDC/SSO login**: environment-configured authorization-code flow with PKCE, signed state/nonce, ID-token signature/issuer/audience validation, role mapping, optional auto-provisioning and optional local-login lockdown with an `admin` break-glass account. Existing local accounts are never linked automatically.
+- **i18n regression gate**: `scripts/check-hardcoded-es.mjs` plus CI; Spanish UI literals and backend fallbacks were cleaned up across the frontend and API.
+
+### Fixed
+
+- **CI flakes**: the federation parallelism test now synchronizes on both calls instead of a 700ms deadline; the cooldown flood test uses a 30s window so a slow runner cannot expire it mid-test. CI annotates failing tests and the log tail when no marker matches.
+- **Remaining Spanish UI strings**: VM audio labels, deployment tasks, terminal shortcuts, RAID/disk initialization, shared-folder mounts, batch clone, app-store script comments and other literals now use `t()` in en/es/ca.
+- **Backend fallbacks**: auth, quota, media-protection, host-update progress and VNC helper strings are English now; the SPA localizes by stable code.
+- **CodeQL hygiene**: the i18n scanner uses line-based comment/code masking instead of regex HTML filtering, clearing the four tooling alerts; the command-runner and Incus trust-on-first-use findings are documented and dismissed as intentional.
 
 ### Changed
 
 - **Default bind address**: fresh installs listen on `0.0.0.0` so the UI is reachable on the LAN without editing `config.json`. When TLS is off, the backend falls back to `127.0.0.1` unless `WEBKVM_ALLOW_INSECURE_HTTP=1` is set; behind a TLS reverse proxy, set `server.bind_addr` to `127.0.0.1`.
 - **AUR**: `webkvm-bin` is documented as an unofficial third-party package. The in-repo `packaging/arch/PKGBUILD` is a local-build reference; WebKVM does not publish or endorse the AUR package.
+- **Dependencies**: `github.com/SherClockHolmes/webpush-go v1.4.0`; `github.com/zitadel/oidc/v3` becomes a direct dependency.
 
 ## [0.1.12-fix02] — 2026-11-16
 
@@ -476,6 +493,7 @@ virtualisation host.
 
 [0.1.11]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.11
 [0.1.12]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12
+[0.1.13]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.13
 [0.1.12-fix02]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12-fix02
 [0.1.12-fix01]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12-fix01
 [0.1.10]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.10

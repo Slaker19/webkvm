@@ -6,12 +6,29 @@ y [Semantic Versioning](https://semver.org/lang/es/).
 
 Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 
-## [Unreleased]
+## [0.1.13] — 2026-11-16
+
+Release de funcionalidades: drenaje seguro de nodos, notificaciones push y SSO OIDC opcional.
+
+### Añadido
+
+- **Drenaje y evacuación de nodos**: los administradores pueden marcar un nodo libvirt en drenaje, bloquear despliegues nuevos, revisar un plan de evacuación por VM y migrar las instancias migrables a un nodo elegido. Las entradas gestionadas por Pacemaker, Incus, con passthrough de GPU o de listados obsoletos se omiten con un motivo.
+- **Notificaciones push del navegador**: suscripciones Web Push por usuario con VAPID, service worker, notificación de prueba y avisos al terminar jobs. Se activan desde Account; sin suscripción no hay notificaciones.
+- **Login OIDC/SSO**: flujo authorization-code configurado por entorno, con PKCE, state/nonce firmados, validación de firma/emisor/audiencia del ID token, mapeo de roles, auto-provisioning opcional y bloqueo opcional del login local con `admin` como cuenta de emergencia. Las cuentas locales existentes nunca se vinculan automáticamente.
+- **Puerta anti-regresión de i18n**: `scripts/check-hardcoded-es.mjs` y CI; se limpiaron los literales españoles de la UI y los fallbacks del backend.
+
+### Corregido
+
+- **Flakes de CI**: el test de paralelismo de federación ahora sincroniza ambas llamadas en vez de exigir 700 ms; el test de cooldown usa una ventana de 30 s para que un runner lento no la agote a mitad. CI anota los tests fallidos y el final del log cuando no hay marcador.
+- **Cadenas españolas restantes**: etiquetas de audio de VM, tareas de despliegue, atajos de terminal, inicialización de RAID/discos, montajes de carpetas compartidas, clonado por lotes, comentarios de scripts del App Store y otros literales ahora usan `t()` en en/es/ca.
+- **Fallbacks del backend**: auth, cuota, protección de medios, progreso de actualización del host y ayudas del VNC están en inglés; la SPA localiza por código estable.
+- **Higiene CodeQL**: el scanner i18n usa enmascarado por líneas en vez de regex de filtrado HTML, resolviendo las cuatro alertas de tooling; los hallazgos del command-runner y del trust-on-first-use de Incus quedan documentados y dismissados como intencionales.
 
 ### Cambiado
 
 - **Dirección de escucha por defecto**: las instalaciones nuevas escuchan en `0.0.0.0`, así la UI es accesible desde la LAN sin editar `config.json`. Sin TLS, el backend cae a `127.0.0.1` salvo que se defina `WEBKVM_ALLOW_INSECURE_HTTP=1`; detrás de un proxy TLS, configura `server.bind_addr` como `127.0.0.1`.
 - **AUR**: `webkvm-bin` queda documentado como paquete no oficial de un tercero. El `packaging/arch/PKGBUILD` del repo es una referencia para compilar en local; WebKVM no publica ni respalda el paquete AUR.
+- **Dependencias**: `github.com/SherClockHolmes/webpush-go v1.4.0`; `github.com/zitadel/oidc/v3` pasa a dependencia directa.
 
 ## [0.1.12-fix02] — 2026-11-16
 
@@ -480,6 +497,7 @@ virtualización Linux.
 
 [0.1.11]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.11
 [0.1.12]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12
+[0.1.13]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.13
 [0.1.12-fix02]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12-fix02
 [0.1.12-fix01]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.12-fix01
 [0.1.10]: https://github.com/Slaker19/webkvm/releases/tag/v0.1.10

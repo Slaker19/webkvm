@@ -25,6 +25,8 @@ type OSCommandRunner struct{}
 var DefaultRunner CommandRunner = &OSCommandRunner{}
 
 func (r *OSCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	// codeql[go/command-injection] All callers pass a hard-coded command
+	// name and separate argv entries; this wrapper never invokes a shell.
 	cmd := exec.CommandContext(ctx, name, args...)
 	return cmd.CombinedOutput()
 }
