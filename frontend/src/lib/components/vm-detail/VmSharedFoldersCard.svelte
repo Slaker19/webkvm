@@ -83,7 +83,9 @@
             </div>
             <div class="text-[10px] font-mono text-muted-foreground truncate">
               {isContainerVm
-                ? `Montado en: ${f.tag.startsWith('/') ? f.tag : '/mnt/' + f.tag}`
+                ? t('storage.mountedAt', {
+                    path: f.tag.startsWith('/') ? f.tag : '/mnt/' + f.tag,
+                  })
                 : sharedFolder9pMountCommand(f.tag)}
             </div>
           </div>

@@ -64,7 +64,7 @@
   function clonePresetAsCustom(sn) {
     editingSnippet = null;
     snippetInitialForm = {
-      name: sn.name + ' (Personalizado)',
+      name: sn.name + ' (Custom)',
       description: sn.description || '',
       category: sn.category || 'custom',
       type: sn.type || 'user-data',

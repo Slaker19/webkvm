@@ -150,7 +150,7 @@ func (h *Handler) Login2FA(w http.ResponseWriter, r *http.Request) {
 				User: username, Action: "auth.2fa_failed", Resource: username, IP: ip,
 				Error: "invalid 2fa verification code",
 			})
-			jsonErrCode(w, http.StatusUnauthorized, "invalid_2fa_code", "código de verificación 2FA inválido")
+			jsonErrCode(w, http.StatusUnauthorized, "invalid_2fa_code", "invalid 2FA verification code")
 			return
 		}
 	}
@@ -244,12 +244,12 @@ func (h *Handler) Enable2FA(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, ok := h.userStore.Validate(username, req.Password); !ok {
-			jsonErrCode(w, http.StatusUnauthorized, "invalid_password", "contraseña incorrecta")
+			jsonErrCode(w, http.StatusUnauthorized, "invalid_password", "incorrect password")
 			return
 		}
 	}
 	if !auth.ValidateTOTP(req.Secret, req.Code) {
-		jsonErrCode(w, http.StatusBadRequest, "invalid_totp_code", "código de verificación incorrecto, asegúrate de que la hora de tu dispositivo esté sincronizada")
+		jsonErrCode(w, http.StatusBadRequest, "invalid_totp_code", "invalid verification code; make sure your device clock is synchronized")
 		return
 	}
 
@@ -279,7 +279,7 @@ func (h *Handler) Disable2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := h.userStore.Validate(username, req.Password); !ok {
-		jsonErrCode(w, http.StatusUnauthorized, "invalid_password", "contraseña incorrecta")
+		jsonErrCode(w, http.StatusUnauthorized, "invalid_password", "incorrect password")
 		return
 	}
 

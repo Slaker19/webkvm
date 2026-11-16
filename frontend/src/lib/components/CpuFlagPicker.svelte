@@ -146,7 +146,7 @@
         {:else}
           <span class="w-2 h-2 rounded-full bg-muted-foreground shrink-0"></span>
           <span class="text-muted-foreground">
-            Modo manual activado (sin anulaciones por ahora)
+            {t('vmDetail.cpuFlagsManualNoOverrides')}
           </span>
         {/if}
       </div>

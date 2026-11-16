@@ -930,7 +930,7 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 	poolIno := fileInode(poolDest)
 	assertStillOurs := func(stage string) bool {
 		if poolIno == 0 {
-			return true // no se pudo marcar; conservar comportamiento clásico
+			return true // could not mark it; keep the legacy behaviour
 		}
 		if cur := fileInode(poolDest); cur == poolIno {
 			return true
@@ -1017,7 +1017,7 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 	if owner != "" {
 		if rerr := h.recheckDiskQuota(owner, poolName, poolFileName); rerr != nil {
 			removePoolImage("quota re-check failed after disk materialization")
-			updateJobErrorAtProgress(jobID, "quota_exceeded_after_materialization", "Cuota excedida tras la materialización del disco. Recursos limpiados por seguridad.", 99)
+			updateJobErrorAtProgress(jobID, "quota_exceeded_after_materialization", "Quota exceeded after disk materialization. Resources cleaned up for safety.", 99)
 			if h.audit != nil {
 				h.audit.Log(audit.Entry{Time: time.Now().UTC().Format(time.RFC3339), User: owner,
 					Action: "appliance.deploy_quota_rollback", Resource: poolFileName,

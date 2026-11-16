@@ -200,12 +200,13 @@
     upsertTask({
       id: taskId,
       kind: 'storage',
-      title: `Inicializando disco: ${initDiskPath} (${initDiskName.trim()})`,
+      title: t('storage.initializingDisk', {
+        path: initDiskPath,
+        name: initDiskName.trim(),
+      }),
       pct: 25,
       message:
-        initDiskMode === 'format'
-          ? 'Formateando y preparando punto de montaje...'
-          : 'Montando y preparando punto de montaje...',
+        initDiskMode === 'format' ? t('storage.formattingMount') : t('storage.mountingMount'),
       status: 'running',
     });
     try {
@@ -230,7 +231,7 @@
       });
       updateTask(taskId, {
         pct: 85,
-        message: 'Registrando pools de almacenamiento y persistencia...',
+        message: t('storage.registeringPools'),
       });
       const createdPools = res?.pools || [];
       const failed = createdPools.filter((p) => p.status === 'error');

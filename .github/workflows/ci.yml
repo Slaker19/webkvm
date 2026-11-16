@@ -126,6 +126,9 @@ jobs:
       - name: i18n key symmetry (en/es/ca)
         run: ../scripts/check-i18n.sh
 
+      - name: No hardcoded Spanish UI strings
+        run: node ../scripts/check-hardcoded-es.mjs
+
       - name: No undefined components in Svelte templates
         run: ../scripts/check-undefined-components.sh
 

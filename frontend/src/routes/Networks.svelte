@@ -775,7 +775,7 @@
                 <option value={iface.name}
                   >{iface.name}
                   {iface.type !== 'other' ? `(${iface.type})` : ''}
-                  {iface.master ? `[en ${iface.master}]` : ''} — {iface.state}</option
+                  {iface.master ? `[${t('networks.inMaster', { master: iface.master })}]` : ''} — {iface.state}</option
                 >
               {/each}
             </select>
@@ -1364,7 +1364,7 @@
                     DHCP: <span class="text-foreground"
                       >{net.dhcp
                         ? `${net.dhcp_start || ''} — ${net.dhcp_end || ''}`
-                        : 'Desactivado'}</span
+                        : t('common.disabled')}</span
                     >
                   </div>
                 </div>

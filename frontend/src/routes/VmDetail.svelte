@@ -889,7 +889,7 @@
     try {
       const nextState = iface.link_state === 'down' ? 'up' : 'down';
       await api.updateNetIface(vmId, iface.mac, { link_state: nextState }, vmNode, vmHvSel);
-      toast.success(nextState === 'up' ? 'Cable de red conectado' : 'Cable de red desconectado');
+      toast.success(nextState === 'up' ? t('vms.networkConnected') : t('vms.networkDisconnected'));
       await load();
     } catch (e) {
       toast.error(e.message);
@@ -920,7 +920,7 @@
   // that used to render a second, dead error panel.
   $effect(() => {
     const onErr = (e) => {
-      const msg = (e && (e.message || e.reason)) || 'error desconocido';
+      const msg = (e && (e.message || e.reason)) || t('vms.unknownError');
       console.error('[WebKVM UI]', e);
       try {
         toast.error('JS: ' + msg, { duration: 0 });
@@ -1526,7 +1526,7 @@
     try {
       const res = await api.moveVMStorage(vmId, movePool);
       await api.waitJob(res.id, {
-        title: `Moviendo almacenamiento: ${vm?.name || vmId} -> ${movePool}`,
+        title: t('vms.movingStorage', { name: vm?.name || vmId, pool: movePool }),
         kind: 'storage',
         // A cross-device copy of a large disk can run well past the
         // default 10-minute ceiling; a timeout here would report

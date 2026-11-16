@@ -532,17 +532,17 @@ body.embedded #status{bottom:8px;right:8px;padding:3px 8px;font-size:10px}
   <div class="vk-header">
     <div class="vk-title">
       <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/><path d="M18 8h.01"/><path d="M6 12h.01"/><path d="M10 12h.01"/><path d="M14 12h.01"/><path d="M18 12h.01"/><path d="M7 16h10"/></svg>
-      <span>Teclado Virtual</span>
+      <span>Virtual Keyboard</span>
     </div>
     <div class="vk-actions">
-      <button class="vk-action-btn" id="vkLayoutBtn" title="Cambiar distribución (Español / English)">
+      <button class="vk-action-btn" id="vkLayoutBtn" title="Change layout (Spanish / English)">
         <span id="vkLayoutLabel" style="font-weight:700;font-size:10px;">ES</span>
       </button>
-      <button class="vk-action-btn" id="vkOpacityBtn" title="Cambiar transparencia">
+      <button class="vk-action-btn" id="vkOpacityBtn" title="Change transparency">
         <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" width="13" height="13"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
         <span id="vkOpacityLabel">50%%</span>
       </button>
-      <button class="vk-action-btn" id="vkCloseBtn" title="Ocultar teclado">
+      <button class="vk-action-btn" id="vkCloseBtn" title="Hide keyboard">
         <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24" width="14" height="14"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
     </div>

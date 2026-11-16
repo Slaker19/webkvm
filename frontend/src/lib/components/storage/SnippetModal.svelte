@@ -116,7 +116,7 @@
           ? editingSnippet.is_preset
             ? t('storage.presetSnippetDetailTitle')
             : t('storage.editSnippet')
-          : snippetForm.name?.includes('(Personalizado)') || snippetForm.name?.includes('(Copia)')
+          : snippetForm.name?.includes('(Custom)') || snippetForm.name?.includes('(Copy)')
             ? t('storage.cloneRecipeTitle')
             : t('storage.newSnippet')}
       </Dialog.Title>

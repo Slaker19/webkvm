@@ -53,8 +53,8 @@
     applySort,
   } from '$lib/stores/vmOrder.svelte.js';
 
-  // Friendly label for a network option {name, bridge} (v1.4 Fase 4.1):
-  // "Red Interna (vmbr0)" instead of a raw bridge/name.
+  // Friendly label for a network option {name, bridge} (v1.4 Phase 4.1):
+  // "Internal network (vmbr0)" instead of a raw bridge/name.
   function netDisplay(n) {
     if (!n) return '';
     return networkLabel({ name: n.name, bridge: n.bridge });
@@ -3650,9 +3650,9 @@ apt-get update -y
             oninput={scriptInputHandler}
             rows="12"
             spellcheck="false"
-            placeholder="#!/bin/bash
+            placeholder={`#!/bin/bash
 set -e
-# tus comandos de instalación..."
+${t('vms.installCommandsPlaceholder')}`}
             class="input w-full font-mono text-[11px] leading-snug"
           ></textarea>
         {/if}

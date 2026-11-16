@@ -710,6 +710,14 @@ export const messages = {
       deleteGroup: 'Delete group',
       bulkConfirmTitle: 'Are you sure about {action} for {n} VMs?',
       assignGroupTitle: 'Assign group to {n} VMs',
+      installCommandsPlaceholder: '# your install commands...',
+      provisioningResources: 'Provisioning resources and storage...',
+      newInstance: 'new instance',
+      creatingInstance: 'Creating {kind}: {name}',
+      movingStorage: 'Moving storage: {name} → {pool}',
+      unknownError: 'Unknown error',
+      networkDisconnected: 'Network cable disconnected',
+      networkConnected: 'Network cable connected',
     },
     shortcuts: {
       title: 'Keyboard shortcuts',
@@ -1366,6 +1374,7 @@ export const messages = {
       cpuFlagsCustomize: 'Customize CPU extensions…',
       cpuFlagsResetAuto: 'Reset to Automatic',
       cpuFlagsCustomActiveNotice: 'Custom CPU flags are active ({n} override{s}).',
+      cpuFlagsManualNoOverrides: 'Manual mode enabled (no overrides yet)',
       cpuUnits: 'CPU Units / Shares',
       kvmHidden: 'KVM Hidden (Anti-Detection)',
       kvmHiddenHelper:
@@ -2186,6 +2195,15 @@ export const messages = {
       saveSnippetError: 'Error saving snippet',
       snippetDeleted: 'Snippet deleted',
       deleteSnippetError: 'Error deleting snippet',
+      containerPoolPurpose: 'Incus containers',
+      backupPoolPurpose: 'Backups',
+      buildingRaid: 'Building disk array on the host...',
+      creatingRaidTitle: 'Creating RAID array {level}: {device}',
+      registeringPools: 'Registering storage pools and persistence...',
+      mountingMount: 'Mounting and preparing mount point...',
+      formattingMount: 'Formatting and preparing mount point...',
+      initializingDisk: 'Initializing disk: {path} ({name})',
+      templateJobTitle: 'Template {name}',
     },
     networks: {
       title: 'Networks',
@@ -2382,6 +2400,7 @@ export const messages = {
       bondAttachedBridgeNoteTitle: 'IP and routing managed by bridge',
       bondAttachedBridgeNoteDesc:
         'When attached to a bridge, the bridge interface holds the IP address and gateway. The bond interface operates purely at Layer 2.',
+      inMaster: 'in {master}',
     },
     users: {
       tab: {
@@ -2793,6 +2812,9 @@ export const messages = {
       finalOutput: 'Final injected output:',
       previewPlaceholder: '# Enter content to preview...',
       customConfigPlaceholder: 'Your custom configuration here',
+      defaultMotd: 'Server {hostname} managed by WebKVM.',
+      defaultRecipeComment: 'Custom recipe',
+      templateError: '# Template error: ',
     },
     helperScripts: {
       tab: 'Community scripts',
@@ -2836,6 +2858,7 @@ export const messages = {
       openHostTerminal: 'Open the host terminal with the interactive command',
       copyInteractiveCommand: 'Copy the interactive command to run manually',
       interactiveCommandLabel: 'Interactive terminal command:',
+      backgroundDeployTitle: 'Automated background deployment (Experimental)',
     },
     appstore: {
       officialTab: 'WebKVM official',
@@ -2975,6 +2998,11 @@ export const messages = {
       scriptFirstBoot: 'Runs on first boot',
       insertSnippet: 'Insert',
       saveToCatalog: 'Save to catalog',
+      scriptCommentConnection: 'WebKVM connection block',
+      scriptCommentSystemd: 'Create Systemd service',
+      scriptCommentPython: 'Install Python3 and venv',
+      scriptCommentNode: 'Install Node.js LTS',
+      scriptCommentDocker: 'Install Docker CE & Compose Plugin',
     },
     imagehub: {
       networkBridgeLabel: 'Network / bridge *',
@@ -4942,6 +4970,10 @@ export const messages = {
       arrowDown: 'Down Arrow',
       arrowLeft: 'Left Arrow',
       arrowRight: 'Right Arrow',
+      sendCtrlL: 'Send Ctrl+L (clear screen)',
+      sendCtrlD: 'Send Ctrl+D (EOF / exit)',
+      sendCtrlZ: 'Send Ctrl+Z (suspend process)',
+      sendCtrlC: 'Send Ctrl+C (interrupt process)',
     },
     multiview: {
       twoDefault: '2 (Default)',
@@ -5318,6 +5350,7 @@ export const messages = {
       cloning: 'Cloning...',
       successToast: 'Batch of {count} clones created successfully',
       errorToast: 'Failed to batch clone: {error}',
+      taskTitle: 'Batch clone ({count} VMs): prefix "{prefix}"',
     },
     remote: {
       errors: {
@@ -6785,6 +6818,14 @@ export const messages = {
       deleteGroup: 'Borrar grupo',
       bulkConfirmTitle: '¿Seguro que quieres {action} {n} VMs?',
       assignGroupTitle: 'Asignar grupo a {n} VMs',
+      installCommandsPlaceholder: '# tus comandos de instalación...',
+      provisioningResources: 'Aprovisionando recursos y almacenamiento...',
+      newInstance: 'nueva instancia',
+      creatingInstance: 'Creando {kind}: {name}',
+      movingStorage: 'Moviendo almacenamiento: {name} → {pool}',
+      unknownError: 'Error desconocido',
+      networkDisconnected: 'Cable de red desconectado',
+      networkConnected: 'Cable de red conectado',
     },
     shortcuts: {
       title: 'Atajos de teclado',
@@ -7459,6 +7500,7 @@ export const messages = {
       cpuFlagsCustomize: 'Personalizar extensiones de CPU…',
       cpuFlagsResetAuto: 'Restablecer a automático',
       cpuFlagsCustomActiveNotice: 'Instrucciones personalizadas activas ({n} anulación/es).',
+      cpuFlagsManualNoOverrides: 'Modo manual activado (sin anulaciones por ahora)',
       cpuUnits: 'CPU Units / Shares',
       kvmHidden: 'KVM Hidden (Anti-Detección)',
       kvmHiddenHelper:
@@ -8293,6 +8335,15 @@ export const messages = {
       saveSnippetError: 'Error al guardar snippet',
       snippetDeleted: 'Snippet eliminado',
       deleteSnippetError: 'Error al eliminar snippet',
+      containerPoolPurpose: 'Contenedores Incus',
+      backupPoolPurpose: 'Copias de seguridad',
+      buildingRaid: 'Construyendo arreglo de discos en el host...',
+      creatingRaidTitle: 'Creando arreglo RAID {level}: {device}',
+      registeringPools: 'Registrando pools de almacenamiento y persistencia...',
+      mountingMount: 'Montando y preparando punto de montaje...',
+      formattingMount: 'Formateando y preparando punto de montaje...',
+      initializingDisk: 'Inicializando disco: {path} ({name})',
+      templateJobTitle: 'Plantilla {name}',
     },
     networks: {
       title: 'Redes',
@@ -8492,6 +8543,7 @@ export const messages = {
       bondAttachedBridgeNoteTitle: 'IP y enrutamiento gestionados por el puente',
       bondAttachedBridgeNoteDesc:
         'Al asociar el enlace a un puente, el puente conserva la dirección IP y la puerta de enlace. El enlace bond opera limpiamente en Capa 2.',
+      inMaster: 'en {master}',
     },
     users: {
       tab: {
@@ -8909,6 +8961,9 @@ export const messages = {
       finalOutput: 'Resultado final inyectado:',
       previewPlaceholder: '# Introduce contenido para previsualizar...',
       customConfigPlaceholder: 'Tu configuración personalizada aquí',
+      defaultMotd: 'Servidor {hostname} gestionado con WebKVM.',
+      defaultRecipeComment: 'Receta personalizada',
+      templateError: '# Error en la plantilla: ',
     },
     helperScripts: {
       tab: 'Scripts de la comunidad',
@@ -8953,6 +9008,7 @@ export const messages = {
       openHostTerminal: 'Abrir la terminal del host con el comando interactivo',
       copyInteractiveCommand: 'Copiar el comando interactivo para ejecutarlo manualmente',
       interactiveCommandLabel: 'Comando para terminal interactiva:',
+      backgroundDeployTitle: 'Despliegue automatizado en segundo plano (Experimental)',
     },
     appstore: {
       officialTab: 'Oficiales WebKVM',
@@ -9094,6 +9150,11 @@ export const messages = {
       scriptFirstBoot: 'Se ejecuta en el primer arranque',
       insertSnippet: 'Insertar',
       saveToCatalog: 'Guardar en el catálogo',
+      scriptCommentConnection: 'Bloque de conexión WebKVM',
+      scriptCommentSystemd: 'Crear servicio Systemd',
+      scriptCommentPython: 'Instalar Python3 y venv',
+      scriptCommentNode: 'Instalar Node.js LTS',
+      scriptCommentDocker: 'Instalar Docker CE & Compose Plugin',
     },
     imagehub: {
       networkBridgeLabel: 'Red / bridge *',
@@ -11099,6 +11160,10 @@ export const messages = {
       arrowDown: 'Flecha Abajo',
       arrowLeft: 'Flecha Izquierda',
       arrowRight: 'Flecha Derecha',
+      sendCtrlL: 'Enviar Ctrl+L (Limpiar pantalla)',
+      sendCtrlD: 'Enviar Ctrl+D (EOF / Salir)',
+      sendCtrlZ: 'Enviar Ctrl+Z (Suspender proceso)',
+      sendCtrlC: 'Enviar Ctrl+C (Interrumpir proceso)',
     },
     multiview: {
       twoDefault: '2 (Defecto)',
@@ -11480,6 +11545,7 @@ export const messages = {
       cloning: 'Clonando...',
       successToast: 'Lote de {count} clones creado exitosamente',
       errorToast: 'Error al clonar por lotes: {error}',
+      taskTitle: 'Clonado en lote ({count} VMs): prefijo "{prefix}"',
     },
     remote: {
       errors: {
@@ -12953,6 +13019,14 @@ export const messages = {
       deleteGroup: 'Esborra grup',
       bulkConfirmTitle: 'Segur que vols {action} {n} VMs?',
       assignGroupTitle: 'Assigna grup a {n} VMs',
+      installCommandsPlaceholder: "# les teves ordres d'instal·lació...",
+      provisioningResources: 'Aprovisionant recursos i emmagatzematge...',
+      newInstance: 'nova instància',
+      creatingInstance: 'Creant {kind}: {name}',
+      movingStorage: "Movent l'emmagatzematge: {name} → {pool}",
+      unknownError: 'Error desconegut',
+      networkDisconnected: 'Cable de xarxa desconnectat',
+      networkConnected: 'Cable de xarxa connectat',
     },
     shortcuts: {
       title: 'Dreceres de teclat',
@@ -13627,6 +13701,7 @@ export const messages = {
       cpuFlagsCustomize: 'Personalitzar extensions de CPU…',
       cpuFlagsResetAuto: 'Restablir a automàtic',
       cpuFlagsCustomActiveNotice: 'Instruccions personalitzades actives ({n} anul·lació/ns).',
+      cpuFlagsManualNoOverrides: 'Mode manual activat (sense anul·lacions per ara)',
       cpuUnits: 'CPU Units / Shares',
       kvmHidden: 'KVM Hidden (Anti-Detecció)',
       kvmHiddenHelper:
@@ -14462,6 +14537,15 @@ export const messages = {
       saveSnippetError: 'Error en desar el snippet',
       snippetDeleted: 'Snippet eliminat',
       deleteSnippetError: 'Error en eliminar el snippet',
+      containerPoolPurpose: 'Contenidors Incus',
+      backupPoolPurpose: 'Còpies de seguretat',
+      buildingRaid: "Construint la matriu de discs a l'amfitrió...",
+      creatingRaidTitle: 'Creant matriu RAID {level}: {device}',
+      registeringPools: "Registrant pools d'emmagatzematge i persistència...",
+      mountingMount: 'Muntant i preparant el punt de muntatge...',
+      formattingMount: 'Formatant i preparant el punt de muntatge...',
+      initializingDisk: 'Inicialitzant disc: {path} ({name})',
+      templateJobTitle: 'Plantilla {name}',
     },
     networks: {
       title: 'Xarxes',
@@ -14661,6 +14745,7 @@ export const messages = {
       bondAttachedBridgeNoteTitle: 'IP i enrutament gestionats pel pont',
       bondAttachedBridgeNoteDesc:
         "En associar l'enllaç a un pont, el pont conserva l'adreça IP i la porta d'enllaç. L'enllaç bond opera netament en Capa 2.",
+      inMaster: 'a {master}',
     },
     users: {
       tab: {
@@ -15079,6 +15164,9 @@ export const messages = {
       finalOutput: 'Resultat final injectat:',
       previewPlaceholder: '# Introdueix contingut per previsualitzar...',
       customConfigPlaceholder: 'La teva configuració personalitzada aquí',
+      defaultMotd: 'Servidor {hostname} gestionat amb WebKVM.',
+      defaultRecipeComment: 'Recepta personalitzada',
+      templateError: '# Error a la plantilla: ',
     },
     helperScripts: {
       tab: 'Scripts de la comunitat',
@@ -15123,6 +15211,7 @@ export const messages = {
       openHostTerminal: 'Obre el terminal de l’amfitrió amb l’ordre interactiva',
       copyInteractiveCommand: 'Copia l’ordre interactiva per executar-la manualment',
       interactiveCommandLabel: 'Ordre per al terminal interactiu:',
+      backgroundDeployTitle: 'Desplegament automatitzat en segon pla (Experimental)',
     },
     appstore: {
       officialTab: 'Oficials WebKVM',
@@ -15264,6 +15353,11 @@ export const messages = {
       scriptFirstBoot: 'S’executa en la primera arrencada',
       insertSnippet: 'Insereix',
       saveToCatalog: 'Desa al catàleg',
+      scriptCommentConnection: 'Bloc de connexió WebKVM',
+      scriptCommentSystemd: 'Crea el servei Systemd',
+      scriptCommentPython: 'Instal·la Python3 i venv',
+      scriptCommentNode: 'Instal·la Node.js LTS',
+      scriptCommentDocker: 'Instal·la Docker CE i el plugin de Compose',
     },
     imagehub: {
       networkBridgeLabel: 'Xarxa / bridge *',
@@ -17270,6 +17364,10 @@ export const messages = {
       arrowDown: 'Fletxa Avall',
       arrowLeft: 'Fletxa Esquerra',
       arrowRight: 'Fletxa Dreta',
+      sendCtrlL: 'Envia Ctrl+L (netejar la pantalla)',
+      sendCtrlD: 'Envia Ctrl+D (EOF / sortir)',
+      sendCtrlZ: 'Envia Ctrl+Z (suspendre el procés)',
+      sendCtrlC: 'Envia Ctrl+C (interrompre el procés)',
     },
     multiview: {
       twoDefault: '2 (Per defecte)',
@@ -17650,6 +17748,7 @@ export const messages = {
       cloning: "S'està clonant...",
       successToast: 'Lot de {count} clons creat amb èxit',
       errorToast: 'Error en clonar per lots: {error}',
+      taskTitle: 'Clonació per lots ({count} VMs): prefix "{prefix}"',
     },
     remote: {
       errors: {

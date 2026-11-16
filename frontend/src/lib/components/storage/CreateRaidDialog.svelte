@@ -92,9 +92,12 @@
     upsertTask({
       id: taskId,
       kind: 'storage',
-      title: `Creando arreglo RAID ${createRaidLevel}: ${raidDevName}`,
+      title: t('storage.creatingRaidTitle', {
+        level: createRaidLevel,
+        device: raidDevName,
+      }),
       pct: 30,
-      message: 'Construyendo arreglo de discos en el host...',
+      message: t('storage.buildingRaid'),
       status: 'running',
     });
     try {
@@ -117,7 +120,7 @@
         }
       }
       const res = await api.createHostRaid(raidPayload);
-      finishTask(taskId, 'success', `Arreglo RAID ${res.device} creado`, 100);
+      finishTask(taskId, 'success', t('storage.raidCreatedSuccess', { device: res.device }), 100);
       open = false;
       onCreated(res);
       alert(t('storage.raidCreatedSuccess', { device: res.device }));
@@ -299,8 +302,10 @@
                     >
                       <option value="disk">disk ({t('storage.diskPoolPurpose')})</option>
                       <option value="iso">iso ({t('storage.isoPoolPurpose')})</option>
-                      <option value="backup">backup (Copias de seguridad)</option>
-                      <option value="container">container (Contenedores Incus)</option>
+                      <option value="backup">backup ({t('storage.backupPoolPurpose')})</option>
+                      <option value="container"
+                        >container ({t('storage.containerPoolPurpose')})</option
+                      >
                     </select>
                   </div>
                 {:else}

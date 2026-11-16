@@ -389,7 +389,7 @@
                   size="sm"
                   onclick={() => confirmDeploy(s)}
                   class="h-8 px-2 text-muted-foreground hover:text-foreground"
-                  title="Despliegue automatizado en segundo plano (Experimental)"
+                  title={t('helperScripts.backgroundDeployTitle')}
                 >
                   <Icon name="play" size={13} />
                 </Button>

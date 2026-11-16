@@ -440,7 +440,7 @@ EOF
     let block = '';
     switch (snippetType) {
       case 'docker':
-        block = `\n# Instalar Docker CE & Compose Plugin
+        block = `\n# ${t('appstore.scriptCommentDocker')}
 if ! command -v docker &>/dev/null; then
   apt-get update -y && apt-get install -y ca-certificates curl gnupg
   curl -fsSL https://get.docker.com | sh
@@ -448,16 +448,16 @@ if ! command -v docker &>/dev/null; then
 fi\n`;
         break;
       case 'nodejs':
-        block = `\n# Instalar Node.js LTS
+        block = `\n# ${t('appstore.scriptCommentNode')}
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs\n`;
         break;
       case 'python':
-        block = `\n# Instalar Python3 y venv
+        block = `\n# ${t('appstore.scriptCommentPython')}
 apt-get update -y && apt-get install -y python3 python3-pip python3-venv\n`;
         break;
       case 'systemd':
-        block = `\n# Crear servicio Systemd
+        block = `\n# ${t('appstore.scriptCommentSystemd')}
 cat > /etc/systemd/system/myapp.service <<'EOF'
 [Unit]
 Description=My Custom Application
@@ -477,7 +477,7 @@ systemctl daemon-reload
 systemctl enable --now myapp\n`;
         break;
       case 'webkvm-creds':
-        block = `\n# Bloque de Conexión WebKVM
+        block = `\n# ${t('appstore.scriptCommentConnection')}
 VMIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$VMIP" ] && VMIP=$(hostname -I | awk '{print $1}')
 cat > /etc/webkvm-app.txt <<EOF

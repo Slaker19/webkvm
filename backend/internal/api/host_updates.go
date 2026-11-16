@@ -455,7 +455,7 @@ func (h *Handler) upgradeJob(pm PkgManager, pkgs []string) func(progress func(pc
 			h.notifyUpgrade(pm, err)
 		}()
 
-		progress(5, fmt.Sprintf("Inicializando gestor de paquetes %s...", strings.ToUpper(string(pm))))
+		progress(5, fmt.Sprintf("Initializing package manager %s...", strings.ToUpper(string(pm))))
 
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 		defer cancel()
@@ -503,7 +503,7 @@ func (h *Handler) upgradeJob(pm PkgManager, pkgs []string) func(progress func(pc
 					if pct > 95.0 {
 						pct = 95.0
 					}
-					progress(pct, fmt.Sprintf("Desempaquetando %s (%d/%d)", pkg, len(unpackedPkgs), totalEstimate))
+					progress(pct, fmt.Sprintf("Unpacking %s (%d/%d)", pkg, len(unpackedPkgs), totalEstimate))
 				}
 			} else if m := settingUpPkgRE.FindStringSubmatch(line); len(m) > 1 {
 				pkg := m[1]
@@ -514,12 +514,12 @@ func (h *Handler) upgradeJob(pm PkgManager, pkgs []string) func(progress func(pc
 					if pct > 95.0 {
 						pct = 95.0
 					}
-					progress(pct, fmt.Sprintf("Configurando %s (%d/%d)", pkg, len(configuredPkgs), totalEstimate))
+					progress(pct, fmt.Sprintf("Configuring %s (%d/%d)", pkg, len(configuredPkgs), totalEstimate))
 				}
 			} else if strings.Contains(line, "Reading database") {
-				progress(10, "Leyendo base de datos de paquetes...")
+				progress(10, "Reading package database...")
 			} else if strings.Contains(line, "Building dependency tree") {
-				progress(15, "Resolviendo dependencias...") //nolint:misspell
+				progress(15, "Resolving dependencies...") //nolint:misspell
 			}
 		}
 
@@ -535,7 +535,7 @@ func (h *Handler) upgradeJob(pm PkgManager, pkgs []string) func(progress func(pc
 			return nil, &hostUpgradeErr{code: hostUpgradeCode(detail), msg: msg}
 		}
 
-		progress(100, "Actualización del sistema completada con éxito")
+		progress(100, "System update completed successfully")
 		return map[string]any{
 			"status":     "completed",
 			"unpacked":   len(unpackedPkgs),

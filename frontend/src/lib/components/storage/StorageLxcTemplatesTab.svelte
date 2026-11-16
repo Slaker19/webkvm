@@ -41,7 +41,7 @@
         trackImageJob({
           jobId: res.job_id,
           taskId: 'container_pull_' + ref,
-          title: 'Plantilla ' + (img.name || ref),
+          title: t('storage.templateJobTitle', { name: img.name || ref }),
           kind: 'download',
         });
       }

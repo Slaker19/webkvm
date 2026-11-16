@@ -35,7 +35,7 @@
       });
       if (res && res.job) {
         await api.waitJob(res.job, {
-          title: `Clonado en lote (${count} VMs): prefijo "${prefix.trim()}"`,
+          title: t('batchClone.taskTitle', { count, prefix: prefix.trim() }),
           kind: 'clone',
         });
       }

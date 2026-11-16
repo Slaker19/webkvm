@@ -466,7 +466,7 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 				h.audit.Log(auditFor(r, "vm.import_quota_rollback", uuid, map[string]interface{}{
 					"name": resolvedName, "pool": pool, "error": rerr.Error(),
 				}))
-				jsonErrCode(w, http.StatusConflict, "quota_exceeded_after_import", "Cuota excedida tras la importación del disco. Recursos limpiados por seguridad.")
+				jsonErrCode(w, http.StatusConflict, "quota_exceeded_after_import", "Quota exceeded after disk import. Resources cleaned up for safety.")
 				return
 			}
 		} else if imported, gerr := h.compute.GetDomain(uuid); gerr == nil && len(imported.Disks) > 0 {
@@ -485,7 +485,7 @@ func (h *Handler) importArchive(w http.ResponseWriter, r *http.Request, requireO
 				h.audit.Log(auditFor(r, "vm.import_quota_rollback", uuid, map[string]interface{}{
 					"name": imported.Name, "volume": vol, "error": rerr.Error(),
 				}))
-				jsonErrCode(w, http.StatusConflict, "quota_exceeded_after_import", "Cuota excedida tras la importación del disco. Recursos limpiados por seguridad.")
+				jsonErrCode(w, http.StatusConflict, "quota_exceeded_after_import", "Quota exceeded after disk import. Resources cleaned up for safety.")
 				return
 			}
 		}

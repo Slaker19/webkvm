@@ -1719,9 +1719,12 @@
       upsertTask({
         id: creationTaskId,
         kind: 'general',
-        title: `Creando ${entityLabel}: ${name || 'nueva instancia'}`,
+        title: t('vms.creatingInstance', {
+          kind: entityLabel,
+          name: name || t('vms.newInstance'),
+        }),
         pct: 20,
-        message: 'Aprovisionando recursos y almacenamiento...',
+        message: t('vms.provisioningResources'),
         status: 'running',
       });
 

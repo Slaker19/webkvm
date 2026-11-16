@@ -152,7 +152,7 @@ func TestHealth_RegularFileAsDataDir(t *testing.T) {
 
 func TestJSONErrCodeIncludesStableCodeAndMessage(t *testing.T) {
 	rr := httptest.NewRecorder()
-	jsonErrCode(rr, http.StatusUnauthorized, "invalid_password", "contraseña incorrecta")
+	jsonErrCode(rr, http.StatusUnauthorized, "invalid_password", "incorrect password")
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnauthorized)
@@ -161,7 +161,7 @@ func TestJSONErrCodeIncludesStableCodeAndMessage(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body["code"] != "invalid_password" || body["error"] != "contraseña incorrecta" {
+	if body["code"] != "invalid_password" || body["error"] != "incorrect password" {
 		t.Fatalf("error response = %#v, want stable code and compatible message", body)
 	}
 }

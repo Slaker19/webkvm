@@ -732,7 +732,7 @@
           type="button"
           onclick={() => sendKey('CTRL_C')}
           class="px-2 py-0.5 rounded bg-background border border-border hover:bg-destructive/10 hover:text-destructive hover:border-destructive/40 text-foreground transition-colors font-semibold shadow-2xs"
-          title="Enviar Ctrl+C (Interrumpir proceso)"
+          title={t('terminal.sendCtrlC')}
         >
           ^C
         </button>
@@ -740,7 +740,7 @@
           type="button"
           onclick={() => sendKey('CTRL_Z')}
           class="px-2 py-0.5 rounded bg-background border border-border hover:bg-muted hover:border-foreground/30 text-foreground transition-colors font-semibold shadow-2xs"
-          title="Enviar Ctrl+Z (Suspender proceso)"
+          title={t('terminal.sendCtrlZ')}
         >
           ^Z
         </button>
@@ -748,7 +748,7 @@
           type="button"
           onclick={() => sendKey('CTRL_D')}
           class="px-2 py-0.5 rounded bg-background border border-border hover:bg-muted hover:border-foreground/30 text-foreground transition-colors font-semibold shadow-2xs"
-          title="Enviar Ctrl+D (EOF / Salir)"
+          title={t('terminal.sendCtrlD')}
         >
           ^D
         </button>
@@ -756,7 +756,7 @@
           type="button"
           onclick={() => sendKey('CTRL_L')}
           class="px-2 py-0.5 rounded bg-background border border-border hover:bg-muted hover:border-foreground/30 text-foreground transition-colors font-semibold shadow-2xs"
-          title="Enviar Ctrl+L (Limpiar pantalla)"
+          title={t('terminal.sendCtrlL')}
         >
           ^L (Clear)
         </button>

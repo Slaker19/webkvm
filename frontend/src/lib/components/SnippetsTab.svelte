@@ -89,7 +89,7 @@
       description: '',
       type: 'user-data',
       content: `#cloud-config
-# Receta personalizada
+# ${t('snippets.defaultRecipeComment')}
 package_update: true
 packages:
   - curl
@@ -99,7 +99,7 @@ packages:
 write_files:
   - path: /etc/motd
     content: |
-      Servidor {{ .VM.Hostname }} gestionado con WebKVM.
+      ${t('snippets.defaultMotd', { hostname: '{{ .VM.Hostname }}' })}
     permissions: '0644'
 `,
     };
@@ -152,7 +152,7 @@ write_files:
       });
       previewData = res.user_data;
     } catch (err) {
-      previewData = '# Error en la plantilla: ' + err.message;
+      previewData = t('snippets.templateError') + err.message;
     } finally {
       previewLoading = false;
     }
