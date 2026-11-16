@@ -44,9 +44,10 @@ func TestCooldown_StopsHandshakeCPUCost(t *testing.T) {
 		defer aggregated.Close()
 
 		if withCooldown {
-			// Threshold deliberately low so the effect is visible
-			// within a short test run.
-			cd := NewCooldown(5, 2*time.Second)
+			// Threshold deliberately low so the effect is visible. The
+			// cooldown is much longer than the flood so a slow CI runner
+			// cannot let it expire mid-test and count extra handshakes.
+			cd := NewCooldown(5, 30*time.Second)
 			aggregated.Observer = cd.Observe
 			limited.Cooldown = cd
 		}

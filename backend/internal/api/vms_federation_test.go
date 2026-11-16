@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,18 +66,32 @@ func TestFederateVMsReturnsPartialResultsWhenNodeHangs(t *testing.T) {
 }
 
 func TestFederateVMsQueriesNodesInParallel(t *testing.T) {
-	stubFederation(t, 5*time.Second, 5*time.Second, func(ctx context.Context, uri string) ([]models.VM, error) {
-		time.Sleep(400 * time.Millisecond)
-		return []models.VM{{ID: uri, Name: uri}}, nil
+	// Deterministic concurrency check: each remote call waits until both
+	// calls have started. A serial implementation deadlocks the first call
+	// until the timeout, so the test fails without relying on wall-clock
+	// scheduling (which was flaky on loaded CI runners).
+	var started int32
+	bothStarted := make(chan struct{})
+	stubFederation(t, 2*time.Second, 5*time.Second, func(ctx context.Context, uri string) ([]models.VM, error) {
+		if atomic.AddInt32(&started, 1) == 2 {
+			close(bothStarted)
+		}
+		select {
+		case <-bothStarted:
+			return []models.VM{{ID: uri, Name: uri}}, nil
+		case <-time.After(2 * time.Second):
+			return nil, context.DeadlineExceeded
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	})
 	h, _, _ := twoNodeHandler(t)
-	start := time.Now()
 	vms := h.federateVMsContext(context.Background(), nil, models.RoleAdmin)
 	if len(vms) != 2 {
 		t.Fatalf("vms = %+v", vms)
 	}
-	if d := time.Since(start); d > 700*time.Millisecond {
-		t.Fatalf("nodes were queried serially (%v)", d)
+	if got := atomic.LoadInt32(&started); got != 2 {
+		t.Fatalf("remote calls started = %d, want 2", got)
 	}
 }
 
