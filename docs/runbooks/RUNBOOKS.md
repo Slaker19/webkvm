@@ -13,7 +13,7 @@ Operational runbooks for system administrators. The goal is to ensure that every
 | [DISASTER-RECOVERY.md](DISASTER-RECOVERY.md) | Host loss, corrupted datadir, libvirt recovery |
 | [SECURITY-MODEL.md](SECURITY-MODEL.md) | System security architecture and auditing |
 | [OPS-DAILY.md](OPS-DAILY.md) | Day-2 operations: health, logs, audit trails, jobs, backups |
-| [RELEASING.md](../RELEASING.md) | Maintainer release checklist, tag, assets and AUR |
+| [RELEASING.md](../RELEASING.md) | Maintainer release checklist, tag, assets and third-party AUR notes |
 
 ## Golden Rules (Apply to all runbooks)
 

@@ -11,6 +11,7 @@ Versión en inglés: [CHANGELOG.md](CHANGELOG.md).
 ### Cambiado
 
 - **Dirección de escucha por defecto**: las instalaciones nuevas escuchan en `0.0.0.0`, así la UI es accesible desde la LAN sin editar `config.json`. Sin TLS, el backend cae a `127.0.0.1` salvo que se defina `WEBKVM_ALLOW_INSECURE_HTTP=1`; detrás de un proxy TLS, configura `server.bind_addr` como `127.0.0.1`.
+- **AUR**: `webkvm-bin` queda documentado como paquete no oficial de un tercero. El `packaging/arch/PKGBUILD` del repo es una referencia para compilar en local; WebKVM no publica ni respalda el paquete AUR.
 
 ## [0.1.12-fix02] — 2026-11-16
 

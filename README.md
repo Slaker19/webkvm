@@ -85,13 +85,11 @@ curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/instal
 ```
 *(See [docs/DOCKER.md](docs/DOCKER.md) for custom volume mounts and security privileges).*
 
-### Arch Linux (AUR)
+### Arch Linux
 
-```bash
-yay -S webkvm-bin
-```
+There is **no official Arch package**. An unofficial `webkvm-bin` AUR package is maintained by a third party, not by WebKVM; we do not control or audit it, and it may lag behind the official release. Prefer the official release binary/tarball above, or inspect the AUR `PKGBUILD` and verify its `sha256sums` against the GitHub release before installing.
 
-The AUR package repackages the official release archive and keeps updates under pacman. It installs WebKVM only: clustering (Incus, LINSTOR, Pacemaker, Corosync, SBD) is modular and not included. See the [HA runbook](docs/runbooks/HA-CLUSTER.md) and `scripts/install-ha-stack.sh`.
+WebKVM itself installs on Arch with the standalone installer. The AUR package installs WebKVM only: clustering (Incus, LINSTOR, Pacemaker, Corosync, SBD) is modular and not included. See the [HA runbook](docs/runbooks/HA-CLUSTER.md) and `scripts/install-ha-stack.sh`.
 
 ### Distribution support
 
@@ -203,7 +201,7 @@ webkvm-cli --json vms list | jq '.[] | select(.state=="running") | .name'
 | [**Architecture Deep Dive (ARCHITECTURE.md)**](docs/ARCHITECTURE.md) | Internal architecture: CGO libvirt bindings, Incus driver, and embedded Svelte 5 engine. |
 | [**Docker Deployment (DOCKER.md)**](docs/DOCKER.md) | Running the same binary as a container: host prerequisites, bind mounts, and the self-update exception. |
 | [**Operational Runbooks**](docs/runbooks/RUNBOOKS.md) | Daily operations, upgrade/rollback, disaster recovery, and the security model. |
-| [**Release Process (RELEASING.md)**](docs/RELEASING.md) | Maintainer checklist for tags, assets, AUR and the in-app updater. |
+| [**Release Process (RELEASING.md)**](docs/RELEASING.md) | Maintainer checklist for tags, assets, third-party AUR notes and the in-app updater. |
 | [**Security Policy (SECURITY.md)**](SECURITY.md) | Threat model, SSRF protection, RBAC roles, and vulnerability disclosure. |
 
 ---

@@ -1,6 +1,8 @@
-# Maintainer: WebKVM <Slaker19@users.noreply.github.com>
-# webkvm-bin: precompiled upstream binary + systemd unit (no toolchain needed).
-# The -bin suffix follows AUR convention for repackaged upstream binaries.
+# Reference PKGBUILD for a local build — NOT the AUR package.
+# The AUR `webkvm-bin` is maintained by a third party and is not
+# endorsed or audited by WebKVM.
+# Maintainer of this reference file: WebKVM <Slaker19@users.noreply.github.com>
+# Precompiled upstream binary + systemd unit (no toolchain needed).
 # Tag stays v0.1.12-fix02; pkgver uses underscore (hyphens are illegal in pkgver).
 pkgname=webkvm-bin
 _pkgver=0.1.12_fix02

@@ -11,6 +11,7 @@ Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 ### Changed
 
 - **Default bind address**: fresh installs listen on `0.0.0.0` so the UI is reachable on the LAN without editing `config.json`. When TLS is off, the backend falls back to `127.0.0.1` unless `WEBKVM_ALLOW_INSECURE_HTTP=1` is set; behind a TLS reverse proxy, set `server.bind_addr` to `127.0.0.1`.
+- **AUR**: `webkvm-bin` is documented as an unofficial third-party package. The in-repo `packaging/arch/PKGBUILD` is a local-build reference; WebKVM does not publish or endorse the AUR package.
 
 ## [0.1.12-fix02] — 2026-11-16
 

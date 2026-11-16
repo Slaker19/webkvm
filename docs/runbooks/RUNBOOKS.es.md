@@ -16,7 +16,7 @@ explícitos.
 | [DISASTER-RECOVERY.es.md](DISASTER-RECOVERY.es.md) | Pérdida del host, del datadir, corrupción de libvirt |
 | [SECURITY-MODEL.es.md](SECURITY-MODEL.es.md) | Entender qué protege el sistema y cómo auditar |
 | [OPS-DAILY.es.md](OPS-DAILY.es.md) | Tareas diarias: health, logs, auditoría, jobs, backups |
-| [RELEASING.es.md](../RELEASING.es.md) | Checklist de release para mantenedores, tag, assets y AUR |
+| [RELEASING.es.md](../RELEASING.es.md) | Checklist de release para mantenedores, tag, assets y notas del AUR de terceros |
 
 ## Reglas de oro (aplican a todos los runbooks)
 

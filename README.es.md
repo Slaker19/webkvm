@@ -85,13 +85,11 @@ curl -fsSL https://raw.githubusercontent.com/Slaker19/webkvm/main/scripts/instal
 ```
 *(Consulta [docs/DOCKER.es.md](docs/DOCKER.es.md) para volúmenes y configuración detallada).*
 
-### Arch Linux (AUR)
+### Arch Linux
 
-```bash
-yay -S webkvm-bin
-```
+**No hay paquete oficial de Arch.** Existe un paquete AUR `webkvm-bin` mantenido por un tercero, no por WebKVM; no lo controlamos ni lo auditamos, y puede ir por detrás de la release oficial. Prefiere el binario/tarball oficial de release, o revisa el `PKGBUILD` de AUR y verifica sus `sha256sums` contra la release de GitHub antes de instalarlo.
 
-El paquete AUR reempaqueta el archivo de release oficial y deja las actualizaciones en manos de pacman. Instala solo WebKVM: el clustering (Incus, LINSTOR, Pacemaker, Corosync, SBD) es modular y no viene incluido. Consulta el [runbook de HA](docs/runbooks/HA-CLUSTER.es.md) y `scripts/install-ha-stack.sh`.
+WebKVM se instala en Arch con el instalador standalone. El paquete AUR instala solo WebKVM: el clustering (Incus, LINSTOR, Pacemaker, Corosync, SBD) es modular y no viene incluido. Consulta el [runbook de HA](docs/runbooks/HA-CLUSTER.es.md) y `scripts/install-ha-stack.sh`.
 
 ### Soporte de distribuciones
 
@@ -203,7 +201,7 @@ webkvm-cli --json vms list | jq '.[] | select(.state=="running") | .name'
 | [**Arquitectura Interna (ARCHITECTURE.es.md)**](docs/ARCHITECTURE.es.md) | Detalles técnicos: bindings CGO, Incus driver y motor Svelte 5 embebido. |
 | [**Despliegue con Docker (DOCKER.es.md)**](docs/DOCKER.es.md) | El mismo binario en un contenedor: requisitos del host, montajes y la excepción de la autoactualización. |
 | [**Runbooks operativos**](docs/runbooks/RUNBOOKS.es.md) | Operación diaria, actualización y reversión, recuperación ante desastres y modelo de seguridad. |
-| [**Proceso de Release (RELEASING.es.md)**](docs/RELEASING.es.md) | Checklist para tags, assets, AUR y el actualizador de la UI. |
+| [**Proceso de Release (RELEASING.es.md)**](docs/RELEASING.es.md) | Checklist para tags, assets, notas del AUR de terceros y el actualizador de la UI. |
 | [**Política de Seguridad (SECURITY.es.md)**](SECURITY.es.md) | Modelo de seguridad, mitigaciones SSRF y reporte de vulnerabilidades. |
 
 ---

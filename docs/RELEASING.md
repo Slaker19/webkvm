@@ -117,18 +117,16 @@ On a 0.1.11 native install:
 
 Docker installs must pull the new image instead of using the button.
 
-## 7. AUR package
+## 7. Third-party AUR package
 
-After the GitHub release exists:
+The `webkvm-bin` package on the AUR is maintained by a third party,
+not by the WebKVM maintainers. We do not publish it and cannot vouch for it;
+do not list it as official or recommended.
 
-```bash
-# from packaging/arch/PKGBUILD
-updpkgsums
-```
-
-Replace `sha256sums=('SKIP')` with the SHA-256 of
-`webkvm-0.1.12-fix02.tar.gz` from `SHA256SUMS`, then push the AUR package
-separately. Do not publish a package with `SKIP` as its checksum.
+The `packaging/arch/PKGBUILD` in this repository is a reference for a local
+`makepkg` build from the official release tarball. If you use it, update
+`sha256sums` with `updpkgsums` or copy the value from the release
+`SHA256SUMS`; never build with `SKIP`.
 
 ## 8. HA clusters
 
