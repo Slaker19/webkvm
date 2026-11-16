@@ -18,6 +18,7 @@ require (
 	github.com/pkg/sftp v1.13.11
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/tredoe/osutil v1.5.0
+	github.com/zitadel/oidc/v3 v3.49.3
 	go.uber.org/goleak v1.3.0
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2
@@ -73,7 +74,6 @@ require (
 	github.com/vbatts/go-mtree v0.7.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
-	github.com/zitadel/oidc/v3 v3.49.3 // indirect
 	github.com/zitadel/schema v1.3.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.47.0 // indirect

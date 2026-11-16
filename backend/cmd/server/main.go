@@ -37,6 +37,7 @@ import (
 	"webkvm/internal/netstore"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
+	"webkvm/internal/oidc"
 	"webkvm/internal/smart"
 	"webkvm/internal/tokens"
 	"webkvm/internal/user"
@@ -982,6 +983,17 @@ func main() {
 		backupRunner.SetAlertFunc(func(level, subject, msg string) {
 			notifier.Record(level, subject, msg)
 		})
+	}
+
+	if oc, err := oidc.FromEnv(); err != nil {
+		logger.Warn("oidc_config_invalid", "err", err)
+	} else if oc.Enabled {
+		client, err := oidc.New(context.Background(), oc, []byte(cfg.JWTSecret))
+		if err != nil {
+			logger.Error("oidc_init_failed", "err", err)
+		} else {
+			api.SetOIDCProvider(client)
+		}
 	}
 
 	if wp, err := webpush.New(cfg.DataDir); err != nil {

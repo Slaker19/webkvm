@@ -216,6 +216,7 @@ func (s *Store) Create(req models.CreateUserRequest) (*models.User, error) {
 	u := &models.User{
 		Username:           req.Username,
 		PasswordHash:       string(hash),
+		OIDCSubject:        req.OIDCSubject,
 		Role:               role,
 		Email:              req.Email,
 		CreatedAt:          time.Now().UTC().Format(time.RFC3339),

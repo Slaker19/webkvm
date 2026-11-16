@@ -411,6 +411,14 @@ Three planes:
 | `PORT` | `8080` | Backend HTTP/HTTPS port. |
 | `BIND_ADDR` | `0.0.0.0` | Persisted as `server.bind_addr`. Without TLS the server falls back to `127.0.0.1` unless `WEBKVM_ALLOW_INSECURE_HTTP=1`. |
 | `WEBKVM_ALLOW_INSECURE_HTTP` | unset | Allow a plaintext non-loopback listener (lab only). |
+| `WEBKVM_OIDC_ENABLED` | unset | Enable SSO/OIDC login. See `.env.example` for the full set. |
+| `WEBKVM_OIDC_ISSUER` | — | OIDC issuer URL. |
+| `WEBKVM_OIDC_CLIENT_ID` | — | OIDC client ID. |
+| `WEBKVM_OIDC_CLIENT_SECRET` | — | OIDC client secret (environment only, never returned by the API). |
+| `WEBKVM_OIDC_REDIRECT_URL` | — | Registered callback URL. |
+| `WEBKVM_OIDC_AUTO_PROVISION` | `false` | Create unknown SSO users with the default role. |
+| `WEBKVM_OIDC_DISABLE_LOCAL_LOGIN` | `false` | Disable local password login except the built-in `admin`. |
+| `WEBKVM_VAPID_SUBJECT` | `mailto:webkvm@localhost` | Contact used in browser push VAPID tokens. |
 | `LIBVIRT_URI` | `qemu:///system` | libvirt URI. |
 | `DATA_DIR` | `/opt/webkvm` | Persistent data directory. |
 | `JWT_SECRET` | auto-generated | Stored at `{DATA_DIR}/jwt.key` (0600); weak secrets rejected. |

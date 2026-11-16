@@ -588,6 +588,7 @@ export const api = {
       xhr.send(formData);
     });
   },
+  getOIDCStatus: () => request('/auth/oidc/status'),
   // force=true deletes an image even when something still points at it.
   // Without it the backend answers 409 and lists the usages, so the user
   // can be told what will break before it breaks.

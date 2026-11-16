@@ -218,6 +218,9 @@ func NewRouter(
 
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Post("/login", h.Login)
+		r.Get("/oidc/status", h.GetOIDCStatus)
+		r.Get("/oidc/login", h.OIDCLogin)
+		r.Get("/oidc/callback", h.OIDCCallback)
 		r.Post("/login/2fa", h.Login2FA)
 		r.Post("/webauthn/login/begin", h.WebAuthnLoginBegin)
 		r.Post("/webauthn/login/finish", h.WebAuthnLoginFinish)

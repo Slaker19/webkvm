@@ -1278,6 +1278,7 @@ func IsCapability(perm string) bool {
 type User struct {
 	Username           string           `json:"username"`
 	PasswordHash       string           `json:"password_hash,omitempty"`
+	OIDCSubject        string           `json:"oidc_subject,omitempty"`
 	Role               string           `json:"role"`
 	CreatedAt          string           `json:"created_at"`
 	Email              string           `json:"email,omitempty"`
@@ -1423,6 +1424,7 @@ func (u *User) ToResponse() UserResponse {
 type CreateUserRequest struct {
 	Username    string           `json:"username"`
 	Password    string           `json:"password"`
+	OIDCSubject string           `json:"oidc_subject,omitempty"`
 	Role        string           `json:"role"`
 	Email       string           `json:"email,omitempty"`
 	Permissions *UserPermissions `json:"permissions,omitempty"`

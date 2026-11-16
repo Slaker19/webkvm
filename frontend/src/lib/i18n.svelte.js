@@ -396,6 +396,8 @@ export const messages = {
       passkeyFailed: 'Passkey authentication failed',
       passkeyCancelled: 'Passkey verification cancelled',
       orSignInWith: 'or sign in with',
+      oidcFailed: 'SSO sign-in failed. Try again or contact your administrator.',
+      oidcButton: 'Sign in with {provider}',
     },
     common: {
       language: 'Language',
@@ -6549,6 +6551,9 @@ export const messages = {
       passkeyFailed: 'Error de autenticación con Passkey',
       passkeyCancelled: 'Verificación de Passkey cancelada',
       orSignInWith: 'o iniciar con',
+      oidcFailed:
+        'El inicio de sesión SSO falló. Inténtalo de nuevo o contacta con tu administrador.',
+      oidcButton: 'Iniciar sesión con {provider}',
     },
     common: {
       language: 'Idioma',
@@ -12792,6 +12797,9 @@ export const messages = {
       passkeyFailed: "Error d'autenticació amb Passkey",
       passkeyCancelled: 'Verificació de Passkey cancel·lada',
       orSignInWith: 'o inicia amb',
+      oidcFailed:
+        "L'inici de sessió SSO ha fallat. Torna-ho a provar o contacta amb l'administrador.",
+      oidcButton: 'Inicia sessió amb {provider}',
     },
     common: {
       language: 'Idioma',

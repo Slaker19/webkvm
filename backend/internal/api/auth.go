@@ -21,6 +21,10 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "username and password required")
 		return
 	}
+	if oidcLocalLoginDisabled(req.Username) {
+		jsonErrCode(w, http.StatusForbidden, "local_login_disabled", "local password login is disabled; use SSO")
+		return
+	}
 
 	// Check perimeter jail before attempting authentication
 	ip, _ := logging.ClientIPInfo(r)

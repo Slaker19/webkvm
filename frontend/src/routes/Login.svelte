@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from 'svelte';
   import { auth, api } from '../lib/stores/auth.svelte.js';
   import { navigate, getRoute } from '../lib/router.svelte.js';
   import { t } from '../lib/i18n.svelte.js';
@@ -23,6 +24,16 @@
   let totpCode = $state('');
 
   let sessionExpired = $derived(getRoute()?.query?.reason === 'session_expired');
+  let oidc = $state({ enabled: false, button_label: 'SSO', disable_local_login: false });
+  let oidcError = $derived(getRoute()?.query?.oidc_error);
+
+  onMount(async () => {
+    try {
+      oidc = await api.getOIDCStatus();
+    } catch {
+      // Local login stays available when the status endpoint is unreachable.
+    }
+  });
 
   async function handlePasskeyLogin() {
     if (loading || passkeyLoading) return;
@@ -145,7 +156,7 @@
         </p>
       </div>
 
-      {#if error}
+      {#if error || oidcError}
         <div
           role="alert"
           aria-live="assertive"
@@ -153,11 +164,11 @@
         >
           <div class="flex items-center gap-2">
             <Icon name="error" size={16} class="shrink-0" />
-            {error}
+            {error || t('login.oidcFailed')}
           </div>
         </div>
       {/if}
-      {#if sessionExpired && !mfaRequired && !error}
+      {#if sessionExpired && !mfaRequired && !error && !oidcError}
         <div
           class="rounded-md border border-warning/30 bg-warning-subtle px-3 py-2 text-sm text-warning mb-4"
         >
@@ -274,6 +285,19 @@
               {t('login.signInPasskey')}
             {/if}
           </Button>
+
+          {#if oidc.enabled}
+            <Button
+              type="button"
+              variant="outline"
+              disabled={loading || passkeyLoading}
+              onclick={() => window.location.assign('/api/auth/oidc/login')}
+              class="w-full border-border/80 hover:border-accent/50 hover:bg-accent/5 text-foreground"
+            >
+              <Icon name="shield" size={16} class="mr-2 text-accent" />
+              {t('login.oidcButton', { provider: oidc.button_label || 'SSO' })}
+            </Button>
+          {/if}
         {/if}
 
         {#if mfaRequired}
