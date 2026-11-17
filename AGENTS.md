@@ -1,7 +1,7 @@
 # WebKVM — Contexto para desarrollo (AGENTS)
 
 > Documento vivo para agentes y humanos.
-> Rama `main` en `v0.1.13` (release en preparación).
+> Rama `main` en `v0.1.13` (release publicada).
 
 ## 1. Qué es
 

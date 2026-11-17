@@ -24,9 +24,8 @@ conflicts=('webkvm')
 backup=('etc/default/webkvm')
 install=webkvm-bin.install
 source=("https://github.com/Slaker19/webkvm/releases/download/v0.1.13/webkvm-0.1.13.tar.gz")
-# Replace SKIP with the v0.1.13 tarball SHA-256 after the release is cut
-# (updpkgsums, or take it from SHA256SUMS in the GitHub release).
-sha256sums=('SKIP')
+# SHA-256 of the published v0.1.13 tarball (from the release SHA256SUMS).
+sha256sums=('499578aefea148ad0607cad6a10f911ed74a1d6498be02d747e23c811827e1fa')
 
 package() {
   # Upstream tarball layout: backend/webkvm (+webkvm-cli), scripts, install.sh, ...
