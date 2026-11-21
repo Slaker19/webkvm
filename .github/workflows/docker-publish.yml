@@ -79,9 +79,13 @@ jobs:
           push: false
           build-args: |
             VERSION=${{ steps.ver.outputs.version }}
+          # A pre-release tag (contains "-") never moves :latest: only a
+          # full v0.1.14-style tag does. RC images are published under
+          # their own tag for early testing while the stable release is
+          # still gated.
           tags: |
             slaker1908/webkvm:${{ steps.ver.outputs.version }}
-            slaker1908/webkvm:latest
+            ${{ !contains(steps.ver.outputs.version, '-') && 'slaker1908/webkvm:latest' || 'slaker1908/webkvm:edge' }}
 
       # Smoke test the locally built image: boot it against a real host
       # libvirtd (socket mounted, like docker-compose.yml does) and prove
@@ -148,4 +152,10 @@ jobs:
         if: steps.check-auth.outputs.auth == 'true'
         run: |
           docker push slaker1908/webkvm:${{ steps.ver.outputs.version }}
-          docker push slaker1908/webkvm:latest
+          if [[ "${{ steps.ver.outputs.version }}" == *-* ]]; then
+            # Pre-release tag: publish under :edge, never move :latest.
+            docker tag slaker1908/webkvm:${{ steps.ver.outputs.version }} slaker1908/webkvm:edge
+            docker push slaker1908/webkvm:edge
+          else
+            docker push slaker1908/webkvm:latest
+          fi
