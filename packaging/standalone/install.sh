@@ -633,6 +633,27 @@ tmp.replace(path)
 PY
 }
 
+# remove_setting deletes a persisted setting (no-op when absent). Used by
+# the plain-HTTP path so a previous install's TLS config cannot survive
+# an explicit --https=no.
+remove_setting() {
+  local key="$1"
+  [[ -f "${CONFIG_PATH}" ]] || return 0
+  python3 - "${CONFIG_PATH}" "${key}" <<'PY'
+import json
+import pathlib
+import sys
+path, key = sys.argv[1], sys.argv[2]
+d = json.loads(pathlib.Path(path).read_text())
+if "values" in d and key in d["values"]:
+    del d["values"][key]
+    tmp = pathlib.Path(path + ".tmp")
+    tmp.write_text(json.dumps(d, indent=2) + "\n")
+    tmp.chmod(0o600)
+    tmp.replace(path)
+PY
+}
+
 # ── Main ───────────────────────────────────────────────────────────────
 bold() { printf "\033[1m%s\033[0m\n" "$*"; }
 
@@ -1014,6 +1035,20 @@ PY
   log "wrote initial settings: bind=${DEFAULT_BIND} port=${DEFAULT_PORT}"
 else
   log "preserving existing persistent server settings"
+  # A --port/--bind passed on a reinstall is silently ignored by the
+  # preserved config; say so instead of failing the health check with a
+  # mystery port mismatch.
+  if python3 - "${CONFIG_PATH}" "${DEFAULT_PORT}" <<'PY'
+import json, pathlib, sys
+try:
+    v = json.loads(pathlib.Path(sys.argv[1]).read_text()).get("values", {})
+    sys.exit(0 if int(v.get("server.port", 0)) != int(sys.argv[2]) else 1)
+except Exception:
+    sys.exit(1)
+PY
+  then
+    warn "existing config keeps its own server.port; --port=${DEFAULT_PORT} is ignored (change it in Settings or delete ${CONFIG_PATH} for a fresh install)"
+  fi
 fi
 
 # ── HTTPS ──────────────────────────────────────────────────────────────
@@ -1024,6 +1059,14 @@ if [[ "${HTTPS}" == "yes" ]]; then
   if [[ -n "${TLS_DOMAIN}" ]]; then
     persist_setting "server.tls_domain" "${TLS_DOMAIN}"
   fi
+else
+  # An explicit plain-HTTP install must also win over TLS settings a
+  # previous installation persisted: stale server.tls_cert/tls_key made
+  # the backend serve HTTPS while the health check probed HTTP (and
+  # vice versa the other way round).
+  remove_setting "server.tls_cert"
+  remove_setting "server.tls_key"
+  remove_setting "server.tls_domain"
 fi
 
 systemctl daemon-reload
@@ -1082,6 +1125,20 @@ PY
 )"
 PROTO="http"
 if [[ "${HTTPS}" == "yes" ]]; then PROTO="https"; fi
+# Prefer the protocol the persisted config actually serves: a preserved
+# tls_cert from a previous install (or this run's HTTPS block) makes the
+# backend HTTPS-only, and probing the wrong protocol wastes the whole
+# health window before a false-negative rollback.
+if python3 - "${CONFIG_PATH}" <<'PY'
+import json, pathlib, sys
+try:
+    v = json.loads(pathlib.Path(sys.argv[1]).read_text()).get("values", {})
+    cert, dom = v.get("server.tls_cert", ""), v.get("server.tls_domain", "")
+    sys.exit(0 if (cert or dom) else 1)
+except Exception:
+    sys.exit(1)
+PY
+then PROTO="https"; fi
 HEALTH_FILE="$(mktemp --tmpdir webkvm-health.XXXXXX)"
 chmod 0600 "${HEALTH_FILE}"
 ok=0

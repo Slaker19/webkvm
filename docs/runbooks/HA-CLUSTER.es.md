@@ -411,8 +411,10 @@ no por la red privada.
 
 El acceso remoto es **solo para administradores**. Usa `?node=` (y
 `hv=kvm|incus` cuando el nombre del miembro Incus coincide con un hostname
-KVM). Casi todo esto se ejercitó con mocks; la edición remota y la consola
-remota **no están probadas en vivo**.
+KVM). Estado de validación (lab v0.1.12, tres Ubuntu VMs bajo Proxmox): la
+edición remota, la consola noVNC y el SSH gestionado (rotación/test/rollback
+de claves) se ejercitaron **en vivo** con un navegador real; SPICE y la
+consola serie remota siguen **sin probar en vivo**.
 
 Qué funciona en remoto, por clase de ruta (79 rutas: 37 A, 16 B, 26 L):
 
@@ -458,10 +460,15 @@ miembros (`POST /api/vms/{id}/move`) responde `member_offline`, `needs_stop`,
 
 Pacemaker es el único cerebro: el CIB es la fuente de verdad. Lo que no aparece
 en "Cargas HA" nunca se toca. Todos los endpoints son solo admin y necesitan el
-módulo activo. Estado: la secuencia de comandos `pcs` del planificador se
-ejecutó contra una copia temporal del CIB real (`pcs -f`, pcs 0.12.1, todo
-rc=0: **solo simulado**); activar HA en una VM o instancia real desde la UI/API,
-`cib-push` y el flujo de mantenimiento **no están probados en vivo**.
+módulo activo. Estado de validación: el flujo de HA por carga se validó
+**en vivo** en el cluster del lab v0.1.12 (tres Ubuntu VMs, Pacemaker con
+quorum) vía la API del producto — readiness, evidencia de fencing, adopción,
+enable, move, recuperación de failcount, mantenimiento y guards pasaron 10/10
+. Sigue **sin probar en vivo**: el asistente
+de creación de clúster de extremo a extremo, `pcs stonith sbd enable`,
+"Probar el fencing" desde la UI, activar HA en una **VM KVM real desde la UI**
+(la pasada en vivo usó la API con cargas Incus), las operaciones en bloque y
+`cib-push --config`.
 
 ### 8.1 Activar y desactivar en la UI
 
@@ -607,7 +614,7 @@ solo dentro del espacio del servicio), desmóntalo antes ahí:
 `nsenter -t $(systemctl show -p MainPID --value webkvm) -m umount <mnt>`.
 
 **No probado en vivo**: la captura y el botón Restaurar solo se han probado con
-dobles (ver STABLE-REPORT 8.20); las correcciones de 8.22 (espacio de montaje
+dobles (informe interno del lab); las correcciones de 8.22 (espacio de montaje
 del host, `drbd_peers_down`, enlace de la definición) tampoco.
 
 Una carga bajo HA tiene su estado de energía en Pacemaker: usa Mover, no
@@ -702,15 +709,23 @@ creado a mano, no con el interruptor "Alta disponibilidad".
 
 ## 10. Límites conocidos y qué no está validado en vivo
 
+La validación se cita con su entorno: todo lo anterior se validó en **tres
+Ubuntu VMs bajo Proxmox** salvo que se indique otra cosa; un lab de VMs no
+puede validar honestamente el fencing con watchdogs de hardware real.
+
+Validado en vivo en ese lab (v0.1.12): failover por standby, dos eventos de
+fence reales (kernel panic), el agente OCF de Incus, HA por carga vía API
+del producto (10/10), SSH gestionado con rotación/test/rollback, edición
+remota de VMs y consola noVNC con navegador real.
+
 No probado en vivo:
 
 - Ruta dnf de Fedora/derivadas de RHEL (y DNF5 en Fedora 44), ruta de
   instalación en Arch (solo se ejecutó `check`), Debian 13.
 - El asistente de clúster de extremo a extremo y `pcs stonith sbd enable`.
-- SSH gestionado en la UI, edición remota, consola remota (VNC, serie, SPICE),
-  `permitopen`/`restrict` con el OpenSSH real de tus nodos.
-- Activar HA en una VM/instancia real desde la UI/API, `cib-push --config`, el
-  flujo de mantenimiento, las operaciones en bloque.
+- La consola serie remota y SPICE (noVNC y la edición remota están validadas).
+- Activar HA en una **VM KVM real desde la UI** (la pasada en vivo usó la API
+  con cargas Incus), `cib-push --config`, las operaciones en bloque.
 - Los flujos de "Probar el fencing" de la UI; snapshots con discos; migrar
   entre nodos.
 - Restauración completa de la base LINSTOR (ver sección 12).
@@ -721,9 +736,12 @@ Límites:
   SSD raíz.
 - No hay migración en vivo de instancias Incus: mover es parar + arrancar.
 - Crear un volumen LINSTOR nuevo de 3 réplicas exige los tres miembros en línea.
-- Las rutas de clase L solo funcionan desde el WebKVM propio del nodo; el
-  estado local por nodo (portadas, planificadores, alertas, grupos) se indexa
-  por nombre y puede colisionar entre nodos.
+- Las rutas de clase L solo funcionan desde el WebKVM propio del nodo. Estado
+  local por nodo: los planificadores de encendido/snapshot y las portadas
+  están acotados por nodo (claves compuestas) desde la corrección de
+  colisiones; el historial de métricas/alertas sigue indexado por nombre de VM
+  y puede confundir VMs homónimas de distintos nodos en las vistas de flota
+  (solo lectura, no se ejecuta ninguna acción en el nodo equivocado).
 - No hay canal de alertas configurado: `webkvm-ha-health-check` solo escribe en
   el journal (añade `OnFailure=` a su unidad).
 

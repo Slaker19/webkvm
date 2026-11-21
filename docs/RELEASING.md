@@ -130,6 +130,16 @@ The `packaging/arch/PKGBUILD` in this repository is a reference for a local
 
 ## 8. HA clusters
 
+**Validation gate (HA):** a milestone that touches HA code paths (drain,
+evacuation, Pacemaker/Incus integration, cluster module) must ship with its
+live-validation slice green — the relevant checks of
+[GUIDED-VALIDATION.md](runbooks/GUIDED-VALIDATION.md) executed against the
+3-node lab, with results recorded in [HA-CLUSTER.md](runbooks/HA-CLUSTER.md)
+citing the environment (e.g. "3 Ubuntu VMs, Proxmox"), never a bare
+"validated". Labels are only upgraded with that lab evidence; SBD/watchdog
+stays "simulated only" until tested on real hardware. A release whose HA
+features lack their green slice does not go out.
+
 The in-app button updates only the node serving the panel. For a real HA
 cluster, follow [HA-CLUSTER.md](runbooks/HA-CLUSTER.md#1211-updating-webkvm-in-an-ha-cluster):
 disable `webkvm-app`, update every node with the same binary, re-enable and

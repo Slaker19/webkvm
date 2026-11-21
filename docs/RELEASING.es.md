@@ -131,6 +131,17 @@ nunca compiles con `SKIP`.
 
 ## 8. Clústeres HA
 
+**Puerta de validación (HA):** un hito que toque rutas de código HA (drain,
+evacuación, integración Pacemaker/Incus, módulo de clúster) debe publicarse con
+su slice de validación en vivo en verde — las comprobaciones pertinentes de
+[GUIDED-VALIDATION.md](runbooks/GUIDED-VALIDATION.es.md) ejecutadas contra el
+lab de 3 nodos, con los resultados anotados en
+[HA-CLUSTER.es.md](runbooks/HA-CLUSTER.es.md) citando el entorno (p. ej. «3
+Ubuntu VMs, Proxmox»), nunca un «validado» a secas. Las etiquetas solo se
+actualizan con esa evidencia del lab; SBD/watchdog sigue «solo simulado» hasta
+probarse en hardware real. Una release cuyas features HA no tengan su slice
+verde no sale.
+
 El botón de la UI solo actualiza el nodo que sirve el panel. Para un clúster HA
 real, sigue [HA-CLUSTER.es.md](runbooks/HA-CLUSTER.es.md#1211-actualizar-webkvm-en-un-clúster-ha):
 deshabilita `webkvm-app`, actualiza todos los nodos con el mismo binario,

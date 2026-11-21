@@ -403,8 +403,10 @@ the node. Open the panel itself through the LAN VIP, not the private network.
 ## 7. Open and edit VMs and Incus from any node
 
 Remote access is **administrators only**. Use `?node=` (and `hv=kvm|incus` when
-the Incus member name equals a KVM hostname). Most of this was exercised with
-mocks; remote editing and the remote console are **not tested live**.
+the Incus member name equals a KVM hostname). Validation status (v0.1.12 lab,
+three Ubuntu VMs under Proxmox): remote editing, the noVNC console and managed
+SSH key rotation/test/rollback were exercised **live** through a real browser;
+SPICE and the remote serial console remain **not tested live**.
 
 What works remotely, by route class (79 routes: 37 A, 16 B, 26 L):
 
@@ -449,10 +451,15 @@ are reached through the local socket; moving instances between members
 
 Pacemaker is the only brain: the CIB is the source of truth. Anything not
 listed in "HA workloads" is never touched. All endpoints are admin-only and
-need the module on. Status: the `pcs` command sequence for the planner was run
-against a temporary copy of the live CIB (`pcs -f`, pcs 0.12.1, all rc=0:
-**simulated only**); enabling HA on a real VM or instance through the UI/API,
-`cib-push`, and the maintenance flow were **not tested live**.
+need the module on. Validation status: the per-workload HA flow was validated
+**live** on the v0.1.12 lab cluster (three Ubuntu VMs, Pacemaker with quorum)
+via the product API — readiness, fencing evidence, workload adoption, enable,
+move, failcount recovery, maintenance mode and guards passed 10/10
+. Still **not tested live**: the cluster
+creation wizard end-to-end, `pcs stonith sbd enable`, "Test fencing" from the
+UI, enabling HA on a real **KVM VM through the UI** (the live pass used the
+API with Incus workloads), bulk operations, snapshots with disks and node
+migration.
 
 ### 8.1 Enable and disable in the UI
 
@@ -591,7 +598,7 @@ inside the service namespace), unmount it there first:
 `nsenter -t $(systemctl show -p MainPID --value webkvm) -m umount <mnt>`.
 
 **Not tested live**: the capture and the Restore button were tested only with
-fakes (see STABLE-REPORT 8.20); the 8.22 fixes (host mount namespace,
+fakes (internal lab report); the 8.22 fixes (host mount namespace,
 `drbd_peers_down`, definition link) are also untested live.
 
 A workload under HA owns its power state in Pacemaker: use Move, not Migrate;
@@ -683,15 +690,23 @@ created by hand, not via the "High availability" switch.
 
 ## 10. Known limits and what is not validated live
 
+Validation is cited with its environment: everything below was validated on
+**three Ubuntu VMs under Proxmox** unless marked otherwise; a VM lab cannot
+honestly validate real-hardware watchdog fencing.
+
+Validated live in that lab (v0.1.12): standby failover, two real fence events
+(kernel panic), the Incus OCF agent, per-workload HA via the product API
+(10/10), managed SSH key rotation/test/rollback, remote VM editing and the
+noVNC console through a real browser.
+
 Not tested live:
 
 - Debian 13, Rocky 8, RHEL with a subscription, an official-repo pacman install
   on Arch (no package of the stack is official there), real hardware watchdogs.
 - The cluster wizard end to end and `pcs stonith sbd enable`.
-- Managed SSH in the UI, remote editing, remote console (VNC, serial, SPICE),
-  `permitopen`/`restrict` with the real OpenSSH of your nodes.
-- Enabling HA on a real VM/instance through the UI/API, `cib-push --config`,
-  the maintenance flow, bulk operations.
+- The remote serial console and SPICE (noVNC and remote editing are validated).
+- Enabling HA on a real KVM VM **through the UI** (the live pass used the API
+  with Incus workloads), `cib-push --config`, bulk operations.
 - The UI "Test fencing" flows; snapshots with disks; migrating between nodes.
 - Full LINSTOR database restore (see section 12).
 
@@ -700,9 +715,11 @@ Limits:
 - A single-host test setup does not protect from losing that host or its root disk.
 - No live migration of Incus instances: a move is stop + start.
 - Creating a new 3-replica LINSTOR volume needs all three members online.
-- Class L routes only work from the node's own WebKVM; per-node local state
-  (covers, schedules, alerts, groups) is indexed by name and can collide
-  between nodes.
+- Class L routes only work from the node's own WebKVM. Per-node local state:
+  VM power/snapshot schedules and cover files are node-scoped (composite
+  keys) since the collision fix; alert/metric history is still keyed by VM
+  name and can conflate same-named VMs of different nodes in fleet views
+  (read-side only, no action is executed on the wrong node).
 - Alert delivery is not configured: `webkvm-ha-health-check` only writes to the
   journal (add `OnFailure=` to its unit).
 

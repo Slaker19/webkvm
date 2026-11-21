@@ -6,6 +6,54 @@ and [Semantic Versioning](https://semver.org/).
 
 Spanish version: [CHANGELOG.es.md](CHANGELOG.es.md).
 
+## [Unreleased] — v0.1.14 candidate
+
+Stability release: the v0.1.13 features hardened for production — async
+evacuations with persisted state, a durable task history with per-task logs,
+cross-node schedule collision fixes, and a validated installer for the apt,
+dnf and pacman families.
+
+### Added
+
+- **Async node evacuation**: evacuation runs as a background job (202 + job ID)
+  with live per-VM progress in the Task Center, a Web Push notification on
+  completion, cancel (no new migrations are started; the in-flight one is
+  never killed) and resume (re-running evacuates the remaining VMs). The
+  evacuation record persists to `<dataDir>/evacuations.json`, survives a
+  server restart and closes as `interrupted` instead of deadlocking the
+  single-flight guard.
+- **Task history and logs**: terminal jobs are persisted to
+  `<dataDir>/jobs-history.json` (capped, deduped by job ID, 7-day TTL) and
+  survive a server restart. Every job accumulates a bounded progress log
+  served as text by `GET /api/jobs/{id}/log`; `GET /api/jobs/history` and
+  `GET /api/jobs/stats` (running / done 24h / failed 24h / evacuations,
+  owner-filtered by RBAC) power a "Recently finished" section with
+  per-task log download in the Task Drawer (en/es/ca).
+- **HA validation gate**: `docs/RELEASING.md` §8 now requires a green
+  live-validation slice (GUIDED-VALIDATION against the 3-node lab, results
+  recorded with the environment cited) for any release touching HA code
+  paths; runbook evidence labels were reconciled with the v0.1.12 lab
+  results in both languages.
+
+### Fixed
+
+- **Cross-node schedule collision**: VM power/snapshot schedules are
+  node-scoped (`nodeID/vm` composite keys with legacy-key migration) and the
+  cron scheduler dispatches each action to the schedule's owning node —
+  previously two nodes hosting a same-named VM shared one schedule, and one
+  node's cron could power the other node's machine. Cover uploads through a
+  remote dispatch are node-scoped for the same reason.
+- **Installer `--https=no`**: a re-install over a preserved config kept the
+  previous `server.tls_cert`/`tls_key`, so the backend served HTTPS while the
+  health check probed HTTP and rolled back a good deployment. An explicit
+  plain-HTTP install now clears persisted TLS keys, the health check derives
+  its protocol from the persisted config, and a `--port` ignored by a
+  preserved config is warned about instead of failing silently.
+- **Stale version fallback**: an unflagged build no longer reports `0.1.12`;
+  the source default is `dev` and release builds stamp the real version.
+- **Empty job logs**: `submitJob`/`submitJobWithPool` success paths now write
+  a terminal `completed` line so the log endpoint is not empty on success.
+
 ## [0.1.13] — 2026-11-16
 
 Feature release: maintenance-safe node drain, browser push, and optional OIDC SSO.
