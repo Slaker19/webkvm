@@ -16,7 +16,7 @@ func (h *Handler) GetVMSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	jsonResp(w, http.StatusOK, h.vmSchedStore.Get(id))
+	jsonResp(w, http.StatusOK, h.vmSchedStore.Get(h.schedScope(), id))
 }
 
 // SetVMSchedule (operator/admin) sets or clears a VM's power schedule.
@@ -36,7 +36,7 @@ func (h *Handler) SetVMSchedule(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}
-	existing := h.vmSchedStore.Get(id)
+	existing := h.vmSchedStore.Get(h.schedScope(), id)
 	// Changing or setting power schedule requires "control_power"
 	if req.StartCron != existing.StartCron || req.StopCron != existing.StopCron {
 		if err := h.requirePermission(r, "control_power"); err != nil {
@@ -58,7 +58,7 @@ func (h *Handler) SetVMSchedule(w http.ResponseWriter, r *http.Request) {
 		SnapshotCron: req.SnapshotCron,
 		SnapshotMax:  req.SnapshotMax,
 	}
-	if err := h.vmSchedStore.Set(id, sch); err != nil {
+	if err := h.vmSchedStore.Set(h.schedScope(), id, sch); err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -69,7 +69,7 @@ func (h *Handler) SetVMSchedule(w http.ResponseWriter, r *http.Request) {
 		"snapshot": req.SnapshotCron,
 		"max_snap": req.SnapshotMax,
 	}))
-	jsonResp(w, http.StatusOK, h.vmSchedStore.Get(id))
+	jsonResp(w, http.StatusOK, h.vmSchedStore.Get(h.schedScope(), id))
 }
 
 // PowerVMNow (operator/admin) starts/stops a VM immediately via the

@@ -196,6 +196,19 @@ func (h *Handler) pruneVMCoverFiles(vmID, keepCoverURL string) {
 	}
 }
 
+// sanitizeCoverScope makes a node ID safe inside a cover filename.
+func sanitizeCoverScope(nodeID string) string {
+	out := make([]rune, 0, len(nodeID))
+	for _, c := range nodeID {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.' {
+			out = append(out, c)
+		} else {
+			out = append(out, '_')
+		}
+	}
+	return string(out)
+}
+
 // UploadCover stores an image file as the VM's cover. The path is
 // recorded in <webkvm:meta><cover>...</cover> so the frontend can
 // resolve the file via /api/covers/{path}.
@@ -253,12 +266,22 @@ func (h *Handler) UploadCover(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Filename is just the VM id + ext so it's easy to reason about.
+	// Remote dispatches scope it with the node ID: the clone shares this
+	// covers dir with the local node, and both can host a VM with the
+	// same name — a bare filename would let one overwrite the other's
+	// file. Legacy local files keep the bare name.
 	cleanID := filepath.Base(id)
 	if cleanID == "" || cleanID == "." || cleanID == ".." || strings.Contains(cleanID, "/") || strings.Contains(cleanID, "\\") || strings.Contains(cleanID, "..") {
 		jsonErr(w, http.StatusBadRequest, "invalid VM id")
 		return
 	}
-	dst := filepath.Join(coversDir, cleanID+ext)
+	var nameID string
+	if h.isRemote() {
+		nameID = sanitizeCoverScope(h.remote.node.ID) + "__" + cleanID
+	} else {
+		nameID = cleanID
+	}
+	dst := filepath.Join(coversDir, nameID+ext)
 	if rel, rerr := filepath.Rel(coversDir, dst); rerr != nil || strings.HasPrefix(rel, "..") || rel == ".." {
 		jsonErr(w, http.StatusBadRequest, "invalid cover path")
 		return
@@ -285,7 +308,7 @@ func (h *Handler) UploadCover(w http.ResponseWriter, r *http.Request) {
 	// with a same-format image reused the exact same URL the browser
 	// had already cached — showing the deleted/old image after a
 	// re-upload even though the new file was saved correctly.
-	url := fmt.Sprintf("/api/covers/%s%s?v=%d", cleanID, ext, time.Now().UnixNano())
+	url := fmt.Sprintf("/api/covers/%s%s?v=%d", nameID, ext, time.Now().UnixNano())
 	if _, err := h.compute.UpdateVMMeta(id, models.VMMetaUpdate{Cover: &url}); err != nil {
 		os.Remove(dst) // lgtm[go/path-injection]
 		jsonErr(w, http.StatusInternalServerError, "save cover meta: "+err.Error())

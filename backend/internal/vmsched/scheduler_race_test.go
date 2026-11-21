@@ -16,10 +16,10 @@ import (
 // running and VMs kept being powered on and snapshotted on schedule.
 func TestSchedulerConcurrentRebuildAndStop(t *testing.T) {
 	store := NewStore(t.TempDir())
-	if err := store.Set("vm1", Schedule{StartCron: "*/5 * * * *"}); err != nil {
+	if err := store.Set("local", "vm1", Schedule{StartCron: "*/5 * * * *"}); err != nil {
 		t.Fatal(err)
 	}
-	sc := NewScheduler(store, func(string, string) error { return nil }, nil, slog.Default())
+	sc := NewScheduler(store, func(string, string, string) error { return nil }, nil, slog.Default())
 	sc.Start()
 	defer sc.Stop()
 

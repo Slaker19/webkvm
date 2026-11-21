@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/robfig/cron/v3"
@@ -33,10 +34,28 @@ func (s Schedule) Enabled() bool {
 }
 
 // Store persists schedules per VM id.
+//
+// Keys are node-scoped composites ("local/web", "n_ab12/web"): the
+// federation clone shares this store across nodes, and two nodes can run
+// domains with the same name — a bare key would make node B's schedule
+// power node A's VM (and vice versa). Legacy bare keys from older
+// versions are re-keyed to the local node by MigrateLegacy.
 type Store struct {
 	mu   sync.Mutex
 	path string
 	byVM map[string]Schedule
+}
+
+// ScopeKey builds the composite store key for one node's VM.
+func ScopeKey(nodeID, vmID string) string { return nodeID + "/" + vmID }
+
+// SplitKey splits a composite key. Returns ok=false for legacy bare keys.
+func SplitKey(key string) (nodeID, vmID string, ok bool) {
+	i := strings.IndexByte(key, '/')
+	if i <= 0 || i == len(key)-1 {
+		return "", "", false
+	}
+	return key[:i], key[i+1:], true
 }
 
 // NewStore creates the store (does not touch disk).
@@ -45,6 +64,29 @@ func NewStore(dataDir string) *Store {
 		path: filepath.Join(dataDir, "vm-schedules.json"),
 		byVM: map[string]Schedule{},
 	}
+}
+
+// MigrateLegacy re-keys schedules persisted by versions before node
+// scoping: a bare "<vm>" key belongs to the local node. Call once after
+// Load with the local node's ID; persists the migrated file.
+func (s *Store) MigrateLegacy(localNodeID string) {
+	if localNodeID == "" {
+		return
+	}
+	s.mu.Lock()
+	changed := false
+	for key, sch := range s.byVM {
+		if _, _, ok := SplitKey(key); ok {
+			continue
+		}
+		delete(s.byVM, key)
+		s.byVM[ScopeKey(localNodeID, key)] = sch
+		changed = true
+	}
+	if changed {
+		_ = s.saveLocked() // best-effort migration persist; next Save() writes it anyway
+	}
+	s.mu.Unlock()
 }
 
 // Load reads the schedules file. A missing file is fine.
@@ -75,6 +117,11 @@ func (s *Store) Load() error {
 func (s *Store) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveLocked()
+}
+
+// saveLocked writes the file; the caller holds s.mu.
+func (s *Store) saveLocked() error {
 	data, err := json.MarshalIndent(map[string]any{
 		"version":   1,
 		"schedules": s.byVM,
@@ -89,15 +136,15 @@ func (s *Store) Save() error {
 	return os.Rename(tmp, s.path)
 }
 
-// Get returns the schedule for a VM (empty if none).
-func (s *Store) Get(vmID string) Schedule {
+// Get returns the schedule for one node's VM (empty if none).
+func (s *Store) Get(nodeID, vmID string) Schedule {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.byVM[vmID]
+	return s.byVM[ScopeKey(nodeID, vmID)]
 }
 
 // Set validates and stores a schedule. Empty both clears it.
-func (s *Store) Set(vmID string, sch Schedule) error {
+func (s *Store) Set(nodeID, vmID string, sch Schedule) error {
 	if sch.Enabled() {
 		if err := Validate(sch); err != nil {
 			return err
@@ -105,9 +152,9 @@ func (s *Store) Set(vmID string, sch Schedule) error {
 	}
 	s.mu.Lock()
 	if sch.Enabled() {
-		s.byVM[vmID] = sch
+		s.byVM[ScopeKey(nodeID, vmID)] = sch
 	} else {
-		delete(s.byVM, vmID)
+		delete(s.byVM, ScopeKey(nodeID, vmID))
 	}
 	s.mu.Unlock()
 	return s.Save()
@@ -141,11 +188,13 @@ func Validate(sch Schedule) error {
 	return nil
 }
 
-// PowerFunc starts or stops a VM. Implemented by the caller (libvirt).
-type PowerFunc func(vmID, action string) error
+// PowerFunc starts or stops a VM on the node the schedule belongs to.
+// Implemented by the caller (libvirt/compute seam).
+type PowerFunc func(nodeID, vmID, action string) error
 
-// SnapshotFunc creates an automated snapshot and prunes older ones.
-type SnapshotFunc func(vmID string, maxKeep int) error
+// SnapshotFunc creates an automated snapshot on the owning node and
+// prunes older ones.
+type SnapshotFunc func(nodeID, vmID string, maxKeep int) error
 
 // Scheduler owns a single cron and (re)registers entries from the
 // store. It is safe to call Rebuild repeatedly.
@@ -212,20 +261,27 @@ func (s *Scheduler) Rebuild() {
 		<-stopped.Done()
 	}
 	s.cron = cron.New()
-	for vmID, sch := range s.store.All() {
-		s.addLocked(vmID, sch)
+	for key, sch := range s.store.All() {
+		s.addLocked(key, sch)
 	}
 	s.cron.Start()
 }
 
-func (s *Scheduler) addLocked(vmID string, sch Schedule) {
+func (s *Scheduler) addLocked(key string, sch Schedule) {
+	nodeID, vmID, ok := SplitKey(key)
+	if !ok {
+		// Un-scoped entry: MigrateLegacy re-keys these; firing a bare key
+		// would target an ambiguous VM, so it is skipped and logged.
+		s.logger.Warn("vmsched_unscoped_key_skipped", "key", key)
+		return
+	}
 	if sch.StartCron != "" {
-		if _, err := s.cron.AddFunc(sch.StartCron, s.fire(vmID, "start")); err != nil {
+		if _, err := s.cron.AddFunc(sch.StartCron, s.fire(nodeID, vmID, "start")); err != nil {
 			s.logger.Warn("vmsched_start_cron_invalid", "vm", vmID, "err", err)
 		}
 	}
 	if sch.StopCron != "" {
-		if _, err := s.cron.AddFunc(sch.StopCron, s.fire(vmID, "stop")); err != nil {
+		if _, err := s.cron.AddFunc(sch.StopCron, s.fire(nodeID, vmID, "stop")); err != nil {
 			s.logger.Warn("vmsched_stop_cron_invalid", "vm", vmID, "err", err)
 		}
 	}
@@ -234,7 +290,7 @@ func (s *Scheduler) addLocked(vmID string, sch Schedule) {
 		if maxKeep <= 0 {
 			maxKeep = 3
 		}
-		if _, err := s.cron.AddFunc(sch.SnapshotCron, s.fireSnapshot(vmID, maxKeep)); err != nil {
+		if _, err := s.cron.AddFunc(sch.SnapshotCron, s.fireSnapshot(nodeID, vmID, maxKeep)); err != nil {
 			s.logger.Warn("vmsched_snapshot_cron_invalid", "vm", vmID, "err", err)
 		}
 	}
@@ -243,36 +299,36 @@ func (s *Scheduler) addLocked(vmID string, sch Schedule) {
 // fire returns a closure that re-reads the current schedule before
 // acting (defence in depth against stale registrations) and runs the
 // power action best-effort.
-func (s *Scheduler) fire(vmID, action string) func() {
+func (s *Scheduler) fire(nodeID, vmID, action string) func() {
 	return func() {
-		cur := s.store.Get(vmID)
+		cur := s.store.Get(nodeID, vmID)
 		if !cur.Enabled() {
 			return // schedule was cleared after registration
 		}
 		if s.power == nil {
 			return
 		}
-		if err := s.power(vmID, action); err != nil {
-			s.logger.Warn("vmsched_power_failed", "vm", vmID, "action", action, "err", err)
+		if err := s.power(nodeID, vmID, action); err != nil {
+			s.logger.Warn("vmsched_power_failed", "node", nodeID, "vm", vmID, "action", action, "err", err)
 		} else {
-			s.logger.Info("vmsched_power", "vm", vmID, "action", action)
+			s.logger.Info("vmsched_power", "node", nodeID, "vm", vmID, "action", action)
 		}
 	}
 }
 
-func (s *Scheduler) fireSnapshot(vmID string, maxKeep int) func() {
+func (s *Scheduler) fireSnapshot(nodeID, vmID string, maxKeep int) func() {
 	return func() {
-		cur := s.store.Get(vmID)
+		cur := s.store.Get(nodeID, vmID)
 		if !cur.Enabled() || cur.SnapshotCron == "" {
 			return
 		}
 		if s.snapshot == nil {
 			return
 		}
-		if err := s.snapshot(vmID, maxKeep); err != nil {
-			s.logger.Warn("vmsched_snapshot_failed", "vm", vmID, "err", err)
+		if err := s.snapshot(nodeID, vmID, maxKeep); err != nil {
+			s.logger.Warn("vmsched_snapshot_failed", "node", nodeID, "vm", vmID, "err", err)
 		} else {
-			s.logger.Info("vmsched_snapshot_success", "vm", vmID)
+			s.logger.Info("vmsched_snapshot_success", "node", nodeID, "vm", vmID)
 		}
 	}
 }

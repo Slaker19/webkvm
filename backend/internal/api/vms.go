@@ -1275,7 +1275,7 @@ func (h *Handler) DeleteVM(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if h.vmSchedStore != nil {
-		if err := h.vmSchedStore.Set(id, vmsched.Schedule{}); err != nil {
+		if err := h.vmSchedStore.Set(h.schedScope(), id, vmsched.Schedule{}); err != nil {
 			h.logError("vmsched_cleanup_after_delete_failed", err, id)
 		} else if h.vmScheduler != nil {
 			h.vmScheduler.Rebuild()

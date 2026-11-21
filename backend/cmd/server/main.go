@@ -48,7 +48,7 @@ import (
 
 // Set by -ldflags at build time. Defaults are used for `go run`.
 var (
-	Version   = "0.1.12"
+	Version   = "dev"
 	BuildTime = "unknown"
 	Commit    = ""
 )
@@ -882,23 +882,56 @@ func main() {
 	if serr := vmSchedStore.Load(); serr != nil {
 		logger.Warn("vmsched_load_failed", "err", serr)
 	}
-	vmScheduler := vmsched.NewScheduler(vmSchedStore, func(vmID, action string) error {
-		if computeBackend == nil {
-			return fmt.Errorf("compute backend not connected")
+	// Node-scoped schedules: the local node's VMs run on the local
+	// compute backend; a remote node's schedule resolves through the
+	// libvirt pool (see schedCompute). Legacy bare keys are re-keyed to
+	// the local node.
+	var localNodeID string
+	for _, n := range nodesReg.List() {
+		if n.IsLocal() {
+			localNodeID = n.ID
+		}
+	}
+	vmSchedStore.MigrateLegacy(localNodeID)
+	schedCompute := func(nodeID string) (compute.Backend, error) {
+		if nodeID == localNodeID || nodeID == "" {
+			if computeBackend == nil {
+				return nil, fmt.Errorf("compute backend not connected")
+			}
+			return computeBackend, nil
+		}
+		node, ok := nodesReg.Get(nodeID)
+		if !ok || !node.Enabled {
+			return nil, fmt.Errorf("scheduled node %q is not registered or disabled", nodeID)
+		}
+		if node.Driver() != nodes.BackendLibvirt {
+			return nil, fmt.Errorf("scheduled actions are only supported for libvirt nodes, not %q", nodeID)
+		}
+		conn, err := libvirtPool.Connector(context.Background(), node)
+		if err != nil {
+			return nil, err
+		}
+		return compute.NewKVMBackend(conn), nil
+	}
+	vmScheduler := vmsched.NewScheduler(vmSchedStore, func(nodeID, vmID, action string) error {
+		be, err := schedCompute(nodeID)
+		if err != nil {
+			return err
 		}
 		switch action {
 		case "start":
-			return computeBackend.StartDomain(vmID)
+			return be.StartDomain(vmID)
 		case "stop":
-			return computeBackend.ShutdownDomain(vmID)
+			return be.ShutdownDomain(vmID)
 		}
 		return fmt.Errorf("unknown action %q", action)
-	}, func(vmID string, maxKeep int) error {
-		if computeBackend == nil {
-			return fmt.Errorf("compute backend not connected")
+	}, func(nodeID, vmID string, maxKeep int) error {
+		be, err := schedCompute(nodeID)
+		if err != nil {
+			return err
 		}
 		snapName := "auto-" + time.Now().Format("20060102-150405")
-		_, err := computeBackend.CreateSnapshot(vmID, models.CreateSnapshotRequest{
+		_, err = be.CreateSnapshot(vmID, models.CreateSnapshotRequest{
 			Name:        snapName,
 			Description: "Automated snapshot by scheduler",
 		})
@@ -906,7 +939,7 @@ func main() {
 			return err
 		}
 		if maxKeep > 0 {
-			snaps, err := computeBackend.ListSnapshots(vmID)
+			snaps, err := be.ListSnapshots(vmID)
 			if err == nil {
 				var autoSnaps []models.Snapshot
 				for _, s := range snaps {
@@ -924,7 +957,7 @@ func main() {
 						if targetID == "" {
 							targetID = autoSnaps[i].Name
 						}
-						_, _ = computeBackend.DeleteSnapshot(vmID, targetID)
+						_, _ = be.DeleteSnapshot(vmID, targetID)
 					}
 				}
 			}
@@ -1002,6 +1035,7 @@ func main() {
 		api.SetWebPushManager(wp)
 		api.SetJobNotifier(wp.NotifyJob)
 	}
+	api.SetJobsHistoryDir(cfg.DataDir)
 
 	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, jail, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, hostSchedStore, hostScheduler, metricHist, alerter, incusMetrics)
 

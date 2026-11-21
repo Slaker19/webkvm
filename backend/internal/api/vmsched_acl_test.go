@@ -69,9 +69,9 @@ func setupSchedHandler(t *testing.T, be *fakeSchedBackend, perms *models.UserPer
 	}
 
 	schedStore := vmsched.NewStore(dir)
-	scheduler := vmsched.NewScheduler(schedStore, func(vmID, action string) error {
+	scheduler := vmsched.NewScheduler(schedStore, func(nodeID, vmID, action string) error {
 		return nil
-	}, func(vmID string, maxKeep int) error {
+	}, func(nodeID, vmID string, maxKeep int) error {
 		return nil
 	}, nil)
 
