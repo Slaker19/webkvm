@@ -47,6 +47,9 @@ func submitJob(owner, name string, fn func() (any, error)) *models.DownloadJob {
 			j.Status = "done"
 			j.Result = result
 			j.UpdatedAt = time.Now().Unix()
+			appendJobLog(j, "completed")
+			snapshot := *j
+			go recordJobHistory(snapshot)
 		}
 		jobsMu.Unlock()
 		notifyJobDone(owner, name, "done", "")
@@ -101,6 +104,9 @@ func submitJobWithPool(owner, name, pool string, fn func(progress func(pct float
 			j.Progress = 100
 			j.Result = result
 			j.UpdatedAt = time.Now().Unix()
+			appendJobLog(j, "completed")
+			snapshot := *j
+			go recordJobHistory(snapshot)
 		}
 		jobsMu.Unlock()
 		notifyJobDone(owner, name, "done", "")

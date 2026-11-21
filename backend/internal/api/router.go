@@ -247,6 +247,9 @@ func NewRouter(
 	r.Route("/api/jobs", func(r chi.Router) {
 		r.Use(auth.RequireAtLeast("viewer"))
 		r.Get("/", h.ListJobs)
+		r.Get("/stats", h.GetJobStats)
+		r.Get("/history", h.GetJobHistory)
+		r.Get("/{id}/log", h.GetJobLog)
 		r.Get("/{id}", h.GetDownloadJob)
 	})
 
@@ -619,6 +622,8 @@ func NewRouter(
 		r.Post("/{id}/undrain", h.UndrainNode)
 		r.Get("/{id}/drain-plan", h.GetNodeDrainPlan)
 		r.Post("/{id}/evacuate", h.EvacuateNode)
+		r.Get("/{id}/evacuate", h.GetNodeEvacuation)
+		r.Post("/{id}/evacuate/cancel", h.CancelNodeEvacuation)
 		r.Group(func(r chi.Router) {
 			r.Post("/", h.CreateNode)
 			r.Put("/{id}", h.UpdateNode)

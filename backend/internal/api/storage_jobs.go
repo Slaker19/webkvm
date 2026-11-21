@@ -91,12 +91,17 @@ func updateJobErrorAtProgress(id, code, text string, progress float64) {
 		j.Status = "error"
 		j.Error = text
 		j.ErrorCode = code
+		appendJobLog(j, text)
 		if progress >= 0 {
 			j.Progress = progress
 		}
 		j.UpdatedAt = time.Now().Unix()
 		notify = !wasTerminal
 		owner, name = j.Owner, j.Name
+		if notify {
+			snapshot := *j
+			go recordJobHistory(snapshot)
+		}
 	}
 	jobsMu.Unlock()
 	if notify {
@@ -129,6 +134,7 @@ func updateJobFull(id string, progress float64, status string, text string, byte
 			// failure that preceded it.
 			j.Error = ""
 		}
+		appendJobLog(j, text)
 		j.UpdatedAt = time.Now().Unix()
 		if bytesDone > 0 || bytesTotal > 0 {
 			j.BytesDone = bytesDone
@@ -143,6 +149,10 @@ func updateJobFull(id string, progress float64, status string, text string, byte
 		terminal := status == "completed" || status == "done" || status == "error"
 		notify = terminal && !wasTerminal
 		owner, name = j.Owner, j.Name
+		if notify {
+			snapshot := *j
+			go recordJobHistory(snapshot)
+		}
 	}
 	jobsMu.Unlock()
 	if notify {

@@ -1529,6 +1529,16 @@ type DownloadJob struct {
 	// Result carries the job's payload on success (e.g. the cloned VM
 	// or the created snapshot) for consumers that poll the job.
 	Result any `json:"result,omitempty"`
+	// Logs is a bounded progress log ring (see jobLogCap) with one line
+	// per recorded step or failure, served as text by /api/jobs/{id}/log.
+	Logs []JobLogLine `json:"logs,omitempty"`
+}
+
+// JobLogLine is one entry of a job's progress log: unix seconds plus the
+// step text. English fallback; the SPA localizes stable codes upstream.
+type JobLogLine struct {
+	Ts  int64  `json:"ts"`
+	Msg string `json:"msg"`
 }
 
 // DHCPLease is one active lease from a "nat"/"isolated" network's

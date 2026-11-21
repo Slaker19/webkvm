@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"webkvm/internal/audit"
 	"webkvm/internal/models"
@@ -217,54 +216,55 @@ func (h *Handler) EvacuateNode(w http.ResponseWriter, r *http.Request) {
 		jsonErrCode(w, http.StatusConflict, "target_draining", "destination node is draining")
 		return
 	}
-	if h.libvirtPool == nil {
+	mig := h.evacMigrator()
+	if mig == nil {
 		jsonErrCode(w, http.StatusServiceUnavailable, "pool_unavailable", "remote libvirt connections are not initialized")
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
-	defer cancel()
-	resp := nodeEvacuateResponse{Status: "completed", Node: src.Name, Target: dst.Name}
+	em := h.evacuationManager()
+	if em.isRunning(src.ID) {
+		jsonErrCode(w, http.StatusConflict, "evacuation_running",
+			"an evacuation is already running for this node; poll GET /api/nodes/{id}/evacuate or cancel it first")
+		return
+	}
+	total := 0
 	for _, vm := range plan.VMs {
-		row := nodeEvacuateResult{ID: vm.ID, Name: vm.Name}
-		if !vm.Migratable {
-			row.Status = "skipped"
-			row.Error = vm.Reason
-			resp.Skipped = append(resp.Skipped, row)
-			continue
-		}
-		live := vm.Action == "live_migrate"
-		shared := req.SharedStorage
-		if vm.Action == "offline_shared_storage" {
-			if !req.SharedStorage {
-				row.Status = "skipped"
-				row.Error = "shared_storage_required"
-				resp.Skipped = append(resp.Skipped, row)
-				continue
-			}
-			live = false
-		}
-		if err := h.libvirtPool.MigrateDomain(ctx, src, dst, vm.ID, live, shared); err != nil {
-			row.Status = "failed"
-			row.Error = err.Error()
-			resp.Failed = append(resp.Failed, row)
-			continue
-		}
-		row.Status = "migrated"
-		resp.Migrated = append(resp.Migrated, row)
-		if h.audit != nil {
-			h.audit.Log(auditFor(r, "vm.migrate", vm.ID, map[string]any{
-				"from_node": src.Name, "to_node": dst.Name, "live": live, "shared_storage": shared,
-			}))
+		if vm.Migratable {
+			total++
 		}
 	}
-	if len(resp.Failed) > 0 {
-		resp.Status = "partial"
+	rec := &evacuationRecord{
+		NodeID:     src.ID,
+		NodeName:   src.Name,
+		TargetName: dst.Name,
+		Status:     "running",
+		StartedBy:  jobOwner(r),
 	}
-	jsonResp(w, http.StatusOK, resp)
+	if !em.start(rec) {
+		jsonErrCode(w, http.StatusConflict, "evacuation_running", "an evacuation is already running for this node")
+		return
+	}
+	// The gate only stops the loop from starting NEW migrations; each
+	// migration runs on its own context so cancel never kills a live
+	// copy in flight.
+	stopCtx, stop := context.WithCancel(context.Background())
+	em.setCancel(src.ID, stop)
+	job := submitJob(jobOwner(r), "evacuate:"+src.Name, func() (any, error) {
+		return h.runEvacuation(em, stopCtx, mig, src, dst, plan, req.SharedStorage, total)
+	})
+	em.setJobID(src.ID, job.ID)
+	if h.audit != nil {
+		h.audit.Log(auditFor(r, "node.evacuate", src.ID, map[string]any{
+			"name": src.Name, "target": dst.Name, "shared_storage": req.SharedStorage, "job": job.ID,
+		}))
+	}
+	jsonResp(w, http.StatusAccepted, map[string]string{"job": job.ID, "status": "started"})
 }
 
 func (h *Handler) listNodeVMs(ctx context.Context, n nodes.Node) ([]models.VM, error) {
+	if h.evacVMSeam != nil {
+		return h.evacVMSeam(ctx, n.URI)
+	}
 	if n.IsLocal() {
 		if h.compute == nil {
 			return nil, errors.New("compute backend unavailable")

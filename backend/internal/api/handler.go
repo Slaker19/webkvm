@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 	"webkvm/internal/hostsched"
 	"webkvm/internal/libvirt"
 	"webkvm/internal/metrics"
+	"webkvm/internal/models"
 	"webkvm/internal/netguard"
 	"webkvm/internal/nodes"
 	"webkvm/internal/notify"
@@ -73,6 +75,15 @@ type Handler struct {
 	hostSched     *hostsched.Store
 	hostScheduler *hostsched.Scheduler
 	snippets      *cloudinit.SnippetStore
+	// Evacuation state (background drain evacuations). evac is built on
+	// first use from cfg.DataDir; evacMigratorOverride is the test seam
+	// for migrations, nil in production (the real libvirt pool is used).
+	// Pointer only: Handler values get copied in a few dispatch paths.
+	evac                 *evacuationManager
+	evacMigratorOverride domainMigrator
+	// evacVMSeam is a test-only override for listing a node's VMs in
+	// drain/evacuate paths; nil in production.
+	evacVMSeam func(ctx context.Context, uri string) ([]models.VM, error)
 	// V13-C-03/04: metric history + alert engine.
 	metricHist *metrics.TimeSeriesStore
 	alerter    *metrics.AlertEngine
