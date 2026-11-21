@@ -36,9 +36,51 @@
     clearFinished,
   } from '$lib/stores/tasks.svelte.js';
   import { events } from '$lib/stores/events.svelte.js';
+  import { api } from '$lib/stores/auth.svelte.js';
   import { t } from '$lib/i18n.svelte.js';
   import { progressLabel } from '$lib/progress.js';
   import EmptyState from '$lib/components/EmptyState.svelte';
+  import { Download } from '@lucide/svelte';
+  import { toast } from '$lib/components/ui/toast';
+
+  // Recent finished jobs from the persisted backend history (survives a
+  // server restart); refreshed whenever the drawer opens.
+  let history = $state([]);
+  async function loadHistory() {
+    try {
+      const res = await api.getJobHistory(10);
+      history = res.jobs || [];
+    } catch {
+      history = [];
+    }
+  }
+
+  function historyTitle(name) {
+    if (!name) return t('taskCenter.backgroundDefault');
+    if (name.startsWith('clone:')) return t('taskCenter.cloningVM', { name: name.slice(6) });
+    if (name.startsWith('batch-clone:'))
+      return t('taskCenter.batchCloning', { name: name.slice(12) });
+    if (name.startsWith('snapshot:'))
+      return t('taskCenter.creatingSnapshot', { name: name.slice(9) });
+    if (name.startsWith('move ')) return t('taskCenter.movingDisk', { name: name.slice(5) });
+    if (name.startsWith('evacuate:'))
+      return t('taskCenter.evacuatingNode', { name: name.slice(9) });
+    return name;
+  }
+
+  async function downloadLog(job) {
+    try {
+      const text = await api.getJobLogText(job.id);
+      const blob = new Blob([text], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `webkvm-${job.id}-log.txt`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
 
   let activeCount = $derived(getActiveCount());
   let runningTask = $derived(tasks.find((t) => t.status === 'running') || null);
@@ -124,6 +166,10 @@
     }
     window.addEventListener('keydown', handleKeydown);
     return () => window.removeEventListener('keydown', handleKeydown);
+  });
+
+  $effect(() => {
+    if (taskDrawer.open) loadHistory();
   });
 
   function formatDuration(startedAt, endedAt) {
@@ -374,6 +420,46 @@
                     <X size={12} />
                   </button>
                 {/if}
+              </div>
+            {/each}
+          {/if}
+
+          {#if history.length > 0}
+            <div class="px-2.5 pt-2 pb-1">
+              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+                {t('taskCenter.history')}
+              </p>
+            </div>
+            {#each history as job (job.id)}
+              <div class="p-2.5 flex items-start gap-2.5 text-xs">
+                <div class="mt-0.5 shrink-0">
+                  {#if job.status === 'error'}
+                    <XCircle size={15} class="text-destructive" />
+                  {:else}
+                    <CheckCircle2 size={15} class="text-success" />
+                  {/if}
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center justify-between gap-1 mb-1">
+                    <span class="font-medium text-foreground truncate font-mono text-[11px]"
+                      >{historyTitle(job.name)}</span
+                    >
+                    <span class="text-[10px] text-muted-foreground font-mono shrink-0"
+                      >{new Date(job.updated_at * 1000).toLocaleString()}</span
+                    >
+                  </div>
+                  <div class="flex items-center justify-between gap-2 text-[10px]">
+                    <span class="truncate text-muted-foreground">{job.id}</span>
+                    <button
+                      type="button"
+                      class="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+                      title={t('taskCenter.downloadLog')}
+                      onclick={() => downloadLog(job)}
+                    >
+                      <Download size={11} />
+                    </button>
+                  </div>
+                </div>
               </div>
             {/each}
           {/if}

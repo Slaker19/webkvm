@@ -270,6 +270,8 @@ export const messages = {
       backupDefault: 'Backup',
       extractedTo: 'Extracted to {dest}',
       backgroundDefault: 'Background operation',
+      history: 'Recent finished',
+      downloadLog: 'Download task log',
       successDefault: 'Completed successfully',
       errorDefault: 'Operation failed',
       timeout: 'Operation timed out',
@@ -277,6 +279,7 @@ export const messages = {
       batchCloning: 'Batch clone: {name}',
       creatingSnapshot: 'Creating snapshot: {name}',
       movingDisk: 'Moving disk: {name}',
+      evacuatingNode: 'Evacuating node {name}',
       queuedMessage: 'Queued...',
     },
     brand: {
@@ -4947,6 +4950,16 @@ export const messages = {
       drainEvacuate: 'Migrate instances',
       drainShared: 'Shared storage',
       drainLive: 'Live migration',
+      evacCancel: 'Cancel evacuation',
+      evacCancelling: 'Cancelling: no new migrations will start, the one in flight finishes',
+      evacCancelled: 'Evacuation cancelled; run it again to resume the remaining instances',
+      evacStatusRunning: 'An evacuation is already running for this node.',
+      evacStatusInterrupted:
+        'WebKVM restarted during an evacuation; run it again to resume the remaining instances.',
+      evacStatusCancelled:
+        'The previous evacuation was cancelled before finishing; run it again to resume.',
+      evacStatusPartial:
+        'The previous evacuation finished with failures; run it again to retry the failed instances.',
       drainTarget: 'Destination node',
       drainStop: 'Stop drain',
       drainStart: 'Start drain',
@@ -6424,6 +6437,8 @@ export const messages = {
       backupDefault: 'Copia de seguridad',
       extractedTo: 'Extraído en {dest}',
       backgroundDefault: 'Operación en segundo plano',
+      history: 'Finalizadas recientemente',
+      downloadLog: 'Descargar log de la tarea',
       successDefault: 'Completado con éxito',
       errorDefault: 'Error en la operación',
       timeout: 'La operación superó el tiempo límite',
@@ -6431,6 +6446,7 @@ export const messages = {
       batchCloning: 'Clonado en lote: {name}',
       creatingSnapshot: 'Creando instantánea: {name}',
       movingDisk: 'Moviendo disco: {name}',
+      evacuatingNode: 'Evacuando nodo {name}',
       queuedMessage: 'En cola...',
     },
     brand: {
@@ -11181,6 +11197,18 @@ export const messages = {
       drainEvacuate: 'Migrar instancias',
       drainShared: 'Almacenamiento compartido',
       drainLive: 'Migración en vivo',
+      evacCancel: 'Cancelar evacuación',
+      evacCancelling:
+        'Cancelando: no se iniciarán migraciones nuevas, la que está en vuelo termina',
+      evacCancelled:
+        'Evacuación cancelada; ejecútala de nuevo para reanudar las instancias restantes',
+      evacStatusRunning: 'Ya hay una evacuación en marcha para este nodo.',
+      evacStatusInterrupted:
+        'WebKVM se reinició durante una evacuación; ejecútala de nuevo para reanudar las instancias restantes.',
+      evacStatusCancelled:
+        'La evacuación anterior se canceló sin terminar; ejecútala de nuevo para reanudar.',
+      evacStatusPartial:
+        'La evacuación anterior terminó con fallos; ejecútala de nuevo para reintentar las instancias fallidas.',
       drainTarget: 'Nodo de destino',
       drainStop: 'Detener drenaje',
       drainStart: 'Iniciar drenaje',
@@ -12670,6 +12698,8 @@ export const messages = {
       backupDefault: 'Còpia de seguretat',
       extractedTo: 'Extret a {dest}',
       backgroundDefault: 'Operació en segon pla',
+      history: 'Acabades recentment',
+      downloadLog: 'Descarrega el log de la tasca',
       successDefault: 'Completat amb èxit',
       errorDefault: 'Error en l’operació',
       timeout: 'L’operació ha superat el temps límit',
@@ -12677,6 +12707,7 @@ export const messages = {
       batchCloning: 'Clonatge per lots: {name}',
       creatingSnapshot: 'Creant instantània: {name}',
       movingDisk: 'Movent disc: {name}',
+      evacuatingNode: 'Evacuant el node {name}',
       queuedMessage: 'A la cua...',
     },
     brand: {
@@ -17431,6 +17462,17 @@ export const messages = {
       drainEvacuate: 'Migra les instàncies',
       drainShared: 'Emmagatzematge compartit',
       drainLive: 'Migració en viu',
+      evacCancel: "Cancel·lar l'evacuació",
+      evacCancelling: "Cancel·lant: no s'iniciaran migracions noves, la que està en vol acaba",
+      evacCancelled:
+        'Evacuació cancel·lada; executa-la de nou per reprendre les instàncies restants',
+      evacStatusRunning: 'Ja hi ha una evacuació en marxa per a aquest node.',
+      evacStatusInterrupted:
+        'WebKVM es va reiniciar durant una evacuació; executa-la de nou per reprendre les instàncies restants.',
+      evacStatusCancelled:
+        "L'evacuació anterior es va cancel·lar sense acabar; executa-la de nou per reprendre.",
+      evacStatusPartial:
+        "L'evacuació anterior va acabar amb errors; executa-la de nou per reintentar les instàncies fallides.",
       drainTarget: 'Node de destí',
       drainStop: 'Atura el drenatge',
       drainStart: 'Inicia el drenatge',

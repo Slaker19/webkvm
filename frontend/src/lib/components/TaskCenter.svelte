@@ -17,6 +17,8 @@
   import EmptyState from '$lib/components/EmptyState.svelte';
   import { t } from '$lib/i18n.svelte.js';
   import { localizedApiErrorMessage } from '$lib/apiErrors.js';
+  import { toast } from '$lib/components/ui/toast';
+  import { Download } from '@lucide/svelte';
   import { progressLabel } from '$lib/progress.js';
   import {
     tasks,
@@ -126,7 +128,49 @@
 
   function togglePanel() {
     panelOpen = !panelOpen;
-    if (panelOpen) clearRead();
+    if (panelOpen) {
+      clearRead();
+      loadHistory();
+    }
+  }
+
+  // Recent finished jobs from the persisted backend history (survives a
+  // server restart). Refreshed each time the panel opens.
+  let history = $state([]);
+  async function loadHistory() {
+    try {
+      const res = await api.getJobHistory(10);
+      history = res.jobs || [];
+    } catch {
+      history = [];
+    }
+  }
+
+  function historyTitle(name) {
+    if (!name) return t('taskCenter.backgroundDefault');
+    if (name.startsWith('clone:')) return t('taskCenter.cloningVM', { name: name.slice(6) });
+    if (name.startsWith('batch-clone:'))
+      return t('taskCenter.batchCloning', { name: name.slice(12) });
+    if (name.startsWith('snapshot:'))
+      return t('taskCenter.creatingSnapshot', { name: name.slice(9) });
+    if (name.startsWith('move ')) return t('taskCenter.movingDisk', { name: name.slice(5) });
+    if (name.startsWith('evacuate:'))
+      return t('taskCenter.evacuatingNode', { name: name.slice(9) });
+    return name;
+  }
+
+  async function downloadLog(job) {
+    try {
+      const text = await api.getJobLogText(job.id);
+      const blob = new Blob([text], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `webkvm-${job.id}-log.txt`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      toast.error(e.message);
+    }
   }
 
   function openTask(id) {
@@ -249,6 +293,39 @@
               </button>
             </div>
           {/each}
+        {/if}
+
+        {#if history.length > 0}
+          <div class="pt-1 border-t border-border">
+            <p
+              class="px-1 py-1 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide"
+            >
+              {t('taskCenter.history')}
+            </p>
+            {#each history as job (job.id)}
+              <div class="flex items-center gap-2 rounded-lg px-1 py-1.5 text-xs">
+                {#if job.status === 'error'}
+                  <XCircle class="w-3.5 h-3.5 text-destructive shrink-0" />
+                {:else}
+                  <CheckCircle2 class="w-3.5 h-3.5 text-success shrink-0" />
+                {/if}
+                <span class="flex-1 min-w-0 truncate" title={job.name}
+                  >{historyTitle(job.name)}</span
+                >
+                <span class="shrink-0 text-muted-foreground"
+                  >{new Date(job.updated_at * 1000).toLocaleString()}</span
+                >
+                <button
+                  type="button"
+                  class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted"
+                  title={t('taskCenter.downloadLog')}
+                  onclick={() => downloadLog(job)}
+                >
+                  <Download class="w-3.5 h-3.5" />
+                </button>
+              </div>
+            {/each}
+          </div>
         {/if}
       </div>
     </div>

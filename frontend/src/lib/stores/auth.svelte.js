@@ -733,6 +733,17 @@ export const api = {
 
   getDownloadJob: (jobId) => request(`/storage/jobs/${jobId}`),
   listJobs: () => request('/jobs'),
+  getJobHistory: (limit = 50) => request(`/jobs/history?limit=${limit}`),
+  getJobStats: () => request('/jobs/stats'),
+  // getJobLogText fetches the job's plain-text progress log (the request
+  // helper always parses JSON, so this goes through fetch directly).
+  getJobLogText: async (jobId) => {
+    const res = await fetch(`${BASE}/jobs/${encodeURIComponent(jobId)}/log`, {
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+  },
 
   // Async job tracking for long operations (VM clone / snapshot / migrations).
   // The endpoints return 202 + {job}; waitJob polls until the job reaches a
@@ -767,6 +778,8 @@ export const api = {
           title = t('taskCenter.creatingSnapshot', { name: title.slice(9) });
         } else if (title.startsWith('move ')) {
           title = t('taskCenter.movingDisk', { name: title.slice(5) });
+        } else if (title.startsWith('evacuate:')) {
+          title = t('taskCenter.evacuatingNode', { name: title.slice(9) });
         }
 
         tasksModule.upsertTask({
@@ -1410,6 +1423,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  getNodeEvacuation: (id) => request(`/nodes/${encodeURIComponent(id)}/evacuate`),
+  cancelNodeEvacuation: (id) =>
+    request(`/nodes/${encodeURIComponent(id)}/evacuate/cancel`, { method: 'POST' }),
   pingAllNodes: () => request('/nodes/ping-all', { method: 'POST' }),
   getClusterSummary: () => request('/nodes/summary'),
   createNode: (name, uri, backend = 'libvirt', project = '', trustToken = '', uiUrl = '') =>

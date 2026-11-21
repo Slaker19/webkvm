@@ -116,6 +116,8 @@
   let drainLoading = $state(false);
   let drainBusy = $state(false);
   let drainError = $state('');
+  let evacRunning = $state(false);
+  let evacStatus = $state(null);
   let pveFenceVerifying = $state(false);
   let pveFenceResult = $state(null);
 
@@ -391,8 +393,16 @@
     drainTarget = '';
     drainShared = false;
     drainError = '';
+    evacStatus = null;
     drainOpen = true;
     await refreshDrainPlan();
+    // Show any previous evacuation outcome (running job after restart,
+    // partial or cancelled run) so re-running reads as a resume.
+    try {
+      evacStatus = await api.getNodeEvacuation(n.id);
+    } catch {
+      evacStatus = null;
+    }
   }
 
   async function refreshDrainPlan() {
@@ -451,14 +461,27 @@
     }
     drainBusy = true;
     drainError = '';
+    evacRunning = true;
     try {
-      const res = await api.evacuateNode(drainNode.id, {
+      const start = await api.evacuateNode(drainNode.id, {
         target: drainTarget,
         shared_storage: drainShared,
       });
-      const failed = res.failed?.length || 0;
-      if (failed > 0) {
-        toast.warning(t('nodes.drainFailed', { count: failed }));
+      // The evacuation now runs as a background job (202): live
+      // migrations outlast any HTTP timeout, so we poll instead of
+      // holding the request open.
+      const rec = await api.waitJob(start.job, {
+        timeout: 2 * 60 * 60 * 1000,
+        title: 'evacuate:' + (drainNode?.name || ''),
+        onPoll: (job) => {
+          evacRunning = job.status === 'running';
+        },
+      });
+      evacStatus = rec;
+      if (rec.status === 'cancelled') {
+        toast.warning(t('nodes.evacCancelled'));
+      } else if ((rec.failed?.length || 0) > 0) {
+        toast.warning(t('nodes.drainFailed', { count: rec.failed.length }));
       } else {
         toast.success(t('nodes.drainDone'));
       }
@@ -468,8 +491,30 @@
       drainError = e.message;
     } finally {
       drainBusy = false;
+      evacRunning = false;
     }
   }
+
+  async function cancelEvacuate() {
+    if (!drainNode) return;
+    try {
+      await api.cancelNodeEvacuation(drainNode.id);
+      toast.info(t('nodes.evacCancelling'));
+    } catch (e) {
+      drainError = e.message;
+    }
+  }
+
+  const evacStatusLabel = $derived.by(() => {
+    if (!evacStatus) return '';
+    const map = {
+      running: 'nodes.evacStatusRunning',
+      interrupted: 'nodes.evacStatusInterrupted',
+      cancelled: 'nodes.evacStatusCancelled',
+      partial: 'nodes.evacStatusPartial',
+    };
+    return map[evacStatus.status] || '';
+  });
 
   let destroyed = false;
   async function loadSSH() {
@@ -2753,11 +2798,22 @@
             {/if}
           </div>
 
+          {#if evacStatus && evacStatusLabel && evacStatus.status !== 'completed'}
+            <Alert variant={evacStatus.status === 'partial' ? 'warning' : 'info'}>
+              {t(evacStatusLabel)}
+            </Alert>
+          {/if}
+
           <div class="flex flex-wrap gap-2">
             <Button onclick={runEvacuate} disabled={drainBusy || !drainTarget}>
               {#if drainBusy}<Spinner size="sm" color="text-white" />{/if}
               {t('nodes.drainEvacuate')}
             </Button>
+            {#if evacRunning}
+              <Button variant="outline" onclick={cancelEvacuate}>
+                {t('nodes.evacCancel')}
+              </Button>
+            {/if}
             <Button variant="outline" onclick={stopDrain} disabled={drainBusy}>
               {t('nodes.drainStop')}
             </Button>
