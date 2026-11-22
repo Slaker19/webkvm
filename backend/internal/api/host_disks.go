@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -637,6 +638,221 @@ func normalizeDiskMode(in string) (string, error) {
 	}
 }
 
+// renderHostMountUnit renders the .mount unit for a WebKVM-initialized disk.
+// It must never declare After=local-fs.target: target units implicitly order
+// After= everything they pull in via WantedBy=, so that After= closes an
+// ordering cycle and systemd deletes the automount start job at boot, leaving
+// the disk unmounted (issue #14). DefaultDependencies are intentionally kept
+// so the mount still orders before umount.target on shutdown; nofail keeps a
+// missing device from hanging the boot.
+func renderHostMountUnit(volumeName, what, where, fsType, options string) string {
+	return fmt.Sprintf(`[Unit]
+Description=WebKVM Mount for %s (%s)
+StartLimitIntervalSec=0
+
+[Mount]
+What=%s
+Where=%s
+Type=%s
+Options=%s
+
+[Install]
+WantedBy=local-fs.target
+`, volumeName, where, what, where, fsType, options)
+}
+
+// renderHostAutomountUnit renders the paired .automount unit. With default
+// dependencies it implicitly gains Before=local-fs.target, which is the
+// correct anchor; an explicit After=local-fs.target here is what created the
+// issue #14 cycle.
+func renderHostAutomountUnit(volumeName, where string) string {
+	return fmt.Sprintf(`[Unit]
+Description=WebKVM Automount for %s (%s)
+StartLimitIntervalSec=0
+
+[Automount]
+Where=%s
+TimeoutIdleSec=60
+
+[Install]
+WantedBy=local-fs.target
+`, volumeName, where, where)
+}
+
+// isWebKVMGeneratedUnit reports whether unit content was produced by WebKVM's
+// disk templates. The reconcile below only ever rewrites these files.
+func isWebKVMGeneratedUnit(content string) bool {
+	return strings.Contains(content, "Description=WebKVM Mount for ") ||
+		strings.Contains(content, "Description=WebKVM Automount for ")
+}
+
+// hasBrokenMountUnitSignature reports whether unit content predates the
+// issue #14 fix: the explicit After=local-fs.target cycle, the
+// DefaultDependencies=no shutdown-ordering loss, or fstab-only x-systemd
+// options on a native .mount unit.
+func hasBrokenMountUnitSignature(content string) bool {
+	if strings.Contains(content, "After=local-fs.target") || strings.Contains(content, "DefaultDependencies=no") {
+		return true
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if opt, ok := strings.CutPrefix(line, "Options="); ok {
+			for o := range strings.SplitSeq(opt, ",") {
+				if o == "x-systemd.automount" || strings.HasPrefix(o, "x-systemd.idle-timeout") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// unitKey looks up a key=value line inside the first matching INI section of
+// unit content, e.g. What=/dev/... from [Mount].
+func unitSectionValue(content, section, key string) string {
+	inSection := false
+	for line := range strings.SplitSeq(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inSection = line == "["+section+"]"
+			continue
+		}
+		if inSection {
+			if v, ok := strings.CutPrefix(line, key+"="); ok {
+				return strings.TrimSpace(v)
+			}
+		}
+	}
+	return ""
+}
+
+// repairGeneratedMountUnitFile rewrites a single broken WebKVM-generated unit
+// file in place with the current templates. Returns whether it rewrote.
+func repairGeneratedMountUnitFile(path string) (bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	content := string(raw)
+	if !isWebKVMGeneratedUnit(content) || !hasBrokenMountUnitSignature(content) {
+		return false, nil
+	}
+	isMount := strings.HasSuffix(path, ".mount")
+	var out string
+	if isMount {
+		what := unitSectionValue(content, "Mount", "What")
+		where := unitSectionValue(content, "Mount", "Where")
+		fsType := unitSectionValue(content, "Mount", "Type")
+		options := unitSectionValue(content, "Mount", "Options")
+		if what == "" || where == "" || fsType == "" {
+			return false, fmt.Errorf("%s: missing Mount fields, refusing to rewrite", path)
+		}
+		// Mount points are restricted to these roots at creation time
+		// (validateMountPoint); enforce it again here so a tampered
+		// Where= cannot steer the rewrite.
+		if !slices.Contains(allowedMountRoots, mountRootOf(where)) {
+			return false, fmt.Errorf("%s: mount point %q outside allowed roots", path, where)
+		}
+		var kept []string
+		for o := range strings.SplitSeq(options, ",") {
+			if o == "" || o == "x-systemd.automount" || strings.HasPrefix(o, "x-systemd.idle-timeout") {
+				continue
+			}
+			kept = append(kept, o)
+		}
+		out = renderHostMountUnit(volumeNameFromUnitDescription(content), what, where, fsType, strings.Join(kept, ","))
+	} else {
+		where := unitSectionValue(content, "Automount", "Where")
+		if where == "" {
+			return false, fmt.Errorf("%s: missing Automount Where, refusing to rewrite", path)
+		}
+		if !slices.Contains(allowedMountRoots, mountRootOf(where)) {
+			return false, fmt.Errorf("%s: mount point %q outside allowed roots", path, where)
+		}
+		out = renderHostAutomountUnit(volumeNameFromUnitDescription(content), where)
+	}
+	if err := os.WriteFile(path, []byte(out), 0644); err != nil {
+		return false, fmt.Errorf("rewrite %s: %w", path, err)
+	}
+	return true, nil
+}
+
+func mountRootOf(where string) string {
+	return "/" + strings.SplitN(strings.TrimPrefix(where, "/"), "/", 2)[0] + "/"
+}
+
+func volumeNameFromUnitDescription(content string) string {
+	// Description=WebKVM Mount for <name> (<mountpoint>) — the volume name is
+	// informational only; parse the first word before " (" when present.
+	line := unitSectionValue(content, "Unit", "Description")
+	if rest, ok := strings.CutPrefix(line, "WebKVM Mount for "); ok {
+		return strings.TrimSpace(strings.SplitN(rest, " (", 2)[0])
+	}
+	if rest, ok := strings.CutPrefix(line, "WebKVM Automount for "); ok {
+		return strings.TrimSpace(strings.SplitN(rest, " (", 2)[0])
+	}
+	return ""
+}
+
+// reconcileGeneratedMountUnits repairs existing installs that still carry the
+// issue #14 broken units: those are only regenerated when a disk is
+// re-initialized, so the daemon itself rewrites them once at startup. It
+// disarms affected automounts, rewrites, reloads, and re-arms; it never starts
+// a mount directly (the automount triggers on first access, so a disk that is
+// absent just stays armed).
+func reconcileGeneratedMountUnits(ctx context.Context, dir string) ([]string, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.mount"))
+	if err != nil {
+		return nil, err
+	}
+	automounts, err := filepath.Glob(filepath.Join(dir, "*.automount"))
+	if err != nil {
+		return nil, err
+	}
+	paths = append(paths, automounts...)
+
+	var changed []string
+	var touchedAutomounts []string
+	for _, path := range paths {
+		was, err := repairGeneratedMountUnitFile(path)
+		if err != nil {
+			// One unreadable/foreign unit must not block the rest.
+			continue
+		}
+		if was {
+			changed = append(changed, filepath.Base(path))
+			if strings.HasSuffix(path, ".automount") {
+				touchedAutomounts = append(touchedAutomounts, filepath.Base(path))
+			}
+		}
+	}
+	if len(changed) == 0 {
+		return nil, nil
+	}
+
+	// Best-effort lifecycle: disarm stale automount state before the
+	// daemon-reload, then re-arm the repaired ones.
+	for _, name := range touchedAutomounts {
+		_ = exec.CommandContext(ctx, "systemctl", "stop", name).Run()
+	}
+	if out, err := exec.CommandContext(ctx, "systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		return changed, fmt.Errorf("systemctl daemon-reload: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	for _, name := range touchedAutomounts {
+		if err := exec.CommandContext(ctx, "systemctl", "start", name).Run(); err != nil {
+			// Disk absent: the automount arms fine, so failure here is
+			// unexpected but must not abort the startup repair.
+			continue
+		}
+	}
+	return changed, nil
+}
+
+// ReconcileGeneratedMountUnits is the startup entry point called from
+// cmd/server/main.go against the real unit directory.
+func ReconcileGeneratedMountUnits(ctx context.Context) ([]string, error) {
+	return reconcileGeneratedMountUnits(ctx, "/etc/systemd/system")
+}
+
 func (h *Handler) executeInitHostDisk(ctx context.Context, req models.InitHostDiskRequest) (*initHostDiskOutput, bool, error) {
 	mode, err := normalizeDiskMode(req.Mode)
 	if err != nil {
@@ -748,9 +964,9 @@ func (h *Handler) executeInitHostDisk(ctx context.Context, req models.InitHostDi
 	if req.NoFail == nil || *req.NoFail {
 		mountOpts = "defaults,noatime,nofail,x-systemd.device-timeout=10,x-systemd.default-timeout=10"
 	}
-	if req.Automount != nil && *req.Automount {
-		mountOpts += ",x-systemd.automount,x-systemd.idle-timeout=60"
-	}
+	// Automount behavior lives in the paired .automount unit below:
+	// x-systemd.* options are only honored by systemd-fstab-generator,
+	// so setting them on a hand-written .mount unit is dead weight.
 	if req.ReadOnly != nil && *req.ReadOnly {
 		mountOpts += ",ro"
 	}
@@ -774,21 +990,7 @@ func (h *Handler) executeInitHostDisk(ctx context.Context, req models.InitHostDi
 	}
 	automountName := strings.TrimSuffix(unitName, ".mount") + ".automount"
 
-	unitContent := fmt.Sprintf(`[Unit]
-Description=WebKVM Mount for %s (%s)
-After=local-fs.target
-DefaultDependencies=no
-StartLimitIntervalSec=0
-
-[Mount]
-What=%s
-Where=%s
-Type=%s
-Options=%s
-
-[Install]
-WantedBy=local-fs.target
-`, req.VolumeName, req.MountPoint, deviceToMount, req.MountPoint, req.Filesystem, mountOpts)
+	unitContent := renderHostMountUnit(req.VolumeName, deviceToMount, req.MountPoint, req.Filesystem, mountOpts)
 
 	unitPath := filepath.Join("/etc/systemd/system", unitName)
 	if err := os.WriteFile(unitPath, []byte(unitContent), 0644); err != nil {
@@ -797,18 +999,7 @@ WantedBy=local-fs.target
 
 	automountPath := filepath.Join("/etc/systemd/system", automountName)
 	if doAutomount {
-		automountContent := fmt.Sprintf(`[Unit]
-Description=WebKVM Automount for %s (%s)
-After=local-fs.target
-StartLimitIntervalSec=0
-
-[Automount]
-Where=%s
-TimeoutIdleSec=0
-
-[Install]
-WantedBy=local-fs.target
-`, req.VolumeName, req.MountPoint, req.MountPoint)
+		automountContent := renderHostAutomountUnit(req.VolumeName, req.MountPoint)
 		if err := os.WriteFile(automountPath, []byte(automountContent), 0644); err != nil {
 			return nil, false, fmt.Errorf("write automount unit %s: %w", automountPath, err)
 		}

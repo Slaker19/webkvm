@@ -1037,6 +1037,15 @@ func main() {
 	}
 	api.SetJobsHistoryDir(cfg.DataDir)
 
+	// Repair installs that still carry the issue #14 broken mount/automount
+	// units: the templates are only regenerated on disk re-init, so the
+	// upgrade itself must rewrite them once at daemon startup.
+	if changed, err := api.ReconcileGeneratedMountUnits(context.Background()); err != nil {
+		logger.Warn("mount_unit_reconcile_failed", "err", err, "units", changed)
+	} else if len(changed) > 0 {
+		logger.Info("mount_units_reconciled", "units", changed)
+	}
+
 	router := api.NewRouter(cfg, lv, computeBackend, authMgr, globalRateLimiter, loginLimiter, jail, userStore, hub, metrics, hostMetrics, auditLogger, settingsStore, tokensStore, nodesReg, backupStore, backupRunner, notifier, fwStore, fwMgr, vmSchedStore, vmScheduler, hostSchedStore, hostScheduler, metricHist, alerter, incusMetrics)
 
 	srv := &http.Server{
