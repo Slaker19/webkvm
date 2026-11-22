@@ -899,6 +899,15 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 		updateJob(jobID, 0, "error", err.Error())
 		return
 	}
+	// The catalog SizeBytes is the COMPRESSED download size: validate the
+	// archive here, while it is still on disk (it is removed after
+	// decompression). A 3x-of-compressed check against the decompressed
+	// image is why OPNsense/IPFire/FreeBSD/OpenWrt deploys never finished
+	// — bz2/xz/gz routinely compress 3-6x.
+	if rawFi, rerr := os.Stat(rawPath); rerr == nil && effective.SizeBytes > 0 && rawFi.Size() > effective.SizeBytes*2 {
+		updateJob(jobID, 99, "error", fmt.Sprintf("downloaded archive size (%d) far exceeds expected compressed (%d)", rawFi.Size(), effective.SizeBytes))
+		return
+	}
 
 	// 2) Decompress. Supported: gz, xz, bz2.
 	switch effective.Compression {
@@ -939,10 +948,6 @@ func (h *Handler) deployApplianceJob(jobID string, app appliances.Appliance, vmN
 	}
 	if effective.Format == "qcow2" && !isQCow2(finalPath) {
 		updateJob(jobID, 99, "error", "downloaded file is not a valid qcow2 image")
-		return
-	}
-	if effective.SizeBytes > 0 && fi.Size() > effective.SizeBytes*3 {
-		updateJob(jobID, 99, "error", fmt.Sprintf("downloaded size (%d) far exceeds expected (%d)", fi.Size(), effective.SizeBytes))
 		return
 	}
 

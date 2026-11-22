@@ -264,7 +264,7 @@ var Defaults = []Appliance{
 		URL:                "https://stable.release.flatcar-linux.net/amd64-usr/current/flatcar_production_qemu_image.img.bz2",
 		Format:             "raw",
 		Compression:        "bz2",
-		SizeBytes:          450000000,
+		SizeBytes:          592617837,
 		VCPUs:              2,
 		RAMMB:              2048,
 		DiskGB:             15,
@@ -279,7 +279,7 @@ var Defaults = []Appliance{
 		URL:                "https://download.freebsd.org/releases/VM-IMAGES/14.5-RELEASE/amd64/Latest/FreeBSD-14.5-RELEASE-amd64-BASIC-CLOUDINIT-ufs.qcow2.xz",
 		Format:             "qcow2",
 		Compression:        "xz",
-		SizeBytes:          400000000,
+		SizeBytes:          653136048,
 		VCPUs:              2,
 		RAMMB:              2048,
 		DiskGB:             10,
@@ -336,7 +336,7 @@ var Defaults = []Appliance{
 
 	// ---- router ----
 	{
-		ID:          "openwrt-25.12",
+		ID:                 "openwrt-25.12",
 		Name:               "OpenWrt 25.12",
 		Description:        "OpenWrt x86_64 (EFI, ext4). Turnkey router/firewall image.",
 		Category:           "router",
@@ -390,7 +390,7 @@ var Defaults = []Appliance{
 		URL:                "https://downloads.ipfire.org/releases/ipfire-2.x/2.29-core203/ipfire-2.29-core203-x86_64.img.xz",
 		Format:             "raw",
 		Compression:        "xz",
-		SizeBytes:          600000000,
+		SizeBytes:          533996648,
 		VCPUs:              1,
 		RAMMB:              1024,
 		DiskGB:             4,
