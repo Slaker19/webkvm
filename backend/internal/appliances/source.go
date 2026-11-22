@@ -37,6 +37,8 @@ var officialHosts = map[string]bool{
 	"downloads.ipfire.org":             true, // IPFire releases
 	"download.truenas.com":             true, // TrueNAS SCALE releases
 	"sourceforge.net":                  true, // OpenMediaVault ISOs
+	"atxfiles.netgate.com":             true, // pfSense CE official mirror
+	"pkg.opnsense.org":                 true, // OPNsense releases
 }
 
 // ValidateSourceURL ensures u is an https URL hosted on an official
@@ -56,7 +58,9 @@ func ValidateSourceURL(u string) error {
 		// github.com release asset redirection is fine, but only for the
 		// Home Assistant operating-system repo.
 		if host == "github.com" {
-			if strings.HasPrefix(parsed.Path, "/home-assistant/operating-system/") {
+			// Release channels of projects that only publish via GitHub.
+			if strings.HasPrefix(parsed.Path, "/home-assistant/operating-system/") ||
+				strings.HasPrefix(parsed.Path, "/vyos/vyos-nightly-build/") {
 				return nil
 			}
 			return fmt.Errorf("URL host %q is not an official source for this path", host)
