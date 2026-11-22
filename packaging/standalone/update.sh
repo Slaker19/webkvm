@@ -98,6 +98,12 @@ log "current: ${CURRENT_VER:-installed}"
 if [[ "${SOURCE_MODE}" == 1 ]]; then
   # Update from local git repo
   [[ -e "${REPO_DIR}/.git" ]] || die "not a git repo: ${REPO_DIR}"
+  # Source mode rebuilds the frontend and backend: without the toolchains
+  # the pull would succeed and the build would die mid-way ("npm: command
+  # not found"), leaving the operator with an update that silently did
+  # nothing. Fail before touching anything.
+  command -v go >/dev/null || die "source mode needs the Go toolchain (go not found); use the release updater (webkvm-update without --source) or install Go 1.26+ and Node.js"
+  command -v npm >/dev/null || die "source mode needs Node.js (npm not found); use the release updater (webkvm-update without --source) or install Node 22+"
   # Follow the branch that is actually checked out. Hardcoding `origin main`
   # would fast-forward a maintenance or feature branch onto main and install
   # code the operator never asked for.

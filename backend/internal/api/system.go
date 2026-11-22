@@ -807,6 +807,14 @@ func (h *Handler) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 	mode := "release"
 	var args []string
 	if sourceMode {
+		// Source mode rebuilds the frontend and backend. Answering 202
+		// without a toolchain made the button spin to "updating" while
+		// the updater died on "npm: command not found" — tell the
+		// operator now instead of after the fact.
+		if err := sourceToolchainCheck(); err != nil {
+			jsonErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
 		mode = "source"
 		args = append(args, "--source")
 	}
@@ -871,6 +879,19 @@ func pathExists(p string) bool {
 var updaterLaunchable = func() error {
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		return errors.New("systemd-run not found; the updater needs it to survive the service restart it performs")
+	}
+	return nil
+}
+
+// sourceToolchainCheck verifies that a source-mode update can actually
+// build on this host. A package var so tests do not depend on the
+// runner's toolchain.
+var sourceToolchainCheck = func() error {
+	if _, err := exec.LookPath("go"); err != nil {
+		return errors.New("source mode needs the Go toolchain (go not found); use the release updater or install Go 1.26+ and Node.js")
+	}
+	if _, err := exec.LookPath("npm"); err != nil {
+		return errors.New("source mode needs Node.js (npm not found); use the release updater or install Node 22+")
 	}
 	return nil
 }

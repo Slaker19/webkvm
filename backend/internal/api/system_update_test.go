@@ -317,3 +317,36 @@ func TestShellQuote(t *testing.T) {
 		}
 	}
 }
+
+// A source-mode update on a host without the Go/Node toolchains must be
+// refused with 503 before the 202, not accepted and then die inside the
+// updater ("npm: command not found") while the UI reports "updating".
+func TestSystemUpdateSourceModeWithoutToolchainRefused(t *testing.T) {
+	launched := withStubbedUpdater(t, writeUpdater(t, t.TempDir()))
+	origCheck := sourceToolchainCheck
+	sourceToolchainCheck = func() error {
+		return errors.New("source mode needs Node.js (npm not found); use the release updater or install Node 22+")
+	}
+	defer func() { sourceToolchainCheck = origCheck }()
+	t.Setenv("WEBKVM_ALLOW_UPDATE", "1")
+
+	// REPO_DIR with a .git marker selects source mode.
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := newUpdateHandler(t, repo)
+	rec := postUpdate(h)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "npm not found") {
+		t.Fatalf("response must name the missing toolchain: %s", rec.Body.String())
+	}
+	select {
+	case <-launched:
+		t.Fatal("updater must not launch when the toolchain check fails")
+	default:
+	}
+}
