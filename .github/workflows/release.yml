@@ -28,8 +28,9 @@ jobs:
     # Pre-release tags (v0.1.14-rc.1) publish a Docker image via
     # docker-publish.yml but never a GitHub Release: the stable tag is
     # the only one that ships assets, so a cancelled-by-design run can
-    # never hang a red check on the candidate commit.
-    if: ${{ !contains(github.ref_name, '-') }}
+    # never hang a red check on the candidate commit. Fix tags
+    # (v0.1.14-fix01) are stable releases by repo convention and ship.
+    if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
