@@ -625,6 +625,14 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// No silent drops: the job path would discard req.CloudInit for an
+		// appliance without cloud-init, and an operator who typed
+		// credentials for e.g. OPNsense must not boot a box with its
+		// vendor default login believing they set a password.
+		if !app.CloudInitSupported {
+			jsonErr(w, http.StatusBadRequest, fmt.Sprintf("%q does not support cloud-init; the credentials would be ignored — check the appliance notes for its default login", app.ID))
+			return
+		}
 	}
 
 	jobID := fmt.Sprintf("app_%d", time.Now().UnixNano())

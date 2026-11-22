@@ -200,6 +200,19 @@
 
   const isContainerDeploy = $derived(deployType === 'container');
 
+  // Cloud-init applies to helper apps and cloud OS images. The 8
+  // disk-image appliances without cloud-init support (NAS/router/firewall)
+  // silently dropped these credentials — the server now 400s them, so the
+  // dialog must not offer fields the appliance cannot honor.
+  const usesCloudInit = $derived(
+    !!deployModalApp &&
+      !!(
+        deployModalApp.cloud_init_supported ||
+        deployModalApp.is_helper_script ||
+        deployModalApp.base_image
+      )
+  );
+
   // Keep dependent state honest when the target type changes: options
   // that do not apply to the new type must not survive in the payload.
   $effect(() => {
@@ -299,13 +312,18 @@
         vcpus: Number(deployVcpus) || 2,
         ram_mb: Number(deployRamMB) || 2048,
         disk_gb: Number(deployDiskGB) || 10,
-        cloud_init: {
+      };
+      // Credentials only when the appliance can consume them: the server
+      // 400s cloud-init for entries without support, so sending the fields
+      // would put a lie in the request record.
+      if (usesCloudInit) {
+        payload.cloud_init = {
           user: deployUser.trim() || 'ubuntu',
           password: deployPassword.trim(),
           ssh_key: deploySSHKey.trim() || undefined,
           hostname: deployName.trim(),
-        },
-      };
+        };
+      }
       // Container-only options are sent ONLY for a container. The server
       // ignores them on a VM anyway, but sending them would imply they
       // had an effect and make the request a poor record of what was
@@ -1132,77 +1150,99 @@ EOF\n`;
             </label>
           {/if}
 
-          <!-- Credentials (User, Root/Sudo Password, SSH Key) -->
-          <div class="rounded-xl border border-border bg-muted/20 p-3.5 space-y-3">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                <Icon name="lock" size={13} class="text-accent" />
-                <span>{t('appstore.accessCredentials')}</span>
-              </span>
-              <button
-                type="button"
-                onclick={generateNewPassword}
-                class="text-[11px] text-accent hover:underline flex items-center gap-1"
-                title={t('appstore.generatePasswordTitle')}
-              >
-                <Icon name="refresh" size={11} />
-                <span>{t('appstore.generatePassword')}</span>
-              </button>
-            </div>
-
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label for="deploy-user-input" class="text-[11px] text-muted-foreground block mb-1">
-                  {t('appstore.systemUser')}
-                </label>
-                <Input
-                  id="deploy-user-input"
-                  bind:value={deployUser}
-                  placeholder="ubuntu"
-                  class="w-full text-xs font-mono"
-                />
+          <!-- Credentials (User, Root/Sudo Password, SSH Key). Hidden for
+               appliances without cloud-init: those boot with their vendor
+               default login (e.g. admin/opnsense from the catalog notes),
+               never with what would be typed here. -->
+          {#if usesCloudInit}
+            <div class="rounded-xl border border-border bg-muted/20 p-3.5 space-y-3">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  <Icon name="lock" size={13} class="text-accent" />
+                  <span>{t('appstore.accessCredentials')}</span>
+                </span>
+                <button
+                  type="button"
+                  onclick={generateNewPassword}
+                  class="text-[11px] text-accent hover:underline flex items-center gap-1"
+                  title={t('appstore.generatePasswordTitle')}
+                >
+                  <Icon name="refresh" size={11} />
+                  <span>{t('appstore.generatePassword')}</span>
+                </button>
               </div>
-              <div>
-                <label for="deploy-pass-input" class="text-[11px] text-muted-foreground block mb-1">
-                  {t('appstore.rootPasswordRequired')}
-                </label>
-                <div class="relative">
-                  <input
-                    id="deploy-pass-input"
-                    type={showDeployPassword ? 'text' : 'password'}
-                    bind:value={deployPassword}
-                    class="w-full pl-2.5 pr-8 py-1.5 rounded-xl bg-background border border-border text-xs font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-accent/40"
-                    placeholder={t('appstore.minimumPassword')}
-                  />
-                  <button
-                    type="button"
-                    onclick={() => (showDeployPassword = !showDeployPassword)}
-                    class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    title={showDeployPassword ? 'Ocultar' : 'Mostrar'}
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label
+                    for="deploy-user-input"
+                    class="text-[11px] text-muted-foreground block mb-1"
                   >
-                    <Icon name={showDeployPassword ? 'eyeOff' : 'eye'} size={14} />
-                  </button>
+                    {t('appstore.systemUser')}
+                  </label>
+                  <Input
+                    id="deploy-user-input"
+                    bind:value={deployUser}
+                    placeholder="ubuntu"
+                    class="w-full text-xs font-mono"
+                  />
+                </div>
+                <div>
+                  <label
+                    for="deploy-pass-input"
+                    class="text-[11px] text-muted-foreground block mb-1"
+                  >
+                    {t('appstore.rootPasswordRequired')}
+                  </label>
+                  <div class="relative">
+                    <input
+                      id="deploy-pass-input"
+                      type={showDeployPassword ? 'text' : 'password'}
+                      bind:value={deployPassword}
+                      class="w-full pl-2.5 pr-8 py-1.5 rounded-xl bg-background border border-border text-xs font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-accent/40"
+                      placeholder={t('appstore.minimumPassword')}
+                    />
+                    <button
+                      type="button"
+                      onclick={() => (showDeployPassword = !showDeployPassword)}
+                      class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      title={showDeployPassword ? 'Ocultar' : 'Mostrar'}
+                    >
+                      <Icon name={showDeployPassword ? 'eyeOff' : 'eye'} size={14} />
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <details class="text-xs pt-1">
-              <summary
-                class="cursor-pointer text-muted-foreground hover:text-foreground select-none font-medium text-[11px]"
-              >
-                {t('appstore.publicSSHOptional')}
-              </summary>
-              <div class="mt-2">
-                <textarea
-                  id="deploy-ssh-key-input"
-                  bind:value={deploySSHKey}
-                  rows="2"
-                  placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."
-                  class="w-full p-2 rounded-xl bg-background border border-border text-xs font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-accent/40"
-                ></textarea>
-              </div>
-            </details>
-          </div>
+              <details class="text-xs pt-1">
+                <summary
+                  class="cursor-pointer text-muted-foreground hover:text-foreground select-none font-medium text-[11px]"
+                >
+                  {t('appstore.publicSSHOptional')}
+                </summary>
+                <div class="mt-2">
+                  <textarea
+                    id="deploy-ssh-key-input"
+                    bind:value={deploySSHKey}
+                    rows="2"
+                    placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5..."
+                    class="w-full p-2 rounded-xl bg-background border border-border text-xs font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  ></textarea>
+                </div>
+              </details>
+            </div>
+          {/if}
+
+          <!-- Catalog notes: the trusted per-appliance truth (default
+               logins, RAM floors, installer quirks) that no derived
+               field can replace. -->
+          {#if deployModalApp?.notes}
+            <p
+              class="text-[11px] text-muted-foreground rounded-xl border border-border bg-muted/20 p-3"
+            >
+              {deployModalApp.notes}
+            </p>
+          {/if}
 
           <!-- Resources -->
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">

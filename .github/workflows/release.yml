@@ -69,6 +69,19 @@ jobs:
           cd backend
           mkdir -p internal/frontend/dist
           cp -r ../frontend/dist/* internal/frontend/dist/
+          # Ship gate: the embedded dist must be byte-identical to the
+          # freshly built frontend. A binary that carries an older dist
+          # shipped the 0.1.13 UI version in the 0.1.14 release and a
+          # pre-fix deploy dialog on a live host — same drift class.
+          cd ..
+          a=$(cd frontend/dist && find . -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+          b=$(cd backend/internal/frontend/dist && find . -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+          if [ "$a" != "$b" ]; then
+            echo "::error::embedded frontend dist does not match the freshly built frontend/dist ($a != $b)"
+            exit 1
+          fi
+          echo "embedded dist hash verified: $a"
+          cd backend
           # On a tag push, git describe yields the tag (vX.Y.Z). On a
           # manual dispatch, the operator supplies the version explicitly.
           VERSION=${{ github.event.inputs.version || '' }}
