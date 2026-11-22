@@ -58,7 +58,11 @@ jobs:
         run: |
           cd frontend
           npm ci
-          npm run build
+          # Same tag-derived version the backend bakes below, so the UI
+          # never diverges from the release.
+          WEBKVM_VERSION="${{ github.event.inputs.version || '' }}"
+          [ -n "$WEBKVM_VERSION" ] || WEBKVM_VERSION=$(git describe --tags --always)
+          WEBKVM_VERSION="${WEBKVM_VERSION#v}" npm run build
 
       - name: Build backend binary + CLI (versioned)
         run: |
