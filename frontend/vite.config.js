@@ -8,9 +8,11 @@ const pkg = JSON.parse(readFileSync(path.resolve('./package.json'), 'utf-8'));
 
 export default defineConfig({
   define: {
-    // Exposed to the bundle so lib/brand.js can read the package version
-    // at build time without an extra API call.
-    __APP_VERSION__: JSON.stringify(pkg.version),
+    // Exposed to the bundle so lib/brand.js can read the version at build
+    // time without an extra API call. WEBKVM_VERSION comes from the git tag
+    // via the Makefile/Dockerfile/ci.yml so the UI version always matches
+    // the backend and the release; package.json is only a local fallback.
+    __APP_VERSION__: JSON.stringify(process.env.WEBKVM_VERSION || pkg.version),
   },
   plugins: [tailwindcss(), svelte()],
   resolve: {

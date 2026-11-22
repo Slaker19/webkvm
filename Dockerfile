@@ -18,7 +18,10 @@ COPY frontend/package*.json ./
 RUN npm ci --prefer-offline --no-audit 2>/dev/null || npm install --no-audit
 
 COPY frontend/ ./
-RUN npm run build
+# VERSION is passed by docker-publish (from the git tag) so the UI version
+# matches the backend baked in stage 2.
+ARG VERSION=dev
+RUN WEBKVM_VERSION=${VERSION} npm run build
 
 # ==============================================================================
 # Stage 2: Build Backend

@@ -138,8 +138,17 @@ jobs:
       - name: DOM component tests (happy-dom)
         run: npm run test:dom
 
-      - name: Build
-        run: npm run build
+      - name: Build (version from git tag)
+        run: |
+          V=$(git describe --tags --always 2>/dev/null | sed 's/^v//')
+          WEBKVM_VERSION="$V" npm run build
+          # Guard: the UI version must stay linked to the git tag, never
+          # to a stale package.json bump (issue that shipped 0.1.13 in the
+          # UI of the 0.1.14 release).
+          if ! grep -rqF "\"$V\"" dist/assets/; then
+            echo "ERROR: frontend bundle does not bake version '$V'"; exit 1
+          fi
+          echo "Baked version: $V"
 
       - name: Upload dist
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

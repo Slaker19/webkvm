@@ -77,8 +77,8 @@ install-deps:
 
 build-frontend:
 	cd frontend && npm ci 2>/dev/null || npm install
-	cd frontend && npm run build
-	@echo "Frontend built -> frontend/dist/"
+	cd frontend && WEBKVM_VERSION=$(VERSION) npm run build
+	@echo "Frontend built -> frontend/dist/ (v$(VERSION))"
 
 build-backend: build-frontend
 	cd backend && \
