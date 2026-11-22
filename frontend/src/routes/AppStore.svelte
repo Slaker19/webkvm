@@ -231,7 +231,13 @@
         .slice(0, 48)
         .toLowerCase() || 'app';
     deployName = base;
-    deployType = app.default_type || (app.is_helper_script ? 'container' : 'container');
+    // Container capability: helper scripts and anything with an Incus
+    // base image can be LXC; plain disk images (cloud/NAS/router) are
+    // KVM-only — offering LXC there would deploy an unrelated Ubuntu
+    // container under the appliance's name.
+    const canContainer =
+      !!app && !!(app.default_type === 'container' || app.is_helper_script || app.base_image);
+    deployType = canContainer ? app.default_type || 'container' : 'vm';
     deployVcpus = app.vcpus || 2;
     deployRamMB = app.ram_mb || 2048;
     deployDiskGB = app.disk_gb || 10;
@@ -982,48 +988,59 @@ EOF\n`;
       {:else}
         <!-- Form Content -->
         <div class="py-4 space-y-4 overflow-y-auto flex-1 min-w-0">
-          <!-- Target Environment (LXC vs VM) -->
+          <!-- Target Environment (LXC vs VM). Disk-image appliances are
+               KVM-only: the LXC option is hidden rather than shown as
+               something that would silently deploy the wrong OS. -->
           <div>
             <span class="text-xs font-semibold text-foreground block mb-1.5"
               >{t('appstore.executionEnvironment')}</span
             >
-            <div class="grid grid-cols-2 gap-2 text-xs">
-              <button
-                type="button"
-                onclick={() => (deployType = 'container')}
-                class="flex flex-col items-start p-3 rounded-xl border text-left transition-all {deployType ===
-                'container'
-                  ? 'border-success bg-success/10 text-foreground font-semibold shadow-sm'
-                  : 'border-border bg-card text-muted-foreground hover:bg-muted'}"
-              >
-                <div class="flex items-center gap-1.5 text-success font-semibold mb-0.5">
-                  <Icon name="box" size={14} />
-                  <span>Incus LXC</span>
-                  <span class="text-[10px] px-1 py-0.2 rounded bg-success/20"
-                    >{t('appstore.recommended')}</span
+            {#if deployModalApp && (deployModalApp.default_type === 'container' || deployModalApp.is_helper_script || deployModalApp.base_image)}
+              <div class="grid grid-cols-2 gap-2 text-xs">
+                <button
+                  type="button"
+                  onclick={() => (deployType = 'container')}
+                  class="flex flex-col items-start p-3 rounded-xl border text-left transition-all {deployType ===
+                  'container'
+                    ? 'border-success bg-success/10 text-foreground font-semibold shadow-sm'
+                    : 'border-border bg-card text-muted-foreground hover:bg-muted'}"
+                >
+                  <div class="flex items-center gap-1.5 text-success font-semibold mb-0.5">
+                    <Icon name="box" size={14} />
+                    <span>Incus LXC</span>
+                    <span class="text-[10px] px-1 py-0.2 rounded bg-success/20"
+                      >{t('appstore.recommended')}</span
+                    >
+                  </div>
+                  <span class="text-[11px] text-muted-foreground font-normal"
+                    >{t('appstore.lxcBootHelper')}</span
                   >
-                </div>
-                <span class="text-[11px] text-muted-foreground font-normal"
-                  >{t('appstore.lxcBootHelper')}</span
+                </button>
+                <button
+                  type="button"
+                  onclick={() => (deployType = 'vm')}
+                  class="flex flex-col items-start p-3 rounded-xl border text-left transition-all {deployType ===
+                  'vm'
+                    ? 'border-accent bg-accent/10 text-foreground font-semibold shadow-sm'
+                    : 'border-border bg-card text-muted-foreground hover:bg-muted'}"
                 >
-              </button>
-              <button
-                type="button"
-                onclick={() => (deployType = 'vm')}
-                class="flex flex-col items-start p-3 rounded-xl border text-left transition-all {deployType ===
-                'vm'
-                  ? 'border-accent bg-accent/10 text-foreground font-semibold shadow-sm'
-                  : 'border-border bg-card text-muted-foreground hover:bg-muted'}"
+                  <div class="flex items-center gap-1.5 text-accent font-semibold mb-0.5">
+                    <Icon name="cpu" size={14} />
+                    <span>KVM Virtual Machine</span>
+                  </div>
+                  <span class="text-[11px] text-muted-foreground font-normal"
+                    >{t('appstore.kernelIsolation')}</span
+                  >
+                </button>
+              </div>
+            {:else}
+              <div
+                class="flex items-center gap-1.5 text-accent font-semibold text-xs p-3 rounded-xl border border-accent bg-accent/10"
               >
-                <div class="flex items-center gap-1.5 text-accent font-semibold mb-0.5">
-                  <Icon name="cpu" size={14} />
-                  <span>KVM Virtual Machine</span>
-                </div>
-                <span class="text-[11px] text-muted-foreground font-normal"
-                  >{t('appstore.kernelIsolation')}</span
-                >
-              </button>
-            </div>
+                <Icon name="cpu" size={14} />
+                <span>KVM Virtual Machine</span>
+              </div>
+            {/if}
           </div>
 
           <!-- Name & Network -->

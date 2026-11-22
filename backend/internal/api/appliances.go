@@ -319,7 +319,16 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 	if targetType == "" {
 		targetType = app.DefaultType
 		if targetType == "" {
-			targetType = "container"
+			// No declared default: helper apps run best as LXC, but a
+			// plain disk image (cloud/NAS/router catalog entries) is a
+			// full OS that only makes sense as a KVM VM — defaulting it
+			// to "container" would deploy a generic Ubuntu container
+			// under the appliance's name.
+			if app.IsHelperScript || app.BaseImage != "" {
+				targetType = "container"
+			} else {
+				targetType = "vm"
+			}
 		}
 	}
 	supportsContainers := false
@@ -327,6 +336,22 @@ func (h *Handler) DeployAppliance(w http.ResponseWriter, r *http.Request) {
 		supportsContainers = comb.Secondary() != nil
 	}
 	deployingContainer := targetType == "container" && supportsContainers
+
+	// A container deploy was silently downgraded to a VM when Incus is
+	// not installed; the operator asked for one thing and received
+	// another. Fail loudly instead.
+	if targetType == "container" && !deployingContainer {
+		jsonErr(w, http.StatusServiceUnavailable, "containers require Incus, which is not available on this host; deploy as a KVM VM or install Incus")
+		return
+	}
+	// Disk-image appliances (cloud/NAS/router entries) have no container
+	// base image: without this guard the deploy below would fall back to
+	// images:ubuntu/26.04 and create an unrelated Ubuntu container under
+	// the appliance's name (e.g. a "truenas-scale" LXC).
+	if deployingContainer && app.BaseImage == "" && !app.IsHelperScript {
+		jsonErr(w, http.StatusBadRequest, fmt.Sprintf("%q is a full disk image and can only be deployed as a KVM VM", app.ID))
+		return
+	}
 
 	// V13-DATA-02: the deploy may target any eligible storage pool (the
 	// frontend offers a selector); see deployPoolName for the defaults.
