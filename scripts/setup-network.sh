@@ -973,6 +973,67 @@ verify_post_state_macvlan() {
     fi
 }
 
+# --- OMV preflight (Council r7: OMV stays the sole network writer) ---------
+# On OpenMediaVault hosts the physical bridge MUST be br0, owned and managed
+# by OMV: OMV hardcodes br0 in its generated netplan and regenerates its
+# netplan files from its config DB on every UI apply. A WebKVM-owned
+# zz-webkvm-*.yaml would be foreign state (invisible in the OMV UI,
+# conflicting with OMV applies), so on OMV we either reuse a healthy
+# OMV-managed br0 or stop BEFORE any network mutation.
+omv_detected() {
+    [ -f /etc/openmediavault/config.xml ] || dpkg -s openmediavault >/dev/null 2>&1
+}
+
+omv_bridge_managed() {
+    # OMV-owned: one of OMV's netplan files defines br0 (OMV names its
+    # generated files *-openmediavault-*.yaml), or OMV's config DB carries a
+    # bridge interface entry.
+    grep -l "br0" /etc/netplan/*openmediavault*.yaml >/dev/null 2>&1 && return 0
+    grep -q "<bridges>" /etc/openmediavault/config.xml 2>/dev/null && return 0
+    return 1
+}
+
+omv_bridge_preflight() {
+    omv_detected || return 0
+
+    local br0_exists=false vmbr0_exists=false
+    [ -d /sys/class/net/br0/bridge ]      && br0_exists=true
+    [ -d /sys/class/net/vmbr0/bridge ]    && vmbr0_exists=true
+
+    if ${br0_exists} && ${vmbr0_exists}; then
+        echo "  FATAL: both br0 and vmbr0 exist on this OpenMediaVault host." >&2
+        echo "        OMV manages br0; WebKVM will not pick one for you or touch either." >&2
+        echo "        Delete the unmanaged one and rerun this installer." >&2
+        return 1
+    fi
+
+    if ${br0_exists}; then
+        if omv_bridge_managed; then
+            echo "  = OMV detected: reusing existing br0 (OMV-managed). WebKVM will make no network changes."
+            echo "    Manage br0 only through OMV; do not create vmbr0 or another bridge for WebKVM."
+            BR_NAME="br0"
+            return 0
+        fi
+        echo "  FATAL: br0 exists but is not managed by OpenMediaVault (no OMV netplan/config entry)." >&2
+        echo "        OMV is the network control plane on this host: recreate br0 from the OMV UI" >&2
+        echo "        (Network > Interfaces > Add Bridge), apply, verify SSH, then rerun this installer." >&2
+        return 1
+    fi
+
+    if ${vmbr0_exists}; then
+        echo "  FATAL: vmbr0 exists on this OpenMediaVault host but OMV does not manage it." >&2
+        echo "        WebKVM will not use or migrate it automatically: create br0 from the OMV UI" >&2
+        echo "        (Network > Interfaces > Add Bridge), apply, verify SSH, then rerun this installer." >&2
+        return 1
+    fi
+
+    echo "  FATAL: OMV detected and no usable br0 exists. No changes were made." >&2
+    echo "        In OMV, create br0 with the intended physical NIC and address, apply the" >&2
+    echo "        configuration, and verify SSH connectivity. Then rerun this installer." >&2
+    echo "        Do not create vmbr0: OMV hardcodes br0 and would not manage it." >&2
+    return 1
+}
+
 # --- Physical bridge (vmbr0) — REQUIRED shared L2 -------------------------
 # WebKVM requires a PHYSICAL Linux bridge (vmbr0/br0) attached to the host's
 # physical NIC so KVM and Incus share the real LAN (Layer-2, IPs from the
@@ -2059,6 +2120,12 @@ fi
 BR_NAME="${BRIDGE_NAME:-vmbr0}"
 
 if [[ "${MODE}" == "bridge" || "${MODE}" == "both" ]]; then
+    # Council r7: on OMV, either reuse the OMV-managed br0 or stop before
+    # ANY network mutation — never create a foreign bridge. Runs here,
+    # after read-only detection (steps 1-4) but before the first write.
+    if ! omv_bridge_preflight; then
+        exit 1
+    fi
     # WebKVM requires a PHYSICAL Linux bridge (vmbr0/br0) so KVM and Incus
     # share the real LAN (shared Layer-2, Proxmox-style). Reuse an existing
     # one or create it (nmcli → netplan); NEVER fall back to NAT/macvlan.

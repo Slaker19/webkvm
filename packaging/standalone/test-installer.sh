@@ -45,6 +45,23 @@ grep -F 'NETWORK_MODE' "${INSTALL}" >/dev/null
 grep -F -e '--bridge' "${INSTALL}" >/dev/null
 grep -F -e '--nat' "${INSTALL}" >/dev/null
 
+# OMV bridge preflight (Council r7): on OpenMediaVault the physical bridge
+# must be an OMV-managed br0 — reuse it or stop BEFORE any network mutation.
+# WebKVM never writes a foreign netplan file or creates vmbr0 there.
+SETUP_NET="${ROOT}/scripts/setup-network.sh"
+bash -n "${SETUP_NET}"
+grep -F 'omv_detected()' "${SETUP_NET}" >/dev/null
+grep -F 'omv_bridge_managed()' "${SETUP_NET}" >/dev/null
+grep -F 'omv_bridge_preflight' "${SETUP_NET}" >/dev/null
+grep -F 'OMV detected and no usable br0 exists. No changes were made.' "${SETUP_NET}" >/dev/null
+grep -F 'Do not create vmbr0' "${SETUP_NET}" >/dev/null
+# The preflight must run before the first mutation (step "5. Apply"), not inside it.
+if [ "$(grep -n 'omv_bridge_preflight' "${SETUP_NET}" | head -1 | cut -d: -f1)" -ge \
+     "$(grep -n '5. Apply configuration based on mode' "${SETUP_NET}" | head -1 | cut -d: -f1)" ]; then
+  echo "OMV preflight must be invoked after mode resolution but before apply" >&2
+  exit 1
+fi
+
 # One-liner bootstrap guards (piped runs go strictly unattended).
 grep -F 'WEBKVM_INSTALL_REPO' "${ROOT}/scripts/install-webkvm.sh" >/dev/null
 grep -F 'WEBKVM_NONINTERACTIVE' "${ROOT}/scripts/install-webkvm.sh" >/dev/null
